@@ -1,0 +1,2 @@
+run:
+  dir: ${run_dir}/hydra/${run_name}
