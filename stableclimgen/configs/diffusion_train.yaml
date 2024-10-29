@@ -2,7 +2,7 @@ defaults:
   - trainer: diffusion
   - logger: wandb
   - model: diffusion
-  - data: tensor
+  - dataloader: netcdf
   - hydra: default
   - _self_
 

@@ -1,14 +1,11 @@
 import torch
 import torch.nn as nn
 
-from latengen.model.diffusion.attention import SelfAttention, TransformerBlock
-from latengen.model.diffusion.modules import SpatioTemporalPatchEmbedding, ResBlock, Identity, \
+from .attention import SelfAttention, TransformerBlock
+from .modules import SpatioTemporalPatchEmbedding, ResBlock, Identity, \
     EmbedBlockSequential, FinalLayer, ConvBlock
-from latengen.model.diffusion.nn import (
-    linear,
-    timestep_embedding
-)
-from latengen.model.diffusion.rearrange import RearrangeBatchCentric, RearrangeSpaceCentric, RearrangeTimeCentric, \
+from .nn import linear, timestep_embedding, normalization, zero_module, conv_nd
+from .rearrange import RearrangeBatchCentric, RearrangeSpaceCentric, RearrangeTimeCentric, \
     RearrangeSpaceChannelCentric, RearrangeTimeChannelCentric
 
 
@@ -68,8 +65,6 @@ class DiffusionGenerator(nn.Module):
             conditioning="channel",
             time_causal=False,
             max_rel_pos=None,
-            disable_spat_att=False,
-            disable_temp_att=False,
             concat_mask=False,
             channel_attention=False
     ):
@@ -107,47 +102,41 @@ class DiffusionGenerator(nn.Module):
         )
 
         def spat_attn_block(dim, img_size=None, cond_dim=None, embed=embed_dim):
-            if disable_spat_att:
-                return Identity()
+            if channel_attention:
+                rearrange_fn = RearrangeSpaceChannelCentric
+                dim = embed = img_size[0] * img_size[1]
             else:
-                if channel_attention:
-                    rearrange_fn = RearrangeSpaceChannelCentric
-                    dim = embed = img_size[0] * img_size[1]
-                else:
-                    rearrange_fn = RearrangeSpaceCentric
-                return rearrange_fn(
-                    SelfAttention(
-                        dim,
-                        cond_dim,
-                        dropout=dropout,
-                        num_heads=n_heads,
-                        num_head_channels=n_head_channels,
-                        embed_dim=embed,
-                        rel_position=rel_position,
-                        window_size=img_size
-                    ))
+                rearrange_fn = RearrangeSpaceCentric
+            return rearrange_fn(
+                SelfAttention(
+                    dim,
+                    cond_dim,
+                    dropout=dropout,
+                    num_heads=n_heads,
+                    num_head_channels=n_head_channels,
+                    embed_dim=embed,
+                    rel_position=rel_position,
+                    window_size=img_size
+                ))
 
         def temp_attn_block(dim, t=None, cond_dim=None, embed=embed_dim):
-            if disable_temp_att:
-                return Identity()
+            if channel_attention:
+                rearrange_fn = RearrangeTimeChannelCentric
+                dim = embed = t
             else:
-                if channel_attention:
-                    rearrange_fn = RearrangeTimeChannelCentric
-                    dim = embed = t
-                else:
-                    rearrange_fn = RearrangeTimeCentric
-                return rearrange_fn(
-                    SelfAttention(
-                        dim,
-                        cond_dim,
-                        dropout=dropout,
-                        num_heads=n_heads,
-                        num_head_channels=n_head_channels,
-                        embed_dim=embed,
-                        rel_position=rel_position,
-                        window_size=t,
-                        max_window_size=max_rel_pos
-                    ))
+                rearrange_fn = RearrangeTimeCentric
+            return rearrange_fn(
+                SelfAttention(
+                    dim,
+                    cond_dim,
+                    dropout=dropout,
+                    num_heads=n_heads,
+                    num_head_channels=n_head_channels,
+                    embed_dim=embed,
+                    rel_position=rel_position,
+                    window_size=t,
+                    max_window_size=max_rel_pos
+                ))
 
         def block(in_ch, out_ch, block_type="conv2d", img_size=None, time_window=None, up=False, down=False):
             if block_type == "conv2d":
@@ -165,8 +154,7 @@ class DiffusionGenerator(nn.Module):
                                         temp_attn_block(in_ch, time_window),
                                         spat_attn_block(in_ch, img_size, cond_dim=input_ch, embed=None) if conditioning == "cross_att" else None,
                                         temp_attn_block(in_ch, time_window, cond_dim=input_ch, embed=None) if conditioning == "cross_att" else None,
-                                        time_window=time_window, embed_dim=embed_dim, up=up, down=down,
-                                        time_causal=time_causal)
+                                        time_window=time_window, embed_dim=embed_dim, time_causal=time_causal)
 
         if not time_window:
             time_window = len(conv_factors) * [seq_length]
@@ -236,9 +224,16 @@ class DiffusionGenerator(nn.Module):
                     layers.append(block(ch, ch, updown, curr_img_size, time_window[level], up=True))
                 self.out_blocks.append(EmbedBlockSequential(*layers))
 
-        self.out = EmbedBlockSequential(FinalLayer(
-            input_ch, out_channels, patch_emb_size, embed_dim, curr_img_size, time_window[0])
-        )
+        if patch_emb_size[0] == patch_emb_size[1] == patch_emb_size[2] == 1:
+            self.out = EmbedBlockSequential(RearrangeBatchCentric(nn.Sequential(
+                normalization(ch),
+                nn.SiLU(),
+                zero_module(conv_nd(2, input_ch, out_channels, 3, padding=1)),
+            )))
+        else:
+            self.out = EmbedBlockSequential(FinalLayer(
+                input_ch, out_channels, patch_emb_size, embed_dim, curr_img_size, time_window[0])
+            )
 
     def forward(self, x, diffusion_steps=None, mask=None, cond_input=None):
         """

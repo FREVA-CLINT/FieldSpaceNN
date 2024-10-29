@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from latengen.model.diffusion.modules import EmbedBlock
+from .modules import EmbedBlock
 
 
 class RelativePosition1D(nn.Module):
@@ -244,8 +244,6 @@ class TransformerBlock(EmbedBlock):
             mult=1,
             dropout=0.,
             embed_dim=None,
-            up=False,
-            down=False,
             time_causal=False
     ):
         super().__init__()
@@ -253,8 +251,6 @@ class TransformerBlock(EmbedBlock):
         self.temporal_attention = temporal_attention
         self.spatial_cross_attention = spatial_cross_attention
         self.temporal_cross_attention = temporal_cross_attention
-        self.scale_factor = 2.0 if up else (0.5 if down else 1.0)
-        out_channels = int(out_channels * (self.scale_factor ** 2) + ((out_channels * (self.scale_factor ** 2) % 2) != 0))
         self.out_channels = out_channels
         self.mlp = MLPLayer(
             in_channels=in_channels,
@@ -284,17 +280,6 @@ class TransformerBlock(EmbedBlock):
 
         out_tensor = self.mlp(out_tensor, emb)
 
-        if self.scale_factor >= 1:
-            # Use einops.rearrange to reshape the tensor for upsampling
-            out_tensor = rearrange(out_tensor, 'b t (w h) (c s1 s2) -> b c t (w s1) (h s2)',
-                                   s1=int(self.scale_factor), s2=int(self.scale_factor), w=w, h=h)
-        else:
-            # Use einops.rearrange to reshape the tensor for downsampling
-            w_new = int(w * self.scale_factor) + ((w % (1 / self.scale_factor)) != 0)
-            h_new = int(h * self.scale_factor) + ((h % (1 / self.scale_factor)) != 0)
-            s1 = int(1 / self.scale_factor)
-            s2 = int(1 / self.scale_factor)
-            c = int(self.out_channels)
-            out_tensor = rearrange(out_tensor, 'b t (w_new s1 h_new s2) c -> b (c s1 s2) t w_new h_new',
-                                   w_new=w_new, s1=s1, h_new=h_new, s2=s2, c=c)
+        # Use einops.rearrange to reshape the tensor
+        out_tensor = rearrange(out_tensor, 'b t (w h) c -> b c t w h', w=w, h=h)
         return out_tensor

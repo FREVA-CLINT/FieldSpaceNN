@@ -1,1 +1,1 @@
-_target_: latengen.model.diffusion.sampler.DDIMSampler
+_target_: stableclimgen.src.models.diffusion.sampler.DDIMSampler

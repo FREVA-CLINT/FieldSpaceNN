@@ -5,7 +5,6 @@ import torch.nn as nn
 from einops import rearrange
 
 from .nn import (
-    checkpoint,
     conv_nd,
     linear,
     avg_pool_nd,
@@ -135,7 +134,6 @@ class ResBlock(EmbedBlock):
         convolution instead of a smaller 1x1 convolution to change the
         channels in the skip connection.
     :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param use_checkpoint: if True, use gradient checkpointing on this module.
     :param up: if True, use this block for upsampling.
     :param down: if True, use this block for downsampling.
     """
@@ -149,7 +147,6 @@ class ResBlock(EmbedBlock):
             use_conv=False,
             use_scale_shift_norm=False,
             dims=2,
-            use_checkpoint=False,
             up=False,
             down=False,
             img_size=None
@@ -160,7 +157,6 @@ class ResBlock(EmbedBlock):
         self.dropout = dropout
         self.out_channels = out_channels or in_channels
         self.use_conv = use_conv
-        self.use_checkpoint = use_checkpoint
         self.use_scale_shift_norm = use_scale_shift_norm
 
         self.in_layers = nn.Sequential(
@@ -205,19 +201,7 @@ class ResBlock(EmbedBlock):
         else:
             self.skip_connection = conv_nd(dims, in_channels, self.out_channels, 1)
 
-    def forward(self, x, emb, mask, cond):
-        """
-        Apply the block to a Tensor, conditioned on a timestep embedding.
-
-        :param x: an [N x C x ...] Tensor of features.
-        :param emb: an [N x emb_channels] Tensor of timestep embeddings.
-        :return: an [N x C x ...] Tensor of outputs.
-        """
-        return checkpoint(
-            self._forward, (x, emb), self.parameters(), self.use_checkpoint
-        )
-
-    def _forward(self, x, emb=None, mask=None, cond=None):
+    def forward(self, x, emb=None, mask=None, cond=None):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)

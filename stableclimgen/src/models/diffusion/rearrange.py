@@ -1,7 +1,7 @@
 import torch
 from einops import rearrange
 
-from latengen.model.diffusion.modules import EmbedBlock
+from .modules import EmbedBlock
 
 
 class RearrangeTimeCentric(EmbedBlock):

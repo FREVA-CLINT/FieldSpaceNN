@@ -13,7 +13,7 @@ import torch
 
 from .nn import mean_flat
 from .resample import create_named_schedule_sampler
-from latengen.model.diffusion.loss import normal_kl, continuous_gaussian_log_likelihood
+from .loss import normal_kl, continuous_gaussian_log_likelihood
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):

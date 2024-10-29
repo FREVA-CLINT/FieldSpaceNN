@@ -1,13 +1,12 @@
 dataset:
-  _target_: latengen.utils.dataloader.NetCDFLoader
-  data_dir_dict: ../../input/data_netcdf.json
+  _target_: stableclimgen.src.utils.datasets.MaskClimateDataset
+  data_dict: ../../input/data_netcdf.json
   seq_length: 1
-  mask_mode: "random"
-  normalization: "img"
-  norm_quantile: 0.95
-  strict: true
+  normalizer:
+    _target_: stableclimgen.src.utils.normalizer.MinMaxNormalizer
+    data_stats_dir: ../../snapshots/${run_name}/data_stats.pth
 
 dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 64
+  batch_size: 16
   num_workers: 12

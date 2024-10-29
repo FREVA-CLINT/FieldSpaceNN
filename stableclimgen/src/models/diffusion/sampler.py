@@ -1,6 +1,6 @@
 import torch
 
-from stableclimgen.src.models.diffusion.gaussian_diffusion import extract_into_tensor
+from .gaussian_diffusion import extract_into_tensor
 
 
 class Sampler:
