@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .attention import SelfAttention, TransformerBlock
-from .modules import SpatioTemporalPatchEmbedding, ResBlock, Identity, \
+from stableclimgen.src.modules.transformer.attention import SelfAttention, TransformerBlock
+from stableclimgen.src.modules.cnn.resnet import SpatioTemporalPatchEmbedding, ResBlock, Identity, \
     EmbedBlockSequential, FinalLayer, ConvBlock
 from .nn import linear, timestep_embedding, normalization, zero_module, conv_nd
 from .rearrange import RearrangeBatchCentric, RearrangeSpaceCentric, RearrangeTimeCentric, \
@@ -66,7 +66,9 @@ class DiffusionGenerator(nn.Module):
             time_causal=False,
             max_rel_pos=None,
             concat_mask=False,
-            channel_attention=False
+            channel_attention=False,
+            disable_temp_attention=False,
+            disable_spat_attention=False
     ):
         super().__init__()
 
@@ -102,6 +104,8 @@ class DiffusionGenerator(nn.Module):
         )
 
         def spat_attn_block(dim, img_size=None, cond_dim=None, embed=embed_dim):
+            if disable_spat_attention:
+                return Identity()
             if channel_attention:
                 rearrange_fn = RearrangeSpaceChannelCentric
                 dim = embed = img_size[0] * img_size[1]
@@ -120,6 +124,8 @@ class DiffusionGenerator(nn.Module):
                 ))
 
         def temp_attn_block(dim, t=None, cond_dim=None, embed=embed_dim):
+            if disable_temp_attention:
+                return Identity()
             if channel_attention:
                 rearrange_fn = RearrangeTimeChannelCentric
                 dim = embed = t
@@ -245,7 +251,8 @@ class DiffusionGenerator(nn.Module):
         :param cond_input: an [N x C x ...] Tensor of inputs.
         :return: an [N x C x ...] Tensor of outputs.
         """
-        hs = []
+        if self.conditioning is None:
+            cond_input = None
 
         if self.conditioning == "channel" and torch.is_tensor(cond_input):
             x = torch.cat([x, cond_input], dim=1)
@@ -272,12 +279,13 @@ class DiffusionGenerator(nn.Module):
             emb.add_(cond_input)
             emb = self.emb_activation(emb)
             cond_input = None
-
+        hs = [h]
         # input blocks
         for i, module in enumerate(self.in_blocks):
             h = module(h, emb[..., :h.shape[-3], :h.shape[-2], :h.shape[-1]], None, cond_input)
             if self.skip_connections:
                 hs.append(h)
+
         # middle block
         h = self.mid_block(h, emb[..., :h.shape[-3], :h.shape[-2], :h.shape[-1]], None, cond_input)
         # output blocks

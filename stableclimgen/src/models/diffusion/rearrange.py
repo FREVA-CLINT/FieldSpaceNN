@@ -1,7 +1,7 @@
 import torch
 from einops import rearrange
 
-from .modules import EmbedBlock
+from stableclimgen.src.modules.cnn.resnet import EmbedBlock
 
 
 class RearrangeTimeCentric(EmbedBlock):

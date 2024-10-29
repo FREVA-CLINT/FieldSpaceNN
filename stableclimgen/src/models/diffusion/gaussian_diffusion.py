@@ -472,12 +472,17 @@ class GaussianDiffusion:
                 terms["loss"] = terms["mse"]
         else:
             raise NotImplementedError(self.loss_type)
-        return terms, x_t - model_output if self.model_mean_type == ModelMeanType.EPSILON else model_output
+
+        if self.model_mean_type == ModelMeanType.EPSILON:
+            results = ((x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * model_output) /
+                       extract_into_tensor(self.sqrt_alphas_cumprod, t, x_t.shape))
+        else:
+            results = model_output
+        return terms, results
 
     def get_diffusion_steps(self, batch_size, device):
         t, weights = self.diffusion_step_sampler.sample(batch_size)
         return t.to(device), weights.to(device)
-
 
 def extract_into_tensor(arr, timesteps, broadcast_shape):
     """

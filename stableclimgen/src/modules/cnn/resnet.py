@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from .nn import (
+from stableclimgen.src.models.diffusion.nn import (
     conv_nd,
     linear,
     avg_pool_nd,
@@ -44,7 +44,8 @@ class SpatioTemporalPatchEmbedding(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, patch_size):
         super().__init__()
         assert len(patch_size) == len(kernel_size) == 3
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, patch_size)
+        padding = tuple((kernel_size[i] - patch_size[i])//2 for i in range(len(kernel_size)))
+        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, patch_size, padding=padding)
 
     def forward(self, x):
         return self.conv(x)

@@ -8,5 +8,5 @@ dataset:
 
 dataloader:
   _target_: torch.utils.data.DataLoader
-  batch_size: 16
+  batch_size: 4
   num_workers: 12

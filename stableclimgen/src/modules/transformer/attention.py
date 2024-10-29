@@ -4,12 +4,10 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 
-from .modules import EmbedBlock
+from stableclimgen.src.modules.cnn.resnet import EmbedBlock
 
 
 class RelativePosition1D(nn.Module):
-    """ https://github.com/evelinehong/Transformer_Relative_Position_PyTorch/blob/master/relative_position.py """
-
     def __init__(self, n_heads, window_size, max_window_size=None):
         super().__init__()
         self.n_heads = n_heads

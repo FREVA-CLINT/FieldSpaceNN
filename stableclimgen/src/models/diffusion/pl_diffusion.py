@@ -5,13 +5,15 @@ import torch
 from cosine_annealing_warmup import CosineAnnealingWarmupRestarts
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
+
+from .model import DiffusionGenerator
 from ...utils.visualization import plot_images
 
 
 class LightningDiffusionGenerator(pl.LightningModule):
     def __init__(self, model, gaussian_diffusion, lr, lr_warmup=None, ema_rate=0.999):
         super().__init__()
-        self.model = model
+        self.model: DiffusionGenerator = model
         self.ema_model = torch.optim.swa_utils.AveragedModel(
             self.model,
             multi_avg_fn=torch.optim.swa_utils.get_ema_multi_avg_fn(
@@ -37,7 +39,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         in_data, gt_data, mask_data = batch
-        t, weights = self.gaussian_diffusion.get_diffusion_steps(in_data.shape[0], in_data.device)
+        t, weights = self.gaussian_diffusion.get_diffusion_steps(in_data.shape[0], gt_data.device)
         l_dict, _ = self(gt_data, mask_data, in_data, t)
         loss = (l_dict["loss"] * weights).mean()
         loss_dict = {}
