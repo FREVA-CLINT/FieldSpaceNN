@@ -5,8 +5,6 @@ import numpy as np
 import torch
 import healpy as hp
 
-from latengen.utils.eval_utils import get_fft_stats, estimate_spectrum
-
 def plot_images(gt_images, gen_images, filename, directory, xr_dss=None):
     gen_images = gen_images.to(torch.device('cpu'))
     gt_images = gt_images.to(torch.device('cpu'))
@@ -74,63 +72,3 @@ def plot_images(gt_images, gen_images, filename, directory, xr_dss=None):
         plt.clf()
 
     plt.close('all')
-
-
-def plot_timeseries_spread(gt, output, percentile, filename, directory):
-    # plot overview with min, max and mean
-    output_mean = torch.mean(output, dim=0)
-    output_min = np.percentile(output, 100 - percentile, axis=0)
-    output_max = np.percentile(output, 0.0 + percentile, axis=0)
-    # plot mean, min and max ranges
-    plt.plot(range(output.shape[1]), output_mean, '{}--'.format("r"), label="Predicted Mean")
-    plt.fill_between(range(output.shape[1]), output_min, output_max, color="r", alpha=0.2)
-
-    gt_mean = torch.mean(gt, dim=0)
-    gt_max = np.percentile(gt, 100 - percentile, axis=0)
-    gt_min = np.percentile(gt, 0.0 + percentile, axis=0)
-    # plot mean, min and max ranges
-    plt.plot(range(gt.shape[1]), gt_mean, '{}--'.format("b"), label="GT Mean")
-    plt.fill_between(range(gt.shape[1]), gt_min, gt_max, color="b", alpha=0.2)
-
-    plt.legend(loc="upper right", prop={'size': 7})
-    plt.xlabel("Time")
-    plt.ylabel("Value")
-    plt.savefig("{}/{}.jpg".format(directory, filename), dpi=300)
-    plt.clf()
-
-
-def plot_timeseries(data, filename, directory):
-    # plot overview with min, max and mean
-    plt.plot(data, '{}--'.format("r"), label="Difference")
-
-    plt.xlabel("Time")
-    plt.ylabel("Value")
-    plt.savefig("{}/{}.jpg".format(directory, filename), dpi=300)
-    plt.clf()
-
-
-def plot_spectral_density(gt_images, out_images, filename, directory):
-    knrm, kbins = get_fft_stats(gt_images)
-
-    spectrum_gt = estimate_spectrum(gt_images, knrm, kbins)
-    spectrum_out = estimate_spectrum(out_images, knrm, kbins)
-
-    spectrum_gt = spectrum_gt.cpu().numpy()
-    spectrum_out = spectrum_out.cpu().numpy()
-    kbins_np = kbins.cpu().numpy()
-
-    # Plotting the spectral power density
-    plt.figure(figsize=(8, 6))
-    plt.yscale('log')
-    plt.xscale('log')
-    plt.plot(kbins_np[:-1] * 200, spectrum_gt, color='blue', label='Ground Truth')
-    plt.plot(kbins_np[:-1] * 200, spectrum_out, color='red', label='Output')
-    plt.xlabel('Spatial Frequency (km)')
-    plt.xlim(4*10**2, 10**4)
-    plt.ylim(10**3, 10**7)
-    plt.ylabel('Spectral Power Density')
-    plt.title('Spectral Power Density Comparison')
-    plt.legend()
-    plt.grid(True, which="both", ls="--")
-    plt.savefig("{}/{}.jpg".format(directory, filename), dpi=300)
-    plt.clf()
