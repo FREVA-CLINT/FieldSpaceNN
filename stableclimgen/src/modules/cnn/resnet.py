@@ -256,6 +256,7 @@ class FinalLayer(EmbedBlock):
 
     def forward(self, x, emb, mask, cond):
         b, c, t, w, h = x.shape
+        print(x.shape)
         x = rearrange(x, 'b c t w h -> b (t w h) c')
         if hasattr(self, 'embedding_layer'):
             emb = rearrange(emb, 'b c t w h -> b (t w h) c')
@@ -275,6 +276,7 @@ class FinalLayer(EmbedBlock):
         p = self.patch_size
         h, w = self.img_size
         t = x.shape[1] // (h * w)
+        print(x.shape)
         x = x.reshape(shape=(x.shape[0], t, h, w, p[0], p[1], p[2], c))
         x = torch.einsum('nthwpqrc->nctphqwr', x)
         return x.reshape(shape=(x.shape[0], c, t * p[0], h * p[1], w * p[2]))

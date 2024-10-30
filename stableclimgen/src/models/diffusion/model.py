@@ -1,11 +1,11 @@
 import torch
 import torch.nn as nn
 
-from stableclimgen.src.modules.transformer.attention import SelfAttention, TransformerBlock
+from stableclimgen.src.modules.transformer.diffusion_attention import SelfAttention, TransformerBlock
 from stableclimgen.src.modules.cnn.resnet import SpatioTemporalPatchEmbedding, ResBlock, Identity, \
     EmbedBlockSequential, FinalLayer, ConvBlock
 from .nn import linear, timestep_embedding, normalization, zero_module, conv_nd
-from .rearrange import RearrangeBatchCentric, RearrangeSpaceCentric, RearrangeTimeCentric, \
+from stableclimgen.src.modules.transformer.rearrange import RearrangeBatchCentric, RearrangeSpaceCentric, RearrangeTimeCentric, \
     RearrangeSpaceChannelCentric, RearrangeTimeChannelCentric
 
 
@@ -251,6 +251,7 @@ class DiffusionGenerator(nn.Module):
         :param cond_input: an [N x C x ...] Tensor of inputs.
         :return: an [N x C x ...] Tensor of outputs.
         """
+        print(x.shape)
         if self.conditioning is None:
             cond_input = None
 
