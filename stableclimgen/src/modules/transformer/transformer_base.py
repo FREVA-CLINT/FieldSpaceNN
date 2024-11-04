@@ -170,6 +170,7 @@ class TransformerBlock(EmbedBlock):
     :param mlp_mult: Multiplier for the hidden channels in MLP blocks.
     :param embed_dim: Dimension of embeddings.
     :param dropout: Dropout probability for each block.
+    :param spatial_dim_count: Determines the number of the spatial dimensions
     """
 
     def __init__(
@@ -181,6 +182,7 @@ class TransformerBlock(EmbedBlock):
             mlp_mult: Union[int, List[int]] = 1,
             embed_dim: Optional[Union[int, List[int]]] = None,
             dropout: Union[float, List[float]] = 0.,
+            spatial_dim_count: int = 1,
             **kwargs
     ):
         super().__init__()
@@ -209,7 +211,7 @@ class TransformerBlock(EmbedBlock):
                     out_ch if isinstance(out_ch, int) else out_ch.pop(0),
                     num_heads if isinstance(num_heads, int) else num_heads.pop(0),
                     embed_dim if isinstance(embed_dim, int) else embed_dim.pop(0),
-                )))
+                ), spatial_dim_count))
 
         self.blocks = EmbedBlockSequential(*trans_blocks)
 

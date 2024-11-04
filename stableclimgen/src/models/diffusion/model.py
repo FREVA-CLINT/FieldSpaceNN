@@ -1,15 +1,15 @@
-import numpy as np
+from typing import List, Optional, Union
+
 import torch
-from typing import List, Union, Optional
 import torch.nn as nn
 
+from stableclimgen.src.modules.cnn.resnet import ResBlock, ConvBlock
 # Import necessary modules for the diffusion generator architecture
 from stableclimgen.src.modules.embedding.diffusion_step import DiffusionStepEmbedder
 from stableclimgen.src.modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
 from stableclimgen.src.modules.rearrange import RearrangeConvCentric
-from stableclimgen.src.modules.utils import EmbedBlockSequential
 from stableclimgen.src.modules.transformer.transformer_base import TransformerBlock
-from stableclimgen.src.modules.cnn.resnet import ResBlock, ConvBlock
+from stableclimgen.src.modules.utils import EmbedBlockSequential
 
 
 class DiffusionBlockConfig:
@@ -49,6 +49,7 @@ class DiffusionGenerator(nn.Module):
     :param block_configs: List of block configurations for each block in the model.
     :param concat_mask: If True, mask is concatenated to the input. Default is False.
     :param concat_cond: If True, conditioning data is concatenated to the input. Default is False.
+    :param spatial_dim_count: Determines the number of the spatial dimensions
     """
 
     def __init__(
@@ -59,11 +60,12 @@ class DiffusionGenerator(nn.Module):
             embed_dim: Optional[int] = None,
             skip_connections: bool = False,
             patch_emb_type: str = "conv",
-            patch_emb_size: tuple = (1, 1, 1),
-            patch_emb_kernel: tuple = (1, 1, 1),
+            patch_emb_size: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
+            patch_emb_kernel: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
             block_configs: Optional[List[DiffusionBlockConfig]] = None,
             concat_mask: bool = False,
-            concat_cond: bool = False
+            concat_cond: bool = False,
+            spatial_dim_count: int = 2
     ):
         super().__init__()
 
@@ -80,8 +82,8 @@ class DiffusionGenerator(nn.Module):
 
         # Define input patch embedding
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(
-            in_ch, model_channels * block_configs[0].ch_mult, patch_emb_kernel, patch_emb_size
-        ))
+            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_kernel, patch_emb_size
+        ), spatial_dim_count)
 
         # Define encoder, processor, and decoder block lists
         enc_blocks, dec_blocks, prc_blocks = [], [], []
@@ -100,14 +102,14 @@ class DiffusionGenerator(nn.Module):
                 # Determine block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
-                        ConvBlock(in_ch, out_ch, *block_conf.sub_confs)
+                        ConvBlock(in_ch, out_ch, *block_conf.sub_confs), spatial_dim_count
                     )
                 elif block_conf.block_type == "resnet":
                     block = RearrangeConvCentric(
-                        ResBlock(in_ch, out_ch, **block_conf.sub_confs)
+                        ResBlock(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
                     )
                 else:
-                    block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs)
+                    block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
 
                 in_ch = out_ch
 
@@ -126,9 +128,9 @@ class DiffusionGenerator(nn.Module):
 
         # Define output unpatchifying layer
         if patch_emb_type == "conv":
-            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch))
+            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch), spatial_dim_count)
         else:
-            self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_size, embed_dim)
+            self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_size, embed_dim, spatial_dim_count)
 
     def forward(
             self,
@@ -151,7 +153,7 @@ class DiffusionGenerator(nn.Module):
         """
 
         # Define the output shape for reconstruction
-        out_shape = x.shape[2:-1]
+        out_shape = x.shape[1:-2]
 
         # Concatenate mask and conditioning if specified
         if self.concat_mask:
@@ -174,20 +176,20 @@ class DiffusionGenerator(nn.Module):
 
         # Encoder forward pass with optional skip connections
         for module in self.encoder:
-            h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords)
+            h = module(h, emb, mask, cond, coords)
             if self.skip_connections:
                 hs.append(h)
 
         # Processor forward pass
         for module in self.processor:
-            h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords)
+            h = module(h, emb, mask, cond, coords)
 
         # Decoder forward pass with optional skip connections
         for module in self.decoder:
             if self.skip_connections:
                 h = torch.cat([h, hs.pop()], dim=-1)
-            h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], None, cond, coords)
+            h = module(h, emb, mask, cond, coords)
 
         # Output layer reconstruction with unpatchifying
-        h = self.out(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords, out_shape)
+        h = self.out(h, emb, mask, cond, coords, out_shape)
         return h

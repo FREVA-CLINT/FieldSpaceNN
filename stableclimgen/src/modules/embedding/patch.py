@@ -82,14 +82,16 @@ class LinearUnpatchify(EmbedBlock):
     :param out_channels: Number of output channels.
     :param patch_size: Size of the patches as a tuple of three integers.
     :param embed_dim: Embedding dimension, if applicable.
+    :param spatial_dim_count: Determines the number of the spatial dimensions
     """
 
-    def __init__(self, in_channels: int, out_channels: int, patch_size: Tuple[int, int, int], embed_dim: Optional[int] = None):
+    def __init__(self, in_channels: int, out_channels: int, patch_size: Tuple[int, int, int], embed_dim: Optional[int] = None, spatial_dim_count: int = 1):
         super().__init__()
         self.norm = nn.LayerNorm(in_channels, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(in_channels, patch_size[0] * patch_size[1] * patch_size[2] * out_channels, bias=True)
         self.patch_size = patch_size
         self.out_channels = out_channels
+        self.spatial_dim_count = spatial_dim_count
         if embed_dim is not None:
             self.embedding_layer = nn.Sequential(
                 nn.SiLU(),
@@ -130,7 +132,14 @@ class LinearUnpatchify(EmbedBlock):
         """
         c = self.out_channels
         p = self.patch_size
-        t, h, w = out_shape
-        x = x.reshape(shape=(x.shape[0], t, h, w, p[0], p[1], p[2], c))
-        x = torch.einsum('nthwpqrc->nctphqwr', x)
-        return x.reshape(shape=(x.shape[0], c, t * p[0], h * p[1], w * p[2]))
+        if self.spatial_dim_count == 2:
+            t, h, w = out_shape
+            x = x.reshape(shape=(x.shape[0], t, h, w, p[0], p[1], p[2], c))
+            x = torch.einsum('nthwpqrc->nctphqwr', x)
+            return x.reshape(shape=(x.shape[0], c, t * p[0], h * p[1], w * p[2]))
+        else:
+            t, g = out_shape
+            x = x.reshape(shape=(x.shape[0], t, g, p[0], p[1], c))
+            x = torch.einsum('ntgpqc->nctpgq', x)
+            return x.reshape(shape=(x.shape[0], c, t * p[0], g * p[1]))
+

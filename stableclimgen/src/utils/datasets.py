@@ -104,7 +104,7 @@ class ClimateDataset(Dataset):
 
         return in_data.unsqueeze(-1), in_coords, gt_data.unsqueeze(-1), gt_coords
 
-    def load_data(self, dataset_index: int, seq_index: int, dataset: List[Union[np.ndarray, xr.DataArray]], coords: List[Dict[str, Any]]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    def load_data(self, dataset_index: int, seq_index: int, dataset: List[Union[np.ndarray, xr.DataArray]], coords: List[Dict[str, Any]]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load and process a data sequence from a given dataset index.
 
@@ -127,7 +127,7 @@ class ClimateDataset(Dataset):
             lons = torch.from_numpy(coords[i][dataset_index]["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
             data_coords.append(torch.stack((lat_grid, lon_grid)))
-        return torch.stack(data_sample), torch.stack(data_coords)
+        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-1)
 
     def __len__(self) -> int:
         """
