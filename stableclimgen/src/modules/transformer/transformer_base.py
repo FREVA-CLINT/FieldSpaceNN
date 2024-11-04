@@ -1,4 +1,4 @@
-from typing import Union, List
+from typing import Union, List, Optional
 
 import torch
 from einops import rearrange
@@ -10,14 +10,25 @@ from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
 
 
 class SelfAttention(EmbedBlock):
+    """
+    Self-attention layer with optional embeddings and causal mask support.
+
+    :param in_ch: Number of input channels.
+    :param out_ch: Number of output channels.
+    :param num_heads: Number of attention heads.
+    :param dropout: Dropout probability. Default is 0.
+    :param embed_dim: Dimension of embeddings. If provided, an embedding layer is applied.
+    :param is_causal: Whether to use causal masking. Default is False.
+    """
+
     def __init__(
             self,
-            in_ch,
-            out_ch,
-            num_heads,
-            dropout=0.,
-            embed_dim=None,
-            is_causal=False
+            in_ch: int,
+            out_ch: int,
+            num_heads: int,
+            dropout: float = 0.,
+            embed_dim: Optional[int] = None,
+            is_causal: bool = False
     ):
         super().__init__()
         if embed_dim:
@@ -40,7 +51,18 @@ class SelfAttention(EmbedBlock):
 
         self.is_causal = is_causal
 
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
+    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """
+        Forward pass for the SelfAttention layer.
+
+        :param x: Input tensor of shape (batch, time, channels).
+        :param emb: Optional embedding tensor.
+        :param mask: Optional mask tensor.
+        :param cond: Optional conditioning tensor.
+        :param coords: Optional coordinates tensor.
+        :return: Output tensor with self-attention applied.
+        """
         b, t_g_v, c = x.shape
         if hasattr(self, 'embedding_layer'):
             scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
@@ -62,18 +84,38 @@ class SelfAttention(EmbedBlock):
         )
         return self.skip_connection(x) + self.gamma * self.out_layer(attn_out)
 
-    def scaled_dot_product_attention(self, q, k, v, mask):
+    def scaled_dot_product_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
+                                     mask: Optional[torch.Tensor]) -> torch.Tensor:
+        """
+        Scaled dot-product attention mechanism.
+
+        :param q: Query tensor.
+        :param k: Key tensor.
+        :param v: Value tensor.
+        :param mask: Optional mask tensor.
+        :return: Output tensor after applying attention.
+        """
         return scaled_dot_product_attention(q, k, v, mask, is_causal=self.is_causal)
 
 
 class MLPLayer(EmbedBlock):
+    """
+    Multi-Layer Perceptron (MLP) layer with optional embedding.
+
+    :param in_ch: Number of input channels.
+    :param out_ch: Number of output channels.
+    :param mult: Multiplier for the hidden channels. Default is 1.
+    :param embed_dim: Dimension of embeddings. If provided, an embedding layer is applied.
+    :param dropout: Dropout probability. Default is 0.
+    """
+
     def __init__(
             self,
-            in_ch,
-            out_ch,
-            mult=1,
-            embed_dim=None,
-            dropout=0.
+            in_ch: int,
+            out_ch: int,
+            mult: int = 1,
+            embed_dim: Optional[int] = None,
+            dropout: float = 0.
     ):
         super().__init__()
         if embed_dim:
@@ -97,7 +139,18 @@ class MLPLayer(EmbedBlock):
 
         self.gamma = torch.nn.Parameter(torch.ones(out_ch) * 1E-6)
 
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
+    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """
+        Forward pass for the MLPLayer.
+
+        :param x: Input tensor.
+        :param emb: Optional embedding tensor.
+        :param mask: Optional mask tensor.
+        :param cond: Optional conditioning tensor.
+        :param coords: Optional coordinates tensor.
+        :return: Output tensor after applying the MLP.
+        """
         if hasattr(self, 'embedding_layer'):
             scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
             branch = self.norm(x) * (scale + 1) + shift
@@ -107,6 +160,18 @@ class MLPLayer(EmbedBlock):
 
 
 class TransformerBlock(EmbedBlock):
+    """
+    Transformer block with multiple sub-layers including MLP and Self-Attention layers.
+
+    :param in_ch: Number of input channels.
+    :param out_ch: Number of output channels.
+    :param blocks: List of blocks to include, either "mlp" or "t"/"s"/"v" for self-attention with time/space/variable rearrangement.
+    :param num_heads: Number of attention heads for self-attention blocks.
+    :param mlp_mult: Multiplier for the hidden channels in MLP blocks.
+    :param embed_dim: Dimension of embeddings.
+    :param dropout: Dropout probability for each block.
+    """
+
     def __init__(
             self,
             in_ch: Union[int, List[int]],
@@ -114,8 +179,8 @@ class TransformerBlock(EmbedBlock):
             blocks: List[str],
             num_heads: Union[int, List[int]] = 1,
             mlp_mult: Union[int, List[int]] = 1,
-            embed_dim: Union[int, List[int]] = None,
-            dropout: Union[float, List[float]]=0.,
+            embed_dim: Optional[Union[int, List[int]]] = None,
+            dropout: Union[float, List[float]] = 0.,
             **kwargs
     ):
         super().__init__()
@@ -148,7 +213,18 @@ class TransformerBlock(EmbedBlock):
 
         self.blocks = EmbedBlockSequential(*trans_blocks)
 
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
+    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """
+        Forward pass for the TransformerBlock.
+
+        :param x: Input tensor.
+        :param emb: Optional embedding tensor.
+        :param mask: Optional mask tensor.
+        :param cond: Optional conditioning tensor.
+        :param coords: Optional coordinates tensor.
+        :return: Output tensor after applying transformer blocks sequentially.
+        """
         for block in self.blocks:
             x = block(x, emb, mask, cond, coords)
         return x

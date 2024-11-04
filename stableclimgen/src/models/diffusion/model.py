@@ -1,8 +1,9 @@
-from typing import List
-
+import numpy as np
 import torch
+from typing import List, Union, Optional
 import torch.nn as nn
 
+# Import necessary modules for the diffusion generator architecture
 from stableclimgen.src.modules.embedding.diffusion_step import DiffusionStepEmbedder
 from stableclimgen.src.modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
 from stableclimgen.src.modules.rearrange import RearrangeConvCentric
@@ -12,7 +13,19 @@ from stableclimgen.src.modules.cnn.resnet import ResBlock, ConvBlock
 
 
 class DiffusionBlockConfig:
-    def __init__(self, depth: int, block_type: str, ch_mult:float, sub_confs: dict, enc=False, dec=False):
+    """
+    Configuration class for defining diffusion blocks in the model.
+
+    :param depth: Number of layers in the block.
+    :param block_type: Type of block (e.g., 'conv', 'resnet').
+    :param ch_mult: Channel multiplier for the block.
+    :param sub_confs: Sub-configuration details specific to the block type.
+    :param enc: Whether the block is an encoder block. Default is False.
+    :param dec: Whether the block is a decoder block. Default is False.
+    """
+
+    def __init__(self, depth: int, block_type: str, ch_mult: float, sub_confs: dict, enc: bool = False,
+                 dec: bool = False):
         self.depth = depth
         self.block_type = block_type
         self.sub_confs = sub_confs
@@ -22,47 +35,69 @@ class DiffusionBlockConfig:
 
 
 class DiffusionGenerator(nn.Module):
+    """
+    Diffusion Generator model class for generating data through a diffusion process.
+
+    :param init_in_ch: Initial number of input channels.
+    :param final_out_ch: Final number of output channels.
+    :param model_channels: Number of base channels for the model. Default is 64.
+    :param embed_dim: Embedding dimension for diffusion steps. Default is None.
+    :param skip_connections: If True, skip connections are included. Default is False.
+    :param patch_emb_type: Type of patch embedding ('conv' or other). Default is 'conv'.
+    :param patch_emb_size: Size of the patch embedding. Default is (1, 1, 1).
+    :param patch_emb_kernel: Kernel size for the patch embedding. Default is (1, 1, 1).
+    :param block_configs: List of block configurations for each block in the model.
+    :param concat_mask: If True, mask is concatenated to the input. Default is False.
+    :param concat_cond: If True, conditioning data is concatenated to the input. Default is False.
+    """
+
     def __init__(
             self,
-            init_in_ch,
-            final_out_ch,
-            model_channels=64,
-            embed_dim=None,
-            skip_connections=False,
-            patch_emb_type="conv",
-            patch_emb_size=(1, 1, 1),
-            patch_emb_kernel=(1, 1, 1),
-            block_configs: List[DiffusionBlockConfig] = None,
-            concat_mask=False,
-            concat_cond=False
+            init_in_ch: int,
+            final_out_ch: int,
+            model_channels: int = 64,
+            embed_dim: Optional[int] = None,
+            skip_connections: bool = False,
+            patch_emb_type: str = "conv",
+            patch_emb_size: tuple = (1, 1, 1),
+            patch_emb_kernel: tuple = (1, 1, 1),
+            block_configs: Optional[List[DiffusionBlockConfig]] = None,
+            concat_mask: bool = False,
+            concat_cond: bool = False
     ):
         super().__init__()
+
+        # Channel configurations
         in_ch = init_in_ch * (1 + concat_mask + concat_cond)
         self.model_channels = model_channels
         self.skip_connections = skip_connections
         self.concat_mask = concat_mask
         self.concat_cond = concat_cond
 
-        # define embeddings
+        # Define embedding dimensions and diffusion step embedding
         self.embed_dim = embed_dim
         self.diffusion_step_emb = DiffusionStepEmbedder(model_channels, embed_dim)
 
+        # Define input patch embedding
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(
-            in_ch, model_channels * block_configs[0].ch_mult, patch_emb_kernel, patch_emb_size))
+            in_ch, model_channels * block_configs[0].ch_mult, patch_emb_kernel, patch_emb_size
+        ))
 
+        # Define encoder, processor, and decoder block lists
         enc_blocks, dec_blocks, prc_blocks = [], [], []
-
         in_ch = model_channels * block_configs[0].ch_mult
         in_block_ch = []
 
-        # define input blocks
-        for i, block_conf in enumerate(block_configs):
+        # Define layers based on block configurations
+        for block_conf in block_configs:
             for _ in range(block_conf.depth):
                 out_ch = int(block_conf.ch_mult * model_channels)
                 if self.skip_connections and block_conf.enc:
                     in_block_ch.append(in_ch)
                 if self.skip_connections and block_conf.dec:
                     in_ch += in_block_ch.pop()
+
+                # Determine block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
                         ConvBlock(in_ch, out_ch, *block_conf.sub_confs)
@@ -73,58 +108,86 @@ class DiffusionGenerator(nn.Module):
                     )
                 else:
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs)
+
                 in_ch = out_ch
-                # separate for skip connections
+
+                # Append block to encoder, decoder, or processor list
                 if block_conf.enc:
                     enc_blocks.append(block)
                 elif block_conf.dec:
                     dec_blocks.append(block)
                 else:
                     prc_blocks.append(block)
+
+        # Assign blocks to encoder, processor, and decoder layers
         self.encoder = EmbedBlockSequential(*enc_blocks)
         self.processor = EmbedBlockSequential(*prc_blocks)
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
+        # Define output unpatchifying layer
         if patch_emb_type == "conv":
             self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch))
         else:
             self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_size, embed_dim)
 
-    def forward(self, x, diffusion_steps=None, mask=None, cond=None, coords=None):
+    def forward(
+            self,
+            x: torch.Tensor,
+            diffusion_steps: Optional[torch.Tensor] = None,
+            mask: Optional[torch.Tensor] = None,
+            cond: Optional[torch.Tensor] = None,
+            coords: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Forward pass through the Diffusion Generator model.
+
+        :param x: Input tensor.
+        :param diffusion_steps: Tensor representing diffusion steps.
+        :param mask: Mask tensor, used if `concat_mask` is True.
+        :param cond: Conditioning tensor, used if `concat_cond` is True.
+        :param coords: Coordinates tensor for spatial context.
+
+        :return: Output tensor after processing through the model.
+        """
+
+        # Define the output shape for reconstruction
         out_shape = x.shape[2:-1]
 
+        # Concatenate mask and conditioning if specified
         if self.concat_mask:
             x = torch.cat([x, mask], dim=-1)
         if self.concat_cond:
             x = torch.cat([x, cond], dim=-1)
 
+        # Initial patch embedding for the input tensor
         h = self.input_patch_embedding(x)
 
-        # embeddings
-        emb = torch.zeros(*h.shape[:-1], self.embed_dim,device=h.device, layout=h.layout,dtype=h.dtype)
-
+        # Initialize embeddings
+        emb = torch.zeros(*h.shape[:-1], self.embed_dim, device=h.device, layout=h.layout, dtype=h.dtype)
         emb.add_(self.diffusion_step_emb(diffusion_steps)[:, None, None, None, None, :])
 
-        # remove if necessary
+        # Remove mask if unnecessary
         mask = None
 
+        # List to store intermediate states for skip connections
         hs = [h]
-        # encoder
-        for i, module in enumerate(self.encoder):
+
+        # Encoder forward pass with optional skip connections
+        for module in self.encoder:
             h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords)
             if self.skip_connections:
                 hs.append(h)
 
-        # processor
-        for i, module in enumerate(self.processor):
+        # Processor forward pass
+        for module in self.processor:
             h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords)
 
-        # decoder
-        for i, module in enumerate(self.decoder):
+        # Decoder forward pass with optional skip connections
+        for module in self.decoder:
             if self.skip_connections:
                 h = torch.cat([h, hs.pop()], dim=-1)
             h = module(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], None, cond, coords)
 
-        # out layer
+        # Output layer reconstruction with unpatchifying
         h = self.out(h, emb[..., :h.shape[-4], :h.shape[-3], :h.shape[-2], :], mask, cond, coords, out_shape)
         return h
