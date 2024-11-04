@@ -10,9 +10,10 @@ class Sampler:
     def sample_loop(
             self,
             model,
-            gt_img,
-            mask,
-            cond_input,
+            gt_data,
+            mask_data,
+            cond_data,
+            coords,
             noise=None,
             denoised_fn=None,
             cond_fn=None,
@@ -36,21 +37,22 @@ class Sampler:
                 """
 
         if noise is not None:
-            img = noise
+            x_0 = noise
         else:
-            img = torch.randn_like(gt_img).to(gt_img.device)
+            x_0 = torch.randn_like(gt_data).to(gt_data.device)
 
         final = None
         for sample in self.sample_loop_progressive(
                 model,
-                gt_img,
-                mask,
-                cond_input,
-                img,
+                gt_data,
+                x_0,
+                mask_data,
+                cond_data,
+                coords,
                 denoised_fn=denoised_fn,
                 cond_fn=cond_fn,
                 model_kwargs=model_kwargs,
-                device=gt_img.device,
+                device=gt_data.device,
                 eta=eta
         ):
             final = sample
@@ -60,44 +62,47 @@ class Sampler:
     def sample_loop_progressive(
             self,
             model,
-            gt_img,
-            mask,
-            cond_input,
-            img,
+            gt_data,
+            x_0,
+            mask_data,
+            cond_data,
+            coords,
             denoised_fn=None,
             cond_fn=None,
             model_kwargs=None,
             device=None,
             eta=0.0,
     ):
-        img = (1 - mask) * img + mask * gt_img
+        x_0 = (1 - mask_data) * x_0 + mask_data * gt_data
         indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]
 
         for i in indices:
-            t = torch.tensor([i] * img.shape[0], device=device)
+            diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
             with torch.no_grad():
                 out = self.sample(
                     model,
-                    img,
-                    cond_input,
-                    mask,
-                    t,
+                    x_0,
+                    cond_data,
+                    mask_data,
+                    coords,
+                    diffusion_steps,
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     model_kwargs=model_kwargs,
                     eta=eta,
                 )
-                out["sample"] = (1 - mask) * out["sample"] + mask * gt_img
+                out["sample"] = (1 - mask_data) * out["sample"] + mask_data * gt_data
                 yield out
-                img = out["sample"]
+                x_0 = out["sample"]
 
     def sample(
             self,
             model,
-            x,
-            cond_input,
-            mask,
-            t,
+            x_t,
+            cond_data,
+            mask_data,
+            coords,
+            diffusion_steps,
             denoised_fn=None,
             cond_fn=None,
             model_kwargs=None,
@@ -113,10 +118,11 @@ class DDPMSampler(Sampler):
     def sample(
             self,
             model,
-            x,
-            cond_input,
-            mask,
-            t,
+            x_t,
+            cond_data,
+            mask_data,
+            coords,
+            diffusion_steps,
             denoised_fn=None,
             cond_fn=None,
             model_kwargs=None,
@@ -126,8 +132,8 @@ class DDPMSampler(Sampler):
         Sample x_{t-1} from the model at the given timestep.
 
         :param model: the model to sample from.
-        :param x: the current tensor at x_{t-1}.
-        :param t: the value of t, starting at 0 for the first diffusion step.
+        :param x_t: the current tensor at x_{t-1}.
+        :param diffusion_steps: the value of t, starting at 0 for the first diffusion step.
         :param denoised_fn: if not None, a function which applies to the
             x_start prediction before it is used to sample.
         :param cond_fn: if not None, this is a gradient function that acts
@@ -140,16 +146,17 @@ class DDPMSampler(Sampler):
         """
         out = self.gaussian_diffusion.p_mean_variance(
             model,
-            x,
-            cond_input,
-            mask,
-            t,
+            x_t,
+            cond_data,
+            mask_data,
+            coords,
+            diffusion_steps,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
-        noise = torch.randn_like(x)
+        noise = torch.randn_like(x_t)
         nonzero_mask = (
-            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+            (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
         )  # no noise when t == 0
         sample = out["mean"] + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
@@ -162,10 +169,11 @@ class DDIMSampler(Sampler):
     def sample(
             self,
             model,
-            x,
-            cond_input,
-            mask,
-            t,
+            x_t,
+            cond_data,
+            mask_data,
+            coords,
+            diffusion_steps,
             denoised_fn=None,
             cond_fn=None,
             model_kwargs=None,
@@ -178,32 +186,33 @@ class DDIMSampler(Sampler):
         """
         out = self.gaussian_diffusion.p_mean_variance(
             model,
-            x,
-            cond_input,
-            mask,
-            t,
+            x_t,
+            cond_data,
+            mask_data,
+            coords,
+            diffusion_steps,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
         )
         # Usually our model outputs epsilon, but we re-derive it
         # in case we used x_start or x_prev prediction.
-        eps = self.gaussian_diffusion.predict_eps_from_xstart(x, t, out["pred_xstart"])
+        eps = self.gaussian_diffusion.predict_eps_from_xstart(x_t, diffusion_steps, out["pred_xstart"])
 
-        alpha_bar = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, t, x.shape)
-        alpha_bar_prev = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, t, x.shape)
+        alpha_bar = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t.shape)
+        alpha_bar_prev = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t.shape)
         sigma = (
                 eta
                 * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar))
                 * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
         )
         # Equation 12.
-        noise = torch.randn_like(x)
+        noise = torch.randn_like(x_t)
         mean_pred = (
                 out["pred_xstart"] * torch.sqrt(alpha_bar_prev)
                 + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
         )
         nonzero_mask = (
-            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+            (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
         )  # no noise when t == 0
         sample = mean_pred + nonzero_mask * sigma * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}

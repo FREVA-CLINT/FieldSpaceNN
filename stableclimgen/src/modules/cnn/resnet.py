@@ -1,54 +1,16 @@
-from abc import abstractmethod
-
 import torch
 import torch.nn as nn
-from einops import rearrange
 
-from stableclimgen.src.models.diffusion.nn import (
-    conv_nd,
-    linear,
-    avg_pool_nd,
-    zero_module,
-    normalization
-)
+from stableclimgen.src.modules.utils import EmbedBlock
 
 
-class EmbedBlock(nn.Module):
+def zero_module(module):
     """
-    Any module where forward() takes timestep embeddings as a second argument.
+    Zero out the parameters of a module and return it.
     """
-
-    @abstractmethod
-    def forward(self, x, emb, mask, cond):
-        """
-        Apply the module to `x` given `emb` timestep embeddings.
-        """
-
-
-class EmbedBlockSequential(nn.Sequential, EmbedBlock):
-    """
-    A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
-    """
-
-    def forward(self, x, emb=None, mask=None, cond=None):
-        for layer in self:
-            if isinstance(layer, EmbedBlock):
-                x = layer(x, emb, mask, cond)
-            else:
-                x = layer(x)
-        return x
-
-
-class SpatioTemporalPatchEmbedding(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, patch_size):
-        super().__init__()
-        assert len(patch_size) == len(kernel_size) == 3
-        padding = tuple((kernel_size[i] - patch_size[i])//2 for i in range(len(kernel_size)))
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, patch_size, padding=padding)
-
-    def forward(self, x):
-        return self.conv(x)
+    for p in module.parameters():
+        p.detach().zero_()
+    return module
 
 
 class Upsample(nn.Module):
@@ -61,15 +23,14 @@ class Upsample(nn.Module):
                  upsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, in_channels, upsample, use_conv=True, dims=2, out_channels=None):
+    def __init__(self, in_channels, out_channels, upsample, use_conv=True):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels or in_channels
         self.use_conv = use_conv
-        self.dims = dims
         self.upsample = upsample
         if use_conv:
-            self.conv = conv_nd(dims, self.in_channels, self.out_channels, 3, padding=1)
+            self.conv = nn.Conv3d(self.in_channels, self.out_channels, 3, padding=1)
 
     def forward(self, x):
         assert x.shape[1] == self.in_channels
@@ -89,20 +50,17 @@ class Downsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, in_channels, use_conv=True, dims=2, out_channels=None):
+    def __init__(self, in_channels, out_channels, use_conv=True):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels or in_channels
         self.use_conv = use_conv
-        self.dims = dims
-        stride = 2 if dims != 3 else (1, 2, 2)
+        stride = (1, 2, 2)
         if use_conv:
-            self.op = conv_nd(
-                dims, self.in_channels, self.out_channels, 3, stride=stride, padding=1
-            )
+            self.op = nn.Conv3d(self.in_channels, self.out_channels, 3, stride=stride, padding=1)
         else:
             assert self.in_channels == self.out_channels
-            self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
+            self.op = nn.AvgPool3d(kernel_size=stride, stride=stride)
 
     def forward(self, x):
         assert x.shape[1] == self.in_channels
@@ -110,16 +68,16 @@ class Downsample(nn.Module):
 
 
 class ConvBlock(EmbedBlock):
-    def __init__(self, in_channels, out_channels, up=False, down=False, img_size=None):
+    def __init__(self, in_channels, out_channels, block_type):
         super().__init__()
-        if up:
-            self.conv = Upsample(in_channels, nn.Upsample(img_size, mode="nearest"), out_channels=out_channels)
-        elif down:
+        if block_type == "up":
+            self.conv = Upsample(in_channels, out_channels, nn.Upsample(scale_factor=2, mode="nearest"))
+        elif block_type == "down":
             self.conv = Downsample(in_channels, out_channels=out_channels)
         else:
             self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
 
-    def forward(self, x, emb=None, mask=None, cond=None):
+    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
         return self.conv(x)
 
 
@@ -127,10 +85,10 @@ class ResBlock(EmbedBlock):
     """
     A residual block that can optionally change the number of channels.
 
-    :param in_channels: the number of input channels.
-    :param emb_channels: the number of timestep embedding channels.
+    :param in_ch: the number of input channels.
+    :param embed_dim: the number of timestep embedding channels.
     :param dropout: the rate of dropout.
-    :param out_channels: if specified, the number of out channels.
+    :param out_ch: if specified, the number of out channels.
     :param use_conv: if True and out_channels is specified, use a spatial
         convolution instead of a smaller 1x1 convolution to change the
         channels in the skip connection.
@@ -141,68 +99,63 @@ class ResBlock(EmbedBlock):
 
     def __init__(
             self,
-            in_channels,
-            emb_channels,
-            dropout,
-            out_channels=None,
+            in_ch,
+            out_ch,
+            embed_dim,
+            block_type,
+            dropout=0.,
             use_conv=False,
-            use_scale_shift_norm=False,
-            dims=2,
-            up=False,
-            down=False,
-            img_size=None
+            use_scale_shift_norm=False
     ):
         super().__init__()
-        self.in_channels = in_channels
-        self.emb_channels = emb_channels
+        self.in_ch = in_ch
+        self.emb_channels = embed_dim
         self.dropout = dropout
-        self.out_channels = out_channels or in_channels
+        self.out_channels = out_ch or in_ch
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
 
         self.in_layers = nn.Sequential(
-            normalization(in_channels),
+            nn.GroupNorm(32, in_ch),
             nn.SiLU(),
-            conv_nd(dims, in_channels, self.out_channels, 3, padding=1),
+            nn.Conv3d(in_ch, self.out_channels, 3, padding=1),
         )
 
-        self.updown = up or down
+        self.updown = (block_type == "up" or block_type == "down")
 
-        if up:
-            self.h_upd = Upsample(in_channels, nn.Upsample(img_size, mode="nearest"), True, dims)
-            self.x_upd = Upsample(in_channels, nn.Upsample(img_size, mode="nearest"), True, dims)
-        elif down:
-            self.h_upd = Downsample(in_channels, True, dims)
-            self.x_upd = Downsample(in_channels, True, dims)
+        if block_type=="up":
+            self.h_upd = Upsample(in_ch, in_ch, nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"), True)
+            self.x_upd = Upsample(in_ch, in_ch, nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"), True)
+        elif block_type=="down":
+            self.h_upd = Downsample(in_ch, in_ch,True)
+            self.x_upd = Downsample(in_ch, in_ch,True)
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
         self.emb_layers = nn.Sequential(
             nn.SiLU(),
-            linear(
-                emb_channels,
+            nn.Linear(
+                embed_dim,
                 2 * self.out_channels if use_scale_shift_norm else self.out_channels,
             ),
         )
         self.out_layers = nn.Sequential(
-            normalization(self.out_channels),
+            nn.GroupNorm(32, self.out_channels),
             nn.SiLU(),
             nn.Dropout(p=dropout),
             zero_module(
-                conv_nd(dims, self.out_channels, self.out_channels, 3, padding=1)
+                nn.Conv3d(self.out_channels, self.out_channels, 3, padding=1)
             ),
         )
 
-        if self.out_channels == in_channels:
+        if self.out_channels == in_ch:
             self.skip_connection = nn.Identity()
         elif use_conv:
-            self.skip_connection = conv_nd(
-                dims, in_channels, self.out_channels, 3, padding=1
-            )
+            self.skip_connection = nn.Conv3d(in_ch, self.out_channels, 3, padding=1)
         else:
-            self.skip_connection = conv_nd(dims, in_channels, self.out_channels, 1)
+            self.skip_connection = nn.Conv3d(in_ch, self.out_channels, 1)
 
-    def forward(self, x, emb=None, mask=None, cond=None):
+    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
@@ -211,7 +164,7 @@ class ResBlock(EmbedBlock):
             h = in_conv(h)
         else:
             h = self.in_layers(x)
-        emb = emb[:, :, 0, 0]
+        emb = emb[:, :, 0, 0, 0]
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
@@ -223,60 +176,5 @@ class ResBlock(EmbedBlock):
         else:
             h = h + emb_out
             h = self.out_layers(h)
-        return self.skip_connection(x) + h
-
-
-class Identity(EmbedBlock):
-    def __init__(self):
-        super().__init__()
-        self.fn = torch.nn.Identity()
-
-    def forward(self, x, emb=None, mask=None, cond=None, **kwargs):
-        return self.fn(x)
-
-
-class FinalLayer(EmbedBlock):
-    """
-    The final layer of DiT.
-    """
-
-    def __init__(self, in_channels, out_channels, patch_size, embed_dim, img_size, seq_length):
-        super().__init__()
-        self.norm = nn.LayerNorm(in_channels, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(in_channels, patch_size[0] * patch_size[1] * patch_size[2] * out_channels, bias=True)
-        self.patch_size = patch_size
-        self.out_channels = out_channels
-        self.img_size = img_size
-        self.seq_length = seq_length
-        if embed_dim is not None:
-            self.embedding_layer = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(embed_dim, 2 * in_channels, bias=True)
-            )
-
-    def forward(self, x, emb, mask, cond):
-        b, c, t, w, h = x.shape
-        print(x.shape)
-        x = rearrange(x, 'b c t w h -> b (t w h) c')
-        if hasattr(self, 'embedding_layer'):
-            emb = rearrange(emb, 'b c t w h -> b (t w h) c')
-            scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
-            x = self.norm(x) * (scale + 1) + shift
-        else:
-            x = self.norm(x)
-        x = self.linear(x)
-        return self.unpatchify(x, b)
-
-    def unpatchify(self, x, b):
-        """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
-        """
-        c = self.out_channels
-        p = self.patch_size
-        h, w = self.img_size
-        t = x.shape[1] // (h * w)
-        print(x.shape)
-        x = x.reshape(shape=(x.shape[0], t, h, w, p[0], p[1], p[2], c))
-        x = torch.einsum('nthwpqrc->nctphqwr', x)
-        return x.reshape(shape=(x.shape[0], c, t * p[0], h * p[1], w * p[2]))
+        skip = self.skip_connection(x)
+        return skip + h

@@ -34,13 +34,15 @@ class LightningDiffusionGenerator(pl.LightningModule):
             self.trainer.train_dataloader, self.ema_model
         )
 
-    def forward(self, gt_data, mask_data, in_data, t):
-        return self.gaussian_diffusion.training_losses(self.model, gt_data, mask_data, in_data, t)
+    def forward(self, gt_data, diffusion_steps, mask_data=None, cond_data=None, coords=None):
+        return self.gaussian_diffusion.training_losses(
+            self.model, gt_data, diffusion_steps, mask_data, cond_data, coords
+        )
 
     def training_step(self, batch, batch_idx):
-        in_data, gt_data, mask_data = batch
-        t, weights = self.gaussian_diffusion.get_diffusion_steps(in_data.shape[0], gt_data.device)
-        l_dict, _ = self(gt_data, mask_data, in_data, t)
+        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
+        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(gt_data.shape[0], gt_data.device)
+        l_dict, _ = self(gt_data, diffusion_steps, mask_data, cond_data, gt_coords)
         loss = (l_dict["loss"] * weights).mean()
         loss_dict = {}
         for k, v in l_dict.items():
@@ -49,17 +51,14 @@ class LightningDiffusionGenerator(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        in_data, gt_data, mask_data = batch
+        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
         loss_dict = {}
         loss = []
         for i in range(gt_data.shape[0]):
             diff_steps = self.gaussian_diffusion.diffusion_steps
             t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
-            if torch.is_tensor(in_data):
-                c = torch.stack(10 * [in_data[i]])
-            else:
-                c = {}
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), torch.stack(10 * [mask_data[i]]), c, t)
+            cond = torch.stack(10 * [cond_data[i]])
+            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, gt_coords)
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
                     loss_dict['val/step_{}_{}'.format(t[ti].item(), k)] = v[ti]

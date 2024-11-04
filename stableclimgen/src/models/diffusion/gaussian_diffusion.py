@@ -11,9 +11,15 @@ import math
 import numpy as np
 import torch
 
-from .nn import mean_flat
 from .resample import create_named_schedule_sampler
 from .loss import normal_kl, continuous_gaussian_log_likelihood
+
+
+def mean_flat(tensor):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
@@ -131,7 +137,7 @@ class GaussianDiffusion:
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
-        self.rescale_timesteps = rescale_timesteps
+        self.rescale_steps = rescale_timesteps
 
         # Use float64 for accuracy.
         if betas is None:
@@ -215,7 +221,7 @@ class GaussianDiffusion:
                 * noise
         )
 
-    def q_posterior_mean_variance(self, x_start, x_t, t):
+    def q_posterior_mean_variance(self, x_start, x_t, diffusion_steps):
         """
         Compute the mean and variance of the diffusion posterior:
 
@@ -224,12 +230,12 @@ class GaussianDiffusion:
         """
         assert x_start.shape == x_t.shape
         posterior_mean = (
-                extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start
-                + extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
+                extract_into_tensor(self.posterior_mean_coef1, diffusion_steps, x_t.shape) * x_start
+                + extract_into_tensor(self.posterior_mean_coef2, diffusion_steps, x_t.shape) * x_t
         )
-        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape)
+        posterior_variance = extract_into_tensor(self.posterior_variance, diffusion_steps, x_t.shape)
         posterior_log_variance_clipped = extract_into_tensor(
-            self.posterior_log_variance_clipped, t, x_t.shape
+            self.posterior_log_variance_clipped, diffusion_steps, x_t.shape
         )
         assert (
                 posterior_mean.shape[0]
@@ -240,7 +246,7 @@ class GaussianDiffusion:
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def p_mean_variance(
-            self, model, x, cond_input, mask, t, denoised_fn=None, model_kwargs=None
+            self, model, x, mask_data, cond_data, coords, diffusion_steps, denoised_fn=None, model_kwargs=None
     ):
         """
         Apply the model to get p(x_{t-1} | x_t), as well as a prediction of
@@ -249,7 +255,7 @@ class GaussianDiffusion:
         :param model: the model, which takes a signal and a batch of timesteps
                       as input.
         :param x: the [N x C x ...] tensor at time t.
-        :param t: a 1-D Tensor of timesteps.
+        :param diffusion_steps: a 1-D Tensor of timesteps.
         :param denoised_fn: if not None, a function which applies to the
             x_start prediction before it is used to sample.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
@@ -264,8 +270,8 @@ class GaussianDiffusion:
             model_kwargs = {}
 
         B, C = x.shape[:2]
-        assert t.shape == (B,)
-        model_output = model(x, self._scale_timesteps(t), mask, cond_input, **model_kwargs)
+        assert diffusion_steps.shape == (B,)
+        model_output = model(x, self._scale_steps(diffusion_steps), mask_data, cond_data, coords, **model_kwargs)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             assert model_output.shape == (B, C * 2, *x.shape[2:])
@@ -275,9 +281,9 @@ class GaussianDiffusion:
                 model_variance = torch.exp(model_log_variance)
             else:
                 min_log = extract_into_tensor(
-                    self.posterior_log_variance_clipped, t, x.shape
+                    self.posterior_log_variance_clipped, diffusion_steps, x.shape
                 )
-                max_log = extract_into_tensor(np.log(self.betas), t, x.shape)
+                max_log = extract_into_tensor(np.log(self.betas), diffusion_steps, x.shape)
                 # The model_var_values is [-1, 1] for [min_var, max_var].
                 frac = (model_var_values + 1) / 2
                 model_log_variance = frac * max_log + (1 - frac) * min_log
@@ -295,8 +301,8 @@ class GaussianDiffusion:
                     self.posterior_log_variance_clipped,
                 ),
             }[self.model_var_type]
-            model_variance = extract_into_tensor(model_variance, t, x.shape)
-            model_log_variance = extract_into_tensor(model_log_variance, t, x.shape)
+            model_variance = extract_into_tensor(model_variance, diffusion_steps, x.shape)
+            model_log_variance = extract_into_tensor(model_log_variance, diffusion_steps, x.shape)
 
         def process_xstart(x):
             if denoised_fn is not None:
@@ -305,7 +311,7 @@ class GaussianDiffusion:
 
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
             pred_xstart = process_xstart(
-                self._predict_xstart_from_xprev(x_t=x, t=t, xprev=model_output)
+                self._predict_xstart_from_xprev(x_t=x, t=diffusion_steps, xprev=model_output)
             )
             model_mean = model_output
         elif self.model_mean_type in [ModelMeanType.START_X, ModelMeanType.EPSILON]:
@@ -313,10 +319,10 @@ class GaussianDiffusion:
                 pred_xstart = process_xstart(model_output)
             else:
                 pred_xstart = process_xstart(
-                    self._predict_xstart_from_eps(x_t=x, t=t, eps=model_output)
+                    self._predict_xstart_from_eps(x_t=x, t=diffusion_steps, eps=model_output)
                 )
             model_mean, _, _ = self.q_posterior_mean_variance(
-                x_start=pred_xstart, x_t=x, t=t
+                x_start=pred_xstart, x_t=x, diffusion_steps=diffusion_steps
             )
         else:
             raise NotImplementedError(self.model_mean_type)
@@ -354,13 +360,13 @@ class GaussianDiffusion:
                 - pred_xstart
         ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape)
 
-    def _scale_timesteps(self, t):
-        if self.rescale_timesteps:
+    def _scale_steps(self, t):
+        if self.rescale_steps:
             return t.float() * (1000.0 / self.diffusion_steps)
         return t
 
     def _vb_terms_bpd(
-            self, model, x_start, cond_input, mask, x_t, t, model_kwargs=None
+            self, model, x_start, x_t, mask_data, cond_data, coords, diffusion_steps, model_kwargs=None
     ):
         """
         Get a term for the variational lower-bound.
@@ -373,10 +379,10 @@ class GaussianDiffusion:
                  - 'pred_xstart': the x_0 predictions.
         """
         true_mean, _, true_log_variance_clipped = self.q_posterior_mean_variance(
-            x_start=x_start, x_t=x_t, t=t
+            x_start=x_start, x_t=x_t, diffusion_steps=diffusion_steps
         )
         out = self.p_mean_variance(
-            model, x_t, cond_input, mask, t, model_kwargs=model_kwargs
+            model, x_t, mask_data, cond_data, coords, diffusion_steps, model_kwargs=model_kwargs
         )
         kl = normal_kl(
             true_mean, true_log_variance_clipped, out["mean"], out["log_variance"]
@@ -391,16 +397,17 @@ class GaussianDiffusion:
 
         # At the first timestep return the decoder NLL,
         # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
-        output = torch.where((t == 0), decoder_nll, kl)
+        output = torch.where((diffusion_steps == 0), decoder_nll, kl)
         return {"output": output, "pred_xstart": out["pred_xstart"]}
 
-    def training_losses(self, model, gt_img, mask, cond_input, t, model_kwargs=None, noise=None):
+    def training_losses(self, model, gt_data, diffusion_steps, mask_data, cond_data, coords,
+                        model_kwargs=None, noise=None):
         """
         Compute training losses for a single timestep.
 
         :param model: the model to evaluate loss on.
-        :param gt_img: the [N x C x ...] tensor of inputs.
-        :param t: a batch of timestep indices.
+        :param gt_data: the [N x C x ...] tensor of inputs.
+        :param diffusion_steps: a batch of timestep indices.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :param noise: if specified, the specific Gaussian noise to try to remove.
@@ -411,27 +418,28 @@ class GaussianDiffusion:
         if model_kwargs is None:
             model_kwargs = {}
         if noise is None:
-            noise = torch.randn_like(gt_img)
+            noise = torch.randn_like(gt_data)
 
-        x_t = self.q_sample(gt_img, t, noise=noise)
-        x_t = (1 - mask) * x_t + mask * gt_img
+        x_t = self.q_sample(gt_data, diffusion_steps, noise=noise)
+        x_t = (1 - mask_data) * x_t + mask_data * gt_data
 
         terms = {}
 
         if self.loss_type == LossType.KL or self.loss_type == LossType.RESCALED_KL:
             terms["loss"] = self._vb_terms_bpd(
                 model=model,
-                x_start=gt_img,
-                cond_input=cond_input,
-                mask=mask,
+                x_start=gt_data,
                 x_t=x_t,
-                t=t,
+                mask_data=mask_data,
+                cond_data=cond_data,
+                coords=coords,
+                diffusion_steps=diffusion_steps,
                 model_kwargs=model_kwargs,
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.diffusion_steps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), mask, cond_input, **model_kwargs)
+            model_output = model(x_t, self._scale_steps(diffusion_steps), mask_data, cond_data, coords, **model_kwargs)
 
             if self.model_var_type in [
                 ModelVarType.LEARNED,
@@ -445,11 +453,12 @@ class GaussianDiffusion:
                 frozen_out = torch.cat([model_output.detach(), model_var_values], dim=1)
                 terms["vb"] = self._vb_terms_bpd(
                     model=lambda *args, r=frozen_out: r,
-                    x_start=gt_img,
-                    cond_input=cond_input,
-                    mask=mask,
+                    x_start=gt_data,
                     x_t=x_t,
-                    t=t,
+                    mask_data=mask_data,
+                    cond_data=cond_data,
+                    coords=coords,
+                    diffusion_steps=diffusion_steps,
                 )["output"]
                 if self.loss_type == LossType.RESCALED_MSE:
                     # Divide by 1000 for equivalence with initial implementation.
@@ -458,14 +467,14 @@ class GaussianDiffusion:
 
             target = {
                 ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
-                    x_start=gt_img, x_t=x_t, t=t
+                    x_start=gt_data, x_t=x_t, diffusion_steps=diffusion_steps
                 )[0],
-                ModelMeanType.START_X: gt_img,
+                ModelMeanType.START_X: gt_data,
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
-            assert model_output.shape == target.shape == gt_img.shape
+            assert model_output.shape == target.shape == gt_data.shape
 
-            terms["mse"] = mean_flat((target * (1 - mask) - model_output * (1 - mask)) ** 2)
+            terms["mse"] = mean_flat((target * (1 - mask_data) - model_output * (1 - mask_data)) ** 2)
             if "vb" in terms:
                 terms["loss"] = terms["mse"] + terms["vb"]
             else:
@@ -474,8 +483,8 @@ class GaussianDiffusion:
             raise NotImplementedError(self.loss_type)
 
         if self.model_mean_type == ModelMeanType.EPSILON:
-            results = ((x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_t.shape) * model_output) /
-                       extract_into_tensor(self.sqrt_alphas_cumprod, t, x_t.shape))
+            results = ((x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diffusion_steps, x_t.shape) * model_output) /
+                       extract_into_tensor(self.sqrt_alphas_cumprod, diffusion_steps, x_t.shape))
         else:
             results = model_output
         return terms, results

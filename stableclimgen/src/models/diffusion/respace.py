@@ -1,11 +1,10 @@
 import numpy as np
 import torch
-from einops import rearrange
 
 from .gaussian_diffusion import GaussianDiffusion
 
 
-def space_timesteps(num_timesteps, section_counts):
+def space_diffusion_steps(num_diffusion_steps, section_counts):
     """
     Create a list of timesteps to use from an original diffusion process,
     given the number of timesteps we want to take from equally-sized portions
@@ -18,7 +17,7 @@ def space_timesteps(num_timesteps, section_counts):
     If the stride is a string starting with "ddim", then the fixed striding
     from the DDIM paper is used, and only one section is allowed.
 
-    :param num_timesteps: the number of diffusion steps in the original
+    :param num_diffusion_steps: the number of diffusion steps in the original
                           process to divide up.
     :param section_counts: either a list of numbers, or a string containing
                            comma-separated numbers, indicating the step count
@@ -30,15 +29,15 @@ def space_timesteps(num_timesteps, section_counts):
     if isinstance(section_counts, str):
         if section_counts.startswith("ddim"):
             desired_count = int(section_counts[len("ddim"):])
-            for i in range(1, num_timesteps):
-                if len(range(0, num_timesteps, i)) == desired_count:
-                    return set(range(0, num_timesteps, i))
+            for i in range(1, num_diffusion_steps):
+                if len(range(0, num_diffusion_steps, i)) == desired_count:
+                    return set(range(0, num_diffusion_steps, i))
             raise ValueError(
-                f"cannot create exactly {num_timesteps} steps with an integer stride"
+                f"cannot create exactly {num_diffusion_steps} steps with an integer stride"
             )
         section_counts = [int(x) for x in section_counts.split(",")]
-    size_per = num_timesteps // len(section_counts)
-    extra = num_timesteps % len(section_counts)
+    size_per = num_diffusion_steps // len(section_counts)
+    extra = num_diffusion_steps % len(section_counts)
     start_idx = 0
     all_steps = []
     for i, section_count in enumerate(section_counts):
@@ -64,29 +63,24 @@ def space_timesteps(num_timesteps, section_counts):
 class SpacedDiffusion(GaussianDiffusion):
     """
     A diffusion process which can skip steps in a base diffusion process.
-
-    :param use_timesteps: a collection (sequence or set) of timesteps from the
-                          original diffusion process to retain.
-    :param kwargs: the kwargs to create the base diffusion process.
     """
 
-    def __init__(self, timestep_respacing=None, diffusion_steps=1000, **kwargs):
-
-        if timestep_respacing is None:
-            timestep_respacing = [diffusion_steps]
-        use_timesteps = space_timesteps(diffusion_steps, timestep_respacing)
-        self.use_timesteps = set(use_timesteps)
-        self.timestep_map = []
+    def __init__(self, respacing=None, diffusion_steps=1000, **kwargs):
+        if respacing is None:
+            respacing = [diffusion_steps]
+        use_steps = space_diffusion_steps(diffusion_steps, respacing)
+        self.use_steps = set(use_steps)
+        self.diffusion_step_map = []
         self.original_num_steps = diffusion_steps
 
         base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
         last_alpha_cumprod = 1.0
         new_betas = []
         for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
-            if i in self.use_timesteps:
+            if i in self.use_steps:
                 new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
                 last_alpha_cumprod = alpha_cumprod
-                self.timestep_map.append(i)
+                self.diffusion_step_map.append(i)
         kwargs["betas"] = np.array(new_betas)
         super().__init__(**kwargs)
 
@@ -104,47 +98,24 @@ class SpacedDiffusion(GaussianDiffusion):
         if isinstance(model, _WrappedModel):
             return model
         return _WrappedModel(
-            model, self.timestep_map, self.rescale_timesteps, self.original_num_steps
+            model, self.diffusion_step_map, self.rescale_steps, self.original_num_steps
         )
 
-    def _scale_timesteps(self, t):
+    def _scale_steps(self, t):
         # Scaling is done by the wrapped model
         return t
 
 
-class GaussianDiffusion3d(SpacedDiffusion):
-    def get_batch(self, tensor):
-        return tensor
-
-    def reverse_batch(self, tensor, t):
-        return tensor
-
-
-class GaussianDiffusion2d(SpacedDiffusion):
-
-    def get_batch(self, tensor):
-        if torch.is_tensor(tensor):
-            return rearrange(tensor, 'b c t h w -> b (t c) h w')
-        else:
-            return tensor
-
-    def reverse_batch(self, tensor, t):
-        if torch.is_tensor(tensor):
-            return rearrange(tensor, 'b (t c) h w -> b c t h w', t=t)
-        else:
-            return tensor
-
-
 class _WrappedModel:
-    def __init__(self, model, timestep_map, rescale_timesteps, original_num_steps):
+    def __init__(self, model, diffusion_step_map, rescale_steps, original_num_steps):
         self.model = model
-        self.timestep_map = timestep_map
-        self.rescale_timesteps = rescale_timesteps
+        self.diffusion_step_map = diffusion_step_map
+        self.rescale_steps = rescale_steps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x, ts, mask, cond_input, **kwargs):
-        map_tensor = torch.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
-        new_ts = map_tensor[ts]
-        if self.rescale_timesteps:
+    def __call__(self, x, diffusion_steps, mask, cond, coords, **kwargs):
+        map_tensor = torch.tensor(self.diffusion_step_map, device=diffusion_steps.device, dtype=diffusion_steps.dtype)
+        new_ts = map_tensor[diffusion_steps]
+        if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
-        return self.model(x, new_ts, mask, cond_input, **kwargs)
+        return self.model(x, new_ts, mask, cond, coords, **kwargs)

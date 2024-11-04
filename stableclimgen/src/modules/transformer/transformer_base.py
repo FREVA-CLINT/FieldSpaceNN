@@ -1,48 +1,15 @@
-from abc import abstractmethod
-from dbm import error
 from typing import Union, List
 
 import torch
 from einops import rearrange
-from torch import nn
 from torch.nn.functional import scaled_dot_product_attention
 
-from stableclimgen.src.modules.transformer.base_rearrange import RearrangeBlock, RearrangeTimeCentric, \
-    RearrangeSpaceCentric, RearrangeVarCentric
-
-
-class EmbedBlock(nn.Module):
-    """
-    Any module where forward() takes timestep embeddings as a second argument.
-    """
-
-    @abstractmethod
-    def forward(self, x, emb, mask, cond, coords):
-        """
-        Apply the module to `x` given `emb`, `mask`, `cond`, `coords`.
-        """
-
-class EmbedBlockSequential(nn.Sequential, EmbedBlock):
-    """
-    A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
-    """
-
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None):
-        for layer in self:
-            if isinstance(layer, EmbedBlock):
-                x = layer(x, emb, mask, cond, coords)
-            else:
-                x = layer(x)
-        return x
+from stableclimgen.src.modules.rearrange import (RearrangeTimeCentric, RearrangeSpaceCentric,
+                                                 RearrangeVarCentric)
+from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
 
 
 class SelfAttention(EmbedBlock):
-    """
-    Self-Attention layer with implementation inspired by
-    https://github.com/Stability-AI/generative-models/
-    """
-
     def __init__(
             self,
             in_ch,
@@ -73,9 +40,8 @@ class SelfAttention(EmbedBlock):
 
         self.is_causal = is_causal
 
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None):
-        b, t_g, c = x.shape
-        # In-/Output dimensions are: (batch size, grid points/time, channels)
+    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
+        b, t_g_v, c = x.shape
         if hasattr(self, 'embedding_layer'):
             scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
             out = self.norm(x) * (scale + 1) + shift
@@ -86,34 +52,28 @@ class SelfAttention(EmbedBlock):
         k = self.to_k(out)
         v = self.to_v(out)
 
-        # Split into q k v (k), heads (h) and channels (c).
-        # Move time into batch dimension.
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.n_heads), (q, k, v))
 
-        # Use of scaled dot product attention function from pytorch
         attn_out = self.scaled_dot_product_attention(q, k, v, mask)
 
-        # Rearrange to get correct output again
         attn_out = rearrange(
             attn_out, "b h t_g_v c -> b t_g_v (h c)",
-            b=b, t_g=t_g, h=self.n_heads
+            b=b, t_g_v=t_g_v, h=self.n_heads
         )
-        # Gamma scaling is initialized to a small number, so that at init it is
-        # roughly an identity
         return self.skip_connection(x) + self.gamma * self.out_layer(attn_out)
 
     def scaled_dot_product_attention(self, q, k, v, mask):
         return scaled_dot_product_attention(q, k, v, mask, is_causal=self.is_causal)
 
 
-class MLPLayer(torch.nn.Module):
+class MLPLayer(EmbedBlock):
     def __init__(
             self,
             in_ch,
             out_ch,
             mult=1,
-            dropout=0.,
-            embed_dim=None
+            embed_dim=None,
+            dropout=0.
     ):
         super().__init__()
         if embed_dim:
@@ -137,7 +97,7 @@ class MLPLayer(torch.nn.Module):
 
         self.gamma = torch.nn.Parameter(torch.ones(out_ch) * 1E-6)
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
         if hasattr(self, 'embedding_layer'):
             scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
             branch = self.norm(x) * (scale + 1) + shift
@@ -149,18 +109,18 @@ class MLPLayer(torch.nn.Module):
 class TransformerBlock(EmbedBlock):
     def __init__(
             self,
-            blocks: List[str],
             in_ch: Union[int, List[int]],
-            out_ch: Union[int, List[int]] = None,
+            out_ch: Union[int, List[int]],
+            blocks: List[str],
             num_heads: Union[int, List[int]] = 1,
             mlp_mult: Union[int, List[int]] = 1,
             embed_dim: Union[int, List[int]] = None,
-            dropout: Union[float, List[float]]=0.
+            dropout: Union[float, List[float]]=0.,
+            **kwargs
     ):
         super().__init__()
         if not out_ch:
             out_ch = in_ch
-        print(blocks)
         trans_blocks = []
         for block in blocks:
             if block == "mlp":
@@ -188,8 +148,7 @@ class TransformerBlock(EmbedBlock):
 
         self.blocks = EmbedBlockSequential(*trans_blocks)
 
-    def forward(self, x, emb=None, mask=None, cond=None, coords=None):
-        # masked spatio-temporal attention
+    def forward(self, x, emb=None, mask=None, cond=None, coords=None, **kwargs):
         for block in self.blocks:
             x = block(x, emb, mask, cond, coords)
         return x
