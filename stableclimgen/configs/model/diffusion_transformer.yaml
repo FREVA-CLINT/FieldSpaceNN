@@ -11,12 +11,12 @@ model:
   patch_emb_kernel: [1, 1, 1]
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
+      block_type: "trans"
       depth: 8
       ch_mult: 1
       sub_confs:
         blocks: ["s", "mlp"]
         embed_dim: 64
-      block_type: "trans"
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion

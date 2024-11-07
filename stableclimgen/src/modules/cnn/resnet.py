@@ -1,189 +1,87 @@
 import torch
 import torch.nn as nn
-from typing import Optional
-from stableclimgen.src.modules.utils import EmbedBlock
+from typing import Optional, Union, List, Tuple
 
-
-def zero_module(module: nn.Module) -> nn.Module:
-    """
-    Zero out the parameters of a module and return it.
-
-    :param module: A PyTorch module whose parameters are to be zeroed out.
-    :return: The same module with all parameters set to zero.
-    """
-    for p in module.parameters():
-        p.detach().zero_()
-    return module
-
-
-class Upsample(nn.Module):
-    """
-    An upsampling layer with an optional convolution.
-
-    :param in_channels: Channels in the inputs and outputs.
-    :param out_channels: Channels in the output; if None, defaults to in_channels.
-    :param upsample: The upsampling operation to apply.
-    :param use_conv: A boolean determining if a convolution is applied.
-    """
-
-    def __init__(self, in_channels: int, out_channels: Optional[int], upsample: nn.Module, use_conv: bool = True):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels or in_channels
-        self.use_conv = use_conv
-        self.upsample = upsample
-        if use_conv:
-            self.conv = nn.Conv3d(self.in_channels, self.out_channels, 3, padding=1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the Upsample layer.
-
-        :param x: Input tensor of shape (batch, channels, depth, height, width).
-        :return: Upsampled tensor with or without convolution applied.
-        """
-        assert x.shape[1] == self.in_channels
-        x = self.upsample(x)
-        if self.use_conv:
-            x = self.conv(x)
-        return x
-
-
-class Downsample(nn.Module):
-    """
-    A downsampling layer with an optional convolution.
-
-    :param in_channels: Channels in the inputs and outputs.
-    :param out_channels: Channels in the output; if None, defaults to in_channels.
-    :param use_conv: A boolean determining if a convolution is applied.
-    """
-
-    def __init__(self, in_channels: int, out_channels: Optional[int], use_conv: bool = True):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels or in_channels
-        self.use_conv = use_conv
-        stride = (1, 2, 2)
-        if use_conv:
-            self.op = nn.Conv3d(self.in_channels, self.out_channels, 3, stride=stride, padding=1)
-        else:
-            assert self.in_channels == self.out_channels
-            self.op = nn.AvgPool3d(kernel_size=stride, stride=stride)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass for the Downsample layer.
-
-        :param x: Input tensor of shape (batch, channels, depth, height, width).
-        :return: Downsampled tensor with or without convolution applied.
-        """
-        assert x.shape[1] == self.in_channels
-        return self.op(x)
-
-
-class ConvBlock(EmbedBlock):
-    """
-    Convolutional block for upsampling or downsampling.
-
-    :param in_channels: Number of input channels.
-    :param out_channels: Number of output channels.
-    :param block_type: Type of block, either "up" or "down".
-    """
-
-    def __init__(self, in_channels: int, out_channels: int, block_type: str):
-        super().__init__()
-        if block_type == "up":
-            self.conv = Upsample(in_channels, out_channels, nn.Upsample(scale_factor=2, mode="nearest"))
-        elif block_type == "down":
-            self.conv = Downsample(in_channels, out_channels=out_channels)
-        else:
-            self.conv = nn.Conv2d(in_channels, out_channels, 3, stride=1, padding=1)
-
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
-        """
-        Forward pass for the ConvBlock.
-
-        :param x: Input tensor.
-        :param emb: Optional embedding tensor.
-        :param mask: Optional mask tensor.
-        :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
-        :return: Output tensor after applying the convolutional block.
-        """
-        return self.conv(x)
+from stableclimgen.src.modules.cnn.conv import Upsample, Downsample
+from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
 
 
 class ResBlock(EmbedBlock):
     """
-    A residual block that can optionally change the number of channels.
+    A residual block with optional upsampling or downsampling and skip connection.
 
     :param in_ch: Number of input channels.
-    :param out_ch: Number of output channels (optional).
-    :param embed_dim: Number of embedding channels.
+    :param out_ch: Number of output channels.
     :param block_type: Type of block ("up", "down", or identity).
+    :param kernel_size: Kernel size for convolution.
+    :param padding: Padding size for convolution.
+    :param embed_dim: Number of embedding channels (optional).
     :param dropout: Dropout rate (optional).
-    :param use_conv: Whether to use a spatial convolution in the skip connection.
-    :param use_scale_shift_norm: Boolean to determine if scale-shift normalization is used.
+    :param use_conv: Whether to use a convolution in the skip connection.
+    :param use_scale_shift_norm: Whether to use scale-shift normalization.
     """
 
     def __init__(self,
                  in_ch: int,
-                 out_ch: Optional[int],
-                 embed_dim: int,
+                 out_ch: int,
                  block_type: str,
+                 kernel_size: Tuple[int, int, int],
+                 padding: Tuple[int, int, int],
+                 embed_dim: Optional[int] = None,
                  dropout: float = 0.0,
                  use_conv: bool = False,
                  use_scale_shift_norm: bool = False):
         super().__init__()
         self.in_ch = in_ch
+        self.out_ch = out_ch
         self.emb_channels = embed_dim
         self.dropout = dropout
-        self.out_channels = out_ch or in_ch
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
 
-        # Define input layers with GroupNorm, activation, and convolution
+        # Define the input transformation layers
         self.in_layers = nn.Sequential(
             nn.GroupNorm(32, in_ch),
             nn.SiLU(),
-            nn.Conv3d(in_ch, self.out_channels, 3, padding=1),
+            nn.Conv3d(in_ch, self.out_ch, kernel_size, padding=padding),
         )
 
-        self.updown = (block_type == "up" or block_type == "down")
-
+        # Set up/down-sampling based on block type
+        self.updown = block_type in {"up", "down"}
         if block_type == "up":
-            self.h_upd = Upsample(in_ch, in_ch, nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"), True)
-            self.x_upd = Upsample(in_ch, in_ch, nn.Upsample(scale_factor=(1, 2, 2), mode="nearest"), True)
+            self.h_upd = Upsample(in_ch, in_ch, kernel_size, padding)
+            self.x_upd = Upsample(in_ch, in_ch, kernel_size, padding)
         elif block_type == "down":
-            self.h_upd = Downsample(in_ch, in_ch, True)
-            self.x_upd = Downsample(in_ch, in_ch, True)
+            self.h_upd = Downsample(in_ch, in_ch, kernel_size, padding)
+            self.x_upd = Downsample(in_ch, in_ch, kernel_size, padding)
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
-        # Define embedding and output layers
-        self.emb_layers = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(
-                embed_dim,
-                2 * self.out_channels if use_scale_shift_norm else self.out_channels,
-            ),
-        )
+        # Define embedding layers if embedding channels are provided
+        if self.emb_channels:
+            self.emb_layers = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(
+                    self.emb_channels,
+                    2 * self.out_ch if use_scale_shift_norm else self.out_ch,
+                ),
+            )
+
+        # Define the output layers including dropout and convolution
         self.out_layers = nn.Sequential(
-            nn.GroupNorm(32, self.out_channels),
+            nn.GroupNorm(32, self.out_ch),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            zero_module(
-                nn.Conv3d(self.out_channels, self.out_channels, 3, padding=1)
-            ),
+            nn.Conv3d(self.out_ch, self.out_ch, kernel_size, padding=padding)
         )
 
-        if self.out_channels == in_ch:
+        # Define the skip connection layer
+        if self.out_ch == in_ch:
             self.skip_connection = nn.Identity()
         elif use_conv:
-            self.skip_connection = nn.Conv3d(in_ch, self.out_channels, 3, padding=1)
+            self.skip_connection = nn.Conv3d(in_ch, self.out_ch, kernel_size, padding=padding)
         else:
-            self.skip_connection = nn.Conv3d(in_ch, self.out_channels, 1)
+            self.skip_connection = nn.Conv3d(in_ch, self.out_ch, 1)
 
     def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
@@ -199,27 +97,88 @@ class ResBlock(EmbedBlock):
         """
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
-            h = in_rest(x)
-            h = self.h_upd(h)
-            x = self.x_upd(x)
-            h = in_conv(h)
+            h = in_rest(x)  # Apply normalization and activation
+            h = self.h_upd(h)  # Upsample or downsample if specified
+            x = self.x_upd(x)  # Apply the same operation to the input
+            h = in_conv(h)  # Apply final convolution
         else:
-            h = self.in_layers(x)
-        emb = emb[:, :, 0, 0, 0]  # Assume 5D tensor; extract relevant embedding part
-        emb_out = self.emb_layers(emb).type(h.dtype)
-        while len(emb_out.shape) < len(h.shape):
-            emb_out = emb_out[..., None]
+            h = self.in_layers(x)  # Apply input layers directly
 
-        # Apply scale-shift normalization if configured
-        if self.use_scale_shift_norm:
-            out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
-            scale, shift = torch.chunk(emb_out, 2, dim=1)
-            h = out_norm(h) * (1 + scale) + shift
-            h = out_rest(h)
-        else:
-            h = h + emb_out
+        if self.emb_channels:
+            emb = emb[:, :, 0, 0, 0]  # Extract relevant embedding
+            emb_out = self.emb_layers(emb).type(h.dtype)
+            while len(emb_out.shape) < len(h.shape):
+                emb_out = emb_out[..., None]
+
+            # Apply scale-shift normalization if configured
+            if self.use_scale_shift_norm:
+                out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
+                scale, shift = torch.chunk(emb_out, 2, dim=1)
+                h = out_norm(h) * (1 + scale) + shift
+                h = out_rest(h)
+            else:
+                h = h + emb_out  # Direct addition without scale-shift
+
+        if not self.use_scale_shift_norm:
             h = self.out_layers(h)
 
-        # Add skip connection and return
+        # Combine output with skip connection
         skip = self.skip_connection(x)
         return skip + h
+
+
+class ResBlockSequential(EmbedBlock):
+    """
+    A sequential container for multiple ResBlocks, allowing channel transformations and up/down-sampling.
+
+    :param in_ch: Number of input channels.
+    :param out_ch: List of output channels for each block.
+    :param blocks: List of types of block ("up", "down", or identity).
+    :param kernel_size: Kernel size for each block.
+    :param embed_dim: Number of embedding channels.
+    :param dropout: Dropout rate.
+    :param use_conv: Whether to use convolution in the skip connection.
+    :param use_scale_shift_norm: Whether to use scale-shift normalization.
+    """
+
+    def __init__(self, in_ch: int, out_ch: List[int], blocks: Union[str, List[str]],
+                 kernel_size: Union[Tuple[int, int, int], List[Tuple[int, int, int]]] = (1, 3, 3),
+                 embed_dim: Optional[Union[int, List[int]]] = None, dropout: Union[float, List[float]] = 0.0,
+                 use_conv: Union[bool, List[bool]] = False, use_scale_shift_norm: Union[bool, List[bool]] = False):
+        super().__init__()
+        if isinstance(blocks, str):
+            blocks = [blocks]  # Ensure blocks is a list
+        if isinstance(kernel_size, tuple):
+            kernel_size = len(blocks) * [kernel_size]  # Replicate kernel size for each block
+
+        res_blocks = []
+        for i, block in enumerate(blocks):
+            padding = tuple(kernel_size[i][j] // 2 for j in range(len(kernel_size[i])))
+            res_blocks.append(ResBlock(
+                in_ch,
+                out_ch if isinstance(out_ch, int) else out_ch[i],
+                block,
+                kernel_size[i],
+                padding,
+                embed_dim if isinstance(embed_dim, int) or embed_dim is None else embed_dim.pop(0),
+                dropout if isinstance(dropout, float) else dropout.pop(0),
+                use_conv if isinstance(use_conv, bool) else use_conv.pop(0),
+                use_scale_shift_norm if isinstance(use_scale_shift_norm, bool) else use_scale_shift_norm.pop(0)
+            ))
+            in_ch = out_ch if isinstance(out_ch, int) else out_ch[i]
+        # Sequential container for ResBlocks
+        self.res_blocks = EmbedBlockSequential(*res_blocks)
+
+    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+        """
+        Forward pass for the ResBlockSequential.
+
+        :param x: Input tensor.
+        :param emb: Optional embedding tensor.
+        :param mask: Optional mask tensor.
+        :param cond: Optional conditioning tensor.
+        :param coords: Optional coordinates tensor.
+        :return: Output tensor after passing through the sequence of residual blocks.
+        """
+        return self.res_blocks(x, emb, mask, cond, coords)

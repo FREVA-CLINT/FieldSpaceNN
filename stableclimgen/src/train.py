@@ -22,6 +22,8 @@ def train(cfg: DictConfig) -> None:
     # Ensure the default root directory exists, then save the configuration file
     if not os.path.exists(cfg.trainer.default_root_dir):
         os.makedirs(cfg.trainer.default_root_dir)
+
+    # Create YAML config of training configuration
     composed_config_path = f'{cfg.trainer.default_root_dir}/composed_config.yaml'
     with open(composed_config_path, 'w') as file:
         OmegaConf.save(config=cfg, f=file)
@@ -38,8 +40,6 @@ def train(cfg: DictConfig) -> None:
 
     # Initialize the logger (e.g., Weights & Biases)
     logger: WandbLogger = instantiate(cfg.logger)
-
-    print(f'Training dataset size: {len(train_dataset)} samples')
 
     # Initialize model and trainer
     model: Any = instantiate(cfg.model)

@@ -3,13 +3,14 @@ from typing import List, Optional, Union
 import torch
 import torch.nn as nn
 
-from stableclimgen.src.modules.cnn.resnet import ResBlock, ConvBlock
 # Import necessary modules for the diffusion generator architecture
-from stableclimgen.src.modules.embedding.diffusion_step import DiffusionStepEmbedder
-from stableclimgen.src.modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
-from stableclimgen.src.modules.rearrange import RearrangeConvCentric
-from stableclimgen.src.modules.transformer.transformer_base import TransformerBlock
-from stableclimgen.src.modules.utils import EmbedBlockSequential
+from ...modules.embedding.diffusion_step import DiffusionStepEmbedder
+from ...modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
+from ...modules.rearrange import RearrangeConvCentric
+from ...modules.cnn.conv import ConvBlockSequential
+from ...modules.cnn.resnet import ResBlockSequential
+from ...modules.transformer.transformer_base import TransformerBlock
+from ...modules.utils import EmbedBlockSequential
 
 
 class DiffusionBlockConfig:
@@ -56,13 +57,13 @@ class DiffusionGenerator(nn.Module):
             self,
             init_in_ch: int,
             final_out_ch: int,
+            block_configs: List[DiffusionBlockConfig],
             model_channels: int = 64,
             embed_dim: Optional[int] = None,
             skip_connections: bool = False,
             patch_emb_type: str = "conv",
             patch_emb_size: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
             patch_emb_kernel: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
-            block_configs: Optional[List[DiffusionBlockConfig]] = None,
             concat_mask: bool = False,
             concat_cond: bool = False,
             spatial_dim_count: int = 2
@@ -92,7 +93,7 @@ class DiffusionGenerator(nn.Module):
 
         # Define layers based on block configurations
         for block_conf in block_configs:
-            for _ in range(block_conf.depth):
+            for d in range(block_conf.depth):
                 out_ch = int(block_conf.ch_mult * model_channels)
                 if self.skip_connections and block_conf.enc:
                     in_block_ch.append(in_ch)
@@ -102,11 +103,11 @@ class DiffusionGenerator(nn.Module):
                 # Determine block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
-                        ConvBlock(in_ch, out_ch, *block_conf.sub_confs), spatial_dim_count
+                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
                     )
                 elif block_conf.block_type == "resnet":
                     block = RearrangeConvCentric(
-                        ResBlock(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
+                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
                     )
                 else:
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
@@ -191,5 +192,5 @@ class DiffusionGenerator(nn.Module):
             h = module(h, emb, mask, cond, coords)
 
         # Output layer reconstruction with unpatchifying
-        h = self.out(h, emb, mask, cond, coords, out_shape)
+        h = self.out(h, emb, mask, cond, coords, out_shape=out_shape)
         return h

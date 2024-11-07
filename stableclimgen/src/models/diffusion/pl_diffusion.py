@@ -1,5 +1,5 @@
 import os
-from typing import Tuple, Dict, Optional
+from typing import Tuple, Dict
 
 import lightning.pytorch as pl
 import torch
@@ -114,10 +114,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                try:
-                    self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), output, f"tensor_plot_{self.current_epoch}")
-                except Exception:
-                    pass
+                self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), output, f"tensor_plot_{self.current_epoch}")
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
