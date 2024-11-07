@@ -15,7 +15,7 @@ from ...utils.visualization import plot_images
 
 class LightningDiffusionGenerator(pl.LightningModule):
     """
-    A PyTorch Lightning Module for training and validating a Diffusion Generator model with EMA (Exponential Moving Average)
+    A PyTorch Lightning Module for training and validating a Diffusion Generator model with Exponential Moving Average (EMA)
     and cosine annealing warm-up restarts for the learning rate scheduler.
     """
 
@@ -114,13 +114,15 @@ class LightningDiffusionGenerator(pl.LightningModule):
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), output, f"tensor_plot_{self.current_epoch}")
+                self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), torch.stack(10 * [cond_data[i]]),
+                                     output, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
 
-    def log_tensor_plot(self, gt_tensor: torch.Tensor, rec_tensor: torch.Tensor, plot_name: str):
+    def log_tensor_plot(self, gt_tensor: torch.Tensor, in_tensor: torch.Tensor, rec_tensor: torch.Tensor,
+                        gt_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
         """
         Logs a plot of ground truth and reconstructed tensor images for validation.
 
@@ -130,7 +132,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
         """
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)
-        plot_images(gt_tensor, rec_tensor, f"{plot_name}", save_dir)
+        plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
 
         for c in range(gt_tensor.shape[1]):
             filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
