@@ -135,42 +135,17 @@ class grid_layer(nn.Module):
     
 
 class multi_grid_channel_attention(nn.Module):
-    def __init__(self, model_dims_in, model_dim_out, n_chunks=4, n_heads=2, output_layer=False, sep_layer_norm=True) -> None: 
+    def __init__(self, model_dims_in, model_dim_out, n_chunks=4, n_head_channels=16, output_layer=False) -> None: 
         super().__init__()
 
         model_dims_in_total = int(model_dims_in.sum())
  
-        self.n_chunks = n_chunks
-
-        model_dim_att = model_dims_in_total // n_chunks
-        
         if output_layer:
-            model_dim_att_out = model_dim_att 
+            model_dim_att_out = model_dim_out*n_chunks
         else:
             model_dim_att_out = model_dim_out 
 
-        self.MHA = helpers.MultiHeadAttentionBlock(
-            model_dim_att, model_dim_att_out//n_chunks, n_heads, input_dim=model_dim_att, qkv_proj=True
-            )   
-
-        self.sep_layer_norm = sep_layer_norm
-        self.layer_norms = nn.ModuleList()
-        if sep_layer_norm:
-            for model_dim_in in model_dims_in:
-                self.layer_norms.append(nn.LayerNorm(int(model_dim_in), elementwise_affine=True))
-        else:
-            self.layer_norms = nn.LayerNorm(model_dim_att, elementwise_affine=True)
-
-        self.mlp_layer = nn.Sequential(
-            nn.LayerNorm(model_dim_att_out, elementwise_affine=True),
-            nn.Linear(model_dim_att_out, model_dim_att_out, bias=False),
-            nn.SiLU(),
-            nn.Linear(model_dim_att_out, model_dim_att_out, bias=False)
-        )
-
-        self.res_layer = nn.Linear(model_dims_in_total, model_dim_att_out, bias=False)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_att_out)*1e-6, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones(model_dim_att_out)*1e-6, requires_grad=True)
+        self.att_layer = channel_variable_attention(model_dims_in_total, n_chunks, n_head_channels, model_dim_out=model_dim_att_out)
 
         if output_layer:
             self.mlp_layer_out = nn.Sequential(nn.Linear(model_dim_att_out, model_dim_att_out//2, bias=False),
@@ -182,39 +157,7 @@ class multi_grid_channel_attention(nn.Module):
 
     def forward(self, x_levels, mask=None):
         
-        if self.sep_layer_norm:
-            x = []
-            for k, layer_norm in enumerate(self.layer_norms):
-                x.append(layer_norm(x_levels[k]))
-            x = torch.concat(x, dim=-1)
-        else:
-            x = torch.concat(x_levels, dim=-1)
-            
-        b,n,nv,f=x.shape
-        x = x.view(b,n,nv,f)
-        x = x.view(b*n,nv,f)
-        x = x.view(b*n,nv*self.n_chunks,-1)
-
-        if not self.sep_layer_norm:
-            x = self.layer_norms(x)
-        
-        mask_chunk=mask
-        if mask_chunk is not None:
-            mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks,dim=1)
-            
-        x = self.MHA(q=x, k=x, v=x, mask=mask_chunk)
-        x = x.view(b*n,nv,-1)
-        x = x.view(b,n,nv,-1)
-
-        x = self.res_layer(torch.concat(x_levels, dim=-1)) + self.gamma * x
-
-        x = x.view(b,n,nv,-1)
-        x = x + self.gamma_mlp * self.mlp_layer(x)
-
-        if mask is not None:
-            mask = mask.view(b, x.shape[1], -1)
-            mask[mask.sum(dim=-1)!=mask.shape[-1]] = False
-            mask = mask.view(b,n,nv)
+        x = self.att_layer(torch.concat(x_levels, dim=-1), mask=mask)[0]
 
         return self.mlp_layer_out(x)
         
@@ -226,7 +169,7 @@ class icon_spatial_attention_ds(nn.Module):
                  grid_layers, 
                  global_level,
                  model_dim,
-                 n_heads,
+                 n_head_channels,
                  seq_level_attention,
                  nh=1,
                  pos_emb_calc='cartesian_km',
@@ -267,6 +210,7 @@ class icon_spatial_attention_ds(nn.Module):
 
         self.layer_norm = nn.LayerNorm(model_dim, elementwise_affine=True)
         
+        n_heads = model_dim // n_head_channels
         self.MHA = helpers.MultiHeadAttentionBlock(
             model_dim, model_dim, n_heads, input_dim=model_dim, qkv_proj=True
             )   
@@ -502,49 +446,49 @@ def get_spatial_projection_weights_vm_dist(phis, dists, phi_0, kappa_vm, dists_0
 
     return weights
 
-def cosine(thetas, wavelengths, distances, theta_offsets=None):
+#def cosine(thetas, wavelengths, distances, theta_offsets=None):
 
-    freq = 2*torch.pi/wavelengths
+#    freq = 2*torch.pi/wavelengths
 
-    if theta_offsets is not None:
-        Z = torch.cos(freq * (torch.cos(thetas.unsqueeze(dim=-1)-theta_offsets)*distances.unsqueeze(dim=-1)).unsqueeze(dim=-1))
-    else:
-        Z = torch.cos(freq * distances)
+#    if theta_offsets is not None:
+#        Z = torch.cos(freq * (torch.cos(thetas.unsqueeze(dim=-1)-theta_offsets)*distances.unsqueeze(dim=-1)).unsqueeze(dim=-1))
+#    else:
+#        Z = torch.cos(freq * distances)
 
-    return Z
+#    return Z
 
 
-def von_mises(thetas, kappa, theta_offsets=None):
-
-    if theta_offsets is not None:
-        if not torch.is_tensor(theta_offsets):
-            theta_offsets = torch.tensor(theta_offsets)
-        vm = torch.exp(kappa * torch.cos(thetas.unsqueeze(dim=-1) - theta_offsets.unsqueeze(dim=-2)).unsqueeze(dim=-1))
-    else:
-        vm = torch.exp(kappa * torch.cos(thetas.unsqueeze(dim=-1)).unsqueeze(dim=-1))
-
+def von_mises(d_phi, kappa):
+    vm = torch.exp(kappa * torch.cos(d_phi))
     return vm
 
+def cosine(d_phi):
+    return torch.cos(d_phi)
 
-def normal_dist(distances, sigma, distances_offsets=None, sigma_cross=True):
-
-
-    if distances_offsets is not None:
-        if not torch.is_tensor(distances_offsets):
-            distances_offsets = torch.tensor(distances_offsets)
-
-        diff = distances.unsqueeze(dim=-1) - distances_offsets.unsqueeze(dim=1).unsqueeze(dim=-2)
-    else:
-        diff = distances
-    
-    if sigma_cross: 
-        diff = diff.unsqueeze(dim=-1).unsqueeze(dim=-1)
-    
-    sigma = sigma.unsqueeze(dim=1).unsqueeze(dim=1)
-
-    nd = torch.exp(-0.5 * (diff / sigma) ** 2)
-
+def normal_dist(d_dists, sigma):
+    nd = torch.exp(-0.5 * (d_dists / sigma) ** 2)
     return nd
+
+
+#def normal_dist(distances, sigma, distances_offsets=None, sigma_cross=True):
+
+
+#    if distances_offsets is not None:
+#        if not torch.is_tensor(distances_offsets):
+#            distances_offsets = torch.tensor(distances_offsets)
+
+#        diff = distances.unsqueeze(dim=-1) - distances_offsets.unsqueeze(dim=1).unsqueeze(dim=-2)
+#    else:
+#        diff = distances
+    
+#    if sigma_cross: 
+#        diff = diff.unsqueeze(dim=-1).unsqueeze(dim=-1)
+    
+#    sigma = sigma.unsqueeze(dim=1).unsqueeze(dim=1)
+
+#    nd = torch.exp(-0.5 * (diff / sigma) ** 2)
+
+#    return nd
 
 class angular_embedder(nn.Module):
     def __init__(self, n_bins, emb_dim) -> None: 
@@ -562,12 +506,9 @@ class multi_grid_encoder(nn.Module):
                  global_levels_out, 
                  model_dim_in, 
                  model_dims: dict, 
-                 n_vars_total, 
-                 kernel_fcn='n', 
-                 simultaneous=False, 
-                 channel_attention=True,
-                 n_chunks_channels=1,
-                 n_heads=4) -> None: 
+                 no_layer_settings, 
+                 simultaneous=False,
+                 n_head_channels=16) -> None: 
         
         super().__init__()
 
@@ -591,16 +532,13 @@ class multi_grid_encoder(nn.Module):
                 model_dim_in = model_dim_in if simultaneous or 'model_dim_out' not in locals() else model_dim_out
                 model_dim_out = model_dims[k]
 
-                self.aggregation_layers[str(global_level)] = get_projection_layer(kernel_fcn, 
-                                                                            model_dim_in, 
-                                                                            model_dim_out, 
-                                                                            grid_layers[str(global_level)], 
-                                                                            n_vars_total,
-                                                                            n_heads=n_heads, 
-                                                                            channel_attention=channel_attention,
-                                                                            n_chunks_channels=n_chunks_channels,
-                                                                            nh_projection=True)
-             
+                self.aggregation_layers[str(global_level)] = no_layer(model_dim_in,
+                                                                      model_dim_out,
+                                                                      grid_layers[str(global_level)].mean_dist,
+                                                                      no_layer_settings,
+                                                                      n_head_channels=n_head_channels)
+                
+                 
 
     def forward(self, x, indices_layers, drop_mask=None, coords_in=None, sample_dict=None):   
         
@@ -649,11 +587,8 @@ class multi_grid_decoder(nn.Module):
                  global_levels: list, 
                  model_dims_in: list, 
                  model_dims_out: list,
-                 n_vars_total,
-                 kernel_fcn='n', 
-                 channel_attention=True,
-                 n_chunks_channels=4, 
-                 n_heads=4,
+                 no_layer_settings, 
+                 n_head_channels=16,
                  output_layer=False) -> None: 
         
         super().__init__()
@@ -676,15 +611,12 @@ class multi_grid_decoder(nn.Module):
 
             for j, global_level_in_step in enumerate(global_levels_in_step):
                 if global_level_in_step != global_level_output:
-                    self.projection_layers_step[str(int(global_level_in_step))] = (get_projection_layer(kernel_fcn, 
-                                                                                                int(model_dims_in_step[j]), 
-                                                                                                int(model_dims_in_step[j]), 
-                                                                                                grid_layers[str(int(global_level_output))], 
-                                                                                                n_vars_total,
-                                                                                                n_heads=n_heads, 
-                                                                                                channel_attention=channel_attention,
-                                                                                                n_chunks_channels=n_chunks_channels,
-                                                                                                nh_projection=True))
+                    self.projection_layers_step[str(int(global_level_in_step))] = no_layer(int(model_dims_in_step[j]), 
+                                                                                            int(model_dims_in_step[j]), 
+                                                                                            grid_layers[str(int(global_level_output))].mean_dist, 
+                                                                                            no_layer_settings,
+                                                                                            n_head_channels=n_head_channels)
+ 
                 else:
                     self.projection_layers_step[str(int(global_level_in_step))] = nn.Identity()
 
@@ -695,7 +627,7 @@ class multi_grid_decoder(nn.Module):
             self.projection_layers[str(int(global_level_output))] = self.projection_layers_step
             self.multi_grid_reduction_layers[str(int(global_level_output))] = multi_grid_channel_attention(model_dims_in_step,
                                                                                                  int(model_dims_out[k]),
-                                                                                                 n_heads=n_heads,
+                                                                                                 n_head_channels=n_head_channels,
                                                                                                  output_layer=output_layer if k==len(global_levels)-1 else False)
 
     def forward(self, x_levels, indices_grid_layers, drop_mask_levels=None, sample_dict=None, coords_out=None):   
@@ -747,7 +679,7 @@ class processing_layer(nn.Module):
                  seq_level_attention: bool,
                  n_vars_total,
                  nh:int=1,
-                 n_heads:int=4,
+                 n_head_channels:int=16,
                  pos_emb_calc:str='cartesian_km',
                  emb_table_bins:int=16,
                  kernel_fcn:str='n_ca',
@@ -770,7 +702,7 @@ class processing_layer(nn.Module):
                 self.processing_layers[global_level] = icon_spatial_attention_ds(grid_layers, 
                                                                                 global_level, 
                                                                                 int(model_dims[k]),
-                                                                                n_heads,
+                                                                                n_head_channels,
                                                                                 seq_level_attention,
                                                                                 nh=nh,
                                                                                 pos_emb_calc=pos_emb_calc,
@@ -791,54 +723,6 @@ class processing_layer(nn.Module):
             drop_masks_levels[global_level] = mask
 
         return x_levels, drop_masks_levels
-
-
-class channel_attention(nn.Module):
-    def __init__(self, grid_layer, model_hparams, model_dim=None, n_chunks=None) -> None: 
-        super().__init__()
-
-        self.grid_layer = grid_layer
-
-        model_dim = model_hparams['model_dim']
-
-        # channel attention is good here!
-        self.n_chunks = 4
-
-        input_model_dim = model_hparams['model_dim'] // self.n_chunks
-
-        self.norm = nn.LayerNorm(input_model_dim, elementwise_affine=True)
-        
-        self.MHA = helpers.MultiHeadAttentionBlock(
-            model_dim, input_model_dim, model_hparams['n_heads'], input_dim=input_model_dim, qkv_proj=True
-            )   
-        
-        self.mlp_layer = nn.Sequential(
-            nn.LayerNorm(model_dim, elementwise_affine=True),
-            nn.Linear(model_dim, model_dim, bias=False),
-            nn.SiLU(),
-            nn.Linear(model_dim, model_dim, bias=False)
-        )
-        self.gamma = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
-
-    def forward(self, x_level):
-        b,n,f = x_level.shape
-
-        x = x_level.view(b*n,f)
-
-        x = x.view(b*n,self.n_chunks,-1)
-
-        x = self.norm(x)
-
-        x = self.MHA(q=x, k=x, v=x)
-
-        x = x_level + self.gamma * x.view(b,n,f)
-        x = x + self.gamma_mlp * self.mlp_layer(x)
-
-        x = x.view(b,n,f)
-
-        return x
-
 
 
 # make similar hier nh grid embedding (hier vielleicht noch nicht wichtig)
@@ -971,71 +855,90 @@ class seq_grid_embedding(nn.Module):
         else:
             return scale.view(b,n,f)
 
-
-
-def get_projection_layer(kernel_fcn, model_dim_in, model_dim_out, grid_layer, n_vars_total, n_heads=4, channel_attention=True, n_chunks_channels=1, nh_projection=False):
-
-    if kernel_fcn == 'n':
-        projection_layer = projection_layer_n_multi_ca(model_dim_in, 
-                                                       model_dim_out, 
-                                                       grid_layer.min_dist/2,
-                                                       grid_layer.min_dist, 
-                                                       n_vars_total,
-                                                       n_heads=n_heads, 
-                                                       channel_attention=channel_attention, 
-                                                       nh_projection=nh_projection,
-                                                       n_chunks_channels=n_chunks_channels,
-                                                       )
-
-    return projection_layer
-
-
-class projection_layer(nn.Module):
+class no_layer(nn.Module):
     def __init__(self, 
-                 model_dim,
-                 n_vars_total,
-                 polar=False, 
-                 requires_arel_positions=True, 
-                 channel_attention=True, 
-                 n_heads=4, 
-                 nh_projection=False, 
-                 init_dist_range=[], 
-                 init_sigma_range=[],
-                 n_chunks_channels=1) -> None: 
+                 model_dim_in,
+                 model_dim_out,
+                 dist_max,
+                 kernel_settings,
+                 n_head_channels: int=16,
+                ) -> None: 
         
         super().__init__()
-        # use channel attention and residual here
-
-        self.periodic_fov=None
-        self.polar=polar
-        self.coord_system = 'polar' if polar else 'cartesian'
         
-        self.requires_arel_positions = requires_arel_positions
-        self.channel_attention = channel_attention
-        self.nh_projection = nh_projection
-       
-        dist = torch.linspace(0, init_dist_range[1], model_dim)
-        self.emb_dist = nn.Parameter(dist.view(1,-1).repeat_interleave(n_vars_total, dim=0), requires_grad=True)
+        n_phi = kernel_settings['n_phi']
+        n_dist = kernel_settings['n_dists']
+        n_sigma = kernel_settings['n_sigma']
+        kappa_init = kernel_settings['kappa_init']
+        use_von_mises = kernel_settings['use_von_mises']
+        phi_channel_attention = kernel_settings['phi_att']
+        dist_channel_attention = kernel_settings['dist_att']
+        sigma_channel_attention = kernel_settings['sigma_att']
+        mixed_channel_attention = kernel_settings['mixed_att']
 
-        sigma = torch.linspace(init_sigma_range[0], init_sigma_range[1], model_dim)
-        self.emb_sigma = nn.Parameter(sigma.view(1,-1).repeat_interleave(n_vars_total, dim=0), requires_grad=True)
-        self.n_vars_total = n_vars_total
+        dist_learnable = kernel_settings['dists_learnable']
+        sigma_learnable = kernel_settings['sigma_learnable']
+        nh_projection = kernel_settings['nh_projection']
+        nh_overlap = kernel_settings['nh_overlap']
 
-        
-        if channel_attention:
-            n_chunks_channels = model_dim//(4*n_heads) if n_vars_total==1 else n_chunks_channels
-            self.att_layer = channel_variable_attention(model_dim, n_chunks_channels, n_heads)
+        min_sigma = 1e-4
+
+        self.nh_projection= nh_projection
+        self.use_von_mises = use_von_mises
+
+        if use_von_mises:
+            phi_min = -torch.pi
         else:
-            self.att_layer = nn.Identity()
-    
-    def get_embedding(self, var_indices):
+            phi_min = 0
 
-        if self.n_vars_total==1:
-            var_indices = var_indices.clamp(max=self.n_vars_total-1)
-            return self.emb_sigma[var_indices][:,[0]], self.emb_dist[var_indices][:,[0]]
+        self.angular_dist_calc = False
+        self.dist_dist_calc = False
+    
+        self.periodic_fov=None
+        self.polar=True
+        self.coord_system = 'polar'
         
-        if self.emb_sigma is not None:
-            return self.emb_sigma[var_indices], self.emb_dist[var_indices]
+        if n_dist>1:
+            dist = torch.linspace(0, dist_max, n_dist)
+            self.dists = nn.Parameter(dist, requires_grad=dist_learnable)
+            self.dist_dist_calc = True
+            n_sigma = n_sigma if n_sigma >=1 else 1
+
+        if n_sigma>1:
+            sigma = torch.linspace(min_sigma, dist_max/2, n_sigma)
+            self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
+            self.dist_dist_calc = True
+
+        elif n_sigma==1:
+            sigma = torch.tensor(dist_max/2)
+            self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
+            self.dist_dist_calc = True
+
+        if n_phi>1:
+            phi = torch.linspace(phi_min, torch.pi, n_phi+1)[:-1]
+            self.phi = nn.Parameter(torch.tensor(phi), requires_grad=False)
+            self.angular_dist_calc = True
+            if use_von_mises:
+                self.kappa = nn.Parameter(torch.tensor(kappa_init), requires_grad=False)
+
+        model_dim_enhanced = model_dim_in * n_dist * n_phi * n_sigma
+
+        if dist_channel_attention:
+            model_dim = model_dim_enhanced // n_dist
+            self.dist_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+
+        if sigma_channel_attention:
+            model_dim = model_dim_enhanced // n_sigma
+            self.sigma_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+
+        if phi_channel_attention:
+            model_dim = model_dim_enhanced // n_phi
+            self.phi_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+        
+        if mixed_channel_attention:
+            model_dim = model_dim_enhanced 
+            self.mixed_channel_attention = channel_variable_attention(model_dim, 4, n_head_channels, model_dim_out)
+
 
     def forward(self, 
                 x, 
@@ -1049,8 +952,6 @@ class projection_layer(nn.Module):
                 mask=None):
         
         nh_projection = self.nh_projection
-
-        emb_sigma, emb_dist = self.get_embedding(sample_dict['variables'])
 
         if coordinates is None and grid_layer is not None and not nh_projection:
             coordinates = grid_layer.get_coordinates_from_grid_indices(indices_layer)
@@ -1077,83 +978,177 @@ class projection_layer(nn.Module):
             x = x.view(b, seq_dim_in, coordinates.shape[-1], n_v, f)
             if mask is not None:
                 mask = mask.view(b, seq_dim_in, -1, n_v)
+       
+        coordinates = coordinates.unsqueeze(dim=-2)
+        coordinates_out = coordinates_out.unsqueeze(dim=-1)
+        coordinates_rel = get_distance_angle(coordinates[0], coordinates[1], coordinates_out[0], coordinates_out[1], base=self.coord_system, periodic_fov=self.periodic_fov)
 
-        if self.requires_arel_positions:
-            coords_ref = coordinates[:,:,:,[0]]
-            coordinates_rel = get_distance_angle(coords_ref[0], coords_ref[1], coordinates[0], coordinates[1], base=self.coord_system, periodic_fov=self.periodic_fov)
-            coordinates_rel_out = get_distance_angle(coords_ref[0], coords_ref[1], coordinates_out[0], coordinates_out[1], base=self.coord_system, periodic_fov=self.periodic_fov)
+        x, mask = self.project(x, coordinates_rel, mask=mask)      
+  
+        b, n, nv, f = x.shape
+                     
+        return x, mask
 
-            x, mask = self.project(x, coordinates_rel, coordinates_rel_out, mask=mask)
-        else:
-            coordinates = coordinates.unsqueeze(dim=-2)
-            coordinates_out = coordinates_out.unsqueeze(dim=-1)
-            coordinates_rel = get_distance_angle(coordinates[0], coordinates[1], coordinates_out[0], coordinates_out[1], base=self.coord_system, periodic_fov=self.periodic_fov)
 
-            x, mask = self.project(x, coordinates_rel, emb_sigma, emb_dist, mask=mask)      
+    def von_mises(d_phi, kappa):
+        vm = torch.exp(kappa * torch.cos(d_phi))
+        return vm
 
-        b, n, nt, nv, f = x.shape
-        x = x.view(b,n*nt,nv,f)
+    def cosine(d_phi):
+        return torch.cos(d_phi)
+
+    def normal_dist(d_dists, sigma):
+        nd = torch.exp(-0.5 * (d_dists / sigma) ** 2)
+        return nd
+
+
+    def project(self, x, coordinates_rel,  mask=None):
+        
+        b, n, nh, nv, f = x.shape
+
+        x = x.view(b,n,nh,nv,1,1,1,f)
+        # new dims: n_d, n_sigma, n_phi
+        
+        sigma = self.sigma.clamp(min=1e-4)
+
+        angular_weights = dist_weights = None
+
+        dists, phis = coordinates_rel
+
+        if self.dist_dist_calc:
+            d_dists = dists.unsqueeze(dim=-1) - self.dists.unsqueeze(dim=0)
+            dist_weights = normal_dist(d_dists.unsqueeze(dim=-1), sigma.unsqueeze(dim=0))
+            dist_weights = dist_weights.unsqueeze(dim=-1)
+
+        if self.angular_dist_calc:
+            d_phis = phis.unsqueeze(dim=-1) - self.phi.unsqueeze(dim=0)
+            if self.use_von_mises:
+                angular_weights = von_mises(d_phis, self.kappa)
+            else:
+                angular_weights = cosine(d_phis)
+
+            angular_weights = angular_weights.masked_fill(dists.unsqueeze(dim=-1)<1e-10, 1)
+
+            angular_weights = angular_weights.unsqueeze(dim=-2).unsqueeze(dim=-3)
+
+
+        if angular_weights is not None and dist_weights is not None:
+            weights = dist_weights*angular_weights
+
+        elif dist_weights is not None:
+            weights = dist_weights
+
+        elif angular_weights is not None:
+            weights = angular_weights
+
+        weights = weights.unsqueeze(dim=4).repeat_interleave(nv, dim=4)
+        
+        if mask is not None:
+
+            weights = weights.masked_fill(mask.view(b,n,1,nh,nv,1,1,1), -1e30 if x.dtype == torch.float32 else -1e4)
+
+        weights = F.softmax(weights, dim=3)
+
+        #inflate target dimension in x and feature dimension in weights
+        x = (x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)).sum(dim=3)
+
+        b, n, nt, nv, n_dist, n_sigma, n_phi, nc = x.shape
+        x = x.view(b, n*nt, nv, n_dist, n_sigma, n_phi, nc)
 
         if mask is not None:
             mask = mask.sum(dim=-2)==mask.shape[-2]
-            if x.shape[1] > mask.shape[1]:
-                mask = mask.unsqueeze(dim=-2).repeat_interleave(x.shape[1]//mask.shape[1], dim=-2)
+            mask = mask.unsqueeze(dim=-2).repeat_interleave(nt, dim=-2)
             mask = mask.view(b,n*nt,nv)
 
-        if self.channel_attention:
-            x, mask = self.att_layer(x, x_res=x.view(b,n,nt,nv,f).mean(dim=2, keepdim=True), mask=mask)    
-                
+        if hasattr(self, 'phi_channel_attention'):
+            x_res = x.mean(dim=-2, keepdim=True)
+            x = x.transpose(3,-2).reshape(b, n*nt, nv*n_phi, -1)
+            x = self.phi_channel_attention(x)[0]
+            x = x.view(b,n*nt, nv*n_phi, n_sigma, n_dist, nc)
+            x = x.view(b,n*nt, nv,n_phi, n_sigma, n_dist, nc)
+            x = x.transpose(3,-2)
+            x = x + x_res
+
+        if hasattr(self, 'dist_channel_attention'):
+            x_res = x.mean(dim=3, keepdim=True)
+            x = x.reshape(b, n*nt, nv*n_dist, -1)
+            x = self.dist_channel_attention(x)[0]
+            x = x.view(b,n*nt, nv*n_dist, n_sigma, n_phi, nc)
+            x = x.view(b,n*nt, nv,n_dist, n_sigma, n_phi, nc)
+            x = x + x_res
+
+        if hasattr(self, 'sigma_channel_attention'):
+            x_res = x.mean(dim=4, keepdim=True)
+            x = x.transpose(3,4).reshape(b,n*nt, nv*n_sigma, -1)
+            x = self.sigma_channel_attention(x)[0]
+            x = x.view(b,n*nt, nv*n_sigma, n_dist, n_phi, nc)
+            x = x.view(b,n*nt, nv,n_sigma, n_dist, n_phi, nc)
+            x = x.transpose(3,4)
+            x = x + x_res
+
+        if hasattr(self, 'mixed_channel_attention'):
+            x = x.reshape(b,n*nt, nv, -1)
+            x = self.mixed_channel_attention(x)[0]
+            x = x.view(b,n*nt, nv,-1)
+
         return x, mask
 
-    def project(self, x, coordinates_rel, coordinates_rel_out=None, mask=None):
-        return x, mask
 
 
 class channel_variable_attention(nn.Module):
-    def __init__(self, model_dim, n_chunks_channel, n_heads):
+    def __init__(self, model_dim, n_chunks_channel, n_head_channels, model_dim_out=None):
         super().__init__()
-
+        
         self.n_chunks_channels = n_chunks_channel
+
+        if model_dim_out is None:
+            model_dim_out = model_dim
+            self.res_layer = nn.Identity()
+        else:
+            self.res_layer = nn.Linear(model_dim, model_dim_out, bias=False)
+
         model_dim_att = model_dim // n_chunks_channel
+        model_dim_att_out = model_dim_out // n_chunks_channel
 
         self.layer_norm = nn.LayerNorm(model_dim_att, elementwise_affine=True)
+
+        n_heads = model_dim_att//n_head_channels
         self.MHA = helpers.MultiHeadAttentionBlock(
-            model_dim_att, model_dim_att, n_heads, input_dim=model_dim_att, qkv_proj=True
+            model_dim_att, model_dim_att_out, n_heads, input_dim=model_dim_att, qkv_proj=True
             )   
 
         self.mlp_layer = nn.Sequential(
-            nn.LayerNorm(model_dim, elementwise_affine=True),
-            nn.Linear(model_dim, model_dim, bias=False),
+            nn.LayerNorm(model_dim_out, elementwise_affine=True),
+            nn.Linear(model_dim_out, model_dim_out , bias=False),
             nn.SiLU(),
-            nn.Linear(model_dim, model_dim, bias=False)
+            nn.Linear(model_dim_out, model_dim_out, bias=False)
         )
     
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
+        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
 
-    def forward(self, x, x_res=None,mask=None):
+
+    def forward(self, x, mask=None):
         b,n,nv,f=x.shape
         x = x.view(b,n,nv,f)
 
-        if x_res is None:
-            x_res = x
+        x_res = self.res_layer(x)
 
         x = x.view(b*n,nv,f)
         x = x.view(b*n,nv*self.n_chunks_channels,-1)
 
-        q = k = v = self.layer_norm(x)
+        x = self.layer_norm(x)
         
         mask_chunk=mask
         if mask_chunk is not None:
             mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
             
-        x = self.MHA(q=q, k=k, v=v, mask=mask_chunk)
+        x = self.MHA(q=x, k=x, v=x, mask=mask_chunk)
         x = x.view(b*n,nv,-1)
         x = x.view(b,n,nv,-1)
 
-        x = x_res + self.gamma * x.view(b,x_res.shape[1],-1,nv,f)
+        x = x_res + self.gamma * x
 
-        x = x.view(b,n,nv,-1)
         x = x + self.gamma_mlp * self.mlp_layer(x)
 
         if mask is not None:
@@ -1162,59 +1157,7 @@ class channel_variable_attention(nn.Module):
             mask = mask.view(b,n,nv)
 
         return x, mask
-
-class projection_layer_n_multi_ca(projection_layer):
    
-    def __init__(self, 
-                 model_dim_in, 
-                 model_dim_out, 
-                 dist_min,
-                 dist_max,  
-                 n_vars_total, 
-                 n_heads=4, 
-                 channel_attention=True,
-                 n_chunks_channels=1, 
-                 nh_projection=False) -> None: 
-
-        super().__init__(model_dim_out, 
-                         n_vars_total, 
-                         polar=True, 
-                         requires_arel_positions=False, 
-                         channel_attention=channel_attention, 
-                         n_heads=n_heads, 
-                         nh_projection=nh_projection,
-                         init_sigma_range=[dist_min, dist_max],
-                         init_dist_range=[0, dist_max],
-                         n_chunks_channels=n_chunks_channels)
-
-        if model_dim_in > 1 and model_dim_in != model_dim_out:
-            self.lin_proj = nn.Linear(model_dim_in, model_dim_out, bias=False)
-        else:
-            self.lin_proj = nn.Identity()
-
-        self.min_sigma = dist_min/2
-
-        
-    def project(self, x: torch.tensor, coordinates_rel: torch.tensor, sigma:torch.tensor, dist:torch.tensor, mask=None):
-        
-        x = self.lin_proj(x)
-
-        min_val = 1e-10 if x.dtype == torch.float32 else 1e-4
-        sigma = sigma.clamp(min=min_val)
-
-        weights = normal_dist(coordinates_rel[0], sigma, dist, sigma_cross=False)
-        
-        if mask is not None:
-            # weights should automatically 
-            #weights = weights.unsqueeze(dim=-2).repeat_interleave(mask.shape[-1],dim=-2)
-            weights = weights.masked_fill(mask.unsqueeze(dim=2), -1e30 if x.dtype == torch.float32 else -1e4)
-
-        weights = F.softmax(weights, dim=-2)
-
-        x = (x.unsqueeze(dim=2) * weights.unsqueeze(dim=-2)).sum(dim=-3)
-        
-        return x, mask
-    
 
 
 def get_relative_positions(coords1, coords2, polar=False, periodic_fov=None):
@@ -1244,18 +1187,14 @@ class MultiGridBlock(nn.Module):
                  model_dims_encode,
                  model_dims_decode, 
                  n_vars_total,
-                 encoder_kernel='n',
+                 encoder_no_layer_settings,
+                 decoder_no_layer_settings,
                  encoder_simul=False,
                  processing_method=None,
                  processing_min_lvl=2,
-                 decoder_kernel='n',
                  seq_level_attention=2, 
                  nh=1,
-                 n_heads=4, 
-                 encoder_channel_attention=True,
-                 decoder_channel_attention=True,
-                 n_chunks_channels_encoder=1,
-                 n_chunks_channels_decoder=4,
+                 n_head_channels=16, 
                  pos_emb_calc='cartesian_km',
                  emb_table_bins=16,
                  output_layer=False
@@ -1267,11 +1206,8 @@ class MultiGridBlock(nn.Module):
                                                global_levels_encode, 
                                                model_dim_in,
                                                model_dims_encode,
-                                               n_vars_total, 
-                                               kernel_fcn=encoder_kernel,
-                                               channel_attention=encoder_channel_attention,
-                                               n_chunks_channels=n_chunks_channels_encoder,
-                                               n_heads=n_heads, 
+                                               no_layer_settings=encoder_no_layer_settings,
+                                               n_head_channels=n_head_channels, 
                                                simultaneous=encoder_simul)
 
 
@@ -1287,7 +1223,7 @@ class MultiGridBlock(nn.Module):
                                                      seq_level_attention,
                                                      n_vars_total,
                                                      nh=nh,
-                                                     n_heads=n_heads,
+                                                     n_head_channels=n_head_channels,
                                                      pos_emb_calc=pos_emb_calc,
                                                      emb_table_bins=emb_table_bins,
                                                      kernel_fcn=processing_method)
@@ -1297,11 +1233,8 @@ class MultiGridBlock(nn.Module):
                                            global_levels_decode, 
                                            model_dims_encode,
                                            model_dims_decode,
-                                           n_vars_total,
-                                           kernel_fcn=decoder_kernel,
-                                           channel_attention=decoder_channel_attention,
-                                           n_chunks_channels=n_chunks_channels_decoder,
-                                           n_heads=n_heads,
+                                           no_layer_settings=decoder_no_layer_settings,
+                                           n_head_channels=n_head_channels,
                                            output_layer=output_layer)
 
 
@@ -1326,36 +1259,45 @@ def check_value(value, n_repeat):
     return value
 
 
+
 class ICON_Transformer(nn.Module):
     def __init__(self, 
                  icon_grid: str,
                  global_levels_block_encoder: list,
                  model_dims_encoder: list,
-                 mg_encoder_kernel: list | str,
                  mg_encoder_simul: list | bool,
-                 mg_decoder_kernel: list | str,
-                 mg_spa_method: list | str = None,
-                 mg_spa_min_lvl: list | str = None,
+                 mg_encoder_n_sigma: list | int,
+                 mg_decoder_n_sigma: list | int,
+                 mg_encoder_n_dist: list | int=1,
+                 mg_encoder_n_phi: list | int=1,
+                 mg_encoder_phi_attention: list | bool = False,
+                 mg_encoder_dist_attention: list | bool = False,
+                 mg_encoder_sigma_attention: list | bool = False,
+                 mg_encoder_mixed_attention: list | bool = True,
+                 mg_encoder_nh_projection : list | bool = True,
+                 mg_encoder_nh_overlap : list | int = 0,
+                 mg_decoder_n_dist: list | int=1,
+                 mg_decoder_n_phi: list | int=1,
+                 mg_decoder_phi_attention: list | bool = False,
+                 mg_decoder_dist_attention: list | bool = False,
+                 mg_decoder_sigma_attention: list | bool = False,
+                 mg_decoder_mixed_attention: list | bool = True,
+                 mg_decoder_nh_projection : list | bool = True,
+                 mg_decoder_nh_overlap : list | int = 0,
                  global_levels_block_decoder: list=[],
                  model_dims_decoder: list =[],
-                 mg_encoder_channel_attention: list | bool = True,
-                 mg_decoder_channel_attention: list | bool = True,
-                 mg_encoder_n_chunks_channel: list | int = 1,
-                 mg_decoder_n_chunks_channel: list | int = 1,
-                 mg_encoder_spa_method: list | bool = False,
-                 mg_decoder_spa_method: list | bool = False,
+                 dist_learnable: list | bool = True,
+                 sigma_learnable: list | bool = True,
+                 use_von_mises: list | bool = True,
+                 kappa_init: list | float = 1.,
+                 mg_spa_method: list | str = None,
+                 mg_spa_min_lvl: list | str = None,
                  nh: int=1,
                  seq_lvl_att: int=2,
                  model_dim_in: int=1,
                  model_dim_out: int=1,
-                 n_heads:int=2,
-                 residual_cons: bool=True,
-                 var_model: bool=False,
+                 n_head_channels:int=16,
                  pos_emb_calc: str='cartesian_km',
-                 kappa_vm: float=0.5,
-                 load_strict: bool=True,
-                 separate_variables=True,
-                 input_dim=1,
                  n_vars_total=1
                  ) -> None: 
         
@@ -1384,19 +1326,37 @@ class ICON_Transformer(nn.Module):
 
 
         model_dims_encoder = check_value(model_dims_encoder, n_blocks)
-        mg_encoder_kernel = check_value(mg_encoder_kernel, n_blocks)
         mg_encoder_simul = check_value(mg_encoder_simul, n_blocks)
+
         mg_spa_method = check_value(mg_spa_method, n_blocks)
         mg_spa_min_lvl = check_value(mg_spa_min_lvl, n_blocks)
-        mg_decoder_kernel = check_value(mg_decoder_kernel, n_blocks)
-        mg_encoder_spa_method = check_value(mg_encoder_spa_method, n_blocks)
-        mg_decoder_spa_method = check_value(mg_decoder_spa_method, n_blocks)
-        mg_encoder_n_chunks_channel = check_value(mg_encoder_n_chunks_channel, n_blocks)
-        mg_decoder_n_chunks_channel = check_value(mg_decoder_n_chunks_channel, n_blocks)
-        mg_encoder_channel_attention = check_value(mg_encoder_channel_attention, n_blocks)
-        mg_decoder_channel_attention = check_value(mg_decoder_channel_attention, n_blocks)
 
-        input_dim=1 if separate_variables else input_dim
+        mg_encoder_n_sigma = check_value(mg_encoder_n_sigma, n_blocks)
+        mg_encoder_n_dist = check_value(mg_encoder_n_dist, n_blocks)
+        mg_encoder_n_phi = check_value(mg_encoder_n_phi, n_blocks)
+        mg_encoder_phi_attention = check_value(mg_encoder_phi_attention, n_blocks)
+        mg_encoder_dist_attention = check_value(mg_encoder_dist_attention, n_blocks)
+        mg_encoder_sigma_attention = check_value(mg_encoder_sigma_attention, n_blocks)
+        mg_encoder_mixed_attention = check_value(mg_encoder_mixed_attention, n_blocks)
+        mg_encoder_nh_projection = check_value(mg_encoder_nh_projection, n_blocks)
+        mg_encoder_nh_overlap = check_value(mg_encoder_nh_overlap, n_blocks)
+
+        mg_decoder_n_sigma = check_value(mg_decoder_n_sigma, n_blocks)
+        mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
+        mg_decoder_n_phi = check_value(mg_decoder_n_phi, n_blocks)
+        mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
+        mg_decoder_phi_attention = check_value(mg_decoder_phi_attention, n_blocks)
+        mg_decoder_dist_attention = check_value(mg_decoder_dist_attention, n_blocks)
+        mg_decoder_sigma_attention = check_value(mg_decoder_sigma_attention, n_blocks)
+        mg_decoder_mixed_attention = check_value(mg_decoder_mixed_attention, n_blocks)
+        mg_decoder_nh_projection = check_value(mg_decoder_nh_projection, n_blocks)
+        mg_decoder_nh_overlap = check_value(mg_decoder_nh_overlap, n_blocks)
+
+        dist_learnable = check_value(dist_learnable, n_blocks)
+        sigma_learnable = check_value(sigma_learnable, n_blocks)
+        use_von_mises = check_value(use_von_mises, n_blocks)
+        kappa_init = check_value(kappa_init, n_blocks)
+
         self.model_dim_in = model_dim_in
 
         if len(global_levels_block_decoder)==0:
@@ -1428,6 +1388,36 @@ class ICON_Transformer(nn.Module):
                 else:
                     model_dims_decode[-1]=model_dim_out
 
+            no_layer_encoder = {'n_sigma': mg_encoder_n_sigma[k],
+                                'n_dists': mg_encoder_n_dist[k],
+                                'n_phi': mg_encoder_n_phi[k],
+                                'sigma_att': mg_encoder_sigma_attention[k],
+                                'dist_att': mg_encoder_dist_attention[k],
+                                'phi_att': mg_encoder_phi_attention[k],
+                                'mixed_att': mg_encoder_mixed_attention[k],
+                                'n_sigma': mg_encoder_n_sigma[k],
+                                'nh_projection': mg_encoder_nh_projection[k],
+                                'nh_overlap': mg_encoder_nh_overlap[k],
+                                'dists_learnable': dist_learnable[k],
+                                'sigma_learnable': sigma_learnable[k],
+                                'use_von_mises': use_von_mises[k],
+                                'kappa_init': kappa_init[k]}
+
+            no_layer_decoder = {'n_sigma': mg_decoder_n_sigma[k],
+                                'n_dists': mg_decoder_n_dist[k],
+                                'n_phi': mg_decoder_n_phi[k],
+                                'sigma_att': mg_decoder_sigma_attention[k],
+                                'dist_att': mg_decoder_dist_attention[k],
+                                'phi_att': mg_decoder_phi_attention[k],
+                                'mixed_att': mg_decoder_phi_attention[k],
+                                'n_sigma': mg_decoder_n_sigma[k],
+                                'nh_projection': mg_decoder_nh_projection[k],
+                                'nh_overlap': mg_decoder_nh_overlap[k],
+                                'dists_learnable': dist_learnable[k],
+                                'sigma_learnable': sigma_learnable[k],
+                                'use_von_mises': use_von_mises[k],
+                                'kappa_init': kappa_init[k]}
+
             self.MGBlocks.append(MultiGridBlock(grid_layers,
                                                 global_level_in,
                                                 global_levels_encode,
@@ -1436,40 +1426,20 @@ class ICON_Transformer(nn.Module):
                                                 model_dims_encode,
                                                 model_dims_decode, 
                                                 n_vars_total,
-                                                encoder_kernel = mg_encoder_kernel[k],
+                                                encoder_no_layer_settings = no_layer_encoder,
+                                                decoder_no_layer_settings = no_layer_decoder,
                                                 encoder_simul = mg_encoder_simul[k],
                                                 processing_method = mg_spa_method[k],
                                                 processing_min_lvl = mg_spa_min_lvl[k],
-                                                decoder_kernel = mg_decoder_kernel[k],
                                                 seq_level_attention = seq_lvl_att, 
                                                 nh = nh,
-                                                n_heads=n_heads, 
-                                                encoder_channel_attention=mg_encoder_channel_attention[k],
-                                                decoder_channel_attention=mg_decoder_channel_attention[k],
-                                                n_chunks_channels_encoder=mg_encoder_n_chunks_channel[k],
-                                                n_chunks_channels_decoder=mg_decoder_n_chunks_channel[k],
+                                                n_head_channels=n_head_channels,
                                                 pos_emb_calc='cartesian_km',
                                                 emb_table_bins=16,
                                                 output_layer=True if k==n_blocks-1 else False))
         
         
 
-       # output_projection = self.model_settings['output_projection']
-        #self.output_layer = output_layer(output_mapping['cell']['cell'], output_coordinates['cell'], [self.global_levels[-1]], grid_layers, self.model_settings, mode=output_projection)
-
-        """
-        trained_iterations = None
-        if "pretrained_path" in self.model_settings.keys():
-            trained_iterations = self.check_pretrained(log_dir_check=self.model_settings['pretrained_path'], strict=strict)
-
-        if "pretrained_pos_embeddings_path" in self.model_settings.keys():
-            self.check_pretrained(log_dir_check=self.model_settings['pretrained_pos_embeddings_path'], strict=False, match_list='pos_embedder')
-
-        if "pretrained_model_wo_input" in self.model_settings.keys():
-            self.check_pretrained(log_dir_check=self.model_settings['pretrained_model_wo_input'], strict=False, not_match='input')
-
-        self.trained_iterations = trained_iterations
-        """
 
     def forward(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, drop_mask=None):
         # if global_indices are provided, batches in x are treated as independent
@@ -1508,77 +1478,6 @@ class ICON_Transformer(nn.Module):
         x = x.view(b,n,-1)
         return x
 
-
-
-    def get_data_from_ds(self, ds, ts, variables_dict, global_level_start, global_indices):
-        
-        sampled_data = {}
-        for key, variables in variables_dict.items():
-            data_g = []
-            for variable in variables:
-                data = torch.tensor(ds[variable][ts].values)
-                data = data[0] if data.dim() > 1  else data
-                data_g.append(data)
-
-            data_g = torch.stack(data_g, dim=-1)
-
-            indices = global_indices
-
-            data_g = data_g[self.input_mapping['cell']['cell'][indices]]
-            data_g = data_g.view(indices.shape[0], indices.shape[1], -1, len(variables))
-
-            sampled_data[key] = data_g
-
-        return sampled_data        
-
-    def get_grid_mappings(self, mgrid_coords_input, mgrid_coords_output):
-        
-        indices_path = os.path.join(self.model_settings["model_dir"],"indices_data.pickle")
-
-        if not os.path.isfile(indices_path):
-
-            input_mapping, input_in_range = get_nh_variable_mapping_icon(self.model_settings['processing_grid'], ['cell'], 
-                                        self.model_settings['input_grid'], self.input_data, 
-                                        search_radius=self.model_settings['search_raadius'], 
-                                        max_nh=self.model_settings['nh_input'], 
-                                        lowest_level=0,
-                                        coords_icon=mgrid_coords_input,
-                                        scale_input = self.scale_input,
-                                        periodic_fov= self.model_settings['clon_fov'] if ('input_periodicty' in self.model_settings.keys() and self.model_settings['input_periodicty']) else None
-                                        )
-
-            output_mapping, output_in_range = get_nh_variable_mapping_icon(self.model_settings['processing_grid'], ['cell'], 
-                                        self.model_settings['output_grid'], self.output_data, 
-                                        search_radius=self.model_settings['search_radius'], 
-                                        max_nh=1, 
-                                        lowest_level=0,
-                                        reverse_last=False,
-                                        coords_icon=mgrid_coords_output,
-                                        scale_input = self.scale_output,
-                                        periodic_fov= self.model_settings['clon_fov'] if ('input_periodicty' in self.model_settings.keys() and self.model_settings['input_periodicty']) else None
-                                        )
-            
-        else:
-            with open(indices_path, 'rb') as handle:
-                indices_data = pickle.load(handle)
-            
-            input_mapping = mapping_to_(indices_data['input_mapping'], to='pytorch')
-            input_in_range = mapping_to_(indices_data['input_in_range'], to='pytorch')
-
-            output_mapping = mapping_to_(indices_data['output_mapping'], to='pytorch')
-            output_in_range = mapping_to_(indices_data['output_in_range'], to='pytorch')
-
-        input_coordinates = {}
-        for grid_type in self.input_data.keys():
-            input_coordinates[grid_type] = scale_coordinates(get_coords_as_tensor(xr.open_dataset(self.model_settings['input_grid']), grid_type=grid_type), self.scale_input)
-            
-
-        output_coordinates = {}
-        for grid_type in self.output_data.keys():
-            output_coordinates[grid_type] = scale_coordinates(get_coords_as_tensor(xr.open_dataset(self.model_settings['output_grid']), grid_type=grid_type), self.scale_output)
-
-        
-        return input_mapping, input_in_range, input_coordinates, output_mapping, output_in_range, output_coordinates
 
 
     def get_nh_indices(self, global_level, global_cell_indices=None, local_cell_indices=None, adjc_global=None):
