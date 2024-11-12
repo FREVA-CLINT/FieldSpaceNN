@@ -1,0 +1,26 @@
+dataset:
+  _target_: utils.datasets_icon.NetCDFLoader_lazy
+  data_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/data.json
+  grid_processing: ${model.model.icon_grid}
+  coarsen_sample_level: 6
+  search_radius: 2
+  nh_input: 1
+  sample_for_norm: 2
+  lazy_load: false
+  p_dropout: 0.9
+  p_average: 0
+  p_average_dropout: 0.5
+  max_average_lvl: 3
+  drop_vars: false
+  n_sample_vars: 3
+  normalizer: 
+    _target_: utils.normalizer.DataNormalizer
+    stat_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/norm_dict.json
+    data_dict: ${dataloader.dataset.data_dict}
+
+
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 4
+  num_workers: 4
+  persistent_workers: true

@@ -1,0 +1,24 @@
+_target_: models.mgno_transformer.pl_ICON_Transformer.LightningICONTransformer
+lr: 1e-3
+lr_warmup: 400
+model:
+  _target_: models.mgno_transformer.mgno_ICON_Transformer.ICON_Transformer
+  icon_grid: /Users/maxwitte/work/crai_sr/ICON_atmo/data/icon_grid_0007_R02B06_G.nc
+  global_levels_block_encoder: [[2,4],[2,4],[2,4]]
+  model_dims_encoder: [[64,64],[64,64],[64,64]]
+  mg_encoder_kernel: "n"
+  mg_encoder_simul: false
+  mg_spa_method: "spatial_seq"
+  mg_spa_min_lvl: [4,4,2]
+  mg_decoder_kernel: "n"
+  global_levels_block_decoder: [[2],[2],[2]]
+  model_dims_decoder: [[64],[64],[64]]
+  mg_encoder_channel_attention: true
+  mg_decoder_channel_attention: true
+  mg_encoder_n_chunks_channel: 1
+  mg_decoder_n_chunks_channel: 4
+  model_dim_in: 3
+  model_dim_out: 3
+  nh: 2
+  n_vars_total: 1
+  n_heads: 2

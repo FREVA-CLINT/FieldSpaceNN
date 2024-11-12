@@ -1,37 +1,70 @@
 import numpy as np
-from torchvision import transforms
+import json
 
 class DataNormalizer:
-    def __init__(self, normalization, n_dim, data=None, data_stats=None, norm_quantile=1.0):
-        data_std, data_mean, data_min, data_max = [], [], [], []
+    def __init__(self, stat_dict:dict|str, data_dict:dict|str, method=None, level=0.98):
+        
+        if isinstance(stat_dict,str):
+            with open(stat_dict) as json_file:
+                self.stat_dict = json.load(json_file)
 
-        self.normalization = normalization
+       
+        if isinstance(data_dict,str):
+            with open(data_dict) as json_file:
+                data_dict = json.load(json_file)
 
-        for i in range(n_dim):
-            if data is not None:
-                data_std.append(np.nanstd(data[i]))
-                data_mean.append(np.nanmean(data[i]))
-                data_min.append(np.nanquantile(data[i], 1.0 - norm_quantile))
-                data_max.append(np.nanquantile(data[i] - data_min[-1], norm_quantile))
-            else:
-                data_std.append(data_stats['std'][i])
-                data_mean.append(data_stats['mean'][i])
-                data_min.append(data_stats['min'][i])
-                data_max.append(data_stats['max'][i])
-        self.data_stats = {'mean': data_mean, 'std': data_std, 'min': data_min, 'max': data_max}
+        if method is not None:
+            variables = np.unique(np.array(data_dict['train']['source']['variables'] 
+                                           + data_dict['train']['target']['variables']))
+            self.var_norm_dict = {}
+            for variable in variables:
+                self.var_norm_dict[variable] = {"method": method,
+                                                "level": level}
+            
+        elif 'normalization' in data_dict.keys():
+            self.var_norm_dict = data_dict['normalization']          
+     
+    
+    def normalize(self, data, var):
+        stats = self.stat_dict[var]
+        norm = self.var_norm_dict[var]
 
-    def normalize(self, data, index):
-        if self.normalization == 'std':
-            return (data - self.data_stats['mean'][index]) / self.data_stats['std'][index]
-        elif self.normalization == 'img':
-            return (data - self.data_stats['min'][index]) / self.data_stats['max'][index]
-        else:
+        q_low_  = np.min([norm['level'], 1-norm['level']])
+        q_high_ = np.max([norm['level'], 1-norm['level']])
+
+        if norm['method']=='quantile':
+            q_low = stats['quantiles'][str(q_low_)]
+            q_high = stats['quantiles'][str(q_high_)]
+
+            return (data - q_low)/(q_high - q_low)
+                
+        elif norm['method']=='quantile_abs':
+            q_high = stats['quantiles'][str(q_high_)]
+            data = data / q_high
             return data
 
-    def renormalize(self, data, index):
-        if self.normalization == 'std':
-            return self.data_stats['std'][index] * data + self.data_stats['mean'][index]
-        elif self.normalization == 'img':
-            return data * self.data_stats['max'][index] + self.data_stats['min'][index]
-        else:
-            return data
+        elif norm['method']=='min_max':
+            return (data - stats['min'])/(stats['max'] - stats['min'])
+        
+        elif norm['method']=='normal':
+            return (data - stats['mean'])/(stats['std'])
+        
+    def renormalize(self, data, var):
+        stats = self.var_norm_dict[var]
+        norm = self.var_norm_dict[var]
+
+        if norm['method']=='quantile':
+            q_low = stats['quantiles'][str(1-float(norm['level']))]
+            q_high = stats['quantiles'][str((norm['level']))]
+
+            return (data)*(q_high - q_low) + q_low
+                
+        elif norm['method']=='quantile_abs':
+            q_high = stats['quantiles'][str((norm['level']))]
+            data = data * q_high
+
+        elif norm['method']=='min_max':
+            return (data) * (stats['max'] - stats['min']) + stats['min']
+        
+        elif norm['method']=='normal':
+            return (data * stats['std']) + stats['mean']

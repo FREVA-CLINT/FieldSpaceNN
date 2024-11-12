@@ -1,0 +1,14 @@
+defaults:
+  - trainer: icon_transformer
+  - logger: wandb
+  - model: icon_transformer
+  - dataloader: netcdf_icon
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+run_name: icon_transformer
+run_dir: /Users/maxwitte/work/climgen_out
+searchpath: 
+ - pkg://Users/maxwitte/work/stableclimgen/stableclimgen/src
