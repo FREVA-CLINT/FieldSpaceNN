@@ -446,16 +446,6 @@ def get_spatial_projection_weights_vm_dist(phis, dists, phi_0, kappa_vm, dists_0
 
     return weights
 
-#def cosine(thetas, wavelengths, distances, theta_offsets=None):
-
-#    freq = 2*torch.pi/wavelengths
-
-#    if theta_offsets is not None:
-#        Z = torch.cos(freq * (torch.cos(thetas.unsqueeze(dim=-1)-theta_offsets)*distances.unsqueeze(dim=-1)).unsqueeze(dim=-1))
-#    else:
-#        Z = torch.cos(freq * distances)
-
-#    return Z
 
 
 def von_mises(d_phi, kappa):
@@ -469,26 +459,6 @@ def normal_dist(d_dists, sigma):
     nd = torch.exp(-0.5 * (d_dists / sigma) ** 2)
     return nd
 
-
-#def normal_dist(distances, sigma, distances_offsets=None, sigma_cross=True):
-
-
-#    if distances_offsets is not None:
-#        if not torch.is_tensor(distances_offsets):
-#            distances_offsets = torch.tensor(distances_offsets)
-
-#        diff = distances.unsqueeze(dim=-1) - distances_offsets.unsqueeze(dim=1).unsqueeze(dim=-2)
-#    else:
-#        diff = distances
-    
-#    if sigma_cross: 
-#        diff = diff.unsqueeze(dim=-1).unsqueeze(dim=-1)
-    
-#    sigma = sigma.unsqueeze(dim=1).unsqueeze(dim=1)
-
-#    nd = torch.exp(-0.5 * (diff / sigma) ** 2)
-
-#    return nd
 
 class angular_embedder(nn.Module):
     def __init__(self, n_bins, emb_dim) -> None: 
@@ -522,8 +492,8 @@ class multi_grid_encoder(nn.Module):
 
         self.aggregation_layers = nn.ModuleDict()
 
+        global_level_in_layer = global_level_in
         for k, global_level in enumerate(self.global_levels):
-            #nh_projection = True if global_level == global_level_in else False
 
             if global_level_in != global_level:
 
@@ -532,12 +502,15 @@ class multi_grid_encoder(nn.Module):
                 model_dim_in = model_dim_in if simultaneous or 'model_dim_out' not in locals() else model_dim_out
                 model_dim_out = model_dims[k]
 
-                self.aggregation_layers[str(global_level)] = no_layer(model_dim_in,
+                self.aggregation_layers[str(global_level)] = no_layer(grid_layers,
+                                                                      global_level_in_layer,
+                                                                      global_level,
+                                                                      model_dim_in,
                                                                       model_dim_out,
-                                                                      grid_layers[str(global_level)].mean_dist,
                                                                       no_layer_settings,
                                                                       n_head_channels=n_head_channels)
                 
+                global_level_in_layer = global_level_in if simultaneous else global_level
                  
 
     def forward(self, x, indices_layers, drop_mask=None, coords_in=None, sample_dict=None):   
@@ -552,20 +525,17 @@ class multi_grid_encoder(nn.Module):
             global_level_in = int(self.global_level_in) if self.simultaneous else global_level_in
             
             x_in = x if self.simultaneous or k==0 else x_
+            drop_mask_in = drop_mask if self.simultaneous or k==0 else drop_mask_
 
             if str(global_level) in self.aggregation_layers.keys():
                 if coords_in is None or k>0:
-                    x_, drop_mask = self.aggregation_layers[str(global_level)](x_in, 
-                                                                        indices_layer=indices_layers[global_level_in], 
-                                                                        grid_layer=self.grid_layers[str(global_level_in)], 
-                                                                        indices_layer_out=indices_layers[global_level], 
-                                                                        grid_layer_out=self.grid_layers[str(global_level)],
+                    x_, drop_mask_ = self.aggregation_layers[str(global_level)](x_in, 
+                                                                        indices_layers=indices_layers,
                                                                         sample_dict = sample_dict,
                                                                         mask=drop_mask)
                 else:
-                    x_, drop_mask = self.aggregation_layers[str(global_level)](x_in,
-                                                                        indices_layer_out=indices_layers[global_level], 
-                                                                        grid_layer_out=self.grid_layers[str(global_level)],
+                    x_, drop_mask_ = self.aggregation_layers[str(global_level)](x_in,
+                                                                        indices_layers=indices_layers,
                                                                         mask=drop_mask,
                                                                         sample_dict=sample_dict,
                                                                         coordinates=coords_in)
@@ -575,7 +545,7 @@ class multi_grid_encoder(nn.Module):
 
             x_levels[global_level] = x_
             
-            drop_masks_level[global_level] = drop_mask
+            drop_masks_level[global_level] = drop_mask_
 
         return x_levels, drop_masks_level
 
@@ -611,9 +581,11 @@ class multi_grid_decoder(nn.Module):
 
             for j, global_level_in_step in enumerate(global_levels_in_step):
                 if global_level_in_step != global_level_output:
-                    self.projection_layers_step[str(int(global_level_in_step))] = no_layer(int(model_dims_in_step[j]), 
+                    self.projection_layers_step[str(int(global_level_in_step))] = no_layer(grid_layers,
+                                                                                            int(global_level_in_step),
+                                                                                            int(global_level_output),
                                                                                             int(model_dims_in_step[j]), 
-                                                                                            grid_layers[str(int(global_level_output))].mean_dist, 
+                                                                                            int(model_dims_in_step[j]),
                                                                                             no_layer_settings,
                                                                                             n_head_channels=n_head_channels)
  
@@ -643,10 +615,7 @@ class multi_grid_decoder(nn.Module):
 
                 if global_level_input != global_level_output:
                     x, drop_mask_level = projection_layers_input(x_levels[int(global_level_input)], 
-                                                        grid_layer=self.grid_layers[global_level_input], 
-                                                        grid_layer_out=self.grid_layers[global_level_output], 
-                                                        indices_layer=indices_grid_layers[int(global_level_input)],
-                                                        indices_layer_out = indices_grid_layers[int(global_level_output)],
+                                                        indices_layers=indices_grid_layers,
                                                         sample_dict=sample_dict,
                                                         mask=drop_mask_input)
                 else:
@@ -729,8 +698,7 @@ class processing_layer(nn.Module):
 class nh_pos_embedding(nn.Module):
     def __init__(self, grid_layer: grid_layer, nh, emb_dim, softmax=False) -> None: 
         super().__init__()
-        #uses hierarical grid embeddings
-        #vm to interpolate -> for nh attention
+
 
         self.n_nh  = [4,6,20]
 
@@ -775,8 +743,6 @@ class nh_pos_embedding(nn.Module):
 class seq_grid_embedding2(nn.Module):
     def __init__(self, grid_layer: grid_layer, max_seq_level, n_bins, emb_dim, constant_init=False) -> None: 
         super().__init__()
-        #uses hierarical grid embeddings
-        #vm to interpolate -> for nh attention
 
         self.grid_layer = grid_layer
         self.max_seq_level = max_seq_level
@@ -856,16 +822,22 @@ class seq_grid_embedding(nn.Module):
             return scale.view(b,n,f)
 
 class no_layer(nn.Module):
-    def __init__(self, 
+    def __init__(self,
+                 grid_layers,
+                 global_level_in,
+                 global_level_out, 
                  model_dim_in,
                  model_dim_out,
-                 dist_max,
                  kernel_settings,
                  n_head_channels: int=16,
                 ) -> None: 
         
         super().__init__()
         
+        self.grid_layers = grid_layers
+        self.global_level_out = global_level_out
+        self.global_level = global_level_in
+
         n_phi = kernel_settings['n_phi']
         n_dist = kernel_settings['n_dists']
         n_sigma = kernel_settings['n_sigma']
@@ -875,14 +847,18 @@ class no_layer(nn.Module):
         dist_channel_attention = kernel_settings['dist_att']
         sigma_channel_attention = kernel_settings['sigma_att']
         mixed_channel_attention = kernel_settings['mixed_att']
+        with_mean_res = kernel_settings['with_mean_res']
+        with_channel_res = kernel_settings['with_channel_res']
 
         dist_learnable = kernel_settings['dists_learnable']
         sigma_learnable = kernel_settings['sigma_learnable']
         nh_projection = kernel_settings['nh_projection']
-        nh_overlap = kernel_settings['nh_overlap']
 
         min_sigma = 1e-4
 
+        dist_max = self.grid_layers[str(global_level_out)].min_dist
+
+        self.with_mean_res = with_mean_res
         self.nh_projection= nh_projection
         self.use_von_mises = use_von_mises
 
@@ -897,14 +873,18 @@ class no_layer(nn.Module):
         self.periodic_fov=None
         self.polar=True
         self.coord_system = 'polar'
-        
+        model_dim_enhanced = model_dim_in
+
         if n_dist>1:
+            model_dim_enhanced *= n_dist
             dist = torch.linspace(0, dist_max, n_dist)
             self.dists = nn.Parameter(dist, requires_grad=dist_learnable)
             self.dist_dist_calc = True
             n_sigma = n_sigma if n_sigma >=1 else 1
 
+
         if n_sigma>1:
+            model_dim_enhanced *= n_sigma
             sigma = torch.linspace(min_sigma, dist_max/2, n_sigma)
             self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
             self.dist_dist_calc = True
@@ -915,25 +895,36 @@ class no_layer(nn.Module):
             self.dist_dist_calc = True
 
         if n_phi>1:
+            model_dim_enhanced *= n_phi
             phi = torch.linspace(phi_min, torch.pi, n_phi+1)[:-1]
             self.phi = nn.Parameter(torch.tensor(phi), requires_grad=False)
             self.angular_dist_calc = True
             if use_von_mises:
                 self.kappa = nn.Parameter(torch.tensor(kappa_init), requires_grad=False)
 
-        model_dim_enhanced = model_dim_in * n_dist * n_phi * n_sigma
-
-        if dist_channel_attention:
+        if dist_channel_attention and n_dist>1:
             model_dim = model_dim_enhanced // n_dist
-            self.dist_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+            self.dist_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels, with_res=with_channel_res)
 
-        if sigma_channel_attention:
+            if with_mean_res:
+                self.gamma_res_dist = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
+                self.res_layer_dist = res_layer(model_dim)
+
+        if sigma_channel_attention and n_sigma>1:
             model_dim = model_dim_enhanced // n_sigma
-            self.sigma_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+            self.sigma_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels, with_res=with_channel_res)
+            
+            if with_mean_res:
+                self.gamma_res_sigma = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
+                self.res_layer_sigma = res_layer(model_dim)
 
-        if phi_channel_attention:
+        if phi_channel_attention and n_phi>1:
             model_dim = model_dim_enhanced // n_phi
-            self.phi_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels)
+            self.phi_channel_attention = channel_variable_attention(model_dim, 1, n_head_channels, with_res=with_channel_res)
+            
+            if with_mean_res:
+                self.gamma_res_phi = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
+                self.res_layer_phi = res_layer(model_dim)
         
         if mixed_channel_attention:
             model_dim = model_dim_enhanced 
@@ -942,25 +933,27 @@ class no_layer(nn.Module):
 
     def forward(self, 
                 x, 
-                grid_layer: grid_layer=None, 
-                grid_layer_out: grid_layer=None, 
-                indices_layer=None, 
-                indices_layer_out=None,
-                sample_dict=None,
+                indices_layers=None,
                 coordinates=None, 
                 coordinates_out=None,
+                sample_dict=None,
                 mask=None):
         
         nh_projection = self.nh_projection
 
-        if coordinates is None and grid_layer is not None and not nh_projection:
-            coordinates = grid_layer.get_coordinates_from_grid_indices(indices_layer)
+        if coordinates is None and not nh_projection:
+            coordinates = self.grid_layers[str(self.global_level)].get_coordinates_from_grid_indices(indices_layers[self.global_level])
 
-        elif coordinates is None and grid_layer is not None and nh_projection:
-            x, mask, coordinates = grid_layer.get_nh(x, indices_layer, sample_dict, relative_coordinates=False, coord_system=self.coord_system, mask=mask)
+        elif coordinates is None and nh_projection:
+            x, mask, coordinates = self.grid_layers[str(self.global_level)].get_nh(x, 
+                                                                            indices_layers[self.global_level], 
+                                                                            sample_dict, 
+                                                                            relative_coordinates=False, 
+                                                                            coord_system=self.coord_system, mask=mask)
             
-        if coordinates_out is None and grid_layer_out is not None:
-            coordinates_out = grid_layer_out.get_coordinates_from_grid_indices(indices_layer_out)
+
+        if coordinates_out is None:
+            coordinates_out = self.grid_layers[str(self.global_level_out)].get_coordinates_from_grid_indices(indices_layers[self.global_level_out])
 
         n_v, f = x.shape[-2:]
         n_c, b, seq_dim_in = coordinates.shape[:3]
@@ -1006,6 +999,17 @@ class no_layer(nn.Module):
         
         b, n, nh, nv, f = x.shape
 
+        if mask is not None and self.with_mean_res:
+            weights_res = torch.ones(x.shape[:-1], device=x.device)
+            weights_res.masked_fill_(mask, 0)
+            x_res = (x * weights_res.unsqueeze(dim=-1)).sum(dim=-3, keepdim=True).unsqueeze(dim=2)
+
+        elif self.with_mean_res:
+            x_res = (x).sum(dim=-3, keepdim=True).unsqueeze(dim=2)
+
+        else:
+            x_res = None
+
         x = x.view(b,n,nh,nv,1,1,1,f)
         # new dims: n_d, n_sigma, n_phi
         
@@ -1016,7 +1020,10 @@ class no_layer(nn.Module):
         dists, phis = coordinates_rel
 
         if self.dist_dist_calc:
-            d_dists = dists.unsqueeze(dim=-1) - self.dists.unsqueeze(dim=0)
+            if hasattr(self, "dists"):
+                d_dists = dists.unsqueeze(dim=-1) - self.dists.unsqueeze(dim=0)
+            else:
+                d_dists = dists.unsqueeze(dim=-1)
             dist_weights = normal_dist(d_dists.unsqueeze(dim=-1), sigma.unsqueeze(dim=0))
             dist_weights = dist_weights.unsqueeze(dim=-1)
 
@@ -1043,48 +1050,75 @@ class no_layer(nn.Module):
 
         weights = weights.unsqueeze(dim=4).repeat_interleave(nv, dim=4)
         
+        sng = weights.sign()
+
         if mask is not None:
 
             weights = weights.masked_fill(mask.view(b,n,1,nh,nv,1,1,1), -1e30 if x.dtype == torch.float32 else -1e4)
 
         weights = F.softmax(weights, dim=3)
 
+        weights = weights*sng
+        
         #inflate target dimension in x and feature dimension in weights
         x = (x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)).sum(dim=3)
 
-        b, n, nt, nv, n_dist, n_sigma, n_phi, nc = x.shape
+        b, n, nt, nv, n_dist, n_sigma, n_phi, nc = x_shape_flat = x.shape
         x = x.view(b, n*nt, nv, n_dist, n_sigma, n_phi, nc)
 
+        
         if mask is not None:
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(nt, dim=-2)
             mask = mask.view(b,n*nt,nv)
 
         if hasattr(self, 'phi_channel_attention'):
-            x_res = x.mean(dim=-2, keepdim=True)
             x = x.transpose(3,-2).reshape(b, n*nt, nv*n_phi, -1)
-            x = self.phi_channel_attention(x)[0]
+            mask_phi=None
+            if mask is not None:
+                mask_phi = mask.unsqueeze(dim=-1).repeat_interleave(n_phi, dim=-1).view(b, n*nt, nv*n_phi)
+            x = self.phi_channel_attention(x, mask=mask_phi)[0]
             x = x.view(b,n*nt, nv*n_phi, n_sigma, n_dist, nc)
-            x = x.view(b,n*nt, nv,n_phi, n_sigma, n_dist, nc)
+
+            if x_res is not None:
+                x = (x.view(b,n,nt,nv,n_phi,n_sigma,n_dist,nc) * self.gamma_res_phi + x_res.view(b,n,1,nv,1,1,1,nc))
+                x = x.view(b,n,nt, nv*n_phi, -1)
+                x = self.res_layer_phi(x)
+                
+            x = x.view(b, n*nt, nv, n_phi, n_sigma, n_dist, nc)
             x = x.transpose(3,-2)
-            x = x + x_res
+
 
         if hasattr(self, 'dist_channel_attention'):
-            x_res = x.mean(dim=3, keepdim=True)
             x = x.reshape(b, n*nt, nv*n_dist, -1)
-            x = self.dist_channel_attention(x)[0]
+            mask_dist=None
+            if mask is not None:
+                mask_dist = mask.unsqueeze(dim=-1).repeat_interleave(n_dist, dim=-1).view(b, n*nt, nv*n_dist)
+            x = self.dist_channel_attention(x, mask=mask_dist)[0]
+
             x = x.view(b,n*nt, nv*n_dist, n_sigma, n_phi, nc)
-            x = x.view(b,n*nt, nv,n_dist, n_sigma, n_phi, nc)
-            x = x + x_res
+            if x_res is not None:
+                x = (x.view(b,n,nt,nv,n_dist,n_sigma,n_phi,nc) * self.gamma_res_dist + x_res.view(b,n,1,nv,1,1,1,nc))
+                x = x.view(b, n, nt, nv*n_dist, -1)
+                x = self.res_layer_dist(x)
+            x = x.view(b,n*nt, nv, n_dist, n_sigma, n_phi, nc)
+
 
         if hasattr(self, 'sigma_channel_attention'):
-            x_res = x.mean(dim=4, keepdim=True)
             x = x.transpose(3,4).reshape(b,n*nt, nv*n_sigma, -1)
-            x = self.sigma_channel_attention(x)[0]
+            mask_sigma=None
+            if mask is not None:
+                mask_sigma = mask.unsqueeze(dim=-1).repeat_interleave(n_dist, dim=-1).view(b, n*nt, nv*n_sigma)
+            x = self.sigma_channel_attention(x, mask=mask_sigma)[0]
             x = x.view(b,n*nt, nv*n_sigma, n_dist, n_phi, nc)
+
+            if x_res is not None:
+                x = (x.view(b,n,nt, nv, n_sigma, n_dist, n_phi, nc) * self.gamma_res_sigma + x_res.view(b,n,1,nv,1,1,1,nc))
+                x = x.view(b,n,nt, nv*n_sigma, -1)
+                x = self.res_layer_sigma(x)
+
             x = x.view(b,n*nt, nv,n_sigma, n_dist, n_phi, nc)
             x = x.transpose(3,4)
-            x = x + x_res
 
         if hasattr(self, 'mixed_channel_attention'):
             x = x.reshape(b,n*nt, nv, -1)
@@ -1093,46 +1127,57 @@ class no_layer(nn.Module):
 
         return x, mask
 
+class res_layer(nn.Module):
+    def __init__(self, model_dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
 
+        self.mlp_layer = nn.Sequential(
+            nn.LayerNorm(model_dim, elementwise_affine=True),
+            nn.Linear(model_dim, model_dim , bias=False),
+            nn.SiLU(),
+            nn.Linear(model_dim, model_dim, bias=False)
+        )
+    
+    def forward(self, x):
+        return x + self.gamma * self.mlp_layer(x)
 
 class channel_variable_attention(nn.Module):
-    def __init__(self, model_dim, n_chunks_channel, n_head_channels, model_dim_out=None):
+    def __init__(self, model_dim, n_chunks_channel, n_head_channels, model_dim_out=None, with_res=True):
         super().__init__()
         
         self.n_chunks_channels = n_chunks_channel
 
+        self.with_res = with_res
+
         if model_dim_out is None:
             model_dim_out = model_dim
-            self.res_layer = nn.Identity()
-        else:
-            self.res_layer = nn.Linear(model_dim, model_dim_out, bias=False)
+            self.res_lin_layer = nn.Identity()
+
+        elif with_res:
+            self.res_lin_layer = nn.Linear(model_dim, model_dim_out, bias=False)
 
         model_dim_att = model_dim // n_chunks_channel
         model_dim_att_out = model_dim_out // n_chunks_channel
 
         self.layer_norm = nn.LayerNorm(model_dim_att, elementwise_affine=True)
 
-        n_heads = model_dim_att//n_head_channels
+        n_heads = model_dim_att//n_head_channels if model_dim_att > n_head_channels else 1
         self.MHA = helpers.MultiHeadAttentionBlock(
             model_dim_att, model_dim_att_out, n_heads, input_dim=model_dim_att, qkv_proj=True
             )   
 
-        self.mlp_layer = nn.Sequential(
-            nn.LayerNorm(model_dim_out, elementwise_affine=True),
-            nn.Linear(model_dim_out, model_dim_out , bias=False),
-            nn.SiLU(),
-            nn.Linear(model_dim_out, model_dim_out, bias=False)
-        )
+        if with_res:
+            self.gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+            self.res_layer = res_layer(model_dim_out)
     
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-
 
     def forward(self, x, mask=None):
         b,n,nv,f=x.shape
         x = x.view(b,n,nv,f)
 
-        x_res = self.res_layer(x)
+        if self.with_res:
+            x_res = self.res_lin_layer(x)
 
         x = x.view(b*n,nv,f)
         x = x.view(b*n,nv*self.n_chunks_channels,-1)
@@ -1147,9 +1192,9 @@ class channel_variable_attention(nn.Module):
         x = x.view(b*n,nv,-1)
         x = x.view(b,n,nv,-1)
 
-        x = x_res + self.gamma * x
-
-        x = x + self.gamma_mlp * self.mlp_layer(x)
+        if self.with_res:
+            x = x_res + self.gamma * x
+            x = self.res_layer(x)
 
         if mask is not None:
             mask = mask.view(b, x.shape[1], -1)
@@ -1274,8 +1319,6 @@ class ICON_Transformer(nn.Module):
                  mg_encoder_dist_attention: list | bool = False,
                  mg_encoder_sigma_attention: list | bool = False,
                  mg_encoder_mixed_attention: list | bool = True,
-                 mg_encoder_nh_projection : list | bool = True,
-                 mg_encoder_nh_overlap : list | int = 0,
                  mg_decoder_n_dist: list | int=1,
                  mg_decoder_n_phi: list | int=1,
                  mg_decoder_phi_attention: list | bool = False,
@@ -1283,12 +1326,13 @@ class ICON_Transformer(nn.Module):
                  mg_decoder_sigma_attention: list | bool = False,
                  mg_decoder_mixed_attention: list | bool = True,
                  mg_decoder_nh_projection : list | bool = True,
-                 mg_decoder_nh_overlap : list | int = 0,
                  global_levels_block_decoder: list=[],
                  model_dims_decoder: list =[],
                  dist_learnable: list | bool = True,
                  sigma_learnable: list | bool = True,
                  use_von_mises: list | bool = True,
+                 with_mean_res: list | bool = True,
+                 with_channel_res: list | bool = False,
                  kappa_init: list | float = 1.,
                  mg_spa_method: list | str = None,
                  mg_spa_min_lvl: list | str = None,
@@ -1338,8 +1382,6 @@ class ICON_Transformer(nn.Module):
         mg_encoder_dist_attention = check_value(mg_encoder_dist_attention, n_blocks)
         mg_encoder_sigma_attention = check_value(mg_encoder_sigma_attention, n_blocks)
         mg_encoder_mixed_attention = check_value(mg_encoder_mixed_attention, n_blocks)
-        mg_encoder_nh_projection = check_value(mg_encoder_nh_projection, n_blocks)
-        mg_encoder_nh_overlap = check_value(mg_encoder_nh_overlap, n_blocks)
 
         mg_decoder_n_sigma = check_value(mg_decoder_n_sigma, n_blocks)
         mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
@@ -1350,11 +1392,12 @@ class ICON_Transformer(nn.Module):
         mg_decoder_sigma_attention = check_value(mg_decoder_sigma_attention, n_blocks)
         mg_decoder_mixed_attention = check_value(mg_decoder_mixed_attention, n_blocks)
         mg_decoder_nh_projection = check_value(mg_decoder_nh_projection, n_blocks)
-        mg_decoder_nh_overlap = check_value(mg_decoder_nh_overlap, n_blocks)
 
         dist_learnable = check_value(dist_learnable, n_blocks)
         sigma_learnable = check_value(sigma_learnable, n_blocks)
         use_von_mises = check_value(use_von_mises, n_blocks)
+        with_mean_res = check_value(with_mean_res, n_blocks)
+        with_channel_res = check_value(with_channel_res, n_blocks)
         kappa_init = check_value(kappa_init, n_blocks)
 
         self.model_dim_in = model_dim_in
@@ -1396,11 +1439,12 @@ class ICON_Transformer(nn.Module):
                                 'phi_att': mg_encoder_phi_attention[k],
                                 'mixed_att': mg_encoder_mixed_attention[k],
                                 'n_sigma': mg_encoder_n_sigma[k],
-                                'nh_projection': mg_encoder_nh_projection[k],
-                                'nh_overlap': mg_encoder_nh_overlap[k],
+                                'nh_projection': False,
                                 'dists_learnable': dist_learnable[k],
                                 'sigma_learnable': sigma_learnable[k],
                                 'use_von_mises': use_von_mises[k],
+                                'with_mean_res': with_mean_res[k],
+                                'with_channel_res': with_channel_res[k],
                                 'kappa_init': kappa_init[k]}
 
             no_layer_decoder = {'n_sigma': mg_decoder_n_sigma[k],
@@ -1412,10 +1456,11 @@ class ICON_Transformer(nn.Module):
                                 'mixed_att': mg_decoder_phi_attention[k],
                                 'n_sigma': mg_decoder_n_sigma[k],
                                 'nh_projection': mg_decoder_nh_projection[k],
-                                'nh_overlap': mg_decoder_nh_overlap[k],
                                 'dists_learnable': dist_learnable[k],
                                 'sigma_learnable': sigma_learnable[k],
                                 'use_von_mises': use_von_mises[k],
+                                'with_mean_res': with_mean_res[k],
+                                'with_channel_res': with_channel_res[k],
                                 'kappa_init': kappa_init[k]}
 
             self.MGBlocks.append(MultiGridBlock(grid_layers,

@@ -136,6 +136,9 @@ def rotate_coord_system(lons: torch.tensor, lats: torch.tensor, rotation_lon: to
     rot_lon = torch.atan2(rotated_y, rotated_x)
     rot_lat = torch.arcsin(rotated_z)
 
+    #lat = arcsin(cos(ϑ) sin(lat') - cos(lon') sin(ϑ) cos(lat'))
+    #lon = atan2(sin(lon'), tan(lat') sin(ϑ) + cos(lon') cos(ϑ)) - φ
+    
     return rot_lon, rot_lat
 
 
