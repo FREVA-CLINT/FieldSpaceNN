@@ -12,34 +12,100 @@ from ..modules import transformer_modules as helpers
 from utils.grid_utils_icon import get_distance_angle, get_coords_as_tensor, get_nh_variable_mapping_icon, icon_get_adjacent_cell_indices, icon_grid_to_mgrid, scale_coordinates
 
 
+def get_nh_indices(adjc_global, global_level, global_cell_indices=None, local_cell_indices=None):
+        
+    if global_cell_indices is not None:
+        local_cell_indices =  global_cell_indices // 4**global_level
+
+    local_cell_indices_nh, mask = helpers.get_nh_of_batch_indices(local_cell_indices, adjc_global)
+
+    return local_cell_indices_nh, mask
+
+
+def gather_nh_data(x, local_cell_indices_nh, batch_sample_indices, sampled_level, global_level):
+    # x in batches sampled from local_cell_indices_nh
+    if x.dim()<4:
+        x = x.unsqueeze(dim=-1)
+
+    b,n,nv,e = x.shape
+    nh = local_cell_indices_nh.shape[-1]
+
+    local_cell_indices_nh_batch = local_cell_indices_nh - (batch_sample_indices*4**(sampled_level - global_level)).view(-1,1,1)
+
+    return torch.gather(x.view(b,-1,nv,e),1, index=local_cell_indices_nh_batch.view(b,-1,1,1).repeat(1,1,nv,e)).view(b,n,nh,nv,e)
+
+
 class grid_layer(nn.Module):
+    """
+    A neural network module representing a grid layer with specific functionalities like
+    coordinate transformations, neighborhood gathering, and relative positioning.
+
+    Attributes:
+        global_level (int): The global hierarchical level.
+        coord_system (str): The coordinate system, e.g., "polar".
+        periodic_fov (Optional[Any]): The periodic field of view.
+        coordinates (Tensor): The coordinates of the grid.
+        adjc (Tensor): Adjacency tensor for the grid.
+        adjc_mask (Tensor): Mask indicating adjacency relations.
+        fov_mask (Tensor): Mask for field of view. (For channel data only)
+        min_dist (Tensor): Minimum distance in the relative coordinates.
+        max_dist (Tensor): Maximum distance in the relative coordinates.
+        mean_dist (Tensor): Mean distance in the relative coordinates.
+        median_dist (Tensor): Median distance in the relative coordinates.
+    """
     def __init__(self, global_level, adjc, adjc_mask, coordinates, coord_system="polar", periodic_fov=None) -> None: 
         super().__init__()
+        """
+        Initializes the GridLayer with given parameters.
 
-        # introduce is_regid
-        # if not add learnable parameters? like federkonstante, that are added onto the coords
-        # all nodes have offsets, just the ones from the specified are learned
+        :param global_level: The global level for hierarchy.
+        :param adjc: The adjacency tensor.
+        :param adjc_mask: Mask for the adjacency tensor.
+        :param coordinates: The coordinates of grid points.
+        :param coord_system: The coordinate system. Defaults to "polar".
+        :param periodic_fov: The periodic field of view. Defaults to None.
+        """
+
+        # Initialize attributes
         self.global_level = global_level
         self.coord_system = coord_system
         self.periodic_fov = periodic_fov
 
+        # Register buffers for coordinates and adjacency information
         self.register_buffer("coordinates", coordinates, persistent=False)
         self.register_buffer("adjc", adjc, persistent=False)
+
+        # Create mask where adjacency is false
         self.register_buffer("adjc_mask", adjc_mask==False, persistent=False)
         self.register_buffer("fov_mask", ((adjc_mask==False).sum(dim=-1)==adjc_mask.shape[1]).view(-1,1),persistent=False)
 
+        # Sample distances for statistical analysis
         n_samples = torch.min(torch.tensor([self.adjc.shape[0]-1, 100]))
         nh_samples = self.adjc[:n_samples]
         coords_nh = self.get_coordinates_from_grid_indices(nh_samples)
         dists = get_relative_positions(coords_nh, coords_nh, polar=True)[0]
 
+        # Compute distance statistics - for init of kernels
         self.min_dist = dists[dists>1e-10].min()
         self.max_dist = dists[dists>1e-10].max()
         self.mean_dist = dists[dists>1e-10].mean()
         self.median_dist = dists[dists>1e-10].median()
 
     def get_nh(self, x, local_indices, sample_dict, relative_coordinates=True, coord_system=None, mask=None):
+        """
+        Get the neighborhood data, mask, and coordinates.
 
+        Args:
+            x (torch.Tensor): Input data tensor.
+            local_indices (torch.Tensor): Indices for local neighborhoods.
+            sample_dict (dict): Dictionary with sample information.
+            relative_coordinates (bool, optional): Whether to use relative coordinates. Defaults to True.
+            coord_system (str, optional): Coordinate system to use. Defaults to None.
+            mask (torch.Tensor, optional): Optional mask tensor. Defaults to None.
+
+        Returns:
+            tuple: Neighborhood data, mask, and coordinates.
+        """
         indices_nh, adjc_mask = get_nh_indices(self.adjc, local_cell_indices=local_indices, global_level=int(self.global_level))
         
         x = gather_nh_data(x, indices_nh, sample_dict['sample'], sample_dict['sample_level'], int(self.global_level))
@@ -57,10 +123,6 @@ class grid_layer(nn.Module):
 
         return x, mask, coords
     
-    def get_nh_indices(self, local_indices):
-        return get_nh_indices(self.adjc, local_cell_indices=local_indices, global_level=int(self.global_level))
-
-
     def get_coordinates_from_grid_indices(self, local_indices):
         coords = self.coordinates[:, local_indices]
         return coords
@@ -84,20 +146,26 @@ class grid_layer(nn.Module):
         
         coords_ref = self.get_coordinates_from_grid_indices(local_indices)
 
-       # if coords.dim()>3:
-       #     n_c, b, n, nh = coords.shape
-       #     coords = coords.view(n_c, b ,-1)
         if coords_ref.dim()<4:
             coords_ref = coords_ref.unsqueeze(dim=-1)
 
         coords_rel = get_distance_angle(coords_ref[0,:,:,[0]], coords_ref[1,:,:,[0]], coords[0], coords[1], base=coord_system, periodic_fov=self.periodic_fov) 
         
-    #    if coords.dim()>3:
-     #       coords_rel = coords_rel.view(n_c, b, n, nh)
-        
         return coords_rel
 
+
     def get_sections(self, x, local_indices, section_level=1, relative_coordinates=True, return_indices=True, coord_system=None):
+        """
+        Divide the input into sections based on hierarchical levels.
+
+        :param x: Input tensor.
+        :param local_indices: Local indices for sections.
+        :param section_level: Level of the section. Defaults to 1.
+        :param relative_coordinates: Use relative coordinates. Defaults to True.
+        :param return_indices: Return indices or not. Defaults to True.
+        :param coord_system: Coordinate system to use. Defaults to None.
+        :return: A tuple containing sectioned data, mask, coordinates, and indices (optional).
+        """
         indices = sequenize(local_indices, max_seq_level=section_level)
         x = sequenize(x, max_seq_level=section_level)
         if relative_coordinates:
@@ -115,7 +183,17 @@ class grid_layer(nn.Module):
    
     
     def get_position_embedding(self, indices, nh: bool, pos_embedder, coord_system, batch_dict=None, section_level=None):
-        
+        """
+        Compute position embeddings for the grid points.
+
+        :param indices: Indices for which to compute embeddings.
+        :param nh: Whether to use neighborhood information.
+        :param pos_embedder: The position embedder object or function.
+        :param coord_system: The coordinate system.
+        :param batch_dict: Batch information. Defaults to None.
+        :param section_level: Level of the section. Defaults to None.
+        :return: Position embeddings.
+        """
         if nh:
             if isinstance(pos_embedder, position_embedder):
                 indices = self.get_nh_indices(indices)[0]
@@ -198,13 +276,6 @@ class icon_spatial_attention_ds(nn.Module):
                 self.coord_system = 'polar'
         
             self.position_embedder = position_embedder(0,0, emb_table_bins, model_dim, pos_emb_calc=pos_emb_calc)
-        else:
-            if nh_attention:
-                self.position_embedder = nh_pos_embedding(grid_layers[global_level], nh, model_dim)
-            else:
-                self.position_embedder = seq_grid_embedding2(grid_layers[global_level], 4, seq_level_attention, model_dim, constant_init=False)
-
-
 
         self.embedding_layer = nn.Linear(model_dim, model_dim*2)
 
@@ -532,16 +603,17 @@ class multi_grid_encoder(nn.Module):
                     x_, drop_mask_ = self.aggregation_layers[str(global_level)](x_in, 
                                                                         indices_layers=indices_layers,
                                                                         sample_dict = sample_dict,
-                                                                        mask=drop_mask)
+                                                                        mask=drop_mask_in)
                 else:
                     x_, drop_mask_ = self.aggregation_layers[str(global_level)](x_in,
                                                                         indices_layers=indices_layers,
-                                                                        mask=drop_mask,
+                                                                        mask=drop_mask_in,
                                                                         sample_dict=sample_dict,
                                                                         coordinates=coords_in)
                 
             else:
                 x_ = x_in
+                drop_mask_ = drop_mask
 
             x_levels[global_level] = x_
             
@@ -580,7 +652,7 @@ class multi_grid_decoder(nn.Module):
             self.projection_layers_step = nn.ModuleDict()
 
             for j, global_level_in_step in enumerate(global_levels_in_step):
-                if global_level_in_step != global_level_output:
+                if global_level_in_step > global_level_output:
                     self.projection_layers_step[str(int(global_level_in_step))] = no_layer(grid_layers,
                                                                                             int(global_level_in_step),
                                                                                             int(global_level_output),
@@ -613,7 +685,7 @@ class multi_grid_decoder(nn.Module):
                 if drop_mask_levels is not None:
                     drop_mask_input = drop_mask_levels[int(global_level_input)] if int(global_level_input) in drop_mask_levels.keys() else None
 
-                if global_level_input != global_level_output:
+                if global_level_input > global_level_output:
                     x, drop_mask_level = projection_layers_input(x_levels[int(global_level_input)], 
                                                         indices_layers=indices_grid_layers,
                                                         sample_dict=sample_dict,
@@ -693,133 +765,6 @@ class processing_layer(nn.Module):
 
         return x_levels, drop_masks_levels
 
-
-# make similar hier nh grid embedding (hier vielleicht noch nicht wichtig)
-class nh_pos_embedding(nn.Module):
-    def __init__(self, grid_layer: grid_layer, nh, emb_dim, softmax=False) -> None: 
-        super().__init__()
-
-
-        self.n_nh  = [4,6,20]
-
-        # number of bins per neighbours
-        n_bins_nh = {1:4, 2:6, 3:12} 
-
-        self.grid_layer = grid_layer
-        self.nh = nh
-        
-        self.softmax = softmax
-
-        self.angular_embedders= nn.ParameterList()
-        for n in range(nh):
-            self.angular_embedders.append(helpers.PositionEmbedder_phys(-torch.pi, torch.pi, n_bins_nh[n+1], n_heads=emb_dim, special_token=True, constant_init=False))
-
-
-    def forward(self, x, indices_layer, batch_dict, add_to_x=True, drop_mask=None):
-      
-        x_nh, _, rel_coords = self.grid_layer.get_nh(x, indices_layer, batch_dict, coord_system='polar', relative_coordinates=True)
-        rel_coords = torch.stack(rel_coords, dim=0)
-        b,n,n_nh,f = x_nh.shape
-        
-        rel_coords = rel_coords.split(tuple(self.n_nh[:self.nh]), dim=-1)
-        
-        embeddings = []
-        for i in range(self.nh):
-
-            embeddings.append(self.angular_embedders[i](rel_coords[i][1], special_token_mask=rel_coords[i][0]<1e-6))
-
-        embeddings = torch.concat(embeddings, dim=-2)
-
-        if self.softmax:
-            embeddings = F.softmax(embeddings, dim=-2)
-
-        if add_to_x:
-            x_nh = x_nh * embeddings  
-            return x_nh.view(b,n,n_nh,f)
-        else:
-            return embeddings.view(b,n,n_nh,f)
-
-
-class seq_grid_embedding2(nn.Module):
-    def __init__(self, grid_layer: grid_layer, max_seq_level, n_bins, emb_dim, constant_init=False) -> None: 
-        super().__init__()
-
-        self.grid_layer = grid_layer
-        self.max_seq_level = max_seq_level
-
-        self.angular_embedders= nn.ParameterList()
-        for _ in range(max_seq_level):
-            self.angular_embedders.append(helpers.PositionEmbedder_phys(-torch.pi, torch.pi, n_bins, n_heads=emb_dim, special_token=True, constant_init=constant_init))
-
-    def forward(self, x, indices_layer):
-        b,n,f = x.shape
-        
-        seq_level = min([get_max_seq_level(x), self.max_seq_level])
-
-        all_embeddings = []
-        for i in range(seq_level):
-            x, mask, rel_coords, indices_layer = self.grid_layer.get_sections(x, indices_layer, section_level=1, relative_coordinates=True, return_indices=True, coord_system="polar")
-            
-            embeddings = self.angular_embedders[i](rel_coords[1], special_token_mask=rel_coords[0]<1e-6)
-
-            if i > 0:
-                scale = scale.view(x.shape) + embeddings
-            else:
-                scale = embeddings
-
-            if seq_level>1:
-                indices_layer = indices_layer[:,:,[0]]
-
-            all_embeddings.append(scale.view(b,n,f))
-        return scale.view(b,n,f)
-
-# make similar hier nh grid embedding (hier vielleicht noch nicht wichtig)
-class seq_grid_embedding(nn.Module):
-    def __init__(self, grid_layer: grid_layer, n_bins, seq_level, emb_dim, softmax=True,  constant_init=False) -> None: 
-        super().__init__()
-        #uses hierarical grid embeddings
-        #vm to interpolate -> for nh attention
-
-
-        self.grid_layer = grid_layer
-        self.seq_level = seq_level
-
-        self.softmax = softmax
-
-        self.angular_embedders= nn.ParameterList()
-        for _ in range(seq_level):
-            self.angular_embedders.append(helpers.PositionEmbedder_phys(-torch.pi, torch.pi, n_bins, n_heads=emb_dim, special_token=True, constant_init=constant_init))
-            #initi to 0.25
-
-    def forward(self, x, indices_layer,  add_to_x=True, drop_mask=None):
-        b,n,f = x.shape
-        
-        seq_level = min([get_max_seq_level(x), self.seq_level])
-
-        for i in range(seq_level):
-            x, mask, rel_coords, indices_layer = self.grid_layer.get_sections(x, indices_layer, section_level=1, relative_coordinates=True, return_indices=True, coord_system="polar")
-            
-            embeddings = self.angular_embedders[i](rel_coords[1], special_token_mask=rel_coords[0]<1e-6)
-
-            if self.softmax:
-                if drop_mask is not None and i==seq_level-1:
-                    embeddings[drop_mask.view(x.shape[:-1],1)] = -100
-                embeddings = F.softmax(embeddings, dim=-2-i)
-
-            if i > 0:
-                scale = scale.view(x.shape) + embeddings
-            else:
-                scale = embeddings
-
-            if seq_level>1:
-                # keep midpoints of previous
-                indices_layer = indices_layer[:,:,[0]]
-
-        if add_to_x:
-            x = x * scale  
-            return x.view(b,n,f)
-        else:
-            return scale.view(b,n,f)
 
 class no_layer(nn.Module):
     def __init__(self,
@@ -1602,24 +1547,3 @@ def get_max_seq_level(tensor):
     return max_seq_level_seq
 
 
-def get_nh_indices(adjc_global, global_level, global_cell_indices=None, local_cell_indices=None):
-        
-    if global_cell_indices is not None:
-        local_cell_indices =  global_cell_indices // 4**global_level
-
-    local_cell_indices_nh, mask = helpers.get_nh_of_batch_indices(local_cell_indices, adjc_global)
-
-    return local_cell_indices_nh, mask
-
-
-def gather_nh_data(x, local_cell_indices_nh, batch_sample_indices, sampled_level, global_level):
-    # x in batches sampled from local_cell_indices_nh
-    if x.dim()<4:
-        x = x.unsqueeze(dim=-1)
-
-    b,n,nv,e = x.shape
-    nh = local_cell_indices_nh.shape[-1]
-
-    local_cell_indices_nh_batch = local_cell_indices_nh - (batch_sample_indices*4**(sampled_level - global_level)).view(-1,1,1)
-
-    return torch.gather(x.view(b,-1,nv,e),1, index=local_cell_indices_nh_batch.view(b,-1,1,1).repeat(1,1,nv,e)).view(b,n,nh,nv,e)
