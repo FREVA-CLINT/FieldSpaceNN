@@ -1,24 +1,38 @@
-_target_: models.mgno_transformer.pl_ICON_Transformer.LightningICONTransformer
+_target_: stableclimgen.src.models.mgno_transformer.pl_ICON_Transformer.LightningICONTransformer
 lr: 1e-3
 lr_warmup: 400
 model:
-  _target_: models.mgno_transformer.mgno_ICON_Transformer.ICON_Transformer
+  _target_: stableclimgen.src.models.mgno_transformer.mgno_ICON_Transformer.ICON_Transformer
   icon_grid: /Users/maxwitte/work/crai_sr/ICON_atmo/data/icon_grid_0007_R02B06_G.nc
-  global_levels_block_encoder: [[2,4],[2,4],[2,4]]
-  model_dims_encoder: [[64,64],[64,64],[64,64]]
-  mg_encoder_kernel: "n"
-  mg_encoder_simul: false
-  mg_spa_method: "spatial_seq"
-  mg_spa_min_lvl: [4,4,2]
-  mg_decoder_kernel: "n"
-  global_levels_block_decoder: [[2],[2],[2]]
+  global_levels_block_encoder: [[2,4],[2,4]]
+  model_dims_encoder: [[16,16],[16,16]]
+  mg_encoder_simul: true
+  mg_encoder_n_sigma: [4,4,4]
+  mg_encoder_n_dist: [1,1,1]
+  mg_encoder_n_phi: 4
+  mg_encoder_phi_attention: true
+  mg_encoder_dist_attention: true
+  mg_encoder_sigma_attention: false
+  mg_encoder_mixed_attention: true
+  mg_decoder_n_sigma: 4
+  mg_decoder_n_dist: 2
+  mg_decoder_n_phi: 0
+  mg_decoder_phi_attention: true
+  mg_decoder_dist_attention: false
+  mg_decoder_sigma_attention: false
+  mg_decoder_mixed_attention: true
+  mg_decoder_nh_projection: true
+  global_levels_block_decoder: [[0],[0],[2]]
   model_dims_decoder: [[64],[64],[64]]
-  mg_encoder_channel_attention: true
-  mg_decoder_channel_attention: true
-  mg_encoder_n_chunks_channel: 1
-  mg_decoder_n_chunks_channel: 4
+  dist_learnable: true
+  sigma_learnable: true
+  use_von_mises: true
+  with_mean_res: true
+  with_channel_res: false
+  kappa_init: 1
+  mg_spa_min_lvl: [3,4,2]
   model_dim_in: 3
   model_dim_out: 3
   nh: 2
   n_vars_total: 1
-  n_heads: 2
+  n_head_channels: 16

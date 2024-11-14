@@ -603,3 +603,25 @@ def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, c
 
     return grids
 
+
+def sequenize(tensor, max_seq_level):
+    
+    seq_level = min([get_max_seq_level(tensor), max_seq_level])
+    
+    if tensor.dim()==2:
+        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level))
+    elif tensor.dim()==3:
+        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-1])
+    elif tensor.dim()==4:
+        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-2], tensor.shape[-1])
+    elif tensor.dim()==5:
+        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
+    elif tensor.dim()==6:
+        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-4], tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
+
+    return tensor
+
+def get_max_seq_level(tensor):
+    seq_len = tensor.shape[1]
+    max_seq_level_seq = int(math.log(seq_len)/math.log(4))
+    return max_seq_level_seq

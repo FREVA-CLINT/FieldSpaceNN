@@ -1,15 +1,13 @@
 import os
 import math
 import torch.nn as nn
-import xarray as xr
 
 import lightning.pytorch as pl
 import torch
-from PIL import UnidentifiedImageError
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
 
-from utils.visualization import scatter_plot
+from torch.optim import AdamW
+
+from ...utils.visualization import scatter_plot
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
@@ -30,19 +28,6 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
             lr_factor *= epoch * 1.0 / self.warmup
         return lr_factor
 
-def dict_to_device(d, device):
-    for key, value in d.items():
-        d[key] = value.to(device)
-    return d
-
-def data_to_device(d, device):
-    if isinstance(d, dict):
-        return dict_to_device(d, device)
-    elif torch.is_tensor(d):
-        return d.to(device)
-    else:
-        return None
-
 
 class MSE_loss(nn.Module):
     def __init__(self):
@@ -51,11 +36,7 @@ class MSE_loss(nn.Module):
         self.loss_fcn = torch.nn.MSELoss() 
 
     def forward(self, output, target):
-        loss = 0
-        idx=0
-       # for target_var in target.values():
         loss = self.loss_fcn(output, target.view(output.shape))
-       #     idx += 1
         return loss
 
 
@@ -70,27 +51,26 @@ class LightningICONTransformer(pl.LightningModule):
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
 
-    def forward(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, drop_mask=None):
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict, drop_mask=drop_mask)
+    def forward(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, mask=None):
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict, mask=mask)
         return x
 
     def training_step(self, batch, batch_idx):
-        #batch = [data_to_device(x, self.trainer.accelerator) for x in batch]
-        source, target, indices, drop_mask, coords_input, coords_output = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, drop_mask=drop_mask)
+        source, target, indices, mask, coords_input, coords_output = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, mask=mask)
         loss = self.loss(output, target)
         self.log_dict({"train/loss": loss.item()}, prog_bar=True, sync_dist=True)
         return loss
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, indices, drop_mask, coords_input, coords_output = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, drop_mask=drop_mask)
+        source, target, indices, mask, coords_input, coords_output = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, mask=mask)
         loss = self.loss(output, target)
         self.log_dict({"loss": loss.item()}, sync_dist=True)
 
         if batch_idx == 0:
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, drop_mask, indices,f"tensor_plot_{self.current_epoch}")
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}")
 
         return loss
 

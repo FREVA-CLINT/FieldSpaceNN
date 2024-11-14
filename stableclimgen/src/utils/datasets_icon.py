@@ -206,7 +206,7 @@ class NetCDFLoader_lazy(Dataset):
             
       
         ds_source = xr.open_dataset(self.files_source[0])
-        self.num_datapoints_time = ds_source[self.variables_source[0]].shape[0]
+        self.len_dataset = len(ds_source)*self.global_cells.shape[1] #ds_source[self.variables_source[0]].shape[0]
 
         self.normalizer = normalizer
     
@@ -264,10 +264,6 @@ class NetCDFLoader_lazy(Dataset):
 
     def __getitem__(self, index):
         
-       # if self.index_range_source is not None:
-       #     if (index < self.index_range_source[0]) or (index > self.index_range_source[1]):
-       #         index = int(torch.randint(self.index_range_source[0], self.index_range_source[1]+1, (1,1)))
-
         if len(self.files_source)>0:
             source_index = torch.randint(0, len(self.files_source), (1,1))
             source_file = self.files_source[source_index]   
@@ -371,4 +367,4 @@ class NetCDFLoader_lazy(Dataset):
         return data_source.float(), data_target.float(), indices, drop_mask, coords_input.float(), coords_output.float()
 
     def __len__(self):
-        return 1000
+        return self.len_dataset

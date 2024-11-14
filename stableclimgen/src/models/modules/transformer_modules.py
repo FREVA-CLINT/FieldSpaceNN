@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 
 import scipy.interpolate as inter
-from utils import grid_utils_icon as gu
+from ...utils import grid_utils_icon as gu
 
 radius_earth = 6371
 
