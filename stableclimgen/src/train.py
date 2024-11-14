@@ -28,6 +28,7 @@ def train(cfg: DictConfig) -> None:
     with open(composed_config_path, 'w') as file:
         OmegaConf.save(config=cfg, f=file)
 
+
     # Load data configuration and initialize datasets
     with open(cfg.dataloader.dataset.data_dict) as json_file:
         data = json.load(json_file)

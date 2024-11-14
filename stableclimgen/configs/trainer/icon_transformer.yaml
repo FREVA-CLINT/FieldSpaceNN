@@ -1,0 +1,17 @@
+_target_: lightning.Trainer
+max_steps: 50000
+accelerator: "cpu"
+default_root_dir: ${run_dir}/snapshots/${run_name}/
+accumulate_grad_batches: 1
+gradient_clip_val: 2.0
+log_every_n_steps: 10
+callbacks:
+  - _target_: lightning.pytorch.callbacks.ModelCheckpoint
+    dirpath: ${run_dir}/snapshots/${run_name}/
+    auto_insert_metric_name: false
+    filename: 'epoch_{epoch}'
+    save_top_k: -1
+    every_n_epochs: 10
+    save_last: true
+  - _target_: lightning.pytorch.callbacks.LearningRateMonitor
+    logging_interval: 'step'

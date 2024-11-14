@@ -10,9 +10,8 @@ class DataNormalizer:
     :param data_stats: Path to the JSON file containing data statistics for normalization.
     """
 
-    def __init__(self, data_stats: str):
-        with open(data_stats, 'r') as json_file:
-            self.data_stats: Dict[str, Dict[int, float]] = json.load(json_file)  # Expected to contain 'min' and 'max' stats
+    def __init__(self, data_stats: Dict):
+        self.data_stats = data_stats
 
     def normalize(self, data: torch.Tensor, index: int) -> torch.Tensor:
         """
