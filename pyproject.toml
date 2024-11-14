@@ -6,9 +6,9 @@ authors = ["Climate Informatics and Technology group at DKRZ (Deutsches Klimarec
 license = "CC0"
 readme = "README.md"
 
-homepage = "https://github.com/FREVA-CLINT/volai/tree/main"
-repository = "https://github.com/FREVA-CLINT/volai/tree/main"
-documentation = "https://github.com/FREVA-CLINT/volai/tree/main"
+homepage = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
+repository = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
+documentation = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
 classifiers = [
     'Development Status :: 3 - Alpha',
     'Intended Audience :: Science/Research',

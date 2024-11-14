@@ -1,12 +1,12 @@
 defaults:
   - trainer: trainer
   - logger: wandb
-  - model: diffusion_transformer
+  - model: vae_cnn
   - dataloader: xarray
   - hydra: default
   - _self_
 
 ckpt_path: null
 
-run_name: diffusion
+run_name: vae
 run_dir: ../..

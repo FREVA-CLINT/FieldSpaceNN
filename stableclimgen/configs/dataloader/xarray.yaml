@@ -1,0 +1,12 @@
+dataset:
+  _target_: stableclimgen.src.utils.datasets.MaskClimateDataset
+  data_dict: ../../input/data_netcdf.json
+  seq_length: 1
+  normalizer:
+    _target_: stableclimgen.src.utils.normalizer.MinMaxNormalizer
+    data_stats: ../../snapshots/${run_name}/data_stats.json
+
+dataloader:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 4
+  num_workers: 12

@@ -1,0 +1,41 @@
+_target_: stableclimgen.src.models.diffusion.pl_diffusion.LightningDiffusionGenerator
+lr: 1e-4
+lr_warmup: 5000
+model:
+  _target_: stableclimgen.src.models.diffusion.model.DiffusionGenerator
+  init_in_ch: 1
+  final_out_ch: 1
+  embed_dim: 64
+  skip_connections: true
+  model_channels: 64
+  patch_emb_size: [1, 1, 1]
+  patch_emb_kernel: [1, 1, 1]
+  block_configs:
+    - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
+      block_type: "resnet"
+      depth: 4
+      enc: true
+      ch_mult: 2
+      sub_confs:
+        blocks: ["normal", "normal", "down"]
+        embed_dim: 64
+    - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
+      block_type: "resnet"
+      depth: 3
+      ch_mult: 2
+      sub_confs:
+        blocks: "normal"
+        embed_dim: 64
+    - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
+      block_type: "resnet"
+      depth: 4
+      dec: true
+      ch_mult: 0.5
+      sub_confs:
+        blocks: ["normal", "normal", "up"]
+        embed_dim: 64
+
+gaussian_diffusion:
+  _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
+  diffusion_steps: 1000
+  diffusion_step_scheduler: "cosine"
