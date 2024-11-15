@@ -143,6 +143,7 @@ def rotate_coord_system(lons: torch.tensor, lats: torch.tensor, rotation_lon: to
 
 
 
+
 def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor, base:str='polar', periodic_fov:list=None) -> torch.tensor:
     """
     :param lon1: target longitude 
@@ -157,9 +158,20 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
     theta = lat1
     phi = lon1
 
-    #rotate_first
-    lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
-    lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
+    # does produce proper results for now
+    #lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
+    #lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
+
+    x = (torch.cos(lon2) * torch.cos(lat2))
+    y = (torch.sin(lon2) * torch.cos(lat2))
+    z = (torch.sin(lat2))
+
+    rotated_x =  torch.cos(theta)*torch.cos(phi) * x + torch.cos(theta)*torch.sin(phi)*y + torch.sin(theta)*z
+    rotated_y = -torch.sin(phi)*x + torch.cos(phi)*y
+    rotated_z = -torch.sin(theta)*torch.cos(phi)*x - torch.sin(theta)*torch.sin(phi)*y + torch.cos(theta)*z
+
+    lon2 = torch.atan2(rotated_y, rotated_x)
+    lat2 = torch.arcsin(rotated_z)
 
     lat1=lon1=0
 
