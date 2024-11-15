@@ -26,7 +26,8 @@ class MultiGridEncoder(nn.Module):
                  model_dims: dict, 
                  no_layer_settings, 
                  simultaneous: bool = False,
-                 n_head_channels: int = 16) -> None:
+                 n_head_channels: int = 16,
+                 first_encoder=True) -> None:
         """
         Initializes the multi_grid_encoder for hierarchical data aggregation.
 
@@ -65,7 +66,8 @@ class MultiGridEncoder(nn.Module):
                     model_dim_in,
                     model_dim_out,
                     no_layer_settings,
-                    n_head_channels=n_head_channels
+                    n_head_channels=n_head_channels,
+                    precompute_rel_coordinates=False if k==0 and first_encoder else True
                 )
 
                 # Update the input level for the next iteration

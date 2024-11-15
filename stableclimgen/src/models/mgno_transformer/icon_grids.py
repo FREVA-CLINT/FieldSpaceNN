@@ -131,7 +131,7 @@ class GridLayer(nn.Module):
         self.mean_dist = dists[dists > 1e-10].mean()
         self.median_dist = dists[dists > 1e-10].median()
 
-    def get_nh(self, x: torch.Tensor, local_indices: torch.Tensor, sample_dict: dict, relative_coordinates: bool = True, coord_system: str = None, mask: torch.Tensor = None) -> tuple:
+    def get_nh(self, x: torch.Tensor, local_indices: torch.Tensor, sample_dict: dict, mask: torch.Tensor = None) -> tuple:
         """
         Get the neighborhood data, mask, and coordinates.
 
@@ -157,21 +157,18 @@ class GridLayer(nn.Module):
             # Use adjacency mask if no mask is provided
             mask = adjc_mask.unsqueeze(dim=-1).repeat_interleave(x.shape[-2], dim=-1)
 
-        # Get coordinates (relative or absolute)
-        if relative_coordinates:
-            coords = self.get_relative_coordinates_from_grid_indices(indices_nh, coord_system=coord_system)
-        else:
-            coords = self.get_coordinates_from_grid_indices(indices_nh)
+        return x, mask
 
-        return x, mask, coords
-
-    def get_coordinates_from_grid_indices(self, local_indices: torch.Tensor) -> torch.Tensor:
+    def get_coordinates_from_grid_indices(self, local_indices: torch.Tensor, nh:bool=False) -> torch.Tensor:
         """
         Retrieve coordinates based on grid indices.
 
         :param local_indices: Indices for grid points.
         :return: Coordinates corresponding to the indices.
         """
+        if nh:
+            local_indices = self.adjc[local_indices]
+
         coords = self.coordinates[:, local_indices]
         return coords
 
@@ -254,31 +251,87 @@ class GridLayer(nn.Module):
         else:
             return x, mask, coords
 
-    def get_position_embedding(self, indices: torch.Tensor, nh: bool, pos_embedder, coord_system: str, batch_dict: dict = None, section_level: int = None) -> torch.Tensor:
-        """
-        Compute position embeddings for the grid points.
+    
 
-        :param indices: Indices for which to compute embeddings.
-        :param nh: Whether to use neighborhood information.
-        :param pos_embedder: The position embedder object or function.
-        :param coord_system: The coordinate system.
-        :param batch_dict: Batch information. Defaults to None.
-        :param section_level: Level of the section. Defaults to None.
-        :return: Position embeddings.
-        """
-        if nh:
-            if isinstance(pos_embedder, PositionEmbedder):
-                indices = get_nh_indices(self.adjc, local_cell_indices=indices, global_level=int(self.global_level))[0]
-                rel_coords = self.get_relative_coordinates_from_grid_indices(indices, coord_system=coord_system)
-                pos_embeddings = pos_embedder(rel_coords[0], rel_coords[1])
+class RelativeCoordinateManager(nn.Module):
+    def __init__(self,  
+                grid_layer_in :GridLayer, 
+                grid_layer_out : GridLayer |None = None,
+                nh_input:bool= False,
+                seq_len_input: int | None= None,
+                precompute:bool=False,
+                coord_system:str='polar') -> None:
+                
+        super().__init__()
+
+        self.grid_layer_in = grid_layer_in
+        self.grid_layer_out = grid_layer_out
+        self.nh_input = nh_input
+
+        self.seq_len_input = seq_len_input if not nh_input else None
+        self.coord_system = coord_system
+        self.precomputed = precompute
+
+        if precompute:
+            if self.grid_layer_out is None:
+                coordinates_rel = self.compute_rel_coordinates(
+                    indices_in=torch.arange(grid_layer_in.coordinates.shape[1]).view(1,-1))
             else:
-                pos_embeddings = pos_embedder(self, indices, batch_dict)
+                coordinates_rel = self.compute_rel_coordinates(
+                    indices_in=torch.arange(grid_layer_in.coordinates.shape[1]).view(1,-1),
+                    indices_out=torch.arange(grid_layer_out.coordinates.shape[1]).view(1,-1))
+
+            self.register_buffer("coordinates_rel", torch.stack(coordinates_rel, dim=0).squeeze(dim=1), persistent=False)
+
+
+    def compute_rel_coordinates(self, indices_in=None, indices_out=None, coordinates_in=None, coordinates_out=None):
+
+        if coordinates_in is None:
+                coordinates_in = self.grid_layer_in.get_coordinates_from_grid_indices(indices_in, nh=self.nh_input)
+            
+        if self.seq_len_input is not None:
+            coordinates_in = sequenize(coordinates_in, max_seq_level=self.seq_len_input, seq_dim=2)
+
+        if coordinates_out is None and self.grid_layer_out is not None:
+            coordinates_out = self.grid_layer_out.get_coordinates_from_grid_indices(indices_out)
+
+            n_c, b, seq_dim_in = coordinates_in.shape[:3]
+            seq_dim_out = coordinates_out.shape[2]
+
+            if seq_dim_in > seq_dim_out:
+                coordinates_in = coordinates_in.view(n_c, b, seq_dim_out, -1)
+                coordinates_out = coordinates_out.view(n_c, b, seq_dim_out, -1)
+            else:
+                coordinates_in = coordinates_in.view(n_c, b, seq_dim_in, -1)
+                coordinates_out = coordinates_out.view(n_c, b, seq_dim_in, -1)
         else:
-            if isinstance(pos_embedder, PositionEmbedder):
-                indices = sequenize(indices, max_seq_level=section_level)
-                coords = self.get_relative_coordinates_from_grid_indices(indices, coord_system=coord_system)
-                pos_embeddings = pos_embedder(coords[0], coords[1])
-            else:
-                pos_embeddings = pos_embedder(self, indices)
+            coordinates_out = coordinates_in[:,:,:,[0]]
+        
+        coordinates_in = coordinates_in.unsqueeze(dim=-2)
+        coordinates_out = coordinates_out.unsqueeze(dim=-1)
 
-        return pos_embeddings
+        coordinates_rel = get_distance_angle(
+                                coordinates_out[0], coordinates_out[1], 
+                                coordinates_in[0], coordinates_in[1], 
+                                base=self.coord_system, periodic_fov=None
+                            )
+        return coordinates_rel
+
+    def forward(self, indices_in=None, indices_out=None, coordinates_in=None, coordinates_out=None):
+        
+        if not self.precomputed:
+            coordinates_rel = self.compute_rel_coordinates(indices_in=indices_in,
+                                         indices_out=indices_out,
+                                         coordinates_in=coordinates_in,
+                                         coordinates_out=coordinates_out)
+        else:
+            if indices_out is not None:
+                coordinates_rel = self.coordinates_rel[:,indices_out]
+            else:
+                if not self.nh_input:
+                    n_c,_,n,n_seq = self.coordinates_rel.shape
+                    coordinates_rel = self.coordinates_rel.view(n_c,-1,n)
+                    coordinates_rel = coordinates_rel[:,indices_in].view(n_c,indices_in.shape[0],-1,n,n_seq)
+                else:
+                    coordinates_rel =  self.coordinates_rel[:,indices_in]
+        return coordinates_rel

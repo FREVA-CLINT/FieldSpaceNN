@@ -124,7 +124,7 @@ class MultiGridChannelAttention(nn.Module):
 
         # Determine the output dimension for the attention layer
         if output_layer:
-            model_dim_att_out = model_dim_out * n_chunks
+            model_dim_att_out = int(model_dims_in.min())
         else:
             model_dim_att_out = model_dim_out
 

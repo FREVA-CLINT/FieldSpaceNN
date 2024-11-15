@@ -32,13 +32,11 @@ class ICON_Transformer(nn.Module):
                  mg_encoder_phi_attention: list | bool = False,
                  mg_encoder_dist_attention: list | bool = False,
                  mg_encoder_sigma_attention: list | bool = False,
-                 mg_encoder_mixed_attention: list | bool = True,
                  mg_decoder_n_dist: list | int=1,
                  mg_decoder_n_phi: list | int=1,
                  mg_decoder_phi_attention: list | bool = False,
                  mg_decoder_dist_attention: list | bool = False,
                  mg_decoder_sigma_attention: list | bool = False,
-                 mg_decoder_mixed_attention: list | bool = True,
                  mg_decoder_nh_projection : list | bool = True,
                  global_levels_block_decoder: list=[],
                  model_dims_decoder: list =[],
@@ -73,13 +71,11 @@ class ICON_Transformer(nn.Module):
         :param mg_encoder_phi_attention: Whether to use phi channel attention in the encoder.
         :param mg_encoder_dist_attention: Whether to use distance channel attention in the encoder.
         :param mg_encoder_sigma_attention: Whether to use sigma channel attention in the encoder.
-        :param mg_encoder_mixed_attention: Whether to use mixed channel attention in the encoder.
         :param mg_decoder_n_dist: Number of distance components for the decoder.
         :param mg_decoder_n_phi: Number of phi (angular) components for the decoder.
         :param mg_decoder_phi_attention: Whether to use phi channel attention in the decoder.
         :param mg_decoder_dist_attention: Whether to use distance channel attention in the decoder.
         :param mg_decoder_sigma_attention: Whether to use sigma channel attention in the decoder.
-        :param mg_decoder_mixed_attention: Whether to use mixed channel attention in the decoder.
         :param mg_decoder_nh_projection: Whether to use nh (neighborhood) projection in the decoder.
         :param global_levels_block_decoder: List of grid levels for the decoder blocks.
         :param model_dims_decoder: List of model dimensions for the decoder blocks.
@@ -139,7 +135,6 @@ class ICON_Transformer(nn.Module):
         mg_encoder_phi_attention = check_value(mg_encoder_phi_attention, n_blocks)
         mg_encoder_dist_attention = check_value(mg_encoder_dist_attention, n_blocks)
         mg_encoder_sigma_attention = check_value(mg_encoder_sigma_attention, n_blocks)
-        mg_encoder_mixed_attention = check_value(mg_encoder_mixed_attention, n_blocks)
 
         mg_decoder_n_sigma = check_value(mg_decoder_n_sigma, n_blocks)
         mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
@@ -148,7 +143,6 @@ class ICON_Transformer(nn.Module):
         mg_decoder_phi_attention = check_value(mg_decoder_phi_attention, n_blocks)
         mg_decoder_dist_attention = check_value(mg_decoder_dist_attention, n_blocks)
         mg_decoder_sigma_attention = check_value(mg_decoder_sigma_attention, n_blocks)
-        mg_decoder_mixed_attention = check_value(mg_decoder_mixed_attention, n_blocks)
         mg_decoder_nh_projection = check_value(mg_decoder_nh_projection, n_blocks)
 
         dist_learnable = check_value(dist_learnable, n_blocks)
@@ -195,7 +189,6 @@ class ICON_Transformer(nn.Module):
                                 'sigma_att': mg_encoder_sigma_attention[k],
                                 'dist_att': mg_encoder_dist_attention[k],
                                 'phi_att': mg_encoder_phi_attention[k],
-                                'mixed_att': mg_encoder_mixed_attention[k],
                                 'n_sigma': mg_encoder_n_sigma[k],
                                 'nh_projection': False,
                                 'dists_learnable': dist_learnable[k],
@@ -211,7 +204,6 @@ class ICON_Transformer(nn.Module):
                                 'sigma_att': mg_decoder_sigma_attention[k],
                                 'dist_att': mg_decoder_dist_attention[k],
                                 'phi_att': mg_decoder_phi_attention[k],
-                                'mixed_att': mg_decoder_phi_attention[k],
                                 'n_sigma': mg_decoder_n_sigma[k],
                                 'nh_projection': mg_decoder_nh_projection[k],
                                 'dists_learnable': dist_learnable[k],
@@ -240,7 +232,8 @@ class ICON_Transformer(nn.Module):
                                                 n_head_channels=n_head_channels,
                                                 pos_emb_calc='cartesian_km',
                                                 emb_table_bins=16,
-                                                output_layer=True if k==n_blocks-1 else False))
+                                                first_block=True if k==0 else False,
+                                                last_block=True if k==n_blocks-1 else False))
         
         
 

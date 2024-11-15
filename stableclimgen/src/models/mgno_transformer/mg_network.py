@@ -25,7 +25,8 @@ class MultiGridBlock(nn.Module):
                  n_head_channels=16, 
                  pos_emb_calc='cartesian_km',
                  emb_table_bins=16,
-                 output_layer=False
+                 first_block=False,
+                 last_block=False,
                  ):
         
         """
@@ -61,7 +62,8 @@ class MultiGridBlock(nn.Module):
                                                model_dims_encode,
                                                no_layer_settings=encoder_no_layer_settings,
                                                n_head_channels=n_head_channels, 
-                                               simultaneous=encoder_simul)
+                                               simultaneous=encoder_simul,
+                                               first_encoder=first_block)
 
 
         if processing_method is not None:
@@ -88,7 +90,7 @@ class MultiGridBlock(nn.Module):
                                            model_dims_decode,
                                            no_layer_settings=decoder_no_layer_settings,
                                            n_head_channels=n_head_channels,
-                                           output_layer=output_layer)
+                                           output_layer=last_block)
 
 
     def forward(self, x, indices_layers, indices_batch_dict, mask=None, coords_in=None, coords_out=None):

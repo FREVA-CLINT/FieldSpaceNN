@@ -4,6 +4,7 @@ import torch.nn as nn
 from ...utils.grid_utils_icon import sequenize
 from .pos_embedding import PositionEmbedder
 from ..modules.transformer_modules import MultiHeadAttentionBlock
+from .icon_grids import RelativeCoordinateManager
 
 class IconSpatialAttention(nn.Module):
     """
@@ -54,11 +55,12 @@ class IconSpatialAttention(nn.Module):
         super().__init__()
         
         self.grid_layers = grid_layers
-        self.nh_attention = nh_attention  
+        self.nh_attention = nh_attention 
         self.max_seq_level = seq_level_attention
         self.continous_pos_embedding = continous_pos_embedding
         self.grid_layer = grid_layers[global_level]
         self.global_level = global_level
+
 
         # Setup the coordinate system based on the chosen positional embedding method
         if continous_pos_embedding:
@@ -69,6 +71,13 @@ class IconSpatialAttention(nn.Module):
         
             self.position_embedder = PositionEmbedder(0, 0, emb_table_bins, model_dim, pos_emb_calc=pos_emb_calc)
 
+        self.rel_coord_mngr = RelativeCoordinateManager(
+            self.grid_layer,
+            nh_input= nh_attention,
+            precompute=True,
+            seq_len_input=None if nh_attention else seq_level_attention,
+            coord_system=self.coord_system)
+        
         # Linear layer to compute shift and scale embeddings
         self.embedding_layer = nn.Linear(model_dim, model_dim * 2)
         self.layer_norm = nn.LayerNorm(model_dim, elementwise_affine=True)
@@ -104,27 +113,22 @@ class IconSpatialAttention(nn.Module):
         b, n, nv, f = x.shape
 
         # Get position embeddings using the grid layer
-        pos_embeddings = self.grid_layer.get_position_embedding(
-            indices_grid_layers[int(self.global_level)], 
-            self.nh_attention, 
-            self.position_embedder, 
-            self.coord_system, 
-            batch_dict=batch_dict, 
-            section_level=self.max_seq_level
-        )
 
+        rel_coords = self.rel_coord_mngr(indices_in=indices_grid_layers[int(self.global_level)])
+        pos_embeddings = self.position_embedder(rel_coords[0], rel_coords[1])
+       
         x = x.view(b, -1, nv, f)
         x_res = x 
 
         # If neighborhood attention is enabled, gather neighborhood information
         if self.nh_attention:
-            x, mask, _ = self.grid_layer.get_nh(
+            x, mask = self.grid_layer.get_nh(
                 x, indices_grid_layers[int(self.global_level)], batch_dict, mask=mask
             )
 
             if mask is not None:
                 mask_update = mask.clone()
-                mask_update = mask_update.sum(dim=-1) == mask_update.shape[-1]
+                mask_update = mask_update.sum(dim=-2) == mask_update.shape[-2]
                 mask_update = mask_update.view(b, n, nv)
         else:
             # If no neighborhood attention, process sequentially
@@ -140,7 +144,7 @@ class IconSpatialAttention(nn.Module):
                 mask_update = mask = None
 
         # Apply positional embeddings
-        shift, scale = self.embedding_layer(pos_embeddings).unsqueeze(dim=-2).chunk(2, dim=-1)
+        shift, scale = self.embedding_layer(pos_embeddings).transpose(-2,-3).chunk(2, dim=-1)
         x = self.layer_norm(x) * (scale + 1) + shift
 
         b, n_seq, nh, nv, f = x.shape

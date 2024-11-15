@@ -154,17 +154,23 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
 
     :returns: distances on the sphere between lon1,lat1 and lon2,lat2
     """
+    theta = lat1
+    phi = lon1
 
+    #rotate_first
+    lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
+    lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
 
-    d_lons =  2*torch.arcsin(torch.cos(lat1)*torch.sin(torch.abs(lon2-lon1)/2))
+    lat1=lon1=0
 
-    d_lats = (lat2-lat1).abs() 
+    d_lons = (lon2).abs()
+    d_lats = (lat2).abs() 
 
-    sgn = torch.sign(lat2-lat1)
+    sgn = torch.sign(lat2)
     sgn[(d_lats).abs()/torch.pi>1] = sgn[(d_lats).abs()/torch.pi>1]*-1
     d_lats = d_lats*sgn
 
-    sgn = torch.sign(lon2-lon1)
+    sgn = torch.sign(lon2)
     sgn[(d_lons).abs()/torch.pi>1] = sgn[(d_lons).abs()/torch.pi>1]*-1
     d_lons = d_lons*sgn
 
@@ -604,24 +610,32 @@ def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, c
     return grids
 
 
-def sequenize(tensor, max_seq_level):
+def sequenize(tensor, max_seq_level, seq_dim=1):
     
-    seq_level = min([get_max_seq_level(tensor), max_seq_level])
+    seq_level = min([get_max_seq_level(tensor, seq_dim), max_seq_level])
     
-    if tensor.dim()==2:
-        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level))
-    elif tensor.dim()==3:
-        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-1])
-    elif tensor.dim()==4:
-        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-2], tensor.shape[-1])
-    elif tensor.dim()==5:
-        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
-    elif tensor.dim()==6:
-        tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-4], tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
+    if seq_dim==1:
+        if tensor.dim()==2:
+            tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level))
+        elif tensor.dim()==3:
+            tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-1])
+        elif tensor.dim()==4:
+            tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-2], tensor.shape[-1])
+        elif tensor.dim()==5:
+            tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
+
+    else:
+        if tensor.dim()==3:
+            tensor = tensor.view(tensor.shape[0], tensor.shape[1], -1, 4**(seq_level))
+        elif tensor.dim()==4:
+            tensor = tensor.view(tensor.shape[0], tensor.shape[1], -1, 4**(seq_level), tensor.shape[-1])
+        elif tensor.dim()==5:
+            tensor = tensor.view(tensor.shape[0], tensor.shape[1], -1, 4**(seq_level), tensor.shape[-2], tensor.shape[-1])    
 
     return tensor
 
-def get_max_seq_level(tensor):
-    seq_len = tensor.shape[1]
+
+def get_max_seq_level(tensor, seq_dim=1):
+    seq_len = tensor.shape[seq_dim]
     max_seq_level_seq = int(math.log(seq_len)/math.log(4))
     return max_seq_level_seq

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 from .attention import ChannelVariableAttention,ResLayer
 from ...utils.grid_utils_icon import get_distance_angle
-
+from .icon_grids import RelativeCoordinateManager
 
 def von_mises(d_phi, kappa):
     vm = torch.exp(kappa * torch.cos(d_phi))
@@ -39,7 +39,6 @@ class NoLayer(nn.Module):
         phi_channel_attention (bool): Flag to enable/disable angular channel attention.
         dist_channel_attention (bool): Flag to enable/disable distance channel attention.
         sigma_channel_attention (bool): Flag to enable/disable sigma channel attention.
-        mixed_channel_attention (bool): Flag to enable/disable mixed channel attention.
         with_mean_res (bool): Whether to use residual connections with mean feature maps.
         with_channel_res (bool): Whether to apply residual connections within channel 
             attention layers.
@@ -58,7 +57,6 @@ class NoLayer(nn.Module):
         dist_channel_attention (nn.Module): Channel attention module for distance-based weights.
         sigma_channel_attention (nn.Module): Channel attention module for sigma-based weights.
         phi_channel_attention (nn.Module): Channel attention module for angular-based weights.
-        mixed_channel_attention (nn.Module): Channel attention module for mixed weights.
         res_layer_dist (nn.Module): Residual layer for distance-based attention.
         res_layer_sigma (nn.Module): Residual layer for sigma-based attention.
         res_layer_phi (nn.Module): Residual layer for angular-based attention.
@@ -74,6 +72,7 @@ class NoLayer(nn.Module):
                  model_dim_out,
                  kernel_settings,
                  n_head_channels: int=16,
+                 precompute_rel_coordinates: bool=False
                 ) -> None: 
         """
         Initializes the NoLayer class with parameters related to grid-based 
@@ -94,6 +93,13 @@ class NoLayer(nn.Module):
         self.global_level_out = global_level_out
         self.global_level = global_level_in
 
+        self.rel_coord_mngr = RelativeCoordinateManager(
+            self.grid_layers[str(global_level_in)],
+            self.grid_layers[str(global_level_out)],
+            nh_input= kernel_settings['nh_projection'],
+            precompute=precompute_rel_coordinates,
+            coord_system='polar')
+  
         # Kernel settings and initialization
         n_phi = kernel_settings['n_phi']
         n_dist = kernel_settings['n_dists']
@@ -103,7 +109,6 @@ class NoLayer(nn.Module):
         phi_channel_attention = kernel_settings['phi_att']
         dist_channel_attention = kernel_settings['dist_att']
         sigma_channel_attention = kernel_settings['sigma_att']
-        mixed_channel_attention = kernel_settings['mixed_att']
         with_mean_res = kernel_settings['with_mean_res']
         with_channel_res = kernel_settings['with_channel_res']
 
@@ -185,9 +190,10 @@ class NoLayer(nn.Module):
                 self.gamma_res_phi = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
                 self.res_layer_phi = ResLayer(model_dim)
         
-        if mixed_channel_attention:
-            model_dim = model_dim_enhanced 
-            self.mixed_channel_attention = ChannelVariableAttention(model_dim, 4, n_head_channels, model_dim_out)
+        if model_dim_enhanced != model_dim_out:
+            self.lin_layer_out = nn.Linear(model_dim_enhanced, model_dim_out, bias=False)
+        else:
+            self.lin_layer_out = nn.Identity()
 
 
     def forward(self, x, indices_layers=None, coordinates=None, coordinates_out=None, sample_dict=None, mask=None):
@@ -220,48 +226,23 @@ class NoLayer(nn.Module):
         
         nh_projection = self.nh_projection
 
-        # Generate or retrieve coordinates if not provided
-        if coordinates is None and not nh_projection:
-            coordinates = self.grid_layers[str(self.global_level)].get_coordinates_from_grid_indices(indices_layers[self.global_level])
-
-        elif coordinates is None and nh_projection:
-            x, mask, coordinates = self.grid_layers[str(self.global_level)].get_nh(x, 
-                                                                            indices_layers[self.global_level], 
-                                                                            sample_dict, 
-                                                                            relative_coordinates=False, 
-                                                                            coord_system=self.coord_system, mask=mask)
+        coordinates_rel = self.rel_coord_mngr(indices_in=indices_layers[self.global_level],
+                                              indices_out=indices_layers[self.global_level_out],
+                                              coordinates_in=coordinates,
+                                              coordinates_out=coordinates_out)
+  
+        if nh_projection:
+            x, mask = self.grid_layers[str(self.global_level)].get_nh(x, 
+                                                                    indices_layers[self.global_level], 
+                                                                    sample_dict, 
+                                                                    mask=mask)
             
-        # Generate output coordinates if not provided
-        if coordinates_out is None:
-            coordinates_out = self.grid_layers[str(self.global_level_out)].get_coordinates_from_grid_indices(indices_layers[self.global_level_out])
-
-        # Reshape `x` and coordinates to align dimensions
-        n_v, f = x.shape[-2:]
-        n_c, b, seq_dim_in = coordinates.shape[:3]
-        seq_dim_out = coordinates_out.shape[2]
+        b, n, seq_out, seq_in = coordinates_rel[0].shape
+        nv, nc = x.shape[-2:]
+        x = x.view(b,n,seq_in,nv,nc)
         
-        if seq_dim_in > seq_dim_out:
-            coordinates = coordinates.view(n_c, b, seq_dim_out, -1)
-            x = x.view(b, seq_dim_out, coordinates.shape[-1], n_v, f)
-            if mask is not None:
-                mask = mask.view(b, seq_dim_out, -1, n_v)
-            coordinates_out = coordinates_out.view(n_c, b, seq_dim_out, -1)
-        else:
-            coordinates = coordinates.view(n_c, b, seq_dim_in,-1)
-            coordinates_out = coordinates_out.view(n_c, b, seq_dim_in, -1)
-            x = x.view(b, seq_dim_in, coordinates.shape[-1], n_v, f)
-            if mask is not None:
-                mask = mask.view(b, seq_dim_in, -1, n_v)
-       
-        #Compute relative coordinates for distance and angle
-        coordinates = coordinates.unsqueeze(dim=-2)
-        coordinates_out = coordinates_out.unsqueeze(dim=-1)
-        coordinates_rel = get_distance_angle(
-                                coordinates[0], coordinates[1], 
-                                coordinates_out[0], coordinates_out[1], 
-                                base=self.coord_system, periodic_fov=self.periodic_fov
-                            )
-
+        if mask is not None:
+            mask = mask.view(b,n,seq_in,nv)
         # Project `x` using the relative coordinates
         x, mask = self.project(x, coordinates_rel, mask=mask)      
                        
@@ -407,7 +388,7 @@ class NoLayer(nn.Module):
             x = x.transpose(3,4).reshape(b,n*seq_out, nv*n_sigma, -1)
             mask_sigma=None
             if mask is not None:
-                mask_sigma = mask.unsqueeze(dim=-1).repeat_interleave(n_dist, dim=-1).view(b, n*seq_out, nv*n_sigma)
+                mask_sigma = mask.unsqueeze(dim=-1).repeat_interleave(n_sigma, dim=-1).view(b, n*seq_out, nv*n_sigma)
             x = self.sigma_channel_attention(x, mask=mask_sigma)[0]
             x = x.view(b,n*seq_out, nv*n_sigma, n_dist, n_phi, nc)
 
@@ -419,9 +400,7 @@ class NoLayer(nn.Module):
             x = x.view(b,n*seq_out, nv,n_sigma, n_dist, n_phi, nc)
             x = x.transpose(3,4)
 
-        if hasattr(self, 'mixed_channel_attention'):
-            x = x.reshape(b,n*seq_out, nv, -1)
-            x = self.mixed_channel_attention(x)[0]
-            x = x.view(b,n*seq_out, nv,-1)
+        x = x.reshape(b,n*seq_out, nv, -1)
+        x = self.lin_layer_out(x)
 
         return x, mask
