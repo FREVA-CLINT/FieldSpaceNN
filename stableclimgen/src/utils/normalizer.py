@@ -5,77 +5,165 @@ from typing import Dict
 
 class DataNormalizer:
     """
-    Base class for data normalization, loading statistics from a provided JSON file.
+    Base class for data normalization. It loads and uses statistics from a provided dictionary.
 
-    :param data_stats: Path to the JSON file containing data statistics for normalization.
+    :param stat_dict: Dictionary containing data statistics for normalization (e.g., means, standard deviations, quantiles).
+    :param definition_dict: Dictionary containing additional settings for the normalizer (e.g., quantile values, output ranges).
     """
 
-    def __init__(self, data_stats: Dict):
-        self.data_stats = data_stats
+    def __init__(self):
+        pass
 
-    def normalize(self, data: torch.Tensor, index: int) -> torch.Tensor:
+    def normalize(self, data: torch.Tensor) -> torch.Tensor:
         """
-        Normalize the data based on statistics for a specific index.
+        Abstract method for normalizing the input data tensor.
 
         :param data: Input data tensor to normalize.
-        :param index: Index indicating which data statistics to apply.
         :return: Normalized data tensor.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def denormalize(self, data: torch.Tensor, index: int) -> torch.Tensor:
+    def denormalize(self, data: torch.Tensor) -> torch.Tensor:
         """
-        Reverse the normalization process to return data to its original scale.
+        Abstract method for denormalizing the input data tensor.
 
         :param data: Normalized data tensor to be denormalized.
-        :param index: Index indicating which data statistics to apply.
         :return: Denormalized data tensor.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
-class MinMaxNormalizer(DataNormalizer):
+class QuantileNormalizer(DataNormalizer):
     """
-    Normalizer that scales data using min-max normalization based on precomputed statistics.
+    Normalizer that scales data using min-max normalization based on quantiles from precomputed statistics.
 
-    :param data_stats: Path to the JSON file containing min and max values for normalization.
-    :param min_range: Minimum range for normalized data. Default is -1.0.
-    :param max_range: Maximum range for normalized data. Default is 1.0.
+    :param stat_dict: Dictionary containing quantile statistics for normalization.
+    :param definition_dict: Dictionary containing settings like quantile values and output ranges.
     """
 
-    def __init__(self, data_stats: str, min_range: float = -1.0, max_range: float = 1.0):
-        super().__init__(data_stats)
-        self.min_range = min_range
-        self.max_range = max_range
+    def __init__(self, stat_dict: Dict, definition_dict: Dict):
+        super().__init__()
+        
+        # Extract quantile settings and output range from the definition dictionary
+        quantile = definition_dict['quantile']
+        output_range = definition_dict.get('output_range', [0, 1])
 
-    def normalize(self, data: torch.Tensor, index: int) -> torch.Tensor:
+        # Calculate the lower and upper quantiles
+        q_low = torch.min(torch.tensor([quantile, 1 - quantile]))
+        q_high = torch.max(torch.tensor([quantile, 1 - quantile]))
+
+        # Retrieve the actual quantile values from the statistics dictionary
+        self.q_low = stat_dict["quantiles"]["{:.2f}".format(float(q_low))]
+        self.q_high = stat_dict["quantiles"]["{:.2f}".format(float(q_high))]
+
+        # Set the output range for the normalized data
+        self.output_range = output_range
+
+    def normalize(self, data: torch.Tensor) -> torch.Tensor:
         """
-        Normalize the data using min-max scaling based on precomputed statistics.
+        Normalize data using min-max scaling between the specified quantiles.
 
         :param data: Input data tensor to normalize.
-        :param index: Index indicating which min and max values to use.
-        :return: Min-max normalized data tensor within the range [min_range, max_range].
+        :return: Min-max normalized data tensor within the specified output range.
         """
-        min_val = self.data_stats['min'][index]
-        max_val = self.data_stats['max'][index]
+        # Apply min-max scaling to map data to the range [0, 1]
+        norm_data = (data - self.q_low) / (self.q_high - self.q_low)
+        # Scale data to the specified output range
+        return norm_data * (self.output_range[1] - self.output_range[0]) + self.output_range[0]
 
-        # Apply min-max scaling to bring data to the range [0, 1]
-        norm_data = (data - min_val) / (max_val - min_val)
-        # Scale to the specified range [min_range, max_range]
-        return norm_data * (self.max_range - self.min_range) + self.min_range
-
-    def denormalize(self, data: torch.Tensor, index: int) -> torch.Tensor:
+    def denormalize(self, data: torch.Tensor) -> torch.Tensor:
         """
-        Reverse the min-max normalization to return data to its original scale.
+        Reverse the min-max normalization and return data to its original scale.
 
-        :param data: Min-max normalized data tensor to be denormalized.
-        :param index: Index indicating which min and max values to use.
-        :return: Denormalized data tensor in the original scale.
+        :param data: Normalized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
         """
-        min_val = self.data_stats['min'][index]
-        max_val = self.data_stats['max'][index]
+        # Rescale data from the output range to [0, 1]
+        data_rescaled = (data - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+        # Rescale data to the original min-max range
+        return data_rescaled * (self.q_high - self.q_low) + self.q_low
 
-        # Scale data back to the range [0, 1]
-        data_rescaled = (data - self.min_range) / (self.max_range - self.min_range)
-        # Rescale to the original min-max range
-        return data_rescaled * (max_val - min_val) + min_val
+
+class AbsQuantileNormalizer(DataNormalizer):
+    """
+    Normalizer that scales data using max scaling based on a specified upper quantile from precomputed statistics.
+
+    :param stat_dict: Dictionary containing quantile statistics for normalization.
+    :param definition_dict: Dictionary containing settings like quantile values and output ranges.
+    """
+
+    def __init__(self, stat_dict: Dict, definition_dict: Dict):
+        super().__init__()
+
+        # Extract quantile settings and output range from the definition dictionary
+        quantile = definition_dict['quantile']
+        output_range = definition_dict.get('output_range', [0, 1])
+
+        # Calculate the upper quantile
+        q_high = torch.max(torch.tensor([quantile, 1 - quantile]))
+
+        # Retrieve the actual upper quantile value from the statistics dictionary
+        self.q_high = stat_dict["quantiles"]["{:.2f}".format(float(q_high))]
+
+        # Set the output range for the normalized data
+        self.output_range = output_range
+
+    def normalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Normalize data using max scaling relative to the specified upper quantile.
+
+        :param data: Input data tensor to normalize.
+        :return: Normalized data tensor within the specified output range.
+        """
+        # Scale data to the range [0, 1] using the upper quantile
+        norm_data = data / self.q_high
+        # Scale data to the specified output range
+        return norm_data * (self.output_range[1] - self.output_range[0]) + self.output_range[0]
+
+    def denormalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the max normalization and return data to its original scale.
+
+        :param data: Normalized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data from the output range to [0, 1]
+        data_rescaled = (data - self.output_range[0]) / (self.output_range[1] - self.output_range[0])
+        # Rescale data to the original scale using the upper quantile
+        return data_rescaled * self.q_high
+
+
+class MeanStdNormalizer(DataNormalizer):
+    """
+    Normalizer that standardizes data using mean and standard deviation from precomputed statistics.
+
+    :param stat_dict: Dictionary containing mean and standard deviation for normalization.
+    :param definition_dict: Dictionary containing additional settings for normalization.
+    """
+
+    def __init__(self, stat_dict: Dict, definition_dict: Dict):
+        super().__init__()
+
+        # Extract mean and standard deviation from the statistics dictionary
+        self.mean = stat_dict["mean"]
+        self.std = stat_dict["std"]
+
+    def normalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Standardize data using mean and standard deviation.
+
+        :param data: Input data tensor to normalize.
+        :return: Standardized data tensor.
+        """
+        # Standardize data by subtracting the mean and dividing by the standard deviation
+        return (data - self.mean) / self.std
+
+    def denormalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the standardization and return data to its original scale.
+
+        :param data: Standardized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data to the original scale by multiplying by std and adding the mean
+        return data * self.std + self.mean

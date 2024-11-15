@@ -1,5 +1,6 @@
 import copy
 
+import json
 from typing import Any
 
 import numpy as np
@@ -7,58 +8,8 @@ import torch
 import xarray as xr
 from torch.utils.data import Dataset, Sampler
 from .grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon
+from . import normalizer as normalizers
 
-
-class InfiniteSampler(Sampler):
-    """
-    A PyTorch Sampler that provides an endless stream of random indices, allowing for 
-    continuous sampling over a finite dataset without resetting, especially useful for 
-    training on large datasets in an "infinite" manner.
-
-    Parameters:
-    ----------
-    num_samples : int
-        The number of samples in the dataset to sample from.
-    data_source : Dataset, optional
-        The dataset from which to sample. This parameter is required by the base 
-        `Sampler` class but is not used directly in `InfiniteSampler` (default is None).
-
-    Methods:
-    -------
-    __iter__()
-        Returns an iterator that yields indices indefinitely, looping over shuffled indices.
-
-    __len__()
-        Returns an arbitrarily large length, simulating an infinite sampling size.
-
-    loop()
-        Generator function that yields indices from a random permutation of `num_samples`.
-        Reshuffles and restarts when all indices have been yielded.
-
-    Usage:
-    ------
-    Used with PyTorch DataLoader for training tasks that require continuous sampling.
-    """
-    def __init__(self, num_samples, data_source=None):
-        super().__init__(data_source)
-        self.num_samples = num_samples
-
-    def __iter__(self):
-        return iter(self.loop())
-
-    def __len__(self):
-        return 2 ** 31
-
-    def loop(self):
-        i = 0
-        n_samples = self.num_samples 
-        order = np.random.permutation(n_samples) 
-        while True:
-            yield order[i]
-            i += 1
-            if i >= n_samples:
-                order = np.random.permutation(n_samples) 
-                i = 0
 
 def get_moments(data, type, level=0.9):
 
@@ -108,7 +59,7 @@ def get_stats(files, variable, norm_dict, n_sample=None):
 
 class NetCDFLoader_lazy(Dataset):
     def __init__(self, data_dict,
-                 normalizer,
+                 norm_dict,
                  grid_processing,
                  coarsen_sample_level,
                  search_radius=2,
@@ -128,7 +79,7 @@ class NetCDFLoader_lazy(Dataset):
         super(NetCDFLoader_lazy, self).__init__()
         
         self.coarsen_sample_level = coarsen_sample_level
-        self.normalizer = normalizer
+        self.norm_dict = norm_dict
         self.index_range_source=index_range_source
         self.index_offset_target = index_offset_target
         self.sample_for_norm = sample_for_norm
@@ -143,6 +94,20 @@ class NetCDFLoader_lazy(Dataset):
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
+
+        with open(norm_dict) as json_file:
+            norm_dict = json.load(json_file)
+
+        self.var_normalizers = {}
+        for var in self.variables_source:
+            norm_class = norm_dict[var]['normalizer']['class']
+            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+
+            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
+                norm_dict[var]['stats'],
+                norm_dict[var]['normalizer'])
+
+
         self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
         self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
         grid_input = data_dict["source"]["grid"]
@@ -204,11 +169,8 @@ class NetCDFLoader_lazy(Dataset):
         self.global_cells = global_indices.reshape(-1,4**coarsen_sample_level)
         self.global_cells_input = self.global_cells[:,0]
             
-      
         ds_source = xr.open_dataset(self.files_source[0])
         self.len_dataset = len(ds_source)*self.global_cells.shape[1] #ds_source[self.variables_source[0]].shape[0]
-
-        self.normalizer = normalizer
     
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -353,12 +315,11 @@ class NetCDFLoader_lazy(Dataset):
                 drop_mask[drop_mask_p]=True
 
     
-        if self.normalizer is not None:
-            for k, var in enumerate(self.variables_source):
-                data_source[:,:,k,:] = self.normalizer.normalize(data_source[:,:,k,:], var)
-            
-            for k, var in enumerate(self.variables_target):
-                data_target[:,:,k,:] = self.normalizer.normalize(data_target[:,:,k,:], var)
+        for k, var in enumerate(self.variables_source):
+            data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
+        
+        for k, var in enumerate(self.variables_target):
+            data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
 
         data_source[drop_mask] = 0
 
