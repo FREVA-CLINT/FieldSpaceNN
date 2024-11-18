@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Optional, Union, List, Tuple
+from typing import Optional, Union, List, Tuple, Dict
 
 from stableclimgen.src.modules.cnn.conv import Upsample, Downsample
 from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
@@ -84,8 +84,8 @@ class ResBlock(EmbedBlock):
         else:
             self.skip_connection = nn.Conv3d(in_ch, self.out_ch, 1)
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
         """
         Forward pass for the ResBlock.
 
@@ -93,7 +93,6 @@ class ResBlock(EmbedBlock):
         :param emb: Optional embedding tensor.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Output tensor after applying the residual block with skip connection.
         """
         if self.updown:
@@ -168,8 +167,8 @@ class ResBlockSequential(EmbedBlock):
         # Sequential container for ResBlocks
         self.res_blocks = EmbedBlockSequential(*res_blocks)
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
         """
         Forward pass for the ResBlockSequential.
 
@@ -177,7 +176,6 @@ class ResBlockSequential(EmbedBlock):
         :param emb: Optional embedding tensor.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Output tensor after passing through the sequence of residual blocks.
         """
-        return self.res_blocks(x, emb, mask, cond, coords)
+        return self.res_blocks(x, emb, mask, cond)

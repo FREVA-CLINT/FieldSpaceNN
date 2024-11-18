@@ -1,10 +1,10 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 import torch
 import torch.nn as nn
 
 # Import necessary modules for the diffusion generator architecture
-from ...modules.embedding.diffusion_step_embedder import DiffusionStepEmbedder
+from ...modules.embedding.embedding_layers import DiffusionStepEmbedder
 from ...modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
@@ -137,19 +137,17 @@ class DiffusionGenerator(nn.Module):
     def forward(
             self,
             x: torch.Tensor,
-            diffusion_steps: Optional[torch.Tensor] = None,
+            emb: Optional[Dict] = None,
             mask: Optional[torch.Tensor] = None,
             cond: Optional[torch.Tensor] = None,
-            coords: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass through the Diffusion Generator model.
 
         :param x: Input tensor.
-        :param diffusion_steps: Tensor representing diffusion steps.
+        :param emb: Tensor representing different embeddings.
         :param mask: Mask tensor, used if `concat_mask` is True.
         :param cond: Conditioning tensor, used if `concat_cond` is True.
-        :param coords: Coordinates tensor for spatial context.
 
         :return: Output tensor after processing through the model.
         """
@@ -166,10 +164,6 @@ class DiffusionGenerator(nn.Module):
         # Initial patch embedding for the input tensor
         h = self.input_patch_embedding(x)
 
-        # Initialize embeddings
-        emb = torch.zeros(*h.shape[:-1], self.embed_dim, device=h.device, layout=h.layout, dtype=h.dtype)
-        emb.add_(expand_tensor_x_to_y(self.diffusion_step_emb(diffusion_steps), emb, True))
-
         # Remove mask if unnecessary
         mask = None
 
@@ -178,20 +172,20 @@ class DiffusionGenerator(nn.Module):
 
         # Encoder forward pass with optional skip connections
         for module in self.encoder:
-            h = module(h, emb, mask, cond, coords)
+            h = module(h, emb, mask, cond)
             if self.skip_connections:
                 hs.append(h)
 
         # Processor forward pass
         for module in self.processor:
-            h = module(h, emb, mask, cond, coords)
+            h = module(h, emb, mask, cond)
 
         # Decoder forward pass with optional skip connections
         for module in self.decoder:
             if self.skip_connections:
                 h = torch.cat([h, hs.pop()], dim=-1)
-            h = module(h, emb, mask, cond, coords)
+            h = module(h, emb, mask, cond)
 
         # Output layer reconstruction with unpatchifying
-        h = self.out(h, emb, mask, cond, coords, out_shape=out_shape)
+        h = self.out(h, emb, mask, cond, out_shape=out_shape)
         return h

@@ -2,8 +2,6 @@ import math
 import torch
 import torch.nn as nn
 
-from stableclimgen.src.modules.embedding.embedder_base import BaseEmbedder
-
 
 class RandomFourierLayer(nn.Module):
     """
@@ -51,20 +49,42 @@ class RandomFourierLayer(nn.Module):
         return out_tensor
 
 
-class CoordinateEmbedder(BaseEmbedder):
+class SinusoidalLayer(nn.Module):
     """
-    A neural network module to embed longitude and latitude coordinates.
+    Sinusoidal timestep embeddings for diffusion steps.
 
-    :param embed_dim: Dimensionality of the embedding output.
-    :param in_channels: Number of input coordinate features (default is 2).
+    This function generates sinusoidal positional embeddings for each diffusion step,
+    where the frequencies are controlled by `max_period`. The embeddings are intended to
+    be used in models that benefit from positional information of diffusion steps.
+
+    :param in_channels: Number of input features.
+    :param dim: Dimensionality of the output embeddings.
+    :param max_period: Controls the minimum frequency of the embeddings.
+                       Higher values lead to more gradual frequency changes.
     """
-
-    def __init__(self, in_channels: int, embed_dim: int) -> None:
-        super().__init__(in_channels, embed_dim)
-        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
+    def __init__(self, in_channels: int, max_period: int = 10000):
+        super().__init__()
+        self.in_channels = in_channels
+        self.freqs = torch.exp(
+            -math.log(max_period) * torch.arange(start=0, end=in_channels // 2,
+                                                 dtype=torch.float32) / (in_channels // 2)
         )
+
+    def forward(self, diffusion_steps):
+        """
+        :param diffusion_steps: A 1-D Tensor of shape [N], where N is the batch size.
+                        Each element represents the diffusion step and can be fractional.
+        :return: A Tensor of shape [N x dim] containing the positional embeddings for each diffusion step.
+        """
+
+        # Calculate arguments for sine and cosine functions
+        args = diffusion_steps[:, None].float() * self.freqs[None].to(diffusion_steps.device)
+
+        # Combine sine and cosine embeddings along the last dimension
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+
+        # Pad with a zero column if `dim` is odd
+        if self.in_channels % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+
+        return embedding

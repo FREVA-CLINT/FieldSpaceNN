@@ -9,6 +9,10 @@ model:
   model_channels: 64
   patch_emb_size: [1, 1, 1]
   patch_emb_kernel: [1, 1, 1]
+  embedding:
+    dims: 64
+    types: [ "fourier", "diffusion" ]
+    shared: [ true, false ]
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "trans"
@@ -16,7 +20,7 @@ model:
       ch_mult: 1
       sub_confs:
         blocks: ["s", "mlp"]
-        embed_dim: 64
+        embed_confs: [["fourier", "diffusion"], ["diffusion"]]
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
