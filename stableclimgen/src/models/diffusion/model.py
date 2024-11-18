@@ -4,13 +4,14 @@ import torch
 import torch.nn as nn
 
 # Import necessary modules for the diffusion generator architecture
-from ...modules.embedding.diffusion_step import DiffusionStepEmbedder
+from ...modules.embedding.diffusion_step_embedder import DiffusionStepEmbedder
 from ...modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...modules.utils import EmbedBlockSequential
+from ...utils.helpers import expand_tensor_x_to_y
 
 
 class DiffusionBlockConfig:
@@ -167,7 +168,7 @@ class DiffusionGenerator(nn.Module):
 
         # Initialize embeddings
         emb = torch.zeros(*h.shape[:-1], self.embed_dim, device=h.device, layout=h.layout, dtype=h.dtype)
-        emb.add_(self.diffusion_step_emb(diffusion_steps)[:, None, None, None, None, :])
+        emb.add_(expand_tensor_x_to_y(self.diffusion_step_emb(diffusion_steps), emb, True))
 
         # Remove mask if unnecessary
         mask = None
