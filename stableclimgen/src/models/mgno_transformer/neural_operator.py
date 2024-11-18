@@ -93,12 +93,15 @@ class NoLayer(nn.Module):
         self.global_level_out = global_level_out
         self.global_level = global_level_in
 
+        rotate_coord_system = kernel_settings['rotate_coord_system']
+
         self.rel_coord_mngr = RelativeCoordinateManager(
             self.grid_layers[str(global_level_in)],
             self.grid_layers[str(global_level_out)],
             nh_input= kernel_settings['nh_projection'],
             precompute=precompute_rel_coordinates,
-            coord_system='polar')
+            coord_system='polar',
+            rotate_coord_system=rotate_coord_system)
   
         # Kernel settings and initialization
         n_phi = kernel_settings['n_phi']
@@ -115,9 +118,10 @@ class NoLayer(nn.Module):
         dist_learnable = kernel_settings['dists_learnable']
         sigma_learnable = kernel_settings['sigma_learnable']
         nh_projection = kernel_settings['nh_projection']
+        
 
-        min_sigma = 1e-4
-        dist_max = self.grid_layers[str(global_level_out)].min_dist
+        self.min_sigma = self.grid_layers[str(global_level_out)].min_dist/2
+        dist_max = self.grid_layers[str(global_level_out)].max_dist
 
         # Flags and parameters
         self.with_mean_res = with_mean_res
@@ -148,7 +152,7 @@ class NoLayer(nn.Module):
 
         if n_sigma>1:
             model_dim_enhanced *= n_sigma
-            sigma = torch.linspace(min_sigma, dist_max/2, n_sigma)
+            sigma = torch.linspace(self.min_sigma, dist_max/2, n_sigma)
             self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
             self.dist_dist_calc = True
 
@@ -291,7 +295,7 @@ class NoLayer(nn.Module):
 
         x = x.view(b,n,seq_in,nv,1,1,1,f)
         
-        sigma = self.sigma.clamp(min=1e-4)
+        sigma = self.sigma.clamp(min=self.min_sigma)
 
         angular_weights = dist_weights = None
 

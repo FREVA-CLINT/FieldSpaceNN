@@ -144,7 +144,7 @@ def rotate_coord_system(lons: torch.tensor, lats: torch.tensor, rotation_lon: to
 
 
 
-def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor, base:str='polar', periodic_fov:list=None) -> torch.tensor:
+def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor, base:str='polar', periodic_fov:list=None, rotate_coords=True) -> torch.tensor:
     """
     :param lon1: target longitude 
     :param lat1: target latitude 
@@ -155,36 +155,44 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
 
     :returns: distances on the sphere between lon1,lat1 and lon2,lat2
     """
-    theta = lat1
-    phi = lon1
-
-    # does produce proper results for now
+    # does not produce proper results for now
     #lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
     #lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
 
-    x = (torch.cos(lon2) * torch.cos(lat2))
-    y = (torch.sin(lon2) * torch.cos(lat2))
-    z = (torch.sin(lat2))
+    if rotate_coords:
+        theta = lat1
+        phi = lon1
 
-    rotated_x =  torch.cos(theta)*torch.cos(phi) * x + torch.cos(theta)*torch.sin(phi)*y + torch.sin(theta)*z
-    rotated_y = -torch.sin(phi)*x + torch.cos(phi)*y
-    rotated_z = -torch.sin(theta)*torch.cos(phi)*x - torch.sin(theta)*torch.sin(phi)*y + torch.cos(theta)*z
+        x = (torch.cos(lon2) * torch.cos(lat2))
+        y = (torch.sin(lon2) * torch.cos(lat2))
+        z = (torch.sin(lat2))
 
-    lon2 = torch.atan2(rotated_y, rotated_x)
-    lat2 = torch.arcsin(rotated_z)
+        rotated_x =  torch.cos(theta)*torch.cos(phi) * x + torch.cos(theta)*torch.sin(phi)*y + torch.sin(theta)*z
+        rotated_y = -torch.sin(phi)*x + torch.cos(phi)*y
+        rotated_z = -torch.sin(theta)*torch.cos(phi)*x - torch.sin(theta)*torch.sin(phi)*y + torch.cos(theta)*z
 
-    lat1=lon1=0
+        lon2 = torch.atan2(rotated_y, rotated_x)
+        lat2 = torch.arcsin(rotated_z)
 
-    d_lons = (lon2).abs()
-    d_lats = (lat2).abs() 
+        lat1=lon1=0
 
-    sgn = torch.sign(lat2)
-    sgn[(d_lats).abs()/torch.pi>1] = sgn[(d_lats).abs()/torch.pi>1]*-1
-    d_lats = d_lats*sgn
+        d_lons = (lon2).abs()
+        d_lats = (lat2).abs() 
 
-    sgn = torch.sign(lon2)
-    sgn[(d_lons).abs()/torch.pi>1] = sgn[(d_lons).abs()/torch.pi>1]*-1
-    d_lons = d_lons*sgn
+        sgn_lat = torch.sign(lat2)
+        sgn_lon = torch.sign(lon2)
+
+    else:
+        d_lons =  2*torch.arcsin(torch.cos(lat1)*torch.sin(torch.abs(lon2-lon1)/2))
+        d_lats = (lat2-lat1).abs() 
+        sgn_lat = torch.sign(lat1-lat2)
+        sgn_lon = torch.sign(lon1-lon2)
+     
+    sgn_lat[(d_lats).abs()/torch.pi>1] = sgn_lat[(d_lats).abs()/torch.pi>1]*-1
+    d_lats = d_lats*sgn_lat
+
+    sgn_lon[(d_lons).abs()/torch.pi>1] = sgn_lon[(d_lons).abs()/torch.pi>1]*-1
+    d_lons = d_lons*sgn_lon
 
     if periodic_fov is not None:
         rng_lon = (periodic_fov[1] - periodic_fov[0])

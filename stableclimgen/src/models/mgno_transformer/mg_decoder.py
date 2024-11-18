@@ -31,7 +31,7 @@ class MultiGridDecoder(nn.Module):
                  model_dims_out: list,
                  no_layer_settings, 
                  n_head_channels: int = 16,
-                 output_layer: bool = False) -> None:
+                 output_dim: int=None) -> None:
         """
         Initializes the MultiGridDecoder for hierarchical feature aggregation.
 
@@ -42,7 +42,6 @@ class MultiGridDecoder(nn.Module):
         :param model_dims_out: A list specifying the output dimensionality for each grid level.
         :param no_layer_settings: Configuration settings for the `no_layer`.
         :param n_head_channels: Number of channels per head for multi-head operations.
-        :param output_layer: If True, enables the output layer for the last grid level.
         """
         super().__init__()
 
@@ -91,9 +90,17 @@ class MultiGridDecoder(nn.Module):
             self.multi_grid_reduction_layers[str(int(global_level_output))] = MultiGridChannelAttention(
                 model_dims_in_step,
                 int(model_dims_out[k]),
-                n_head_channels=n_head_channels,
-                output_layer=output_layer if k == len(global_levels) - 1 else False
+                n_head_channels=n_head_channels
             )
+        
+        if output_dim is not None:
+            self.mlp_layer_out = nn.Sequential(
+                nn.Linear(int(model_dims_out[k]), int(model_dims_out[k]) // 2, bias=False),
+                nn.SiLU(),
+                nn.Linear(int(model_dims_out[k]) // 2, output_dim, bias=False)
+            )
+        else:
+            self.mlp_layer_out = nn.Identity()
 
     def forward(self, 
                 x_levels: dict, 
@@ -149,4 +156,5 @@ class MultiGridDecoder(nn.Module):
             # Aggregate data using the multi-grid reduction layer
             x_levels[int(global_level_output)] = self.multi_grid_reduction_layers[global_level_output](x_out)
 
-        return x_levels[int(global_level_output)], drop_mask_levels[int(global_level_output)]
+        x = self.mlp_layer_out(x_levels[int(global_level_output)])
+        return x, drop_mask_levels[int(global_level_output)]

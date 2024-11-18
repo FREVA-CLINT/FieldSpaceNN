@@ -37,7 +37,8 @@ class IconSpatialAttention(nn.Module):
                  pos_emb_calc: str = 'cartesian_km',
                  emb_table_bins: int = 16,
                  nh_attention: bool = False, 
-                 continous_pos_embedding: bool = True) -> None:
+                 continous_pos_embedding: bool = True,
+                 rotate_coord_system=True) -> None:
         """
         Initializes the IconSpatialAttention module.
 
@@ -76,7 +77,8 @@ class IconSpatialAttention(nn.Module):
             nh_input= nh_attention,
             precompute=True,
             seq_len_input=None if nh_attention else seq_level_attention,
-            coord_system=self.coord_system)
+            coord_system=self.coord_system,
+            rotate_coord_system=rotate_coord_system)
         
         # Linear layer to compute shift and scale embeddings
         self.embedding_layer = nn.Linear(model_dim, model_dim * 2)

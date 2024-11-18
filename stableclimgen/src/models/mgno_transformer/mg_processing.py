@@ -32,7 +32,8 @@ class ProcessingLayer(nn.Module):
                  nh: int = 1,
                  n_head_channels: int = 16,
                  pos_emb_calc: str = 'cartesian_km',
-                 emb_table_bins: int = 16) -> None:
+                 emb_table_bins: int = 16,
+                 rotate_coord_system=True) -> None:
         """
         Initializes the processing_layer class with spatial attention mechanisms.
 
@@ -70,7 +71,8 @@ class ProcessingLayer(nn.Module):
                 pos_emb_calc=pos_emb_calc,
                 emb_table_bins=emb_table_bins, 
                 nh_attention=nh_attention, 
-                continous_pos_embedding=True
+                continous_pos_embedding=True,
+                rotate_coord_system=rotate_coord_system
             )
 
         self.grid_layers = grid_layers

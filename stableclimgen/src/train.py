@@ -10,7 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 
-@hydra.main(version_base=None, config_path="../configs", config_name="config")
+@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs/", config_name="icon_transformer_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
@@ -41,10 +41,15 @@ def train(cfg: DictConfig) -> None:
 
     # Initialize the logger (e.g., Weights & Biases)
     logger: WandbLogger = instantiate(cfg.logger)
-
-    # Initialize model and trainer
+    
+    # Initialize model and trainer  
     model: Any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer, logger=logger)
+
+    # Log model config
+    logger.experiment.config.update(OmegaConf.to_container(
+        cfg.model, resolve=True, throw_on_missing=False
+    ))
 
     # Start the training process
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,

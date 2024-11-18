@@ -260,13 +260,15 @@ class RelativeCoordinateManager(nn.Module):
                 nh_input:bool= False,
                 seq_len_input: int | None= None,
                 precompute:bool=False,
-                coord_system:str='polar') -> None:
+                coord_system:str='polar',
+                rotate_coord_system=True) -> None:
                 
         super().__init__()
 
         self.grid_layer_in = grid_layer_in
         self.grid_layer_out = grid_layer_out
         self.nh_input = nh_input
+        self.rotate_coord_system = rotate_coord_system
 
         self.seq_len_input = seq_len_input if not nh_input else None
         self.coord_system = coord_system
@@ -313,7 +315,8 @@ class RelativeCoordinateManager(nn.Module):
         coordinates_rel = get_distance_angle(
                                 coordinates_out[0], coordinates_out[1], 
                                 coordinates_in[0], coordinates_in[1], 
-                                base=self.coord_system, periodic_fov=None
+                                base=self.coord_system, periodic_fov=None,
+                                rotate_coords=self.rotate_coord_system
                             )
         return coordinates_rel
 

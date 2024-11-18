@@ -54,7 +54,8 @@ class ICON_Transformer(nn.Module):
                  model_dim_out: int=1,
                  n_head_channels:int=16,
                  pos_emb_calc: str='cartesian_km',
-                 n_vars_total=1
+                 n_vars_total:int=1,
+                 rotate_coord_system: bool=True
                  ) -> None: 
         
         """
@@ -94,6 +95,7 @@ class ICON_Transformer(nn.Module):
         :param n_head_channels: Number of channels per attention head.
         :param pos_emb_calc: Method for position embedding calculation.
         :param n_vars_total: Total number of variables to handle. Set to 1 if model runs in variable-dependent mode
+        :param rotate_coord_system: Whether to rotate the coord system with respect to target points.
 
         """
                 
@@ -160,7 +162,7 @@ class ICON_Transformer(nn.Module):
             global_levels_block_decoder[-1]=[0]
 
             model_dims_decoder = list([[int(k)] for k in torch.tensor(model_dims_encoder)[:,0]])
-            model_dims_decoder[-1] = model_dim_out
+            #model_dims_decoder[-1] = model_dim_out
         else:
             global_levels_block_decoder = check_value(global_levels_block_decoder, n_blocks)
             model_dims_decoder = check_value(model_dims_decoder, n_blocks)
@@ -176,12 +178,12 @@ class ICON_Transformer(nn.Module):
             model_dims_encode = model_dims_encoder[k] 
             model_dims_decode = model_dims_decoder[k]
 
-            if k==n_blocks-1:
-                if global_levels_decode[-1]!=0:
-                    global_levels_decode.append(0)
-                    model_dims_decode.append(model_dim_out)
-                else:
-                    model_dims_decode[-1]=model_dim_out
+            #if k==n_blocks-1:
+                #if global_levels_decode[-1]!=0:
+                #    global_levels_decode.append(0)
+                #    model_dims_decode.append(model_dim_out)
+                #else:
+                #    model_dims_decode[-1]=model_dim_out
 
             no_layer_encoder = {'n_sigma': mg_encoder_n_sigma[k],
                                 'n_dists': mg_encoder_n_dist[k],
@@ -196,7 +198,8 @@ class ICON_Transformer(nn.Module):
                                 'use_von_mises': use_von_mises[k],
                                 'with_mean_res': with_mean_res[k],
                                 'with_channel_res': with_channel_res[k],
-                                'kappa_init': kappa_init[k]}
+                                'kappa_init': kappa_init[k],
+                                'rotate_coord_system': rotate_coord_system}
 
             no_layer_decoder = {'n_sigma': mg_decoder_n_sigma[k],
                                 'n_dists': mg_decoder_n_dist[k],
@@ -211,7 +214,8 @@ class ICON_Transformer(nn.Module):
                                 'use_von_mises': use_von_mises[k],
                                 'with_mean_res': with_mean_res[k],
                                 'with_channel_res': with_channel_res[k],
-                                'kappa_init': kappa_init[k]}
+                                'kappa_init': kappa_init[k],
+                                'rotate_coord_system': rotate_coord_system}
 
             # Add a Multi-Grid Block to the model
             self.MGBlocks.append(MultiGridBlock(grid_layers,
@@ -233,7 +237,7 @@ class ICON_Transformer(nn.Module):
                                                 pos_emb_calc='cartesian_km',
                                                 emb_table_bins=16,
                                                 first_block=True if k==0 else False,
-                                                last_block=True if k==n_blocks-1 else False))
+                                                output_dim=model_dim_out if k==n_blocks-1 else None))
         
         
 

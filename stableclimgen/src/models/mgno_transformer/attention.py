@@ -107,7 +107,7 @@ class MultiGridChannelAttention(nn.Module):
                                    output_layer is set to False.
     """
 
-    def __init__(self, model_dims_in: torch.Tensor, model_dim_out: int, n_chunks: int = 4, n_head_channels: int = 16, output_layer: bool = False) -> None:
+    def __init__(self, model_dims_in: torch.Tensor, model_dim_out: int, n_chunks: int = 4, n_head_channels: int = 16) -> None:
         """
         Initializes the MultiGridChannelAttention module.
 
@@ -123,25 +123,14 @@ class MultiGridChannelAttention(nn.Module):
         model_dims_in_total = int(model_dims_in.sum())
 
         # Determine the output dimension for the attention layer
-        if output_layer:
-            model_dim_att_out = int(model_dims_in.min())
-        else:
-            model_dim_att_out = model_dim_out
+        
+        model_dim_att_out = model_dim_out
 
         # Initialize the channel variable attention layer
         self.att_layer = ChannelVariableAttention(
             model_dims_in_total, n_chunks, n_head_channels, model_dim_out=model_dim_att_out
         )
 
-        # If an output layer is needed, set up an MLP layer
-        if output_layer:
-            self.mlp_layer_out = nn.Sequential(
-                nn.Linear(model_dim_att_out, model_dim_att_out // 2, bias=False),
-                nn.SiLU(),
-                nn.Linear(model_dim_att_out // 2, model_dim_out, bias=False)
-            )
-        else:
-            self.mlp_layer_out = nn.Identity()
 
     def forward(self, x_levels: list, mask: torch.Tensor = None) -> torch.Tensor:
         """
@@ -155,7 +144,7 @@ class MultiGridChannelAttention(nn.Module):
         x = self.att_layer(torch.concat(x_levels, dim=-1), mask=mask)[0]
 
         # Apply the output MLP layer or identity
-        return self.mlp_layer_out(x)
+        return x
 
         
         

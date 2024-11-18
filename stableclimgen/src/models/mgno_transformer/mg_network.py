@@ -26,7 +26,8 @@ class MultiGridBlock(nn.Module):
                  pos_emb_calc='cartesian_km',
                  emb_table_bins=16,
                  first_block=False,
-                 last_block=False,
+                 output_dim=None,
+                 rotate_coord_system=True
                  ):
         
         """
@@ -50,7 +51,6 @@ class MultiGridBlock(nn.Module):
         :param n_head_channels: Number of channels per attention head.
         :param pos_emb_calc: Method for position embedding calculation.
         :param emb_table_bins: Number of bins for embedding table.
-        :param output_layer: Whether this block is the final output layer.
         """
 
         super().__init__()      
@@ -80,7 +80,8 @@ class MultiGridBlock(nn.Module):
                                                     nh=nh,
                                                     n_head_channels=n_head_channels,
                                                     pos_emb_calc=pos_emb_calc,
-                                                    emb_table_bins=emb_table_bins)
+                                                    emb_table_bins=emb_table_bins,
+                                                    rotate_coord_system=rotate_coord_system)
 
 
         self.mg_layer = MultiGridDecoder(grid_layers,
@@ -90,7 +91,7 @@ class MultiGridBlock(nn.Module):
                                            model_dims_decode,
                                            no_layer_settings=decoder_no_layer_settings,
                                            n_head_channels=n_head_channels,
-                                           output_layer=last_block)
+                                           output_dim=output_dim)
 
 
     def forward(self, x, indices_layers, indices_batch_dict, mask=None, coords_in=None, coords_out=None):
