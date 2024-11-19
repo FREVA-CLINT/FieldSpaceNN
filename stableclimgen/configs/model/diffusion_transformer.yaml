@@ -9,19 +9,24 @@ model:
   model_channels: 64
   patch_emb_size: [1, 1, 1]
   patch_emb_kernel: [1, 1, 1]
-  embedding:
-    dims: 64
-    types: [ "fourier", "diffusion" ]
-    shared: [ true, false ]
+  embed_conf:
+    CoordinateEmbedder:
+      in_channels: 2
+      embed_dim: 64
+      shared: false
+    DiffusionStepEmbedder:
+      in_channels: 64
+      embed_dim: 64
+      shared: true
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "trans"
-      depth: 8
+      depth: 1
       ch_mult: 1
       sub_confs:
         blocks: ["s", "mlp"]
-        embed_confs: [["fourier", "diffusion"], ["diffusion"]]
-
+        embedder_names: [["CoordinateEmbedder", "DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embed_confs: ${model.model.embed_conf}
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
   diffusion_steps: 1000

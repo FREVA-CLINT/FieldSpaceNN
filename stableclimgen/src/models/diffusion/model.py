@@ -4,14 +4,13 @@ import torch
 import torch.nn as nn
 
 # Import necessary modules for the diffusion generator architecture
-from ...modules.embedding.embedding_layers import DiffusionStepEmbedder
 from ...modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...modules.utils import EmbedBlockSequential
-from ...utils.helpers import expand_tensor_x_to_y
+from ...utils.helpers import check_value
 
 
 class DiffusionBlockConfig:
@@ -27,13 +26,14 @@ class DiffusionBlockConfig:
     """
 
     def __init__(self, depth: int, block_type: str, ch_mult: float, sub_confs: dict, enc: bool = False,
-                 dec: bool = False):
+                 dec: bool = False, embedders: List[List[str]] = None):
         self.depth = depth
         self.block_type = block_type
         self.sub_confs = sub_confs
         self.enc = enc
         self.dec = dec
         self.ch_mult = ch_mult
+        self.embedders = embedders
 
 
 class DiffusionGenerator(nn.Module):
@@ -61,6 +61,7 @@ class DiffusionGenerator(nn.Module):
             block_configs: List[DiffusionBlockConfig],
             model_channels: int = 64,
             embed_dim: Optional[int] = None,
+            embed_conf: Dict = None,
             skip_connections: bool = False,
             patch_emb_type: str = "conv",
             patch_emb_size: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
@@ -80,7 +81,6 @@ class DiffusionGenerator(nn.Module):
 
         # Define embedding dimensions and diffusion step embedding
         self.embed_dim = embed_dim
-        self.diffusion_step_emb = DiffusionStepEmbedder(model_channels, embed_dim)
 
         # Define input patch embedding
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(

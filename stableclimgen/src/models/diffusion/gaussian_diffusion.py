@@ -251,14 +251,18 @@ class GaussianDiffusion:
             model_kwargs = {}
 
         # Ensure correct input shapes
-        B, C = x.shape[:2]
-        assert t.shape == (B,)
-        model_output = model(x, self._scale_steps(t), mask_data, cond_data, coords, **model_kwargs)
+        b, c = x.shape[0], x.shape[-1]
+        assert t.shape == (b,)
+        emb = {
+            "DiffusionStepEmbedder": self._scale_steps(t),
+            "CoordinateEmbedder": coords
+        }
+        model_output = model(x, emb, mask_data, cond_data)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             # Splits the output into predicted mean and log variance
-            assert model_output.shape == (B, C * 2, *x.shape[2:])
-            model_output, model_var_values = torch.split(model_output, C, dim=1)
+            assert model_output.shape == (*x.shape[:-1], c * 2)
+            model_output, model_var_values = torch.split(model_output, c, dim=-1)
             if self.model_var_type == ModelVarType.LEARNED:
                 model_log_variance = model_var_values
                 model_variance = torch.exp(model_log_variance)
@@ -285,10 +289,10 @@ class GaussianDiffusion:
             model_variance = extract_into_tensor(model_variance, t, x.shape)
             model_log_variance = extract_into_tensor(model_log_variance, t, x.shape)
 
-        def process_xstart(x):
+        def process_xstart(in_tensor):
             if denoised_fn is not None:
-                x = denoised_fn(x)
-            return x
+                in_tensor = denoised_fn(in_tensor)
+            return in_tensor
 
         # Predict initial x depending on mean type
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -455,7 +459,6 @@ class GaussianDiffusion:
             mask_data: torch.Tensor,
             cond_data: torch.Tensor,
             coords: torch.Tensor,
-            model_kwargs: Optional[Dict[str, Union[torch.Tensor, np.ndarray]]] = None,
             noise: Optional[torch.Tensor] = None
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         """
@@ -467,7 +470,6 @@ class GaussianDiffusion:
         :param mask_data: Mask data applied to x_t.
         :param cond_data: Conditioning data.
         :param coords: Coordinates tensor.
-        :param model_kwargs: Extra keyword arguments for the model (default is None).
         :param noise: Optional Gaussian noise tensor of the same shape as gt_data.
         :return: A tuple where the first element is a dictionary with keys:
                  - "loss": Training loss tensor of shape [N].
@@ -475,8 +477,6 @@ class GaussianDiffusion:
                  - "vb": Variational bound (if applicable).
                  The second element is a tensor containing the intermediate results.
         """
-        if model_kwargs is None:
-            model_kwargs = {}
         if noise is None:
             noise = torch.randn_like(gt_data)
 
@@ -495,24 +495,25 @@ class GaussianDiffusion:
                 mask_data=mask_data,
                 cond_data=cond_data,
                 coords=coords,
-                t=t,
-                model_kwargs=model_kwargs,
+                t=t
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.diffusion_steps  # Rescale the KL term
 
         # Compute MSE or Rescaled MSE losses for applicable loss types
         elif self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
-            model_output = model(
-                x_t, self._scale_steps(t), mask_data, cond_data, coords, **model_kwargs
-            )
+            emb = {
+                "DiffusionStepEmbedder": self._scale_steps(t),
+                "CoordinateEmbedder": coords
+            }
+            model_output = model(x_t, emb, mask_data, cond_data)
 
             if self.model_var_type in {ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE}:
-                B, C = x_t.shape[:2]
-                assert model_output.shape == (B, C * 2, *x_t.shape[2:])
-                model_output, model_var_values = torch.split(model_output, C, dim=1)
+                b, c = x_t.shape[0], x_t.shape[-1]
+                assert model_output.shape == (b, c * 2, *x_t.shape[2:])
+                model_output, model_var_values = torch.split(model_output, c, dim=-1)
                 # Variational bound for learning variance without affecting mean prediction
-                frozen_out = torch.cat([model_output.detach(), model_var_values], dim=1)
+                frozen_out = torch.cat([model_output.detach(), model_var_values], dim=-1)
                 terms["vb"] = self._vb_terms_bpd(
                     model=lambda *args, r=frozen_out: r,
                     x_start=gt_data,

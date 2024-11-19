@@ -6,6 +6,7 @@ import torch.nn as nn
 from torch import ModuleDict
 
 from .embedding_layers import RandomFourierLayer, SinusoidalLayer
+from ...utils.helpers import expand_tensor
 
 
 class BaseEmbedder(nn.Module):
@@ -47,6 +48,10 @@ class CoordinateEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
         super().__init__(name, in_channels, embed_dim)
+
+        # keep batch and channel dimensions
+        self.keep_dims = [0, 2, -1]
+
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
             RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim),
@@ -74,7 +79,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch and channel dimensions
-        self.keep_dims = []
+        self.keep_dims = [0, -1]
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn = nn.Sequential(
@@ -87,6 +92,13 @@ class DiffusionStepEmbedder(BaseEmbedder):
 
 # Embedder manager to handle shared or non-shared instances
 class EmbedderManager:
+    _instance = None
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super(EmbedderManager, cls).__new__(
+                cls, *args, **kwargs)
+        return cls._instance
+
     def __init__(self):
         self.shared_embedders = {}
 
@@ -117,11 +129,10 @@ class EmbedderSequential(nn.Module):
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode = mode
 
-    def forward(self, inputs: Dict[str, torch.Tensor], batch_size: int):
+    def forward(self, inputs: Dict[str, torch.Tensor]):
         """
         Args:
             inputs (dict): A dictionary of input tensors where each key corresponds to an embedder.
-            batch_size (int): The desired batch-size for each embedding.
 
         Returns:
             torch.Tensor: The combined embedding tensor.
@@ -138,7 +149,7 @@ class EmbedderSequential(nn.Module):
             embed_output = embedder(input_tensor)
 
             # Reshape the output to the target output_shape
-            embed_output = embed_output.view(output_shape)
+            embed_output = expand_tensor(embed_output, keep_dims=embedder.keep_dims)
             embeddings.append(embed_output)
 
         # Combine embeddings according to the mode

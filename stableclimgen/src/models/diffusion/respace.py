@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from typing import Union, List, Set
+from typing import Union, List, Set, Dict
 from .gaussian_diffusion import GaussianDiffusion
 from .model import DiffusionGenerator
 
@@ -147,25 +147,24 @@ class _WrappedModel:
         self.rescale_steps = rescale_steps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x: torch.Tensor, diffusion_steps: torch.Tensor, mask: torch.Tensor,
-                 cond: torch.Tensor, coords: torch.Tensor, **kwargs) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, emb: Dict, mask: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
         """
         Call the wrapped model with rescaled diffusion steps.
 
         :param x: Input tensor.
-        :param diffusion_steps: Diffusion step tensor to map and rescale.
+        :param emb: Embedding tensor.
         :param mask: Mask tensor for diffusion.
         :param cond: Conditional input tensor.
-        :param coords: Coordinate tensor for input.
-        :param kwargs: Additional arguments for the model.
         :return: Output from the model with rescaled diffusion steps.
         """
         # Convert diffusion_step_map to a tensor on the correct device and type
+        diffusion_steps = emb["DiffusionStepEmbedder"]
         map_tensor = torch.tensor(self.diffusion_step_map, device=diffusion_steps.device, dtype=diffusion_steps.dtype)
         new_ts = map_tensor[diffusion_steps]  # Map diffusion steps
 
         # Rescale steps if necessary
         if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
+        emb["DiffusionStepEmbedder"] = new_ts
 
-        return self.model(x, new_ts, mask, cond, coords, **kwargs)
+        return self.model(x, emb, mask, cond)

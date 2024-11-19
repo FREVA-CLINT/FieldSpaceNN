@@ -4,7 +4,7 @@ from typing import Optional, Union, List, Tuple, Dict
 
 from stableclimgen.src.modules.cnn.conv import Upsample, Downsample
 from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
-from stableclimgen.src.utils.helpers import expand_tensor_x_to_y, expand_tensor_to_shape
+from stableclimgen.src.utils.helpers import expand_tensor
 
 
 class ResBlock(EmbedBlock):
@@ -106,7 +106,7 @@ class ResBlock(EmbedBlock):
 
         if self.emb_channels:
             emb_out = self.emb_layers(emb).type(h.dtype)
-            emb_out = expand_tensor_to_shape(emb_out, h.shape, keep_dims=[0, 1])
+            emb_out = expand_tensor(emb_out, h.shape, keep_dims=[0, 1])
 
             # Apply scale-shift normalization if configured
             if self.use_scale_shift_norm:

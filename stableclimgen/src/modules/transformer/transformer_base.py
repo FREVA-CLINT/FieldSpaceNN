@@ -11,6 +11,7 @@ from stableclimgen.src.modules.rearrange import (RearrangeTimeCentric, Rearrange
                                                  RearrangeVarCentric)
 from stableclimgen.src.modules.utils import EmbedBlock
 from .. import embedding as embedding
+from ...utils.helpers import check_value
 
 
 class SelfAttention(nn.Module):
@@ -182,7 +183,8 @@ class TransformerBlock(EmbedBlock):
             in_ch: int,
             out_ch: List[int],
             blocks: List[str],
-            embedder_args: List[Dict] = None,
+            embedder_names: List[List[str]] = None,
+            embed_confs: Dict = None,
             emb_mode: str = "sum",
             num_heads: List[int] = 1,
             mlp_mult: List[int] = 1,
@@ -194,9 +196,10 @@ class TransformerBlock(EmbedBlock):
 
         if not out_ch:
             out_ch = in_ch  # Default output channels to input channels if not provided
-        if isinstance(blocks, str):
-            blocks = [blocks]  # Ensure blocks is a list
-
+        out_ch = check_value(out_ch, len(blocks))
+        num_heads = check_value(num_heads, len(blocks))
+        mlp_mult = check_value(mlp_mult, len(blocks))
+        dropout = check_value(dropout, len(blocks))
         assert len(out_ch) == len(blocks)
 
         trans_blocks, embedders, norms = [], [], []
@@ -226,10 +229,10 @@ class TransformerBlock(EmbedBlock):
                 ), spatial_dim_count)
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
-            if embedder_args:
+            if embedders:
                 emb_dict = nn.ModuleDict()
-                for emb_name, emb_conf in embedder_args[i].items():
-                    emb: BaseEmbedder = EmbedderManager.get_embedder(emb_name, **emb_conf)
+                for emb_name in embedder_names[i]:
+                    emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
                     emb_dict[emb.name] = emb
                 embedder_seq = EmbedderSequential(emb_dict, mode=emb_mode)
                 embedders.append(embedder_seq)
@@ -258,10 +261,11 @@ class TransformerBlock(EmbedBlock):
         :param cond: Optional conditioning tensor (additional input).
         :return: Output tensor after applying all blocks sequentially.
         """
-        for norm, embedder, block in zip_longest(self.norms, self.blocks, self.embedders, fillvalue=None):
+        for norm, block, embedder in zip_longest(self.norms, self.blocks, self.embedders, fillvalue=None):
             if embedder:
                 # Apply the embedding transformation (scale and shift)
                 scale, shift = embedder(emb).chunk(2, dim=-1)
+                print(scale.shape)
                 out = norm(x) * (scale + 1) + shift
             else:
                 out = norm(x)
