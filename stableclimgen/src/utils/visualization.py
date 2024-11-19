@@ -118,7 +118,7 @@ def plot_images(
                         axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
                         # Create a pcolormesh with geospatial coordinates
                         pcm = axes[i, index].pcolormesh(
-                            coords[0, 1, 0, :, v], coords[0, 0, :, 0, v],
+                            coords[0, 0, :, v, 1], coords[0, :, 0, v, 0],
                             np.squeeze(data[i, j, ..., v, :].numpy()),
                             vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), shading='auto',
                             cmap="RdBu_r", rasterized=True

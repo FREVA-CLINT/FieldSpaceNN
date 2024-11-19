@@ -170,8 +170,8 @@ class TransformerBlock(EmbedBlock):
     :param in_ch: Number of input channels.
     :param out_ch: List of output channels for each block in the sequence.
     :param blocks: List of blocks to include, can be "mlp", "t", "s", or "v" for self-attention.
-    :param embedder_args: List of dictionaries containing the arguments for the embedders for each block.
-    :param emb_mode: Mode for embedding application, default is "sum".
+    :param embed_confs: List of dictionaries containing the arguments for the embedders for each block.
+    :param embed_mode: Mode for embedding application, default is "sum".
     :param num_heads: List of number of attention heads for each attention block.
     :param mlp_mult: List of multipliers for hidden channels in MLP blocks.
     :param dropout: List of dropout probabilities for each block.
@@ -185,7 +185,7 @@ class TransformerBlock(EmbedBlock):
             blocks: List[str],
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
-            emb_mode: str = "sum",
+            embed_mode: str = "sum",
             num_heads: List[int] = 1,
             mlp_mult: List[int] = 1,
             dropout: List[float] = 0.,
@@ -202,16 +202,11 @@ class TransformerBlock(EmbedBlock):
         dropout = check_value(dropout, len(blocks))
         assert len(out_ch) == len(blocks)
 
-        trans_blocks, embedders, norms = [], [], []
+        trans_blocks, embedders, embedding_layers, norms = [], [], [], []
         for i, block in enumerate(blocks):
             # Add MLP layer if specified
             if block == "mlp":
-                trans_block = MLPLayer(
-                    in_ch,
-                    out_ch[i],
-                    mlp_mult[i],
-                    dropout[i]
-                )
+                trans_block = MLPLayer(in_ch, out_ch[i], mlp_mult[i], dropout[i])
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=False)
             else:
                 # Select rearrangement function based on block type
@@ -222,20 +217,19 @@ class TransformerBlock(EmbedBlock):
                 else:
                     assert block == "v"
                     rearrange_fn = RearrangeVarCentric
-                trans_block = rearrange_fn(SelfAttention(
-                    in_ch,
-                    out_ch[i],
-                    num_heads[i],
-                ), spatial_dim_count)
+                trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count)
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
-            if embedders:
+            if embedder_names:
                 emb_dict = nn.ModuleDict()
                 for emb_name in embedder_names[i]:
                     emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
                     emb_dict[emb.name] = emb
-                embedder_seq = EmbedderSequential(emb_dict, mode=emb_mode)
+                embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = spatial_dim_count)
+                embedding_layer = torch.nn.Linear(embedder_seq.get_out_channels, 2 * in_ch)
+
                 embedders.append(embedder_seq)
+                embedding_layers.append(embedding_layer)
 
             # append normalization and trans_block
             trans_blocks.append(trans_block)
@@ -244,6 +238,7 @@ class TransformerBlock(EmbedBlock):
             in_ch = out_ch if isinstance(out_ch, int) else out_ch[i]
 
         self.embedders = nn.ModuleList(embedders)
+        self.embedding_layers = nn.ModuleList(embedding_layers)
         self.blocks = nn.ModuleList(trans_blocks)
         self.norms = nn.ModuleList(norms)
 
@@ -261,11 +256,10 @@ class TransformerBlock(EmbedBlock):
         :param cond: Optional conditioning tensor (additional input).
         :return: Output tensor after applying all blocks sequentially.
         """
-        for norm, block, embedder in zip_longest(self.norms, self.blocks, self.embedders, fillvalue=None):
+        for norm, block, embedder, embedding_layer in zip_longest(self.norms, self.blocks, self.embedders, self.embedding_layers, fillvalue=None):
             if embedder:
                 # Apply the embedding transformation (scale and shift)
-                scale, shift = embedder(emb).chunk(2, dim=-1)
-                print(scale.shape)
+                scale, shift = embedding_layer(embedder(emb)).chunk(2, dim=-1)
                 out = norm(x) * (scale + 1) + shift
             else:
                 out = norm(x)

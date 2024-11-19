@@ -152,9 +152,9 @@ class ClimateDataset(Dataset):
             lats = torch.from_numpy(coords[var][file_index]["lat"].values)
             lons = torch.from_numpy(coords[var][file_index]["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
-            data_coords.append(torch.stack((lat_grid, lon_grid)))
+            data_coords.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
 
-        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-1)
+        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-2)
 
     def __len__(self) -> int:
         """

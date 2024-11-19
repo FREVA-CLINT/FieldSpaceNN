@@ -7,19 +7,34 @@ def check_value(value, n_repeat):
     return value
 
 def expand_tensor(tensor, dims=5, keep_dims=None):
+    if dims == 5:
+        dim_dict = {
+            "b": 0,
+            "t": 1,
+            "s": 2,
+            "v": 3,
+            "c": 4
+        }
+    else:
+        dim_dict = {
+            "b": 0,
+            "t": 1,
+            "s": [2, 3],
+            "v": 4,
+            "c": 5
+        }
+
     if keep_dims is None:
-        keep_dims = []
+        # keep all first dimensions
+        keep_dims = dim_dict.keys()[:len(tensor.shape)]
 
-    # Convert negative dimensions in keep_dims to positive ones based on the target shape length
-    keep_dims = [(dim if dim >= 0 else dims + dim) for dim in keep_dims]
+    keep_dims = [item for dim in keep_dims for item in
+                 (dim_dict[dim] if isinstance(dim_dict[dim], list) else [dim_dict[dim]])]
 
-    while dims > len(tensor.shape):
-        current_dim = len(tensor.shape)
+    assert len(tensor.shape) == len(keep_dims)
 
-        if current_dim - 1 in keep_dims:
-            tensor = tensor[..., None]
-        else:
-            # Add the new dimension at the end of the current shape
-            tensor = tensor[..., None, :]
+    for d in range(dims):
+        if d not in keep_dims:
+            tensor = tensor.unsqueeze(d)
 
     return tensor

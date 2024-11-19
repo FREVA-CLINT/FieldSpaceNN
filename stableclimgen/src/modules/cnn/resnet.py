@@ -2,9 +2,12 @@ import torch
 import torch.nn as nn
 from typing import Optional, Union, List, Tuple, Dict
 
+from einops import rearrange
+
 from stableclimgen.src.modules.cnn.conv import Upsample, Downsample
+from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
 from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
-from stableclimgen.src.utils.helpers import expand_tensor
+from stableclimgen.src.utils.helpers import expand_tensor, check_value
 
 
 class ResBlock(EmbedBlock):
@@ -28,14 +31,15 @@ class ResBlock(EmbedBlock):
                  block_type: str,
                  kernel_size: Tuple[int, int, int],
                  padding: Tuple[int, int, int],
-                 embed_dim: Optional[int] = None,
+                 embedder_names: List[str] = None,
+                 embed_confs: Dict = None,
+                 embed_mode: str = "sum",
                  dropout: float = 0.0,
                  use_conv: bool = False,
                  use_scale_shift_norm: bool = False):
         super().__init__()
         self.in_ch = in_ch
         self.out_ch = out_ch
-        self.emb_channels = embed_dim
         self.dropout = dropout
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
@@ -59,14 +63,13 @@ class ResBlock(EmbedBlock):
             self.h_upd = self.x_upd = nn.Identity()
 
         # Define embedding layers if embedding channels are provided
-        if self.emb_channels:
-            self.emb_layers = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(
-                    self.emb_channels,
-                    2 * self.out_ch if use_scale_shift_norm else self.out_ch,
-                ),
-            )
+        if embedder_names:
+            emb_dict = nn.ModuleDict()
+            for emb_name in embedder_names:
+                emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
+                emb_dict[emb.name] = emb
+            self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=2)
+            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch)
 
         # Define the output layers including dropout and convolution
         self.out_layers = nn.Sequential(
@@ -104,9 +107,9 @@ class ResBlock(EmbedBlock):
         else:
             h = self.in_layers(x)  # Apply input layers directly
 
-        if self.emb_channels:
-            emb_out = self.emb_layers(emb).type(h.dtype)
-            emb_out = expand_tensor(emb_out, h.shape, keep_dims=[0, 1])
+        if hasattr(self, "embedding_layer"):
+            emb_out = self.embedding_layer(self.embedder_seq(emb))
+            emb_out = rearrange(emb_out, 'b t h w v c -> (b v) c t h w')
 
             # Apply scale-shift normalization if configured
             if self.use_scale_shift_norm:
@@ -139,29 +142,40 @@ class ResBlockSequential(EmbedBlock):
     :param use_scale_shift_norm: Whether to use scale-shift normalization.
     """
 
-    def __init__(self, in_ch: int, out_ch: List[int], blocks: Union[str, List[str]],
-                 kernel_size: Union[Tuple[int, int, int], List[Tuple[int, int, int]]] = (1, 3, 3),
-                 embed_dim: Optional[Union[int, List[int]]] = None, dropout: Union[float, List[float]] = 0.0,
-                 use_conv: Union[bool, List[bool]] = False, use_scale_shift_norm: Union[bool, List[bool]] = False):
+    def __init__(
+            self,
+            in_ch: int,
+            out_ch: List[int],
+            blocks: Union[str, List[str]],
+            kernel_size: Union[Tuple[int, int, int], List[Tuple[int, int, int]]] = (1, 3, 3),
+            embedder_names: List[List[str]] = None,
+            embed_confs: Dict = None,
+            embed_mode: str = "sum",
+            dropout: Union[float, List[float]] = 0.0,
+            use_conv: Union[bool, List[bool]] = False,
+            use_scale_shift_norm: Union[bool, List[bool]] = False):
         super().__init__()
-        if isinstance(blocks, str):
-            blocks = [blocks]  # Ensure blocks is a list
-        if isinstance(kernel_size, tuple):
-            kernel_size = len(blocks) * [kernel_size]  # Replicate kernel size for each block
+        out_ch = check_value(out_ch, len(blocks))
+        kernel_size = check_value(kernel_size, len(blocks))
+        dropout = check_value(dropout, len(blocks))
+        use_conv = check_value(use_conv, len(blocks))
+        use_scale_shift_norm = check_value(use_scale_shift_norm, len(blocks))
 
         res_blocks = []
         for i, block in enumerate(blocks):
             padding = tuple(kernel_size[i][j] // 2 for j in range(len(kernel_size[i])))
             res_blocks.append(ResBlock(
                 in_ch,
-                out_ch if isinstance(out_ch, int) else out_ch[i],
+                out_ch[i],
                 block,
                 kernel_size[i],
                 padding,
-                embed_dim if isinstance(embed_dim, int) or embed_dim is None else embed_dim.pop(0),
-                dropout if isinstance(dropout, float) else dropout.pop(0),
-                use_conv if isinstance(use_conv, bool) else use_conv.pop(0),
-                use_scale_shift_norm if isinstance(use_scale_shift_norm, bool) else use_scale_shift_norm.pop(0)
+                embedder_names[i] if embedder_names else None,
+                embed_confs,
+                embed_mode,
+                dropout[i],
+                use_conv[i],
+                use_scale_shift_norm[i]
             ))
             in_ch = out_ch if isinstance(out_ch, int) else out_ch[i]
         # Sequential container for ResBlocks

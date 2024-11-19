@@ -37,7 +37,6 @@ class BaseEmbedder(nn.Module):
         return self.embedding_fn(emb)
 
 
-
 class CoordinateEmbedder(BaseEmbedder):
     """
     A neural network module to embed longitude and latitude coordinates.
@@ -49,8 +48,8 @@ class CoordinateEmbedder(BaseEmbedder):
     def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        # keep batch and channel dimensions
-        self.keep_dims = [0, 2, -1]
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "s", "v", "c"]
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -79,7 +78,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch and channel dimensions
-        self.keep_dims = [0, -1]
+        self.keep_dims = ["b", "c"]
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn = nn.Sequential(
@@ -118,7 +117,7 @@ class EmbedderManager:
 
 
 class EmbedderSequential(nn.Module):
-    def __init__(self, embedders: ModuleDict, mode='sum'):
+    def __init__(self, embedders: ModuleDict, mode='sum', spatial_dim_count = 2):
         """
         Args:
             embedders (dict): A dictionary of embedders. Keys are names, values are instances of embedders.
@@ -128,6 +127,7 @@ class EmbedderSequential(nn.Module):
         self.embedders = embedders
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode = mode
+        self.spatial_dim_count = spatial_dim_count
 
     def forward(self, inputs: Dict[str, torch.Tensor]):
         """
@@ -149,7 +149,7 @@ class EmbedderSequential(nn.Module):
             embed_output = embedder(input_tensor)
 
             # Reshape the output to the target output_shape
-            embed_output = expand_tensor(embed_output, keep_dims=embedder.keep_dims)
+            embed_output = expand_tensor(embed_output, dims=4 + self.spatial_dim_count, keep_dims=embedder.keep_dims)
             embeddings.append(embed_output)
 
         # Combine embeddings according to the mode
@@ -158,7 +158,20 @@ class EmbedderSequential(nn.Module):
             return torch.cat(embeddings, dim=-1)
         elif self.mode == 'sum':
             # Sum the embeddings
-            return torch.stack(embeddings, dim=0).sum(dim=0)
+            emb_sum = embeddings.pop(0)
+            for emb in embeddings:
+                emb_sum.add_(emb)
+            return emb_sum
         elif self.mode == 'average':
-            # Average the embeddings
-            return torch.stack(embeddings, dim=0).mean(dim=0)
+            # Sum the embeddings
+            emb_sum = embeddings.pop(0)
+            for emb in embeddings:
+                emb_sum.add_(emb)
+            return emb_sum / (len(embeddings) + 1)
+
+    @property
+    def get_out_channels(self):
+        if self.mode == "concat":
+            return sum([emb.embed_dim for _, emb in self.embedders.items()])
+        else:
+            return [emb.embed_dim for _, emb in self.embedders.items()][-1]

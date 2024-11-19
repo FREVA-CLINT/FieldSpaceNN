@@ -21,12 +21,13 @@ model:
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "trans"
-      depth: 1
+      depth: 4
       ch_mult: 1
       sub_confs:
         blocks: ["s", "mlp"]
         embedder_names: [["CoordinateEmbedder", "DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
         embed_confs: ${model.model.embed_conf}
+        embed_mode: "sum"
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
   diffusion_steps: 1000

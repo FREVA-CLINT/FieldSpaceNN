@@ -106,7 +106,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
             diff_steps = self.gaussian_diffusion.diffusion_steps
             t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
             cond = torch.stack(10 * [cond_data[i]])
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, gt_coords)
+            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, torch.stack(10 * [gt_coords[i]]))
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
