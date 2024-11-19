@@ -4,6 +4,7 @@ defaults:
   - model: diffusion_transformer
   - dataloader: xarray
   - hydra: default
+  - embedding: default
   - _self_
 
 ckpt_path: null

@@ -18,14 +18,16 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal", "normal", "down"]
-        embed_dim: 64
+        embedder_names: [["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
       depth: 3
       ch_mult: 2
       sub_confs:
-        blocks: "normal"
-        embed_dim: 64
+        blocks: ["normal"]
+        embedder_names: [["DiffusionStepEmbedder"]]
+        embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
       depth: 4
@@ -33,7 +35,8 @@ model:
       ch_mult: 0.5
       sub_confs:
         blocks: ["normal", "normal", "up"]
-        embed_dim: 64
+        embedder_names: [["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embed_confs: ${embedding}
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
