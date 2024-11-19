@@ -170,7 +170,7 @@ class NetCDFLoader_lazy(Dataset):
         self.global_cells_input = self.global_cells[:,0]
             
         ds_source = xr.open_dataset(self.files_source[0])
-        self.len_dataset = len(ds_source)*self.global_cells.shape[1] #ds_source[self.variables_source[0]].shape[0]
+        self.len_dataset = 200#len(ds_source)*self.global_cells.shape[1] 
     
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -257,13 +257,13 @@ class NetCDFLoader_lazy(Dataset):
         else:
             sample_vars = torch.arange(len(self.variables_source))
 
-        self.variables_source = np.array(self.variables_source)[sample_vars]
-        self.variables_target = np.array(self.variables_target)[sample_vars]
+        variables_source = np.array(self.variables_source)[sample_vars]
+        variables_target = np.array(self.variables_target)[sample_vars]
 
-        data_source = self.get_data(ds_source, index, global_cells[sample_index] , self.variables_source, 0, input_mapping)
+        data_source = self.get_data(ds_source, index, global_cells[sample_index] , variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, index, global_cells[sample_index] , self.variables_target, 0, output_mapping)
+            data_target = self.get_data(ds_target, index, global_cells[sample_index] , variables_target, 0, output_mapping)
         else:
             data_target = data_source
 
@@ -315,10 +315,10 @@ class NetCDFLoader_lazy(Dataset):
                 drop_mask[drop_mask_p]=True
 
     
-        for k, var in enumerate(self.variables_source):
+        for k, var in enumerate(variables_source):
             data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
         
-        for k, var in enumerate(self.variables_target):
+        for k, var in enumerate(variables_target):
             data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
 
         data_source[drop_mask] = 0

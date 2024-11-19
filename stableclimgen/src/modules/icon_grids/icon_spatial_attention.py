@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 from ...utils.grid_utils_icon import sequenize
-from .pos_embedding import PositionEmbedder
-from ..modules.transformer_modules import MultiHeadAttentionBlock
+from ..embedding.pos_embedding_cont import PositionEmbedder
+from ..transformer.transformer_modules import MultiHeadAttentionBlock
 from .icon_grids import RelativeCoordinateManager
 
 class IconSpatialAttention(nn.Module):

@@ -20,9 +20,11 @@ class MultiGridBlock(nn.Module):
                  encoder_simul=False,
                  processing_method=None,
                  processing_min_lvl=2,
+                 processing_no_layer_settings=None,
                  seq_level_attention=2, 
                  nh=1,
                  n_head_channels=16, 
+                 mg_attention_chunks:int=2,
                  pos_emb_calc='cartesian_km',
                  emb_table_bins=16,
                  first_block=False,
@@ -78,6 +80,7 @@ class MultiGridBlock(nn.Module):
                                                     model_dims_processing,
                                                     seq_level_attention,
                                                     nh=nh,
+                                                    no_layer_settings=processing_no_layer_settings,
                                                     n_head_channels=n_head_channels,
                                                     pos_emb_calc=pos_emb_calc,
                                                     emb_table_bins=emb_table_bins,
@@ -91,6 +94,7 @@ class MultiGridBlock(nn.Module):
                                            model_dims_decode,
                                            no_layer_settings=decoder_no_layer_settings,
                                            n_head_channels=n_head_channels,
+                                           mg_attention_chunks=mg_attention_chunks,
                                            output_dim=output_dim)
 
 

@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .icon_spatial_attention import IconSpatialAttention
+from ...modules.icon_grids.icon_spatial_attention import IconSpatialAttention
+from ...modules.neural_operator.neural_operator import NoLayer
 
 class ProcessingLayer(nn.Module):
     """
@@ -30,6 +31,7 @@ class ProcessingLayer(nn.Module):
                  model_dims: list,
                  seq_level_attention: bool,
                  nh: int = 1,
+                 no_layer_settings=None,
                  n_head_channels: int = 16,
                  pos_emb_calc: str = 'cartesian_km',
                  emb_table_bins: int = 16,
@@ -52,6 +54,7 @@ class ProcessingLayer(nn.Module):
         """
         super().__init__()
 
+        self.processing_method = processing_method
         self.global_levels = global_levels
         self.processing_layers = nn.ModuleDict()
         self.gammas = nn.ParameterDict()
@@ -59,22 +62,37 @@ class ProcessingLayer(nn.Module):
         # Initialize processing layers for each global level
         for k, global_level in enumerate(global_levels):
             global_level = str(int(global_level))
-
+            
             nh_attention = 'nh' in processing_method
-            self.processing_layers[global_level] = IconSpatialAttention(
-                grid_layers, 
-                global_level, 
-                int(model_dims[k]),
-                n_head_channels,
-                seq_level_attention,
-                nh=nh,
-                pos_emb_calc=pos_emb_calc,
-                emb_table_bins=emb_table_bins, 
-                nh_attention=nh_attention, 
-                continous_pos_embedding=True,
-                rotate_coord_system=rotate_coord_system
-            )
 
+            if 'spatial' in processing_method:
+                self.processing_layers[global_level] = IconSpatialAttention(
+                    grid_layers, 
+                    global_level, 
+                    int(model_dims[k]),
+                    n_head_channels,
+                    seq_level_attention,
+                    nh=nh,
+                    pos_emb_calc=pos_emb_calc,
+                    emb_table_bins=emb_table_bins, 
+                    nh_attention=nh_attention, 
+                    continous_pos_embedding=True,
+                    rotate_coord_system=rotate_coord_system
+                )
+            else:
+                # overwrite
+                no_layer_settings['nh_projection'] = nh_attention
+                no_layer_settings['with_mean_res'] = False if no_layer_settings['use_von_mises'] else True
+                no_layer_settings['with_channel_res'] = True
+                self.processing_layers[global_level] = NoLayer(grid_layers,
+                                                               global_level_in=int(global_level),
+                                                               global_level_out=int(global_level),
+                                                               model_dim_in=int(model_dims[k]),
+                                                               model_dim_out=int(model_dims[k]),
+                                                               kernel_settings=no_layer_settings,
+                                                               n_head_channels=n_head_channels,
+                                                               precompute_rel_coordinates=True,
+                                                               seq_len_input=seq_level_attention)
         self.grid_layers = grid_layers
 
     def forward(self, x_levels: dict, indices_layers: dict, batch_dict: dict, drop_masks_levels: dict = None):
@@ -93,13 +111,21 @@ class ProcessingLayer(nn.Module):
         for k, global_level in enumerate(self.global_levels):
             global_level = int(global_level)
 
-            # Apply the processing layer for the current global level
-            x, mask = self.processing_layers[str(global_level)](
-                x_levels[global_level], 
-                drop_masks_levels[global_level], 
-                indices_layers, 
-                batch_dict
-            )
+            if 'spatial' in self.processing_method:
+                # Apply the processing layer for the current global level
+                x, mask = self.processing_layers[str(global_level)](
+                    x_levels[global_level], 
+                    drop_masks_levels[global_level], 
+                    indices_layers, 
+                    batch_dict
+                )
+            else:
+                x, mask = self.processing_layers[str(global_level)](
+                    x_levels[global_level], 
+                    mask=drop_masks_levels[global_level], 
+                    indices_layers=indices_layers, 
+                    sample_dict=batch_dict
+                )
 
             # Update the output tensors and masks for the current level
             x_levels[global_level] = x

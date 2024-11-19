@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..modules import transformer_modules as helpers
+from ...modules.transformer import transformer_modules as helpers
 
 class PositionEmbedder(nn.Module):
     """

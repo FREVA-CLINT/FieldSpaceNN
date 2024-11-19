@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from .attention import MultiGridChannelAttention
-from .neural_operator import NoLayer
+from ...modules.transformer.attention import MultiGridChannelAttention, MultiGridAttention_masked
+from ...modules.neural_operator.neural_operator import NoLayer
 
 
 class MultiGridDecoder(nn.Module):
@@ -31,6 +31,7 @@ class MultiGridDecoder(nn.Module):
                  model_dims_out: list,
                  no_layer_settings, 
                  n_head_channels: int = 16,
+                 mg_attention_chunks:int=2,
                  output_dim: int=None) -> None:
         """
         Initializes the MultiGridDecoder for hierarchical feature aggregation.
@@ -70,12 +71,14 @@ class MultiGridDecoder(nn.Module):
                         int(global_level_in_step),
                         int(global_level_output),
                         int(model_dims_in_step[j]), 
-                        int(model_dims_in_step[j]),
+                        int(model_dims_out[k]),
                         no_layer_settings,
-                        n_head_channels=n_head_channels
+                        n_head_channels=n_head_channels,
+                        ref_layer_in=True,
+                        precompute_rel_coordinates=True
                     )
                 else:
-                    self.projection_layers_step[str(int(global_level_in_step))] = nn.Identity()
+                    self.projection_layers_step[str(int(global_level_in_step))] = nn.Linear(int(model_dims_in_step[j]), int(model_dims_out[k]), bias=False) if int(model_dims_out[k])!=int(model_dims_in_step[j]) else nn.Identity()
 
             # Update the input model dimensions and global levels
             model_dims_in = torch.concat(
@@ -87,11 +90,19 @@ class MultiGridDecoder(nn.Module):
 
             # Store the projection and reduction layers
             self.projection_layers[str(int(global_level_output))] = self.projection_layers_step
-            self.multi_grid_reduction_layers[str(int(global_level_output))] = MultiGridChannelAttention(
-                model_dims_in_step,
+
+            self.multi_grid_reduction_layers[str(int(global_level_output))] = MultiGridAttention_masked(
+                torch.ones_like(model_dims_in_step)*int(model_dims_out[k]),
                 int(model_dims_out[k]),
-                n_head_channels=n_head_channels
+                n_head_channels=n_head_channels,
+                n_chunks=mg_attention_chunks
             )
+
+          #  self.multi_grid_reduction_layers[str(int(global_level_output))] = MultiGridChannelAttention(
+          #      torch.ones_like(model_dims_in_step)*int(model_dims_out[k]),
+          #      int(model_dims_out[k]),
+          #      n_head_channels=n_head_channels
+          #  )
         
         if output_dim is not None:
             self.mlp_layer_out = nn.Sequential(
@@ -123,7 +134,7 @@ class MultiGridDecoder(nn.Module):
         # Iterate over the output global levels and aggregate data
         for global_level_output, projection_layers_output in self.projection_layers.items():
             x_out = []
-
+            mask_out = []
             # Collect and project data from each input level
             for global_level_input, projection_layers_input in projection_layers_output.items():
                 if drop_mask_levels is not None:
@@ -137,10 +148,11 @@ class MultiGridDecoder(nn.Module):
                         mask=drop_mask_input
                     )
                 else:
-                    x = x_levels[int(global_level_input)]
+                    x = projection_layers_input(x_levels[int(global_level_input)])
                     drop_mask_level = drop_mask_input
 
                 x_out.append(x)
+                mask_out.append(drop_mask_level.view(x.shape[:-1]))
 
                 if drop_mask_level is not None:
                     mask_shape = x.shape[:-1]
@@ -154,7 +166,9 @@ class MultiGridDecoder(nn.Module):
                         drop_mask_levels[int(global_level_output)] = drop_mask_level.view(mask_shape)
 
             # Aggregate data using the multi-grid reduction layer
-            x_levels[int(global_level_output)] = self.multi_grid_reduction_layers[global_level_output](x_out)
+            x, mask = self.multi_grid_reduction_layers[global_level_output](x_out, mask_levels=mask_out)
+            x_levels[int(global_level_output)] = x
+            drop_mask_levels[int(global_level_output)] = mask
 
         x = self.mlp_layer_out(x_levels[int(global_level_output)])
         return x, drop_mask_levels[int(global_level_output)]

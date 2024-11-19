@@ -8,7 +8,7 @@ import omegaconf
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
 from .mg_network import MultiGridBlock
-from .icon_grids import GridLayer
+from ...modules.icon_grids.icon_grids import GridLayer
 
 
 
@@ -42,12 +42,15 @@ class ICON_Transformer(nn.Module):
                  model_dims_decoder: list =[],
                  dist_learnable: list | bool = True,
                  sigma_learnable: list | bool = True,
+                 kappa_learnable: list | bool = True,
                  use_von_mises: list | bool = True,
                  with_mean_res: list | bool = True,
                  with_channel_res: list | bool = False,
                  kappa_init: list | float = 1.,
                  mg_spa_method: list | str = None,
                  mg_spa_min_lvl: list | str = None,
+                 mg_encoder_kernel_settings_for_spa: bool = True,
+                 mg_attention_chunks:int=2,
                  nh: int=1,
                  seq_lvl_att: int=2,
                  model_dim_in: int=1,
@@ -88,6 +91,7 @@ class ICON_Transformer(nn.Module):
         :param kappa_init: Initial value for kappa (angular concentration parameter).
         :param mg_spa_method: Spatial method used in the multi-grid encoding.
         :param mg_spa_min_lvl: Minimum level for spatial processing.
+        :param mg_encoder_kernel_settings_for_spa: Whether the kernel settings of the encoder should be used for multi-grid spatial attention
         :param nh: Number of neighborhoods.
         :param seq_lvl_att: Number of sequential level attention layers.
         :param model_dim_in: Input model dimensionality. Set to 1 if model runs in variable-independent mode
@@ -149,6 +153,7 @@ class ICON_Transformer(nn.Module):
 
         dist_learnable = check_value(dist_learnable, n_blocks)
         sigma_learnable = check_value(sigma_learnable, n_blocks)
+        kappa_learnable = check_value(kappa_learnable, n_blocks)
         use_von_mises = check_value(use_von_mises, n_blocks)
         with_mean_res = check_value(with_mean_res, n_blocks)
         with_channel_res = check_value(with_channel_res, n_blocks)
@@ -195,6 +200,7 @@ class ICON_Transformer(nn.Module):
                                 'nh_projection': False,
                                 'dists_learnable': dist_learnable[k],
                                 'sigma_learnable': sigma_learnable[k],
+                                'kappa_learnable': kappa_learnable[k],
                                 'use_von_mises': use_von_mises[k],
                                 'with_mean_res': with_mean_res[k],
                                 'with_channel_res': with_channel_res[k],
@@ -211,11 +217,14 @@ class ICON_Transformer(nn.Module):
                                 'nh_projection': mg_decoder_nh_projection[k],
                                 'dists_learnable': dist_learnable[k],
                                 'sigma_learnable': sigma_learnable[k],
+                                'kappa_learnable': kappa_learnable[k],
                                 'use_von_mises': use_von_mises[k],
                                 'with_mean_res': with_mean_res[k],
                                 'with_channel_res': with_channel_res[k],
                                 'kappa_init': kappa_init[k],
                                 'rotate_coord_system': rotate_coord_system}
+
+            no_layer_processing = no_layer_encoder if mg_encoder_kernel_settings_for_spa else no_layer_decoder
 
             # Add a Multi-Grid Block to the model
             self.MGBlocks.append(MultiGridBlock(grid_layers,
@@ -231,9 +240,11 @@ class ICON_Transformer(nn.Module):
                                                 encoder_simul = mg_encoder_simul[k],
                                                 processing_method = mg_spa_method[k],
                                                 processing_min_lvl = mg_spa_min_lvl[k],
+                                                processing_no_layer_settings = no_layer_processing,
                                                 seq_level_attention = seq_lvl_att, 
                                                 nh = nh,
                                                 n_head_channels=n_head_channels,
+                                                mg_attention_chunks=mg_attention_chunks,
                                                 pos_emb_calc='cartesian_km',
                                                 emb_table_bins=16,
                                                 first_block=True if k==0 else False,
@@ -286,8 +297,6 @@ class ICON_Transformer(nn.Module):
         # Pass through each Multi-Grid Block
         for k, multi_grid_block in enumerate(self.MGBlocks):
             
-            mask = None if k>0 else mask
-
             coords_in = coords_input if k==0 else None
             coords_out = coords_output if k==len(self.MGBlocks)-1  else None
             

@@ -62,35 +62,6 @@ def scaled_dot_product_rpe(q=None, k=None, v=None, aq=None, ak=None, av=None, bi
     return values, attention
 
 
-def scaled_dot_product_rpe_swin(q, k, v, b=None, logit_scale=None, mask=None):
-    # with relative position embeddings swin transformer (2022)
-    
-    # q is the size of (t, dk)
-    d_z = q.size()[-1] # embedding dimension
-
-    if logit_scale is not None:
-        attn = F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)
-        logit_scale = torch.clamp(logit_scale, max=math.log(100.0)).exp()
-        attn = attn * logit_scale
-    
-    else:
-        attn = torch.matmul(q, k.transpose(-2, -1))
-        attn = (attn)/torch.sqrt(torch.tensor(d_z))
-    
-   # b,n,s,s = attn.shape
-    if b is not None:
-        attn =  attn + b
-
-    if mask is not None:
-        mask = mask.reshape(attn.shape[0],1,mask.shape[-2],mask.shape[-1]).repeat(1,attn.shape[1],1,1)
-        attn = attn.masked_fill(mask, -1e10)
-
-    attn = F.softmax(attn, dim=-1)
-    values = torch.matmul(attn, v)
-
-    return values, attn
-
-
 
 class PositionEmbedder_angular(nn.Module):
 
@@ -345,30 +316,6 @@ class RelativePositionEmbedder_par(nn.Module):
         return pos_emb
 
 
-class SelfAttentionRPPEBlock(nn.Module):
-    def __init__(self, input_dim, embed_dim, output_dim):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.input_dim = input_dim
-
-        self.qkv_projection = nn.Linear(input_dim, embed_dim * 3)
-        
-        self.output_projection = nn.Linear(embed_dim, output_dim)
-        
-
-    def forward(self, x, b):
-        # batch, sequence length, embedding dimension
-        b, t, e = x.shape
-        qkv = self.qkv_projection(x)
-        
-        q, k, v = qkv.chunk(3, dim=-1)
-
-        values, _ = scaled_dot_product_rpe_swin(q, k, v, b)
-        
-        x = self.output_projection(values)
-
-        return x 
-
 class MultiHeadAttentionBlock(nn.Module):
     def __init__(self,  model_dim, output_dim, n_heads, input_dim= None, qkv_proj=False, dropout=0, use_bias=True, qkv_bias=True, v_proj=True):
         super().__init__()
@@ -447,61 +394,7 @@ class MultiHeadAttentionBlock(nn.Module):
         else:
             return x    
         
-class MultiHeadAttentionBlock_swin(nn.Module):
-    def __init__(self, model_dim, output_dim, n_heads, logit_scale=False, qkv_proj=False, dropout=0):
-        super().__init__()
-
-        self.n_heads = n_heads
-        self.head_dim = model_dim // n_heads
-               
-        self.output_projection = nn.Linear(model_dim, output_dim, bias=False)
-        
-        if logit_scale:
-            self.logit_scale = nn.Parameter(torch.log(10 * torch.ones((n_heads, 1, 1))))
-        else:
-            self.logit_scale = None
-        
-        if qkv_proj:
-            self.qkv_projection = nn.ModuleList([nn.Linear(model_dim, model_dim, bias=False) for _ in range(3)])
-        else:
-            self.qkv_projection = nn.ModuleList([nn.Identity()  for _ in range(3)])
-        
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-
-
-    def forward(self, q, k, v, rel_pos_bias=None, return_debug=False, mask=None):
-        # batch, sequence length, embedding dimension
-        bq, t = q.shape[0], q.shape[1] 
-        bk, s = k.shape[0], k.shape[1] 
-        bv, s = v.shape[0], v.shape[1] 
-
-        q = self.qkv_projection[0](q)
-        k = self.qkv_projection[1](k)
-        v = self.qkv_projection[2](v)
-
-        q = q.reshape(bq, t, self.n_heads, self.head_dim).permute(0,2,1,3)
-        k = k.reshape(bk, s, self.n_heads, self.head_dim).permute(0,2,1,3)
-        v = v.reshape(bv, s, self.n_heads, self.head_dim).permute(0,2,1,3)
-
-        if rel_pos_bias is not None:
-            if len(rel_pos_bias.shape)>3:
-                rel_pos_bias = rel_pos_bias.permute(0,3,1,2)
-            else:
-                rel_pos_bias = rel_pos_bias.permute(-1,0,1)
-        else:
-            rel_pos_bias=None
-
-        values, att = scaled_dot_product_rpe_swin(q, k, v, rel_pos_bias, self.logit_scale, mask=mask)
-
-        values = values.permute(0,2,1,3)
-        values = values.reshape(bv, t, self.head_dim*self.n_heads)
-
-        x = self.output_projection(values)
-
-        if return_debug:
-            return x , att
-        else:
-            return x    
+  
 
 def get_coord_relation(coords_target, coords_source, cart=True):
     

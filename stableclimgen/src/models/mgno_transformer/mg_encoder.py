@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from .neural_operator import NoLayer
+from ...modules.neural_operator.neural_operator import NoLayer
 
 class MultiGridEncoder(nn.Module):
     """
@@ -52,12 +52,13 @@ class MultiGridEncoder(nn.Module):
         self.aggregation_layers = nn.ModuleDict()
 
         global_level_in_layer = global_level_in
+        no_layer_count = 0
         for k, global_level in enumerate(self.global_levels):
-            if global_level_in != global_level:
-                global_level = int(global_level)
-                model_dim_in = model_dim_in if simultaneous or 'model_dim_out' not in locals() else model_dim_out
-                model_dim_out = model_dims[k]
+            global_level = int(global_level)
+            model_dim_in = model_dim_in if simultaneous or 'model_dim_out' not in locals() else model_dim_out
+            model_dim_out = model_dims[k]
 
+            if global_level_in != global_level:
                 # Initialize aggregation layer for the current global level
                 self.aggregation_layers[str(global_level)] = NoLayer(
                     grid_layers,
@@ -67,11 +68,14 @@ class MultiGridEncoder(nn.Module):
                     model_dim_out,
                     no_layer_settings,
                     n_head_channels=n_head_channels,
-                    precompute_rel_coordinates=False if k==0 and first_encoder else True
+                    precompute_rel_coordinates=False if no_layer_count==0 and first_encoder else True
                 )
+                no_layer_count+=1
+            else:
+                self.aggregation_layers[str(global_level)] = nn.Linear(model_dim_in, model_dim_out, bias=False) if model_dim_in!= model_dim_out else nn.Identity
 
-                # Update the input level for the next iteration
-                global_level_in_layer = global_level_in if simultaneous else global_level
+                
+            global_level_in_layer = global_level_in if simultaneous else global_level
 
     def forward(self, 
                 x: torch.Tensor, 
@@ -105,15 +109,16 @@ class MultiGridEncoder(nn.Module):
             drop_mask_in = drop_mask if self.simultaneous or k == 0 else drop_mask_
 
             if str(global_level) in self.aggregation_layers.keys():
-                # Process through the aggregation layer
-                if coords_in is None or k > 0:
-                    x_, drop_mask_ = self.aggregation_layers[str(global_level)](
-                        x_in, indices_layers=indices_layers, sample_dict=sample_dict, mask=drop_mask_in
-                    )
+                layer = self.aggregation_layers[str(global_level)]
+                
+                if isinstance(layer,nn.Identity) or isinstance(layer,nn.Linear):
+                    x_ = layer(x)
+                    drop_mask_ = drop_mask_in
                 else:
                     x_, drop_mask_ = self.aggregation_layers[str(global_level)](
-                        x_in, indices_layers=indices_layers, mask=drop_mask_in, sample_dict=sample_dict, coordinates=coords_in
+                        x_in, indices_layers=indices_layers, sample_dict=sample_dict, mask=drop_mask_in, coordinates=coords_in
                     )
+                    coords_in = None
             else:
                 x_ = x_in
                 drop_mask_ = drop_mask

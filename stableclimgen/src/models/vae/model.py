@@ -3,7 +3,7 @@ from typing import Optional, Union, List, Tuple
 import torch
 import torch.nn as nn
 
-from .distributions import DiagonalGaussianDistribution
+from ...modules.distributions.distributions import DiagonalGaussianDistribution
 from .quantization import Quantization
 from ...modules.embedding.patch import PatchEmbedder3D, ConvUnpatchify, LinearUnpatchify
 from ...modules.rearrange import RearrangeConvCentric

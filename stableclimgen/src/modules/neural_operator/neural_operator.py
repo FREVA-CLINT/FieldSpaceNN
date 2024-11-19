@@ -2,9 +2,9 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from .attention import ChannelVariableAttention,ResLayer
+from ..transformer.attention import ChannelVariableAttention,ResLayer
 from ...utils.grid_utils_icon import get_distance_angle
-from .icon_grids import RelativeCoordinateManager
+from ..icon_grids.icon_grids import RelativeCoordinateManager
 
 def von_mises(d_phi, kappa):
     vm = torch.exp(kappa * torch.cos(d_phi))
@@ -72,7 +72,9 @@ class NoLayer(nn.Module):
                  model_dim_out,
                  kernel_settings,
                  n_head_channels: int=16,
-                 precompute_rel_coordinates: bool=False
+                 precompute_rel_coordinates: bool=False,
+                 ref_layer_in: bool=False,
+                 seq_len_input: int|None=None
                 ) -> None: 
         """
         Initializes the NoLayer class with parameters related to grid-based 
@@ -86,6 +88,7 @@ class NoLayer(nn.Module):
         :param kernel_settings: A dictionary specifying settings for distance 
             and angular kernel computations, such as 'n_phi', 'n_dists', etc.
         :param n_head_channels: Number of channels per head in attention mechanisms.
+        :param ref_layer_in: Wheather the input layer should be used for initializing the kernel dims
         """
         super().__init__()
         
@@ -99,10 +102,15 @@ class NoLayer(nn.Module):
             self.grid_layers[str(global_level_in)],
             self.grid_layers[str(global_level_out)],
             nh_input= kernel_settings['nh_projection'],
+            seq_len_input = seq_len_input,
             precompute=precompute_rel_coordinates,
             coord_system='polar',
-            rotate_coord_system=rotate_coord_system)
-  
+            rotate_coord_system=rotate_coord_system,
+            ref_layer_in=ref_layer_in)
+
+        # 0.01, 0.1, 0.5, 0.9, 0.99 quantiles
+        dist_quantiles = self.rel_coord_mngr.dist_quantiles
+
         # Kernel settings and initialization
         n_phi = kernel_settings['n_phi']
         n_dist = kernel_settings['n_dists']
@@ -116,13 +124,12 @@ class NoLayer(nn.Module):
         with_channel_res = kernel_settings['with_channel_res']
 
         dist_learnable = kernel_settings['dists_learnable']
+        kappa_learnable = kernel_settings['kappa_learnable']
         sigma_learnable = kernel_settings['sigma_learnable']
         nh_projection = kernel_settings['nh_projection']
         
-
-        self.min_sigma = self.grid_layers[str(global_level_out)].min_dist/2
-        dist_max = self.grid_layers[str(global_level_out)].max_dist
-
+        self.ref_layer_in = ref_layer_in
+        
         # Flags and parameters
         self.with_mean_res = with_mean_res
         self.nh_projection= nh_projection
@@ -131,7 +138,7 @@ class NoLayer(nn.Module):
         if use_von_mises:
             phi_min = -torch.pi
         else:
-            phi_min = 0
+            phi_min = -torch.pi
 
         self.angular_dist_calc = False
         self.dist_dist_calc = False
@@ -144,21 +151,20 @@ class NoLayer(nn.Module):
         # Distance, sigma, and angular kernel initialization
         if n_dist>1:
             model_dim_enhanced *= n_dist
-            dist = torch.linspace(0, dist_max, n_dist)
+            dist = torch.linspace(0, dist_quantiles[-1],n_dist)
             self.dists = nn.Parameter(dist, requires_grad=dist_learnable)
             self.dist_dist_calc = True
             n_sigma = n_sigma if n_sigma >=1 else 1
 
-
+        self.min_sigma = 1e-9
         if n_sigma>1:
             model_dim_enhanced *= n_sigma
-            sigma = torch.linspace(self.min_sigma, dist_max/2, n_sigma)
+            sigma = torch.linspace(dist_quantiles[0], dist_quantiles[-1],n_sigma)
             self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
             self.dist_dist_calc = True
 
         elif n_sigma==1:
-            sigma = torch.tensor(dist_max/2)
-            self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
+            self.sigma = nn.Parameter(dist_quantiles[0], requires_grad=sigma_learnable)
             self.dist_dist_calc = True
 
         if n_phi>1:
@@ -167,7 +173,7 @@ class NoLayer(nn.Module):
             self.phi = nn.Parameter(torch.tensor(phi), requires_grad=False)
             self.angular_dist_calc = True
             if use_von_mises:
-                self.kappa = nn.Parameter(torch.tensor(kappa_init), requires_grad=False)
+                self.kappa = nn.Parameter(torch.tensor(kappa_init), requires_grad=kappa_learnable)
 
         # Initialize channel attention mechanisms
         if dist_channel_attention and n_dist>1:
@@ -237,9 +243,9 @@ class NoLayer(nn.Module):
   
         if nh_projection:
             x, mask = self.grid_layers[str(self.global_level)].get_nh(x, 
-                                                                    indices_layers[self.global_level], 
-                                                                    sample_dict, 
-                                                                    mask=mask)
+                                                                indices_layers[self.global_level], 
+                                                                sample_dict, 
+                                                                mask=mask)
             
         b, n, seq_out, seq_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
@@ -281,15 +287,27 @@ class NoLayer(nn.Module):
                 - mask: Updated mask tensor, if provided, with shape (B, N*seq_out, NV).
         """
         b, n, seq_in, nv, f = x.shape
+        
+      #  if mask is not None and self.with_mean_res:
+      #      weights_res = torch.ones(x.shape[:-1], device=x.device)
+      #      weights_res.masked_fill_(mask, 0)
 
+      #      x_res = (x * weights_res.unsqueeze(dim=-1)).sum(dim=-3, keepdim=True).unsqueeze(dim=2)
+
+      #  elif self.with_mean_res:
+      #      x_res = (x).mean(dim=-3, keepdim=True).unsqueeze(dim=2)
+
+      #  else:
+      #      x_res = None
+
+        
         if mask is not None and self.with_mean_res:
-            weights_res = torch.ones(x.shape[:-1], device=x.device)
-            weights_res.masked_fill_(mask, 0)
-            x_res = (x * weights_res.unsqueeze(dim=-1)).sum(dim=-3, keepdim=True).unsqueeze(dim=2)
+            weights = (mask==False) + 1e-6
+            weights = weights/(weights.sum(dim=-2,keepdim=True))
+            x_res = (x * weights.view(b,n,seq_in,nv,1)).sum(dim=-3).unsqueeze(dim=2)
 
         elif self.with_mean_res:
-            x_res = (x).sum(dim=-3, keepdim=True).unsqueeze(dim=2)
-
+             x_res = (x).mean(dim=-3, keepdim=True).unsqueeze(dim=2)
         else:
             x_res = None
 
@@ -312,7 +330,7 @@ class NoLayer(nn.Module):
         if self.angular_dist_calc:
             d_phis = phis.unsqueeze(dim=-1) - self.phi.unsqueeze(dim=0)
             if self.use_von_mises:
-                angular_weights = von_mises(d_phis, self.kappa)
+                angular_weights = von_mises(d_phis, self.kappa)/torch.exp(self.kappa)
             else:
                 angular_weights = cosine(d_phis)
 
@@ -332,17 +350,14 @@ class NoLayer(nn.Module):
 
         weights = weights.unsqueeze(dim=4).repeat_interleave(nv, dim=4)
         
-        sng = weights.sign()
+       # sng = weights.sign()
 
         if mask is not None:
+            weights_weights = (mask.view(b,n,1,seq_in,nv,1,1,1) == False)
+            weights = (weights * weights_weights) + 1e-10
 
-            weights = weights.masked_fill(mask.view(b,n,1,seq_in,nv,1,1,1), -1e30 if x.dtype == torch.float32 else -1e4)
+        weights = weights/weights.abs().sum(dim=3, keepdim=True)
 
-        weights = F.softmax(weights, dim=3)
-
-        weights = weights*sng
-        
-        #inflate target dimension in x and feature dimension in weights
         x = (x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)).sum(dim=3)
 
 
