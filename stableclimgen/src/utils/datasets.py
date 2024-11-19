@@ -1,13 +1,14 @@
+import json
 import os
 import random
-from typing import Tuple, List, Dict, Any, Union, Optional
+from typing import Tuple, List, Dict, Any, Union
 
 import numpy as np
 import torch
 import xarray as xr
 from torch.utils.data import Dataset
 
-from stableclimgen.src.utils.normalizer import DataNormalizer
+from . import normalizer as normalizers
 
 
 def file_loadchecker(filename: str, data_type: str, lazy_load: bool = False) -> Tuple[
@@ -63,87 +64,97 @@ class ClimateDataset(Dataset):
     A PyTorch Dataset class for loading and processing climate data.
 
     :param data_dict: Dictionary containing input data paths and types.
+    :param norm_dict: Dictionary containing normalizer type and variable specific data stats.
     :param lazy_load: If True, enables lazy loading of data. Default is True.
-    :param normalizer: Optional normalizer for data preprocessing.
     :param seq_length: Length of the data sequences to load.
     """
 
-    def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], lazy_load: bool = True,
-                 normalizer: Optional[DataNormalizer] = None, seq_length: int = 1):
+    def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], norm_dict: Dict, lazy_load: bool = True,
+                 seq_length: int = 1):
         self.lazy_load = lazy_load
         self.seq_length = seq_length
-        self.normalizer = normalizer
-        self.data_seq_lengths = []
 
-        self.climate_in_data, self.in_coords = [], []
-        self.climate_out_data, self.out_coords = [], []
+        self.vars, self.data_seq_lengths = [], []
+
+        self.var_normalizers = {}
+        self.climate_in_data, self.in_coords = {}, {}
+        self.climate_out_data, self.out_coords = {}, {}
+
+        with open(norm_dict) as json_file:
+            norm_dict = json.load(json_file)
 
         # Load input data and coordinates
-        for i, data_type in enumerate(data_dict["input"].keys()):
-            climate_in_data, in_lengths, in_coords = load_data(data_dict["input"][data_type], data_type)
-            self.climate_in_data.append(climate_in_data)
+        for i, var in enumerate(data_dict["input"].keys()):
+            climate_in_data, in_lengths, in_coords = load_data(data_dict["input"][var], var)
+            self.climate_in_data[var] = climate_in_data
             if i == 0:
                 self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
-            self.in_coords.append(in_coords)
+            self.in_coords[var] = in_coords
 
         # Load output data and coordinates
-        for data_type in data_dict["output"].keys():
-            climate_out_data, _, out_coords = load_data(data_dict["output"][data_type], data_type)
-            self.climate_out_data.append(climate_out_data)
-            self.out_coords.append(out_coords)
+        for var in data_dict["output"].keys():
+            climate_out_data, _, out_coords = load_data(data_dict["output"][var], var)
+            self.climate_out_data[var] = climate_out_data
+            self.out_coords[var] = out_coords
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, List[torch.Tensor], torch.Tensor, List[torch.Tensor]]:
+            # create normalizers
+            norm_class = norm_dict[var]['normalizer']['class']
+            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+            self.vars.append(var)
+            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
+                norm_dict[var]['stats'],
+                norm_dict[var]['normalizer'])
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Retrieve a sequence from the dataset at a given index.
 
         :param index: Index of the sequence to retrieve.
         :return: A tuple containing input data, input coordinates, ground truth data, and ground truth coordinates.
         """
-        dataset_index = 0
+        file_index = 0
         current_index = 0
         # Determine the dataset and sequence index for the requested index
         for length in self.data_seq_lengths:
             if index >= current_index + length:
                 current_index += length
-                dataset_index += 1
+                file_index += 1
             else:
                 break
         seq_index = index - current_index
 
         # Load input and ground truth data for the selected sequence
-        in_data, in_coords = self.load_data(dataset_index, seq_index, self.climate_in_data, self.in_coords)
-        gt_data, gt_coords = self.load_data(dataset_index, seq_index, self.climate_out_data, self.out_coords)
+        in_data, in_coords = self.load_data(file_index, seq_index, self.climate_in_data, self.in_coords)
+        gt_data, gt_coords = self.load_data(file_index, seq_index, self.climate_out_data, self.out_coords)
 
         return in_data.unsqueeze(-1), in_coords, gt_data.unsqueeze(-1), gt_coords
 
-    def load_data(self, dataset_index: int, seq_index: int, dataset: List[Union[np.ndarray, xr.DataArray]],
-                  coords: List[Dict[str, Any]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def load_data(self, file_index: int, seq_index: int, dataset: Dict, coords: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load and process a data sequence from a given dataset index.
 
-        :param dataset_index: Index of the dataset to retrieve data from.
+        :param file_index: Index of the file to retrieve data from.
         :param seq_index: Index of the sequence within the dataset.
-        :param dataset: List of datasets to load data from.
-        :param coords: List of coordinate dictionaries for each dataset.
+        :param dataset: Dict of datasets to load data from.
+        :param coords: Dict of coordinates for each dataset.
         :return: Processed data sample and coordinates for the given sequence.
         """
         data_sample, data_coords = [], []
-        for i, data_array in enumerate(dataset):
+        for var in self.vars:
             # Extract data sequence and convert to torch tensor
-            data = torch.from_numpy(np.nan_to_num(data_array[dataset_index][seq_index:seq_index + self.seq_length]))
+            data = torch.from_numpy(np.nan_to_num(dataset[var][file_index][seq_index:seq_index + self.seq_length]))
 
             # Apply normalization if a normalizer is provided
-            if self.normalizer:
-                data = self.normalizer.normalize(data, i)
+            data = self.var_normalizers[var].normalize(data)
             data_sample.append(data)
 
             # Load and arrange latitude and longitude coordinates
-            lats = torch.from_numpy(coords[i][dataset_index]["lat"].values)
-            lons = torch.from_numpy(coords[i][dataset_index]["lon"].values)
+            lats = torch.from_numpy(coords[var][file_index]["lat"].values)
+            lons = torch.from_numpy(coords[var][file_index]["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
-            data_coords.append(torch.stack((lat_grid, lon_grid)))
+            data_coords.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
 
-        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-1)
+        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-2)
 
     def __len__(self) -> int:
         """

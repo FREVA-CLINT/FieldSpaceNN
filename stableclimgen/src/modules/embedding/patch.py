@@ -3,7 +3,7 @@ import torch.nn as nn
 from einops import rearrange
 import torch.nn.functional as F
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict
 
 from ..utils import EmbedBlock
 
@@ -25,8 +25,8 @@ class PatchEmbedder3D(EmbedBlock):
         padding = tuple((kernel_size[i] - patch_size[i]) // 2 for i in range(len(kernel_size)))
         self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, stride=patch_size, padding=padding)
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
         """
         Forward pass through the patch embedding layer.
 
@@ -58,8 +58,8 @@ class ConvUnpatchify(EmbedBlock):
             nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
         )
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, out_shape: Optional[Tuple[int, int, int]] = None, *args) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, out_shape: Optional[Tuple[int, int, int]] = None, *args) -> torch.Tensor:
         """
         Forward pass through the unpatchifying layer with optional interpolation.
 
@@ -67,7 +67,6 @@ class ConvUnpatchify(EmbedBlock):
         :param emb: Optional embedding tensor.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :param out_shape: Target output shape for interpolation.
         :return: Reconstructed output tensor.
         """
@@ -102,8 +101,8 @@ class LinearUnpatchify(EmbedBlock):
                 nn.Linear(embed_dim, 2 * in_channels, bias=True)
             )
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, out_shape: Optional[Tuple[int, int, int]] = None, *args) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, out_shape: Optional[Tuple[int, int, int]] = None, *args) -> torch.Tensor:
         """
         Forward pass to reconstruct the linear embeddings back to original dimensions.
 
@@ -111,7 +110,6 @@ class LinearUnpatchify(EmbedBlock):
         :param emb: Optional embedding tensor for scale-shift normalization.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :param out_shape: Target output shape for the unpatchifying operation.
         :return: Reconstructed output tensor.
         """

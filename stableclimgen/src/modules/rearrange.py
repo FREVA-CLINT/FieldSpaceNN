@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Dict
 
 from einops import rearrange
 import torch
@@ -26,16 +26,15 @@ class RearrangeBlock(EmbedBlock):
             self.pattern = self.pattern.replace('g', 'h w')
             self.reverse_pattern = self.reverse_pattern.replace('g', 'h w')
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
         """
         Forward pass for the RearrangeBlock.
 
         :param x: Input tensor with shape (batch, vars, time, height, width, channels) or (batch, vars, time, group, channels).
-        :param emb: Optional embedding tensor.
+        :param emb: Optional embedding Dictionary.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Tensor after rearrangement, function application, and reverse rearrangement.
         """
         # Determine the input dimensionality and extract batch, time, and variable dimensions
@@ -46,16 +45,16 @@ class RearrangeBlock(EmbedBlock):
             b, t, g, v, c = x.shape
 
         # Rearrange input and optional tensors according to the specified pattern
-        x, emb, mask, cond = [
+        x, mask, cond = [
             rearrange(tensor, self.pattern) if torch.is_tensor(tensor) else tensor
-            for tensor in (x, emb, mask, cond)
+            for tensor in (x, mask, cond)
         ]
 
         # Apply the specified function (fn) to the rearranged tensor
         if isinstance(self.fn, EmbedBlock):
-            x = self.fn(x, emb, mask, cond, coords, *args, **kwargs)
+            x = self.fn(x, emb, mask, cond, *args)
         else:
-            x = self.fn(x, *args, **kwargs)
+            x = self.fn(x, *args)
 
         # Reverse rearrange to restore the original shape
         if dim == 6:
@@ -132,31 +131,30 @@ class RearrangeConvCentric(RearrangeBlock):
             spatial_dim_count=spatial_dim_count
         )
 
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+                cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass for the RearrangeConvCentric.
 
         :param x: Input tensor with shape (batch, time, height, width, vars, channels).
-        :param emb: Optional embedding tensor.
+        :param emb: Optional embedding dict.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Tensor after rearrangement, function application, and reverse rearrangement.
         """
         b, t, h, w, v, c = x.shape
 
         # Rearrange input and optional tensors according to the specified pattern
-        x, emb, mask, cond = [
+        x, mask, cond = [
             rearrange(tensor, self.pattern) if torch.is_tensor(tensor) else tensor
-            for tensor in (x, emb, mask, cond)
+            for tensor in (x, mask, cond)
         ]
 
         # Apply the function (fn) to the rearranged tensor
         if isinstance(self.fn, EmbedBlock):
-            x = self.fn(x, emb, mask, cond, coords, *args, **kwargs)
+            x = self.fn(x, emb, mask, cond, *args, **kwargs)
         else:
-            x = self.fn(x, *args, **kwargs)
+            x = self.fn(x, *args)
 
         # Reverse rearrange to restore the original shape
         return rearrange(x, self.reverse_pattern, b=b, t=t, v=v)
