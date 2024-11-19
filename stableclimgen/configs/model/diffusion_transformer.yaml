@@ -9,15 +9,6 @@ model:
   model_channels: 64
   patch_emb_size: [1, 1, 1]
   patch_emb_kernel: [1, 1, 1]
-  embed_conf:
-    CoordinateEmbedder:
-      in_channels: 2
-      embed_dim: 64
-      shared: false
-    DiffusionStepEmbedder:
-      in_channels: 64
-      embed_dim: 64
-      shared: true
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "trans"
@@ -26,7 +17,7 @@ model:
       sub_confs:
         blocks: ["s", "mlp"]
         embedder_names: [["CoordinateEmbedder", "DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
-        embed_confs: ${model.model.embed_conf}
+        embed_confs: ${embedding}
         embed_mode: "sum"
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
