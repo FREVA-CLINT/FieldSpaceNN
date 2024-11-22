@@ -1,0 +1,41 @@
+_target_: stableclimgen.src.models.mgno_transformer.pl_HealPix_Transformer.LightningHealPixTransformer
+lr: 1e-3
+lr_warmup: 400
+model:
+  _target_: stableclimgen.src.models.mgno_transformer.mgno_HealPix_Transformer.HealPixTransformer
+  reference_grid_level: 3
+  global_levels_block_encoder: [[2,4]]
+  model_dims_encoder: [[32,64]]
+  mg_encoder_simul: false
+  mg_encoder_n_sigma: 2
+  mg_encoder_n_dist: 2
+  mg_encoder_n_phi: 4
+  mg_encoder_phi_attention: true
+  mg_encoder_dist_attention: false
+  mg_encoder_sigma_attention: false
+  mg_decoder_n_sigma: 2
+  mg_decoder_n_dist: 2
+  mg_decoder_n_phi: 4
+  mg_decoder_phi_attention: true
+  mg_decoder_dist_attention: false
+  mg_decoder_sigma_attention: false
+  mg_decoder_nh_projection: true
+  global_levels_block_decoder: [[0]]
+  model_dims_decoder: [[48]]
+  dist_learnable: true
+  sigma_learnable: true
+  kappa_learnable: true
+  use_von_mises: true
+  with_mean_res: true
+  with_channel_res: false
+  mg_spa_method: 'nh_no'
+  mg_spa_min_lvl: 2
+  mg_encoder_kernel_settings_for_spa: true
+  mg_attention_chunks: 1
+  kappa_init: 0.1
+  model_dim_in: 1
+  model_dim_out: 1
+  nh: 2
+  n_vars_total: 1
+  n_head_channels: 8
+  rotate_coord_system: true
