@@ -4,7 +4,7 @@ lr_warmup: 400
 model:
   _target_: stableclimgen.src.models.mgno_transformer.mgno_HealPix_Transformer.HealPixTransformer
   reference_grid_level: 3
-  global_levels_block_encoder: [[2,4]]
+  global_levels_block_encoder: [[2, 4]]
   model_dims_encoder: [[32,64]]
   mg_encoder_simul: false
   mg_encoder_n_sigma: 2

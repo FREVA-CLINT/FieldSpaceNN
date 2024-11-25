@@ -1,17 +1,14 @@
 import copy
-
 import json
-import random
-from typing import Any
 
 import numpy as np
 import torch
 import xarray as xr
-from torch.utils.data import Dataset, Sampler
+from torch.utils.data import Dataset
 
-from .grid_utils_healpix import healpix_pixel_lonlat_torch
-from .grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon
 from . import normalizer as normalizers
+from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
+from .grid_utils_icon import get_coords_as_tensor
 
 
 def get_moments(data, type, level=0.9):
@@ -63,10 +60,12 @@ def get_stats(files, variable, norm_dict, n_sample=None):
 class HealPixLoader(Dataset):
     def __init__(self, data_dict,
                  norm_dict,
-                 processing_nside,
-                 in_nside,
-                 out_nside,
                  coarsen_sample_level,
+                 processing_nside,
+                 in_grid = None,
+                 out_grid = None,
+                 in_nside = None,
+                 out_nside = None,
                  search_radius=2,
                  nh_input=1,
                  index_range_source=None,
@@ -118,14 +117,45 @@ class HealPixLoader(Dataset):
 
         coords_processing = healpix_pixel_lonlat_torch(processing_nside)
 
-        input_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
-        input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
-        input_coordinates = None
+        if processing_nside == in_nside:
+            input_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+            input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
+            input_coordinates = None
+        else:
+            if in_nside is not None:
+                input_coordinates = healpix_pixel_lonlat_torch(in_nside)
+            else:
+                assert(in_grid is not None)
+                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid), grid_type='cell') # change for other grids
+            mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                  input_coordinates,
+                                                  search_radius=search_radius,
+                                                  max_nh=nh_input,
+                                                  lowest_level=0,
+                                                  periodic_fov=None)
 
-        output_mapping = np.arange(coords_processing.shape[1])[:,np.newaxis]
-        output_in_range = np.ones_like(output_mapping, dtype=bool)[:,np.newaxis]
-        output_coordinates = None
+            input_mapping = mapping["indices"]
+            input_in_range = mapping["in_rng_mask"]
 
+        if processing_nside == out_nside:
+            output_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+            output_in_range = np.ones_like(output_mapping, dtype=bool)[:, np.newaxis]
+            output_coordinates = None
+        else:
+            if out_nside is not None:
+                output_coordinates = healpix_pixel_lonlat_torch(out_nside)
+            else:
+                assert(out_grid is not None)
+                output_coordinates = get_coords_as_tensor(xr.open_dataset(out_grid), grid_type='cell') # change for other grids
+            mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                  output_coordinates,
+                                                  search_radius=search_radius,
+                                                  max_nh=nh_input,
+                                                  lowest_level=0,
+                                                  periodic_fov=None)
+
+            output_mapping = mapping["indices"]
+            output_in_range = mapping["in_rng_mask"]
 
         self.input_mapping = input_mapping
         self.input_in_range = input_in_range
@@ -138,9 +168,10 @@ class HealPixLoader(Dataset):
 
         self.global_cells = global_indices.reshape(-1,4**coarsen_sample_level)
         self.global_cells_input = self.global_cells[:,0]
-            
-        self.len_dataset = 200#len(ds_source)*self.global_cells.shape[1]
-    
+
+        ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
+        self.len_dataset = ds_source["time"].shape[0]*self.global_cells.shape[0]
+
     def get_files(self, file_path_source, file_path_target=None):
       
 
@@ -167,7 +198,7 @@ class HealPixLoader(Dataset):
     def get_data(self, ds, ts, global_indices, variables, global_level_start, index_mapping_dict=None):
         
         if index_mapping_dict is not None:
-            indices = index_mapping_dict[global_indices // 4**global_level_start] 
+            indices = index_mapping_dict[global_indices // 4**global_level_start]
         else:
             indices = global_indices.view(-1,1)
 
@@ -217,7 +248,6 @@ class HealPixLoader(Dataset):
         output_mapping = self.output_mapping
         output_in_range = self.output_in_range
 
-    
         sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
 
         if self.n_sample_vars !=-1 and self.n_sample_vars != len(self.variables_source):
@@ -242,12 +272,12 @@ class HealPixLoader(Dataset):
                     'variables': sample_vars}
 
         if self.input_coordinates is not None:
-            coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[sample_index]]])
+            coords_input = self.input_coordinates[:, input_mapping[global_cells[sample_index]]]
         else:
             coords_input = torch.tensor([])
 
         if self.output_coordinates is not None:
-            coords_output = torch.tensor(self.output_coordinates[output_mapping[global_cells[sample_index]]])
+            coords_output = self.output_coordinates[:, output_mapping[global_cells[sample_index]]]
         else:
             coords_output = torch.tensor([])
 
@@ -292,7 +322,6 @@ class HealPixLoader(Dataset):
         data_source[drop_mask] = 0
 
         ds_target = ds_source = output_mapping = input_mapping = global_cells = global_cells = []
-
         return data_source.float(), data_target.float(), indices, drop_mask, coords_input.float(), coords_output.float()
 
     def __len__(self):
