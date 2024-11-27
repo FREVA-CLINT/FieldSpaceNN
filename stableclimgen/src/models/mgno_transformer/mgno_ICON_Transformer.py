@@ -2,253 +2,176 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import copy
+from typing import List
 import xarray as xr
 import omegaconf
 
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
-from .mg_network import MultiGridBlock
 from ...modules.icon_grids.icon_grids import GridLayer
+from .no_block import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock
+
+from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
 
 
 
 def check_value(value, n_repeat):
     if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig):
         value = [value]*n_repeat
+    elif (isinstance(value, list) or isinstance(value, omegaconf.listconfig.ListConfig)) and len(value)<=1 and len(value)< n_repeat:
+        value = [list(value) for _ in range(n_repeat)] if len(value)==0 else list(value)*n_repeat
     return value
 
 
+class NOBlockConfig:
+
+    def __init__(self, 
+                 block_type: str,
+                 neural_operator_type: int|list,
+                 global_levels: int|list, 
+                 model_dims_out: int|list,
+                 n_params: List[int],
+                 att_block_types_encode: List[bool],
+                 global_params_learnable : List[bool],
+                 att_block_types_decode: List[bool] = [],
+                 global_params_init : List[float] = [],
+                 nh_transformation: bool = False,
+                 nh_inverse_transformation: bool = False,
+                 att_dims: int = None,
+                 bottle_neck_dims: int = None,
+                 multi_grid_attention: bool=False,
+                 with_res: bool = True,
+                 neural_operator_type_nh: str='Normal_VM',
+                 n_params_nh: List[int] = [[3,2]],
+                 global_params_init_nh: List[float] = [[3.0]]):
+
+        n_no_layers = len(global_levels)
+
+        inputs = copy.deepcopy(locals())
+        self.block_type = block_type
+        self.multi_grid_attention = multi_grid_attention
+
+        for input, value in inputs.items():
+            if input != 'self' and input != 'block_type' and input !=multi_grid_attention:
+                setattr(self, input, check_value(value, n_no_layers))
+        
 
 class ICON_Transformer(nn.Module):
     def __init__(self, 
                  icon_grid: str,
-                 global_levels_block_encoder: list,
-                 model_dims_encoder: list,
-                 mg_encoder_simul: list | bool,
-                 mg_encoder_n_sigma: list | int,
-                 mg_decoder_n_sigma: list | int,
-                 mg_encoder_n_dist: list | int=1,
-                 mg_encoder_n_phi: list | int=1,
-                 mg_encoder_phi_attention: list | bool = False,
-                 mg_encoder_dist_attention: list | bool = False,
-                 mg_encoder_sigma_attention: list | bool = False,
-                 mg_decoder_n_dist: list | int=1,
-                 mg_decoder_n_phi: list | int=1,
-                 mg_decoder_phi_attention: list | bool = False,
-                 mg_decoder_dist_attention: list | bool = False,
-                 mg_decoder_sigma_attention: list | bool = False,
-                 mg_decoder_nh_projection : list | bool = True,
-                 global_levels_block_decoder: list=[],
-                 model_dims_decoder: list =[],
-                 dist_learnable: list | bool = True,
-                 sigma_learnable: list | bool = True,
-                 kappa_learnable: list | bool = True,
-                 use_von_mises: list | bool = True,
-                 with_mean_res: list | bool = True,
-                 with_channel_res: list | bool = False,
-                 kappa_init: list | float = 1.,
-                 mg_spa_method: list | str = None,
-                 mg_spa_min_lvl: list | str = None,
-                 mg_encoder_kernel_settings_for_spa: bool = True,
-                 mg_attention_chunks:int=2,
+                 block_configs: List[NOBlockConfig],
                  nh: int=1,
                  seq_lvl_att: int=2,
                  model_dim_in: int=1,
                  model_dim_out: int=1,
                  n_head_channels:int=16,
-                 pos_emb_calc: str='cartesian_km',
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True
                  ) -> None: 
         
-        """
-        Initialize the ICON_Transformer class.
-
-        :param icon_grid: Path to the ICON grid file.
-        :param global_levels_block_encoder: List of grid levels for the encoder blocks.
-        :param model_dims_encoder: List of model dimensions for the encoder blocks.
-        :param mg_encoder_simul: Whether to perform simultaneous multi-grid encoding.
-        :param mg_encoder_n_sigma: Number of sigma (scale) components for the encoder.
-        :param mg_decoder_n_sigma: Number of sigma (scale) components for the decoder.
-        :param mg_encoder_n_dist: Number of distance components for the encoder.
-        :param mg_encoder_n_phi: Number of phi (angular) components for the encoder.
-        :param mg_encoder_phi_attention: Whether to use phi channel attention in the encoder.
-        :param mg_encoder_dist_attention: Whether to use distance channel attention in the encoder.
-        :param mg_encoder_sigma_attention: Whether to use sigma channel attention in the encoder.
-        :param mg_decoder_n_dist: Number of distance components for the decoder.
-        :param mg_decoder_n_phi: Number of phi (angular) components for the decoder.
-        :param mg_decoder_phi_attention: Whether to use phi channel attention in the decoder.
-        :param mg_decoder_dist_attention: Whether to use distance channel attention in the decoder.
-        :param mg_decoder_sigma_attention: Whether to use sigma channel attention in the decoder.
-        :param mg_decoder_nh_projection: Whether to use nh (neighborhood) projection in the decoder.
-        :param global_levels_block_decoder: List of grid levels for the decoder blocks.
-        :param model_dims_decoder: List of model dimensions for the decoder blocks.
-        :param dist_learnable: Whether distance components are learnable.
-        :param sigma_learnable: Whether sigma components are learnable.
-        :param use_von_mises: Whether to use the von Mises distribution for angular weighting.
-        :param with_mean_res: Whether to use mean residual connections.
-        :param with_channel_res: Whether to use channel-wise residual connections.
-        :param kappa_init: Initial value for kappa (angular concentration parameter).
-        :param mg_spa_method: Spatial method used in the multi-grid encoding.
-        :param mg_spa_min_lvl: Minimum level for spatial processing.
-        :param mg_encoder_kernel_settings_for_spa: Whether the kernel settings of the encoder should be used for multi-grid spatial attention
-        :param nh: Number of neighborhoods.
-        :param seq_lvl_att: Number of sequential level attention layers.
-        :param model_dim_in: Input model dimensionality. Set to 1 if model runs in variable-independent mode
-        :param model_dim_out: Output model dimensionality. Set to 1 if model runs in variable-independent mode
-        :param n_head_channels: Number of channels per attention head.
-        :param pos_emb_calc: Method for position embedding calculation.
-        :param n_vars_total: Total number of variables to handle. Set to 1 if model runs in variable-dependent mode
-        :param rotate_coord_system: Whether to rotate the coord system with respect to target points.
-
-        """
                 
         super().__init__()
         
-        # Flatten and combine encoder and decoder grid levels into a single tensor
-        global_levels_encode_flat = torch.concat([torch.tensor(l) for l in global_levels_block_encoder])
-        global_levels_decode_flat = torch.concat([torch.tensor(l) for l in global_levels_block_decoder]) if len(global_levels_block_decoder)>0 else global_levels_encode_flat
-        global_levels = torch.concat((global_levels_encode_flat, global_levels_decode_flat, torch.tensor(0).view(-1))).unique()
+        self.model_dim_in = model_dim_in
+        self.model_dim_out = model_dim_out
+        self.n_vars_total = n_vars_total
+
+        global_levels = [torch.tensor(block_conf.global_levels) for block_conf in block_configs] + [torch.tensor(0).view(-1)]
+        global_levels = torch.concat(global_levels).unique()
+        
         self.register_buffer('global_levels', global_levels, persistent=False)
 
-        # Create multi-grid structures using the provided ICON grid
         mgrids = icon_grid_to_mgrid(xr.open_dataset(icon_grid),
                                     int(torch.tensor(global_levels).max()) + 1, 
                                     nh=nh)
 
-        self.coord_system = "polar" if "polar" in  pos_emb_calc else "cartesian"
-        
-        # Store global cell indices and cell coordinates for reference
-        self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[1]).unsqueeze(dim=0), persistent=False)
+        self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
         # Create grid layers for each unique global level
         grid_layers = nn.ModuleDict()
         for global_level in global_levels:
-            grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system=self.coord_system)
+            grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system='polar')
+
+        n = 0
+        global_level_in = 0
+        # Construct blocks based on configurations
+        self.Blocks = nn.ModuleList()
+
+        for block_conf in block_configs:
+
+            n_no_layers = len(block_conf.global_levels) 
+            global_levels = block_conf.global_levels
+
+            no_layers = []
+            nh_no_layers = []
+            for k in range(n_no_layers):
+                
+                global_level_in = 0 if block_conf.block_type != 'Stacked' or k==0 else global_level_no
+                global_level_no = global_levels[k]
+
+                no_layer = get_no_layer(block_conf.neural_operator_type[k], 
+                                    grid_layers, 
+                                    global_level_in, 
+                                    global_level_no,
+                                    n_params=block_conf.n_params[k],
+                                    params_init=block_conf.global_params_init[k],
+                                    params_learnable=block_conf.global_params_learnable[k],
+                                    nh_projection=block_conf.nh_transformation[k],
+                                    nh_backprojection=block_conf.nh_inverse_transformation[k],
+                                    precompute_coordinates=True if n!=0 and n<n_no_layers else False,
+                                    rotate_coordinate_system=rotate_coord_system)
+
+                no_layers.append(no_layer)
+
+                nh_no_layer_required_encode = torch.tensor(['nh' in block_conf.att_block_types_encode[k]]).any()
+                nh_no_layer_required_decode = torch.tensor(['nh' in block_conf.att_block_types_decode[k]]).any()
+                nh_no_layer_required = nh_no_layer_required_encode or nh_no_layer_required_decode
+
+                if nh_no_layer_required:
+                    no_layer_nh = get_no_layer(block_conf.neural_operator_type_nh[k], 
+                                    grid_layers, 
+                                    global_level_no, 
+                                    global_level_no,
+                                    n_params=block_conf.n_params_nh[k],
+                                    params_init=block_conf.global_params_init_nh[k],
+                                    params_learnable=block_conf.global_params_learnable[k],
+                                    nh_projection=True,
+                                    nh_backprojection=True)
+                else:
+                    no_layer_nh = None
+                
+                nh_no_layers.append(no_layer_nh)
+
+                n+=1
+
+            if block_conf.block_type == 'Serial':
+                block = Serial_NOBlock
+
+            elif block_conf.block_type == 'Stacked':
+                block = Stacked_NOBlock
+
+            elif block_conf.block_type == 'Parallel':
+                block = Stacked_NOBlock
+
+
+            self.Blocks.append(block(model_dim_in,
+                        block_conf.model_dims_out,
+                        no_layers,
+                        n_params=block_conf.n_params,
+                        att_block_types_encode=block_conf.att_block_types_encode,
+                        att_block_types_decode=block_conf.att_block_types_decode,
+                        n_head_channels=n_head_channels,
+                        bottle_neck_dims=block_conf.bottle_neck_dims,
+                        att_dims=block_conf.att_dims,
+                        with_res= block_conf.with_res,
+                        no_layers_nh=nh_no_layers,
+                        multi_grid_attention=block_conf.multi_grid_attention))
+
+         
         
-    
-        n_blocks = len(global_levels_block_encoder)
-
-        # Ensure all configurations are properly assigned for each block
-        model_dims_encoder = check_value(model_dims_encoder, n_blocks)
-        mg_encoder_simul = check_value(mg_encoder_simul, n_blocks)
-        mg_spa_method = check_value(mg_spa_method, n_blocks)
-        mg_spa_min_lvl = check_value(mg_spa_min_lvl, n_blocks)
-        mg_encoder_n_sigma = check_value(mg_encoder_n_sigma, n_blocks)
-        mg_encoder_n_dist = check_value(mg_encoder_n_dist, n_blocks)
-        mg_encoder_n_phi = check_value(mg_encoder_n_phi, n_blocks)
-        mg_encoder_phi_attention = check_value(mg_encoder_phi_attention, n_blocks)
-        mg_encoder_dist_attention = check_value(mg_encoder_dist_attention, n_blocks)
-        mg_encoder_sigma_attention = check_value(mg_encoder_sigma_attention, n_blocks)
-
-        mg_decoder_n_sigma = check_value(mg_decoder_n_sigma, n_blocks)
-        mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
-        mg_decoder_n_phi = check_value(mg_decoder_n_phi, n_blocks)
-        mg_decoder_n_dist = check_value(mg_decoder_n_dist, n_blocks)
-        mg_decoder_phi_attention = check_value(mg_decoder_phi_attention, n_blocks)
-        mg_decoder_dist_attention = check_value(mg_decoder_dist_attention, n_blocks)
-        mg_decoder_sigma_attention = check_value(mg_decoder_sigma_attention, n_blocks)
-        mg_decoder_nh_projection = check_value(mg_decoder_nh_projection, n_blocks)
-
-        dist_learnable = check_value(dist_learnable, n_blocks)
-        sigma_learnable = check_value(sigma_learnable, n_blocks)
-        kappa_learnable = check_value(kappa_learnable, n_blocks)
-        use_von_mises = check_value(use_von_mises, n_blocks)
-        with_mean_res = check_value(with_mean_res, n_blocks)
-        with_channel_res = check_value(with_channel_res, n_blocks)
-        kappa_init = check_value(kappa_init, n_blocks)
-
-        self.model_dim_in = model_dim_in
-
-        # If decoder blocks are not provided, create default settings
-        if len(global_levels_block_decoder)==0:
-            global_levels_block_decoder = list([[int(k)] for k in torch.tensor(global_levels_block_encoder)[:,0]])
-            global_levels_block_decoder[-1]=[0]
-
-            model_dims_decoder = list([[int(k)] for k in torch.tensor(model_dims_encoder)[:,0]])
-            #model_dims_decoder[-1] = model_dim_out
-        else:
-            global_levels_block_decoder = check_value(global_levels_block_decoder, n_blocks)
-            model_dims_decoder = check_value(model_dims_decoder, n_blocks)
-
-
-        # Initialize Multi-Grid Blocks
-        self.MGBlocks = nn.ModuleList()
-        for k in range(n_blocks):
-            global_level_in = 0 if k==0 else global_levels_block_decoder[k-1][-1]
-            model_dim_in = model_dim_in if k==0 else model_dims_decoder[k-1][-1]
-            global_levels_encode = global_levels_block_encoder[k]
-            global_levels_decode = global_levels_block_decoder[k]
-            model_dims_encode = model_dims_encoder[k] 
-            model_dims_decode = model_dims_decoder[k]
-
-            #if k==n_blocks-1:
-                #if global_levels_decode[-1]!=0:
-                #    global_levels_decode.append(0)
-                #    model_dims_decode.append(model_dim_out)
-                #else:
-                #    model_dims_decode[-1]=model_dim_out
-
-            no_layer_encoder = {'n_sigma': mg_encoder_n_sigma[k],
-                                'n_dists': mg_encoder_n_dist[k],
-                                'n_phi': mg_encoder_n_phi[k],
-                                'sigma_att': mg_encoder_sigma_attention[k],
-                                'dist_att': mg_encoder_dist_attention[k],
-                                'phi_att': mg_encoder_phi_attention[k],
-                                'n_sigma': mg_encoder_n_sigma[k],
-                                'nh_projection': False,
-                                'dists_learnable': dist_learnable[k],
-                                'sigma_learnable': sigma_learnable[k],
-                                'kappa_learnable': kappa_learnable[k],
-                                'use_von_mises': use_von_mises[k],
-                                'with_mean_res': with_mean_res[k],
-                                'with_channel_res': with_channel_res[k],
-                                'kappa_init': kappa_init[k],
-                                'rotate_coord_system': rotate_coord_system}
-
-            no_layer_decoder = {'n_sigma': mg_decoder_n_sigma[k],
-                                'n_dists': mg_decoder_n_dist[k],
-                                'n_phi': mg_decoder_n_phi[k],
-                                'sigma_att': mg_decoder_sigma_attention[k],
-                                'dist_att': mg_decoder_dist_attention[k],
-                                'phi_att': mg_decoder_phi_attention[k],
-                                'n_sigma': mg_decoder_n_sigma[k],
-                                'nh_projection': mg_decoder_nh_projection[k],
-                                'dists_learnable': dist_learnable[k],
-                                'sigma_learnable': sigma_learnable[k],
-                                'kappa_learnable': kappa_learnable[k],
-                                'use_von_mises': use_von_mises[k],
-                                'with_mean_res': with_mean_res[k],
-                                'with_channel_res': with_channel_res[k],
-                                'kappa_init': kappa_init[k],
-                                'rotate_coord_system': rotate_coord_system}
-
-            no_layer_processing = no_layer_encoder if mg_encoder_kernel_settings_for_spa else no_layer_decoder
-
-            # Add a Multi-Grid Block to the model
-            self.MGBlocks.append(MultiGridBlock(grid_layers,
-                                                global_level_in,
-                                                global_levels_encode,
-                                                global_levels_decode, 
-                                                model_dim_in,
-                                                model_dims_encode,
-                                                model_dims_decode, 
-                                                n_vars_total,
-                                                encoder_no_layer_settings = no_layer_encoder,
-                                                decoder_no_layer_settings = no_layer_decoder,
-                                                encoder_simul = mg_encoder_simul[k],
-                                                processing_method = mg_spa_method[k],
-                                                processing_min_lvl = mg_spa_min_lvl[k],
-                                                processing_no_layer_settings = no_layer_processing,
-                                                seq_level_attention = seq_lvl_att, 
-                                                nh = nh,
-                                                n_head_channels=n_head_channels,
-                                                mg_attention_chunks=mg_attention_chunks,
-                                                pos_emb_calc='cartesian_km',
-                                                emb_table_bins=16,
-                                                first_block=True if k==0 else False,
-                                                output_dim=model_dim_out if k==n_blocks-1 else None))
+        
         
         
 
@@ -289,22 +212,23 @@ class ICON_Transformer(nn.Module):
 
         # Use global cell coordinates if none are provided
         if coords_input.numel()==0:
-            coords_input = self.cell_coords_global[:,sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-1)
+            coords_input = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
 
         if coords_output.numel()==0:
-            coords_output = self.cell_coords_global[:,sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-1)
+            coords_output = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
 
-        # Pass through each Multi-Grid Block
-        for k, multi_grid_block in enumerate(self.MGBlocks):
+
+        for k, block in enumerate(self.Blocks):
             
             coords_in = coords_input if k==0 else None
-            coords_out = coords_output if k==len(self.MGBlocks)-1  else None
+            coords_out = coords_output if k==len(self.Blocks)-1  else None
             
             # Process input through the block
-            x, mask = multi_grid_block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_in, coords_out=coords_out)
+            x, mask = block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_in, coords_out=coords_out)
 
-        # Reshape output to match the expected dimensions
+        
         x = x.view(b,n,-1)
+
         return x
 
     
@@ -315,3 +239,67 @@ class ICON_Transformer(nn.Module):
         
         return global_indices_sampled // 4**global_level
     
+
+def get_no_layer(neural_operator_type, 
+                 grid_layers, 
+                 global_level_in, 
+                 global_level_no,
+                 n_params=[],
+                 params_init=[],
+                 params_learnable=[],
+                 nh_projection=False,
+                 nh_backprojection=False,
+                 precompute_coordinates=True,
+                 rotate_coordinate_system=True,
+                 nh=1):
+    
+    #if global_level_in==global_level_no:
+    #    if nh==1:
+    #        n_params = [3,1]
+    #        neural_operator_type = 'Normal_VM'
+
+    #    elif nh==2:
+    #        n_params = [3,2]
+    #        neural_operator_type = 'Normal'
+
+    if neural_operator_type == 'Normal_VM':
+        no_layer = Normal_VM_NoLayer(grid_layers,
+                            global_level_in,
+                            global_level_no,
+                            n_phi=n_params[0],
+                            n_dist=n_params[1],
+                            kappa_init=params_init[0],
+                            kappa_learnable=params_learnable[0],
+                            dist_learnable=params_learnable[1],
+                            sigma_learnable=params_learnable[2],
+                            nh_projection=nh_projection,
+                            nh_backprojection=nh_backprojection,
+                            precompute_coordinates=precompute_coordinates,
+                            rotate_coord_system=rotate_coordinate_system)
+                    
+    elif neural_operator_type == 'Normal':
+        no_layer = Normal_NoLayer(grid_layers,
+                            global_level_in,
+                            global_level_no,
+                            n_dist_lon=n_params[0],
+                            n_dist_lat=n_params[1],
+                            dist_learnable=params_learnable[0],
+                            sigma_learnable=params_learnable[1],
+                            nh_projection=nh_projection,
+                            nh_backprojection=nh_backprojection,
+                            precompute_coordinates=precompute_coordinates,
+                            rotate_coord_system=rotate_coordinate_system)
+        
+    elif neural_operator_type == 'FT':
+        no_layer = FT_NOLayer(grid_layers,
+                            global_level_in,
+                            global_level_no,
+                            n_freq_lon=n_params[0],
+                            n_freq_lat=n_params[1],
+                            freq_learnable=params_learnable[0],
+                            nh_projection=nh_projection,
+                            nh_backprojection=nh_backprojection,
+                            precompute_coordinates=precompute_coordinates,
+                            rotate_coord_system=rotate_coordinate_system)
+    
+    return no_layer

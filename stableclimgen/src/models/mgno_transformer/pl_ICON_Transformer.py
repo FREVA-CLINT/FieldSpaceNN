@@ -91,9 +91,9 @@ class LightningICONTransformer(pl.LightningModule):
                 mask_p = None
             
             if coords_input.numel()==0:
-                coords_input = coords_output = self.model.cell_coords_global[:,indices_dict['local_cell']]
+                coords_input = coords_output = self.model.cell_coords_global[indices_dict['local_cell']]
 
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input[:,sample], coords_output[:,sample], mask_p, save_path=save_path)
+            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input[sample], coords_output[sample], mask_p, save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 

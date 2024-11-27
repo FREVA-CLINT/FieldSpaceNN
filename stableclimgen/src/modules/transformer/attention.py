@@ -25,7 +25,7 @@ class ResLayer(nn.Module):
         return x + self.gamma * self.mlp_layer(x)
 
 class ChannelVariableAttention(nn.Module):
-    def __init__(self, model_dim, n_chunks_channel, n_head_channels, model_dim_out=None, with_res=True):
+    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True):
         super().__init__()
         """
         Channel-wise variable attention module for applying multi-head attention across variable dimensions.
@@ -42,20 +42,24 @@ class ChannelVariableAttention(nn.Module):
         self.with_res = with_res
 
         if model_dim_out is None:
-            model_dim_out = model_dim
+            model_dim_out = model_dim_in
             self.res_lin_layer = nn.Identity()
 
         elif with_res:
-            self.res_lin_layer = nn.Linear(model_dim, model_dim_out, bias=False)
+            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False)
 
-        model_dim_att = model_dim // n_chunks_channel
-        model_dim_att_out = model_dim_out // n_chunks_channel
+        model_dim_out = int(model_dim_out)
+        model_dim_chunked = int(model_dim_in // n_chunks_channel)
+        model_dim_chunked_out = int(model_dim_out // n_chunks_channel)
 
-        self.layer_norm = nn.LayerNorm(model_dim_att, elementwise_affine=True)
+        self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+
+        model_dim_att = model_dim_chunked if att_dim is None else att_dim
 
         n_heads = model_dim_att//n_head_channels if model_dim_att > n_head_channels else 1
+
         self.MHA = MultiHeadAttentionBlock(
-            model_dim_att, model_dim_att_out, n_heads, input_dim=model_dim_att, qkv_proj=True
+            model_dim_att, model_dim_chunked_out, n_heads, input_dim=model_dim_chunked, qkv_proj=True
             )   
 
         if with_res:

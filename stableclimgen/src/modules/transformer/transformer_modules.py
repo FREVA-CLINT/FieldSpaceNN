@@ -353,15 +353,16 @@ class MultiHeadAttentionBlock(nn.Module):
         if self.qkv_bias:
             bq, t = q.shape[0], q.shape[1] 
             bk, s = k.shape[0], k.shape[1] 
-            bv, s = v.shape[0], v.shape[1] 
+            bv, s = v.shape[0], v.shape[1]
 
             q = self.qkv_projection[0](q)
             k = self.qkv_projection[1](k)
             v = self.qkv_projection[2](v)
+            v_head_dim = v.shape[-1] // self.n_heads
 
             q = q.reshape(bq, t, self.n_heads, self.head_dim).permute(0,2,1,3)
             k = k.reshape(bk, s, self.n_heads, self.head_dim).permute(0,2,1,3)
-            v = v.reshape(bv, s, self.n_heads, self.head_dim).permute(0,2,1,3)
+            v = v.reshape(bv, s, self.n_heads, v_head_dim).permute(0,2,1,3)
 
             if ak is not None:
                 ak = ak.reshape(bk, t, s, self.head_dim)
@@ -385,7 +386,7 @@ class MultiHeadAttentionBlock(nn.Module):
             values, att = scaled_dot_product_rpe(v=v, bias=bias, mask=mask, logit_scale=self.logit_scale)
 
         values = values.permute(0,2,1,3)
-        values = values.reshape(bv, t, self.head_dim*self.n_heads)
+        values = values.reshape(bv, t, self.n_heads*v_head_dim)
 
         x = self.output_projection(values)
 
