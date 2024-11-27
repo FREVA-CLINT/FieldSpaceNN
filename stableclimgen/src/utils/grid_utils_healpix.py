@@ -295,8 +295,8 @@ def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torc
         "pos": [],
         "in_rng_mask": []
     }
-    for k in range(level_start - lowest_level):
-        level = level_start - k - 1
+    for k in range(level_start + 1 - lowest_level):
+        level = level_start - k
 
         if level == lowest_level:
             nh = max_nh

@@ -117,7 +117,7 @@ class HealPixLoader(Dataset):
 
         coords_processing = healpix_pixel_lonlat_torch(processing_nside)
 
-        if processing_nside == in_nside:
+        if processing_nside == in_nside and False:
             input_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
             input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
             input_coordinates = None
@@ -170,7 +170,7 @@ class HealPixLoader(Dataset):
         self.global_cells_input = self.global_cells[:,0]
 
         ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
-        self.len_dataset = ds_source["time"].shape[0]*self.global_cells.shape[0]
+        self.len_dataset = 400#ds_source["time"].shape[0]*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -249,14 +249,13 @@ class HealPixLoader(Dataset):
         output_in_range = self.output_in_range
 
         sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
-
-        if self.n_sample_vars !=-1 and self.n_sample_vars != len(self.variables_source):
+        if self.n_sample_vars != -1 and self.n_sample_vars != len(self.variables_source):
             sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
         else:
             sample_vars = torch.arange(len(self.variables_source))
 
-        variables_source = np.array(self.variables_source)[sample_vars]
-        variables_target = np.array(self.variables_target)[sample_vars]
+        variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
+        variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
 
         data_source = self.get_data(ds_source, index, global_cells[sample_index] , variables_source, 0, input_mapping)
 

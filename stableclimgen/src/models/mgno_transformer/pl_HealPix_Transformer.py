@@ -55,6 +55,15 @@ class LightningHealPixTransformer(pl.LightningModule):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict, mask=mask)
         return x
 
+    def on_before_batch_transfer(self, batch, batch_idx):
+        source, target, indices, mask, coords_input, coords_output = batch
+
+        if coords_input.numel() != 0:
+            coords_input = torch.movedim(coords_input, 0, 1)
+        if coords_output.numel() != 0:
+            coords_output = torch.movedim(coords_output, 0, 1)
+        return source, target, indices, mask, coords_input, coords_output
+
     def training_step(self, batch, batch_idx):
         source, target, indices, mask, coords_input, coords_output = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, mask=mask)
@@ -91,7 +100,9 @@ class LightningHealPixTransformer(pl.LightningModule):
                 mask_p = None
             
             if coords_input.numel()==0:
-                coords_input = coords_output = self.model.cell_coords_global[:,indices_dict['local_cell']]
+                coords_input = self.model.cell_coords_global[:,indices_dict['local_cell']]
+            if coords_output.numel()==0:
+                coords_output = self.model.cell_coords_global[:,indices_dict['local_cell']]
 
             scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input[:,sample], coords_output[:,sample], mask_p, save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])

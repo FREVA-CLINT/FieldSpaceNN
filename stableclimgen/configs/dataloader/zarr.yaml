@@ -3,9 +3,9 @@ dataset:
   data_dict: ../../input/data_healpix.json
   norm_dict: ../../input/norm_dict.json
   processing_nside: 64
-  in_nside: 1
+  in_nside: 64
   out_nside: 64
-  coarsen_sample_level: 4
+  coarsen_sample_level: 6
   search_radius: 2
   nh_input: 1
   sample_for_norm: 2
@@ -15,11 +15,10 @@ dataset:
   p_average_dropout: 0.5
   max_average_lvl: 3
   drop_vars: false
-  n_sample_vars: 3
 
 
 dataloader:
   _target_: torch.utils.data.DataLoader
   batch_size: 4
-  num_workers: 4
+  num_workers: 1
   persistent_workers: true
