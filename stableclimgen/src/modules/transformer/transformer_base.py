@@ -220,7 +220,7 @@ class TransformerBlock(EmbedBlock):
                 trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count)
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
-            if embedder_names:
+            if embedder_names[i]:
                 emb_dict = nn.ModuleDict()
                 for emb_name in embedder_names[i]:
                     emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
@@ -230,6 +230,9 @@ class TransformerBlock(EmbedBlock):
 
                 embedders.append(embedder_seq)
                 embedding_layers.append(embedding_layer)
+            else:
+                embedders.append(None)
+                embedding_layers.append(None)
 
             # append normalization and trans_block
             trans_blocks.append(trans_block)
@@ -256,7 +259,7 @@ class TransformerBlock(EmbedBlock):
         :param cond: Optional conditioning tensor (additional input).
         :return: Output tensor after applying all blocks sequentially.
         """
-        for norm, block, embedder, embedding_layer in zip_longest(self.norms, self.blocks, self.embedders, self.embedding_layers, fillvalue=None):
+        for norm, block, embedder, embedding_layer in zip(self.norms, self.blocks, self.embedders, self.embedding_layers):
             if embedder:
                 # Apply the embedding transformation (scale and shift)
                 scale, shift = embedding_layer(embedder(emb)).chunk(2, dim=-1)
