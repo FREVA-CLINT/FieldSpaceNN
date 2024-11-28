@@ -6,6 +6,8 @@ import torch.nn as nn
 from .neural_operator import NoLayer
 from ..transformer.attention import ChannelVariableAttention
 from ...models.mgno_transformer.mg_attention import MultiGridAttention
+from ...modules.transformer.transformer_base import TransformerBlock
+from ..icon_grids.icon_grids import RelativeCoordinateManager
 
 class NOBlock(nn.Module):
   
@@ -20,6 +22,7 @@ class NOBlock(nn.Module):
                  with_res=False,
                  no_layer_nh: NoLayer=None,
                  is_decode:list=[],
+                 spatial_attention_configs = [],
                 ) -> None: 
       
         super().__init__()
@@ -51,6 +54,13 @@ class NOBlock(nn.Module):
                                     model_dim_in, 
                                     n_head_channels,
                                     n_params=n_params)
+            
+            elif 'trans' in att_block_type:
+                layer = SpatialAttention(no_layer,
+                                         model_dim_in, 
+                                         n_head_channels, 
+                                         n_params,
+                                         spatial_attention_configs[k])
 
             if len(is_decode)>0 and is_decode[k]:
                 self.att_block_types_decode.append(layer)
@@ -68,7 +78,7 @@ class NOBlock(nn.Module):
         x, mask = self.no_layer.transform(x, indices_layers=indices_layers, coordinates=coords_in, sample_dict=sample_dict, mask=mask)
 
         for layer in self.att_block_types_encode:
-            if isinstance(layer, NHAttention):
+            if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
                 x = layer(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask)
             else:    
                 x = layer(x, mask=mask)
@@ -123,7 +133,8 @@ class Serial_NOBlock(nn.Module):
                  att_dims: list=[],
                  with_res: list=[],
                  no_layers_nh: list[NoLayer]=[None],
-                 multi_grid_attention: bool=False
+                 multi_grid_attention: bool=False,
+                 spatial_attention_configs: dict = {}
                 ) -> None: 
       
         super().__init__()
@@ -144,7 +155,8 @@ class Serial_NOBlock(nn.Module):
                 n_head_channels=n_head_channels,
                 att_dim=att_dims[n],
                 with_res=with_res[n],
-                no_layer_nh=no_layers_nh[n]
+                no_layer_nh=no_layers_nh[n],
+                spatial_attention_configs=spatial_attention_configs
             ))
 
         if multi_grid_attention:
@@ -250,19 +262,125 @@ class Parallel_NOBlock(nn.Module):
   
     def __init__(self,
                  model_dim_in,
-                 model_dim_out,
+                 model_dims_out,
                  no_layers: list[NoLayer],
                  att_block_types_encode:list,
                  att_block_types_decode:list,
-                 has_bottle_neck:list,
                  n_params=list,
                  n_head_channels = 16,
-                 att_dim=None,
-                 res_mode=True,
-                 no_layers_nh: list[NoLayer]=[None]
+                 bottle_neck_dims:list=[],
+                 att_dims: list=[],
+                 with_res: list=[],
+                 no_layers_nh: list[NoLayer]=[None],
+                 multi_grid_attention: bool=False
                 ) -> None: 
       
         super().__init__()
+
+        self.multi_grid_attention = multi_grid_attention
+        self.NO_Blocks = nn.ModuleList()
+
+        for n, no_layer in enumerate(no_layers): 
+
+            att_block_types = att_block_types_encode[n] + att_block_types_decode[n]
+
+            self.NO_Blocks.append(NOBlock(
+                no_layer=no_layer,
+                model_dim_in=model_dim_in,
+                model_dim_out=model_dims_out[n],
+                att_block_types=att_block_types,
+                n_params=n_params[n],
+                n_head_channels=n_head_channels,
+                att_dim=att_dims[n],
+                with_res=with_res[n],
+                no_layer_nh=no_layers_nh[n]
+            ))
+
+        if multi_grid_attention:
+            self.mga_layer = MultiGridAttention(model_dim_in, model_dims_out[n], len(no_layers), att_dim=att_dims[-1], n_head_channels=n_head_channels)
+    
+    def forward(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None, coords_out=None):
+        
+        x_mg = []
+        mask_mg = []
+        for layer in self.NO_Blocks:
+            x_enc, mask = layer.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+            x_dec, mask = layer.decode(x_enc, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+
+            if self.multi_grid_attention:
+                x_mg.append(x_dec)
+                mask_mg.append(mask)
+        
+        if self.multi_grid_attention:
+            x = self.mga_layer(x_mg, mask_mg)
+        
+        return x, mask
+
+
+class SpatialAttention(nn.Module):
+  
+    def __init__(self,
+                 no_layer: NoLayer,
+                 model_dim_in, 
+                 n_head_channels,
+                 n_params, 
+                 spatial_attention_configs = None,
+                 rotate_coord_system =True
+                ) -> None: 
+      
+        super().__init__()
+
+        ch_dim = int(model_dim_in*torch.tensor(n_params).prod())
+        out_ch = ch_dim
+        n_heads = ch_dim // n_head_channels
+
+        nh = spatial_attention_configs.pop('nh')
+        seq_lvl = spatial_attention_configs.pop('seq_lvl')
+
+        if seq_lvl != -1 or nh:
+            self.rel_coord_mngr = RelativeCoordinateManager(
+                no_layer.grid_layers[str(no_layer.global_level_no)],
+                no_layer.grid_layers[str(no_layer.global_level_no)],
+                nh_in= nh,
+                nh_ref=nh,
+                seq_lvl=seq_lvl,
+                precompute = True,
+                coord_system= "cartesian",
+                rotate_coord_system=no_layer.rotate_coord_system)
+
+        self.attention_layer = TransformerBlock(ch_dim,
+                                                out_ch,
+                                                num_heads=n_heads,
+                                                **spatial_attention_configs)
+        self.no_layer = no_layer
+        self.global_level = self.no_layer.global_level_no
+    
+    def get_coordinates(self, indices_layers):
+
+        if hasattr(self, 'rel_coord_mngr'):
+            coords = self.rel_coord_mngr(indices_ref=indices_layers[self.global_level])
+            coords = torch.stack(coords, dim=-1)
+        else:
+            coords = self.no_layer.rel_coord_mngr.grid_layer_ref.get_coordinates_from_grid_indices(indices_layers[self.global_level])
+
+        emb_dict = {'CoordinateEmbedder': coords}
+        return emb_dict
+
+
+    def forward(self, x, indices_layers=None, sample_dict=None, mask=None):
+
+        x_shape = x.shape
+        x, mask = shape_to_att(x, mask=mask)
+
+        emb_dict = self.get_coordinates(indices_layers)
+        
+        x = self.attention_layer(x.unsqueeze(dim=1), emb=emb_dict, mask=mask)
+
+        x = x.squeeze(dim=1)
+
+        x = shape_to_x(x, x_shape)
+        return x
+
 
 class ParamAttention(nn.Module):
   

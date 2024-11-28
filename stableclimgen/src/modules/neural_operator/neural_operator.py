@@ -2,8 +2,6 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from ..transformer.attention import ChannelVariableAttention,ResLayer
-from ...utils.grid_utils_icon import get_distance_angle
 from ..icon_grids.icon_grids import RelativeCoordinateManager
 
 
@@ -127,7 +125,7 @@ class Normal_VM_NoLayer(NoLayer):
         
         self.min_sigma = 1e-10
         
-        self.sigma = nn.Parameter(grid_layers[str(global_level_in)].min_dist, requires_grad=sigma_learnable)
+        self.sigma = nn.Parameter(grid_layers[str(global_level_no)].min_dist/(n_dist), requires_grad=sigma_learnable)
         
     
     def vm_weights(self, coordinates_rel):
@@ -260,8 +258,8 @@ class Normal_NoLayer(NoLayer):
         self.mus_lat = nn.Parameter(mus_lat, requires_grad=dist_learnable)
 
         self.min_sigma = 1e-10
-        
-        self.sigma = nn.Parameter(grid_layers[str(global_level_in)].min_dist, requires_grad=sigma_learnable)
+
+        self.sigma = nn.Parameter(grid_dist_out/((n_dist_lon+n_dist_lat)/2), requires_grad=sigma_learnable)
                   
 
     def normal_dist(self, dists, mus):

@@ -44,7 +44,8 @@ class NOBlockConfig:
                  with_res: bool = True,
                  neural_operator_type_nh: str='Normal_VM',
                  n_params_nh: List[int] = [[3,2]],
-                 global_params_init_nh: List[float] = [[3.0]]):
+                 global_params_init_nh: List[float] = [[3.0]],
+                 spatial_attention_configs: dict = {}):
 
         n_no_layers = len(global_levels)
 
@@ -153,7 +154,7 @@ class ICON_Transformer(nn.Module):
                 block = Stacked_NOBlock
 
             elif block_conf.block_type == 'Parallel':
-                block = Stacked_NOBlock
+                block = Parallel_NOBlock
 
 
             self.Blocks.append(block(model_dim_in,
@@ -167,7 +168,8 @@ class ICON_Transformer(nn.Module):
                         att_dims=block_conf.att_dims,
                         with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,
-                        multi_grid_attention=block_conf.multi_grid_attention))     
+                        multi_grid_attention=block_conf.multi_grid_attention,
+                        spatial_attention_configs=block_conf.spatial_attention_configs))     
         
         
 
