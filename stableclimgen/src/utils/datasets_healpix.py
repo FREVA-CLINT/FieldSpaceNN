@@ -1,0 +1,327 @@
+import copy
+import json
+
+import numpy as np
+import torch
+import xarray as xr
+from torch.utils.data import Dataset
+
+from . import normalizer as normalizers
+from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
+from .grid_utils_icon import get_coords_as_tensor
+
+
+def get_moments(data, type, level=0.9):
+
+    if type == 'quantile':
+        moments = (np.quantile((data), ((1-level), level)).astype(float))
+
+    elif type == 'quantile_abs':
+        q = np.quantile(np.abs(data), level).astype(float)
+        moments = (q,q)
+
+    elif type == 'None':
+        moments = (1., 1.)
+
+    elif type == 'min_max':
+        moments = (data.min().astype(float), data.max().astype(float))
+    else:
+        moments = (data.mean().astype(float), data.std().astype(float))
+    
+    return tuple(moments)
+
+
+
+def get_stats(files, variable, norm_dict, n_sample=None):
+    if (n_sample is not None) and (n_sample < len(files)):
+        file_indices = np.random.randint(0,len(files), (n_sample,))
+    else:
+        file_indices = np.arange(len(files))
+    
+    if variable == "uv":
+        variables = ["u", "v"]
+    else:
+        variables = [variable]
+    
+    data = []
+    for file_index in np.array(files)[file_indices]:
+        ds = xr.load_dataset(file_index)
+        for variable in variables:
+            d = ds[variable].values
+            if len(d.shape)==3:
+                d = d[0,0]
+            elif len(d.shape)==2: 
+                d = d[0]
+            data.append(d.flatten())
+
+    return get_moments(np.concatenate(data), norm_dict["type"], level=norm_dict["level"])
+
+
+class HealPixLoader(Dataset):
+    def __init__(self, data_dict,
+                 norm_dict,
+                 coarsen_sample_level,
+                 processing_nside,
+                 in_grid = None,
+                 out_grid = None,
+                 in_nside = None,
+                 out_nside = None,
+                 search_radius=2,
+                 nh_input=1,
+                 index_range_source=None,
+                 index_offset_target=0,
+                 sample_for_norm=-1,
+                 lazy_load=False,
+                 random_time_idx=True,
+                 p_dropout=0,
+                 p_average=0,
+                 p_average_dropout=0,
+                 max_average_lvl=0,
+                 drop_vars=False,
+                 n_sample_vars=-1):
+        
+        super(HealPixLoader, self).__init__()
+        
+        self.coarsen_sample_level = coarsen_sample_level
+        self.norm_dict = norm_dict
+        self.index_range_source=index_range_source
+        self.index_offset_target = index_offset_target
+        self.sample_for_norm = sample_for_norm
+        self.lazy_load=lazy_load
+        self.random_time_idx = random_time_idx
+        self.p_dropout = p_dropout
+        self.p_average = p_average
+        self.p_average_dropout = p_average_dropout
+        self.max_average_lvl = max_average_lvl
+        self.drop_vars = drop_vars
+        self.n_sample_vars = n_sample_vars
+
+        self.variables_source = data_dict["source"]["variables"]
+        self.variables_target = data_dict["target"]["variables"]
+
+        with open(norm_dict) as json_file:
+            norm_dict = json.load(json_file)
+
+        self.var_normalizers = {}
+        for var in self.variables_source:
+            norm_class = norm_dict[var]['normalizer']['class']
+            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+
+            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
+                norm_dict[var]['stats'],
+                norm_dict[var]['normalizer'])
+
+
+        self.files_source = data_dict["source"]["files"]
+        self.files_target = data_dict["target"]["files"]
+
+        coords_processing = healpix_pixel_lonlat_torch(processing_nside)
+
+        if processing_nside == in_nside and False:
+            input_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+            input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
+            input_coordinates = None
+        else:
+            if in_nside is not None:
+                input_coordinates = healpix_pixel_lonlat_torch(in_nside)
+            else:
+                assert(in_grid is not None)
+                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid), grid_type='cell') # change for other grids
+            mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                  input_coordinates,
+                                                  search_radius=search_radius,
+                                                  max_nh=nh_input,
+                                                  lowest_level=0,
+                                                  periodic_fov=None)
+
+            input_mapping = mapping["indices"]
+            input_in_range = mapping["in_rng_mask"]
+
+        if processing_nside == out_nside:
+            output_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+            output_in_range = np.ones_like(output_mapping, dtype=bool)[:, np.newaxis]
+            output_coordinates = None
+        else:
+            if out_nside is not None:
+                output_coordinates = healpix_pixel_lonlat_torch(out_nside)
+            else:
+                assert(out_grid is not None)
+                output_coordinates = get_coords_as_tensor(xr.open_dataset(out_grid), grid_type='cell') # change for other grids
+            mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                  output_coordinates,
+                                                  search_radius=search_radius,
+                                                  max_nh=nh_input,
+                                                  lowest_level=0,
+                                                  periodic_fov=None)
+
+            output_mapping = mapping["indices"]
+            output_in_range = mapping["in_rng_mask"]
+
+        self.input_mapping = input_mapping
+        self.input_in_range = input_in_range
+        self.output_mapping = output_mapping
+        self.output_in_range = output_in_range
+        self.input_coordinates = input_coordinates
+        self.output_coordinates = output_coordinates
+
+        global_indices = np.arange(coords_processing.shape[1])
+
+        self.global_cells = global_indices.reshape(-1,4**coarsen_sample_level)
+        self.global_cells_input = self.global_cells[:,0]
+
+        ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
+        self.len_dataset = 400#ds_source["time"].shape[0]*self.global_cells.shape[0]
+
+    def get_files(self, file_path_source, file_path_target=None):
+      
+
+        if self.lazy_load:
+            ds_source = xr.open_zarr(file_path_source, decode_times=False)
+        else:
+            ds_source = xr.load_dataset(file_path_source, decode_times=False)
+
+        if file_path_target is None:
+            ds_target = copy.deepcopy(ds_source)
+
+        elif file_path_target==file_path_source:
+            ds_target = ds_source
+            
+        else:
+            if self.lazy_load:
+                ds_target = xr.open_zarr(file_path_target, decode_times=False)
+            else:
+                ds_target = xr.load_dataset(file_path_target, decode_times=False)
+
+        return ds_source, ds_target
+
+
+    def get_data(self, ds, ts, global_indices, variables, global_level_start, index_mapping_dict=None):
+        
+        if index_mapping_dict is not None:
+            indices = index_mapping_dict[global_indices // 4**global_level_start]
+        else:
+            indices = global_indices.view(-1,1)
+
+        n, nh = indices.shape
+        indices = indices.reshape(-1)
+
+        # tbd: spatial dim as input!
+        if 'ncells' in dict(ds.sizes).keys():
+            ds = ds.isel(ncells=indices, time=ts)
+        else:
+            ds = ds.isel(cell=indices, time=ts)
+
+        data_g = []
+        for variable in variables:
+            data = torch.tensor(ds[variable].values)
+            data = data[0] if data.dim() > 1  else data
+            data_g.append(data)
+
+        data_g = torch.stack(data_g, dim=-1)
+        data_g = data_g.view(n, nh, len(variables), 1)
+
+        ds.close()
+
+        return data_g
+
+    def __getitem__(self, index):
+        
+        source_index = 0
+        source_file = self.files_source[source_index]
+        
+        target_file = self.files_target[source_index]
+
+        
+        ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
+
+        if self.random_time_idx:
+            index = int(torch.randint(0, len(ds_source.time.values), (1,1)))
+            if self.index_range_source is not None:
+                if (index < self.index_range_source[0]) or (index > self.index_range_source[1]):
+                    index = int(torch.randint(self.index_range_source[0], self.index_range_source[1]+1, (1,1)))
+
+
+        global_cells_input = self.global_cells_input
+        input_mapping = self.input_mapping
+        global_cells = self.global_cells
+        input_in_range = self.input_in_range
+        output_mapping = self.output_mapping
+        output_in_range = self.output_in_range
+
+        sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
+        if self.n_sample_vars != -1 and self.n_sample_vars != len(self.variables_source):
+            sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
+        else:
+            sample_vars = torch.arange(len(self.variables_source))
+
+        variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
+        variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
+
+        data_source = self.get_data(ds_source, index, global_cells[sample_index] , variables_source, 0, input_mapping)
+
+        if ds_target is not None:
+            data_target = self.get_data(ds_target, index, global_cells[sample_index] , variables_target, 0, output_mapping)
+        else:
+            data_target = data_source
+
+        indices = {'global_cell': torch.tensor(global_cells[sample_index]),
+                    'local_cell': torch.tensor(global_cells[sample_index]),
+                    'sample': sample_index,
+                    'sample_level': self.coarsen_sample_level,
+                    'variables': sample_vars}
+
+        if self.input_coordinates is not None:
+            coords_input = self.input_coordinates[:, input_mapping[global_cells[sample_index]]]
+        else:
+            coords_input = torch.tensor([])
+
+        if self.output_coordinates is not None:
+            coords_output = self.output_coordinates[:, output_mapping[global_cells[sample_index]]]
+        else:
+            coords_output = torch.tensor([])
+
+        n, nh, nv, f = data_source.shape
+        if self.p_average > 0 and torch.rand(1)<self.p_average:
+            avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
+            data_source_resh = data_source.view(-1,4**avg_level,nh,f)
+            data_source_resh = data_source_resh.mean(dim=[1,2], keepdim=True)
+            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=1)
+            data_source_resh = data_source_resh.repeat_interleave(nh, dim=2)
+            data_source = data_source_resh.view(n, nh, nv, f)
+
+            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+
+            if self.p_average_dropout >0:
+                if self.drop_vars:
+                    drop_mask_p = (torch.rand((n//4**avg_level,nv))<self.p_average_dropout).bool()
+                else:
+                    drop_mask_p = (torch.rand((n//4**avg_level))<self.p_average_dropout).bool()
+
+                drop_mask = drop_mask.view(-1,4**avg_level, nh, nv).transpose(-1,1)
+                drop_mask[drop_mask_p]=True
+                drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
+        else:
+            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+
+            if self.p_dropout > 0 and not self.drop_vars:
+                drop_mask_p = (torch.rand((n,nh))<self.p_dropout).bool()
+                drop_mask[drop_mask_p]=True
+
+            elif self.drop_vars:
+                drop_mask_p = (torch.rand((n,nh,nv))<self.p_dropout).bool()
+                drop_mask[drop_mask_p]=True
+
+    
+        for k, var in enumerate(variables_source):
+            data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
+        
+        for k, var in enumerate(variables_target):
+            data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
+
+        data_source[drop_mask] = 0
+
+        ds_target = ds_source = output_mapping = input_mapping = global_cells = global_cells = []
+        return data_source.float(), data_target.float(), indices, drop_mask, coords_input.float(), coords_output.float()
+
+    def __len__(self):
+        return self.len_dataset

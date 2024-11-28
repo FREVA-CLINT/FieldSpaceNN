@@ -52,12 +52,6 @@ class SelfAttention(nn.Module):
         self.n_heads = num_heads  # Number of attention heads
         self.dropout = dropout  # Dropout probability for attention output
 
-        # Skip connection layer (Identity if in_ch == out_ch, else linear projection)
-        if in_ch != out_ch:
-            self.skip_connection = torch.nn.Linear(in_ch, out_ch)
-        else:
-            self.skip_connection = torch.nn.Identity()
-
         self.is_causal = is_causal  # Flag for causal masking (used in time-series tasks)
 
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
@@ -88,7 +82,7 @@ class SelfAttention(nn.Module):
         attn_out = rearrange(attn_out, "b h t_g_v c -> b t_g_v (h c)", b=b, t_g_v=t_g_v, h=self.n_heads)
 
         # Apply skip connection and scaling to the output
-        return self.skip_connection(x) + self.gamma * self.out_layer(attn_out)
+        return self.gamma * self.out_layer(attn_out)
 
     def scaled_dot_product_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
                                      mask: Optional[torch.Tensor]) -> torch.Tensor:
@@ -139,12 +133,6 @@ class MLPLayer(nn.Module):
             torch.nn.Linear(self.hidden_channels, out_ch)
         )
 
-        # Skip connection layer: Identity if in_ch == out_ch, else a linear projection
-        if in_ch != out_ch:
-            self.skip_connection = torch.nn.Linear(in_ch, out_ch)
-        else:
-            self.skip_connection = torch.nn.Identity()
-
         # Learnable scaling parameter for the output of the MLP layer
         self.gamma = torch.nn.Parameter(torch.ones(out_ch) * 1E-6)
 
@@ -157,7 +145,7 @@ class MLPLayer(nn.Module):
         :param x: Input tensor.
         :return: Output tensor after MLP transformation and skip connection.
         """
-        return self.skip_connection(x) + self.gamma * self.branch_layer(x)
+        return self.gamma * self.branch_layer(x)
 
 
 class TransformerBlock(EmbedBlock):
@@ -202,7 +190,7 @@ class TransformerBlock(EmbedBlock):
         dropout = check_value(dropout, len(blocks))
         assert len(out_ch) == len(blocks)
 
-        trans_blocks, embedders, embedding_layers, norms = [], [], [], []
+        trans_blocks, embedders, embedding_layers, norms, residuals = [], [], [], [], []
         for i, block in enumerate(blocks):
             # Add MLP layer if specified
             if block == "mlp":
@@ -220,7 +208,7 @@ class TransformerBlock(EmbedBlock):
                 trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count)
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
-            if embedder_names:
+            if embedder_names[i]:
                 emb_dict = nn.ModuleDict()
                 for emb_name in embedder_names[i]:
                     emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
@@ -230,10 +218,20 @@ class TransformerBlock(EmbedBlock):
 
                 embedders.append(embedder_seq)
                 embedding_layers.append(embedding_layer)
+            else:
+                embedders.append(None)
+                embedding_layers.append(None)
+
+            # Skip connection layer: Identity if in_ch == out_ch, else a linear projection
+            if in_ch != out_ch[i]:
+                residual = torch.nn.Linear(in_ch, out_ch)
+            else:
+                residual = torch.nn.Identity()
 
             # append normalization and trans_block
             trans_blocks.append(trans_block)
             norms.append(norm)
+            residuals.append(residual)
 
             in_ch = out_ch if isinstance(out_ch, int) else out_ch[i]
 
@@ -241,6 +239,7 @@ class TransformerBlock(EmbedBlock):
         self.embedding_layers = nn.ModuleList(embedding_layers)
         self.blocks = nn.ModuleList(trans_blocks)
         self.norms = nn.ModuleList(norms)
+        self.residuals = nn.ModuleList(residuals)
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
@@ -256,12 +255,12 @@ class TransformerBlock(EmbedBlock):
         :param cond: Optional conditioning tensor (additional input).
         :return: Output tensor after applying all blocks sequentially.
         """
-        for norm, block, embedder, embedding_layer in zip_longest(self.norms, self.blocks, self.embedders, self.embedding_layers, fillvalue=None):
+        for norm, block, embedder, embedding_layer, residual in zip(self.norms, self.blocks, self.embedders, self.embedding_layers, self.residuals):
             if embedder:
                 # Apply the embedding transformation (scale and shift)
                 scale, shift = embedding_layer(embedder(emb)).chunk(2, dim=-1)
                 out = norm(x) * (scale + 1) + shift
             else:
                 out = norm(x)
-            x = block(out)
+            x = block(out) + residual(x)
         return x

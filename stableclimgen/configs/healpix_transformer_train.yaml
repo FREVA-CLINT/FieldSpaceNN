@@ -1,0 +1,12 @@
+defaults:
+  - trainer: icon_transformer
+  - logger: wandb
+  - model: healpix_transformer
+  - dataloader: zarr_healpix
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+run_name: healpix_transformer
+run_dir: ../..
