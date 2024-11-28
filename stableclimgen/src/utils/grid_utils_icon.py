@@ -29,11 +29,11 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
     if target=='torch':
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
-        coords = torch.stack((lons, lats)).float()
+        coords = torch.stack((lons, lats), dim=-1).float()
     else:
         lons = np.array(ds[lon].values)
         lats = np.array(ds[lat].values)
-        coords = np.stack((lons, lats)).astype(np.float32)
+        coords = np.stack((lons, lats), axis=-1).astype(np.float32)
 
     return coords
 
@@ -597,14 +597,14 @@ def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, c
             idx_shift = index_shift[k] if k==0 else index_shift[k]-1
             adjc_lvl[adjc_lvl >= adjc_lvl[k,0]] = adjc_lvl[adjc_lvl >= adjc_lvl[k,0]] - idx_shift
 
-        cell_coords_lvl = cell_coords_global.reshape(2,-1,4**global_level)[:,:,0]
+        cell_coords_lvl = cell_coords_global.reshape(-1,4**global_level,2)[:,0,:]
 
         if clon_fov is not None:
             fov_ext = (clon_fov[1] - clon_fov[0])*extension/2
-            adjc_mask_lon = torch.logical_and(cell_coords_lvl[0, adjc[keep_grid_indices_lvl]] >= clon_fov[0]-fov_ext, cell_coords_lvl[0, adjc[keep_grid_indices_lvl]] <= clon_fov[1]+fov_ext)
+            adjc_mask_lon = torch.logical_and(cell_coords_lvl[adjc[keep_grid_indices_lvl],0] >= clon_fov[0]-fov_ext, cell_coords_lvl[adjc[keep_grid_indices_lvl],0] <= clon_fov[1]+fov_ext)
 
             fov_ext = (clat_fov[1] - clat_fov[0])*extension/2
-            adjc_mask_lat = torch.logical_and(cell_coords_lvl[1, adjc[keep_grid_indices_lvl]] >= clat_fov[0]-fov_ext, cell_coords_lvl[1, adjc[keep_grid_indices_lvl]] <= clat_fov[1]+fov_ext)
+            adjc_mask_lat = torch.logical_and(cell_coords_lvl[adjc[keep_grid_indices_lvl],1] >= clat_fov[0]-fov_ext, cell_coords_lvl[adjc[keep_grid_indices_lvl],1] <= clat_fov[1]+fov_ext)
 
             adjc_mask = torch.logical_and(adjc_mask_lon, adjc_mask_lat)
             adjc_mask = torch.logical_and(adjc_mask, adjc_mask_duplicates)
@@ -618,7 +618,7 @@ def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, c
         adjc_lvl[r,c] = adjc_lvl[r,0] 
 
         grid_lvl = {
-            'coords': cell_coords_global[:,indices_lvl],
+            'coords': cell_coords_global[indices_lvl,:],
             'adjc': adjc,
             'adjc_lvl': adjc_lvl,
             'adjc_mask': adjc_mask,
