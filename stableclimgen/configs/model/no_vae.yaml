@@ -1,0 +1,45 @@
+_target_: stableclimgen.src.models.no_vae.pl_no_vae.LightningNOVAE
+lr: 1e-3
+lr_warmup: 400
+model:
+  _target_: stableclimgen.src.models.no_vae.no_vae.NOVAE
+  icon_grid: /Users/maxwitte/work/crai_sr/ICON_atmo/data/icon_grid_0007_R02B06_G.nc
+  model_dim_in: 1
+  model_dim_out: 1
+  nh: 1
+  n_vars_total: 3
+  n_head_channels: 16
+  rotate_coord_system: true
+  block_configs:
+    - _target_: stableclimgen.src.models.no_vae.no_vae.NOBlockConfig
+      block_type: "Stacked"
+      is_encoder_only: false
+      is_decoder_only: false
+      neural_operator_type: "Normal"
+      global_levels: [0,1,2,4]
+      model_dims_out: [1,1,1,1]
+      n_params: [[2,2], [2,2], [2,2], [4,4]]
+      global_params_learnable: [[true,true, true]]
+      att_block_types_encode: [["var"],["var"],["var"],["var"]]
+      att_block_types_decode: [["var"],["var"],["var"],["var"]]
+      nh_transformation: false
+      nh_inverse_transformation: false
+      att_dims: 64
+      multi_grid_attention: false
+      with_res: false
+    - _target_: stableclimgen.src.models.no_vae.no_vae.NOBlockConfig
+      block_type: "Serial"
+      is_encoder_only: false
+      is_decoder_only: true
+      neural_operator_type: "Normal"
+      global_levels: [0,2]
+      model_dims_out: [1,1]
+      n_params: [[2,2],[2,2]]
+      global_params_learnable: [[true,true, true]]
+      att_block_types_encode: [["var"]]
+      att_block_types_decode: [["var"]]
+      nh_transformation: true
+      nh_inverse_transformation: true
+      att_dims: 64
+      multi_grid_attention: true
+      with_res: false

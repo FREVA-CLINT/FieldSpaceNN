@@ -132,7 +132,7 @@ class NetCDFLoader_lazy(Dataset):
             input_in_range = input_in_range['cell']['cell']
             input_coordinates = get_coords_as_tensor(grid_input, lon='clon', lat='clat', target='numpy')
         else:
-            input_mapping = np.arange(coords_processing.shape[1])[:,np.newaxis]
+            input_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
             input_in_range = np.ones_like(input_mapping, dtype=bool)[:,np.newaxis]
             input_coordinates = None
             
@@ -152,7 +152,7 @@ class NetCDFLoader_lazy(Dataset):
             output_in_range = output_in_range['cell']['cell']
             output_coordinates = get_coords_as_tensor(grid_output, lon='clon', lat='clat', target='numpy')
         else:
-            output_mapping = np.arange(coords_processing.shape[1])[:,np.newaxis]
+            output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
             output_in_range = np.ones_like(output_mapping, dtype=bool)[:,np.newaxis]
             output_coordinates = None
             
@@ -164,9 +164,9 @@ class NetCDFLoader_lazy(Dataset):
         self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
         
-        global_indices = np.arange(coords_processing.shape[1])
+        global_indices = np.arange(coords_processing.shape[0])
 
-        self.global_cells = global_indices.reshape(-1,4**coarsen_sample_level)
+        self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
         self.global_cells_input = self.global_cells[:,0]
             
         ds_source = xr.open_dataset(self.files_source[0])
