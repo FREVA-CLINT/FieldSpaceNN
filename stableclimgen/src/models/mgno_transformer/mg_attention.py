@@ -28,8 +28,6 @@ class MultiGridAttention(nn.Module):
         self.MHA = MultiHeadAttentionBlock(
             att_dim, att_dim, 1, input_dim=att_dim, qkv_proj=False, v_proj=False
             )   
-
-        self.gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
        
 
 

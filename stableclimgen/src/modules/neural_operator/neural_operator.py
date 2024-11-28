@@ -259,7 +259,8 @@ class Normal_NoLayer(NoLayer):
 
         self.min_sigma = 1e-10
 
-        self.sigma = nn.Parameter(grid_dist_out/((n_dist_lon+n_dist_lat)/2), requires_grad=sigma_learnable)
+        sigma = torch.tensor([grid_dist_out/((n_dist_lon+n_dist_lat)/2), grid_layers[str(global_level_in)].min_dist]).max()
+        self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
                   
 
     def normal_dist(self, dists, mus):
@@ -295,7 +296,7 @@ class Normal_NoLayer(NoLayer):
         if mask is not None:
             mask = mask.view(*c_shape,1,1)
             weights_weights = (mask == False)
-            weights = (weights * weights_weights) + 1e-10
+            weights = (weights * weights_weights)
 
             mask = mask.view(*c_shape)
             mask = mask.sum(dim=-2)==mask.shape[-2]
@@ -303,7 +304,7 @@ class Normal_NoLayer(NoLayer):
         else:
             norm=1
         
-        weights = weights/weights.sum(dim=3,keepdim=True)
+        weights = weights/(weights.sum(dim=3,keepdim=True)+1e-10)
 
         x = x.view(*c_shape,1, 1, nc)
         x = (x * weights.unsqueeze(dim=-1)).sum(dim=3)
@@ -334,7 +335,7 @@ class Normal_NoLayer(NoLayer):
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
         
-        weights = weights/weights.sum(dim=[2,-2,-3], keepdim=True)
+        weights = weights/(weights.sum(dim=[2,-2,-3], keepdim=True) + 1e-10)
 
         x = (x * weights).sum(dim=[2, -2,-3])
 

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 from .neural_operator import NoLayer
-from ..transformer.attention import ChannelVariableAttention
+from ..transformer.attention import ChannelVariableAttention, CrossChannelVariableAttention
 from ...models.mgno_transformer.mg_attention import MultiGridAttention
 from ...modules.transformer.transformer_base import TransformerBlock
 from ..icon_grids.icon_grids import RelativeCoordinateManager
@@ -22,7 +22,7 @@ class NOBlock(nn.Module):
                  with_res=False,
                  no_layer_nh: NoLayer=None,
                  is_decode:list=[],
-                 spatial_attention_configs = [],
+                 spatial_attention_config={},
                 ) -> None: 
       
         super().__init__()
@@ -43,7 +43,8 @@ class NOBlock(nn.Module):
                                        n_params=n_params, 
                                        param_idx_att=param_att_idx)
             elif 'var' in att_block_type:
-                layer = ParamAttention(model_dim_in, 
+                block = ParamAttention if 'cross' not in att_block_type else CrossAttention
+                layer = block(model_dim_in, 
                                        n_head_channels,
                                        att_dim=att_dim, 
                                        n_params=n_params, 
@@ -60,7 +61,7 @@ class NOBlock(nn.Module):
                                          model_dim_in, 
                                          n_head_channels, 
                                          n_params,
-                                         spatial_attention_configs[k])
+                                         spatial_attention_config)
 
             if len(is_decode)>0 and is_decode[k]:
                 self.att_block_types_decode.append(layer)
@@ -115,10 +116,6 @@ class NOBlock(nn.Module):
 
 
 
-
-
-
-
 class Serial_NOBlock(nn.Module):
   
     def __init__(self,
@@ -129,7 +126,6 @@ class Serial_NOBlock(nn.Module):
                  att_block_types_decode:list,
                  n_params=list,
                  n_head_channels = 16,
-                 bottle_neck_dims:list=[],
                  att_dims: list=[],
                  with_res: list=[],
                  no_layers_nh: list[NoLayer]=[None],
@@ -156,7 +152,7 @@ class Serial_NOBlock(nn.Module):
                 att_dim=att_dims[n],
                 with_res=with_res[n],
                 no_layer_nh=no_layers_nh[n],
-                spatial_attention_configs=spatial_attention_configs
+                spatial_attention_config=spatial_attention_configs[n]
             ))
 
         if multi_grid_attention:
@@ -189,11 +185,11 @@ class Stacked_NOBlock(nn.Module):
                  att_block_types_decode:list,
                  n_params=list,
                  n_head_channels = 16,
-                 bottle_neck_dims:list=[],
                  att_dims: list=[],
                  with_res: list=[],
                  no_layers_nh: list[NoLayer]=[None],
-                 multi_grid_attention: bool=False
+                 multi_grid_attention: bool=False,
+                 spatial_attention_configs = {}
                 ) -> None: 
       
         super().__init__()
@@ -223,7 +219,8 @@ class Stacked_NOBlock(nn.Module):
                 n_head_channels=n_head_channels,
                 att_dim=att_dims[n],
                 with_res=with_res[n],
-                no_layer_nh=no_layers_nh[n]
+                no_layer_nh=no_layers_nh[n],
+                spatial_attention_config=spatial_attention_configs[n]
             ))
 
         self.model_dim_out_encode = model_dim_out_encode
@@ -250,12 +247,104 @@ class Stacked_NOBlock(nn.Module):
     
     def forward(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None, coords_out=None):
         
-        x, shapes = self.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+        x = self.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
 
-        x = self.decode(x,shapes, indices_layers=indices_layers, sample_dict=sample_dict, mask=None, coords_out=coords_out)
+        x = self.decode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=None, coords_out=coords_out)
 
         return x, mask
 
+
+class UNet_NOBlock(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dims_out,
+                 no_layers: list[NoLayer],
+                 att_block_types_encode:list,
+                 att_block_types_decode:list,
+                 n_params=list,
+                 n_head_channels = 16,
+                 att_dims: list=[],
+                 with_res: list=[],
+                 no_layers_nh: list[NoLayer]=[None],
+                 multi_grid_attention: bool=False,
+                 spatial_attention_configs = {}
+                ) -> None: 
+      
+        super().__init__()
+
+        self.multi_grid_attention = multi_grid_attention
+        self.NO_Blocks = nn.ModuleList()
+
+        for n, no_layer in enumerate(no_layers): 
+            
+            is_decode_encode = [False for _ in range(len(att_block_types_encode[n]))]
+            is_decode_decode = [True for _ in range(len(att_block_types_decode[n]))]
+            is_decode = is_decode_encode + is_decode_decode
+
+            att_block_types = att_block_types_encode[n] + att_block_types_decode[n]
+
+            model_dim_in = model_dim_in if n==0 else model_dim_out_encode
+
+            model_dim_out_encode = int(model_dim_in*torch.tensor(n_params[n]).prod())
+
+            
+            self.NO_Blocks.append(NOBlock(
+                no_layer=no_layer,
+                model_dim_in=model_dim_in,
+                model_dim_out=model_dims_out[n],
+                att_block_types=att_block_types,
+                is_decode=is_decode,
+                n_params=n_params[n],
+                n_head_channels=n_head_channels,
+                att_dim=att_dims[n],
+                with_res=with_res[n],
+                no_layer_nh=no_layers_nh[n],
+                spatial_attention_config=spatial_attention_configs[n]
+            ))
+
+        self.model_dim_out_encode = model_dim_out_encode
+
+    def encode(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None):
+        
+        x_skip = []
+        mask_skip = []
+        for layer in self.NO_Blocks:
+            x, mask = layer.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+            x, mask = shape_to_att(x, mask=mask)
+
+            x_skip.append(x)
+            mask_skip.append(mask)
+
+        return x_skip, mask_skip
+    
+    def decode(self, x_skip, mask_skip, indices_layers=None, sample_dict=None,  coords_out=None):
+
+        for layer_idx in range(len(self.NO_Blocks)-1,-1,-1):
+            
+            mask = mask_skip[layer_idx] 
+            layer = self.NO_Blocks[layer_idx]
+            x_shape_origin = (*x_skip[layer_idx].shape[:3], *layer.n_params, -1)
+
+            if layer_idx<len(self.NO_Blocks)-1:
+                x = torch.cat((shape_to_x(x, x_shape_origin),
+                               shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=-1)
+            else:
+                x = shape_to_x(x_skip[layer_idx], x_shape_origin)
+                              
+            x, mask = layer.decode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_out=coords_out)
+
+        return x
+
+
+    
+    def forward(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None, coords_out=None):
+        
+        x_skip, mask_skip = self.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+
+        x = self.decode(x_skip, mask_skip, indices_layers=indices_layers, sample_dict=sample_dict, coords_out=coords_out)
+
+        return x, mask
 
 
 class Parallel_NOBlock(nn.Module):
@@ -268,11 +357,11 @@ class Parallel_NOBlock(nn.Module):
                  att_block_types_decode:list,
                  n_params=list,
                  n_head_channels = 16,
-                 bottle_neck_dims:list=[],
                  att_dims: list=[],
                  with_res: list=[],
                  no_layers_nh: list[NoLayer]=[None],
-                 multi_grid_attention: bool=False
+                 multi_grid_attention: bool=False,
+                 spatial_attention_configs = {}
                 ) -> None: 
       
         super().__init__()
@@ -293,7 +382,8 @@ class Parallel_NOBlock(nn.Module):
                 n_head_channels=n_head_channels,
                 att_dim=att_dims[n],
                 with_res=with_res[n],
-                no_layer_nh=no_layers_nh[n]
+                no_layer_nh=no_layers_nh[n],
+                spatial_attention_config = spatial_attention_configs[n]
             ))
 
         if multi_grid_attention:
@@ -304,12 +394,12 @@ class Parallel_NOBlock(nn.Module):
         x_mg = []
         mask_mg = []
         for layer in self.NO_Blocks:
-            x_enc, mask = layer.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
-            x_dec, mask = layer.decode(x_enc, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+            x_enc, mask_enc = layer.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+            x_dec, mask_dec = layer.decode(x_enc, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask_enc, coords_in=coords_in)
 
             if self.multi_grid_attention:
                 x_mg.append(x_dec)
-                mask_mg.append(mask)
+                mask_mg.append(mask_dec)
         
         if self.multi_grid_attention:
             x = self.mga_layer(x_mg, mask_mg)
@@ -324,8 +414,7 @@ class SpatialAttention(nn.Module):
                  model_dim_in, 
                  n_head_channels,
                  n_params, 
-                 spatial_attention_configs = None,
-                 rotate_coord_system =True
+                 spatial_attention_configs = None
                 ) -> None: 
       
         super().__init__()
@@ -405,6 +494,37 @@ class ParamAttention(nn.Module):
         x_shape = x.shape
         x, mask = shape_to_att(x, self.param_idx_att, mask=mask)
         x, _  = self.attention_layer(x, mask=mask)
+        x = shape_to_x(x, x_shape, self.param_idx_att)
+        return x
+
+
+class CrossAttention(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in, 
+                 n_head_channels, 
+                 att_dim=None,
+                 n_params = [],
+                 param_idx_att = None
+                ) -> None: 
+      
+        super().__init__()
+
+        model_dim_total = model_dim_in*torch.tensor(n_params).prod()
+        model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
+
+        att_dim = model_dim_param if att_dim is None else att_dim
+
+        self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim)
+
+        self.param_idx_att = param_idx_att
+
+    def forward(self, x, mask=None):
+        x, x_cross = x.chunk(2,dim=-1)
+        x_shape = x.shape
+        x, mask = shape_to_att(x.contiguous(), self.param_idx_att, mask=mask)
+        x_cross, _ = shape_to_att(x_cross.contiguous(), self.param_idx_att)
+        x, _  = self.attention_layer(x, x_cross, mask=mask)
         x = shape_to_x(x, x_shape, self.param_idx_att)
         return x
 

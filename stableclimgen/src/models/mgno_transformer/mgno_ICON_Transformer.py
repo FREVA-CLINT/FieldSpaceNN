@@ -10,7 +10,7 @@ import omegaconf
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
 from ...modules.icon_grids.icon_grids import GridLayer
-from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock
+from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock,UNet_NOBlock
 
 from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
 
@@ -39,7 +39,6 @@ class NOBlockConfig:
                  nh_transformation: bool = False,
                  nh_inverse_transformation: bool = False,
                  att_dims: int = None,
-                 bottle_neck_dims: int = None,
                  multi_grid_attention: bool=False,
                  with_res: bool = True,
                  neural_operator_type_nh: str='Normal_VM',
@@ -109,7 +108,7 @@ class ICON_Transformer(nn.Module):
             nh_no_layers = []
             for k in range(n_no_layers):
                 
-                global_level_in = 0 if block_conf.block_type != 'Stacked' or k==0 else global_level_no
+                global_level_in = 0 if block_conf.block_type != 'Stacked' and block_conf.block_type != 'UNet' or k==0 else global_level_no
                 global_level_no = global_levels[k]
 
                 no_layer = get_no_layer(block_conf.neural_operator_type[k], 
@@ -156,6 +155,9 @@ class ICON_Transformer(nn.Module):
             elif block_conf.block_type == 'Parallel':
                 block = Parallel_NOBlock
 
+            elif block_conf.block_type == 'UNet':
+                block = UNet_NOBlock
+
 
             self.Blocks.append(block(model_dim_in,
                         block_conf.model_dims_out,
@@ -164,7 +166,6 @@ class ICON_Transformer(nn.Module):
                         att_block_types_encode=block_conf.att_block_types_encode,
                         att_block_types_decode=block_conf.att_block_types_decode,
                         n_head_channels=n_head_channels,
-                        bottle_neck_dims=block_conf.bottle_neck_dims,
                         att_dims=block_conf.att_dims,
                         with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,

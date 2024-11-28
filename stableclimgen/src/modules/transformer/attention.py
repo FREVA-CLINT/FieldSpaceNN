@@ -97,6 +97,84 @@ class ChannelVariableAttention(nn.Module):
             mask = mask.view(b,n,nv)
 
         return x, mask
+
+class CrossChannelVariableAttention(nn.Module):
+    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True):
+        super().__init__()
+        """
+        Channel-wise variable attention module for applying multi-head attention across variable dimensions.
+
+        :param model_dim: Dimensionality of the input feature space.
+        :param n_chunks_channel: Number of chunks to divide the channel dimension into for attention.
+        :param n_head_channels: Number of channels per attention head.
+        :param model_dim_out: Dimensionality of the output feature space (if different from model_dim).
+        :param with_res: Whether to use a residual connection with the attention mechanism.
+        """
+        
+        self.n_chunks_channels = n_chunks_channel
+
+        self.with_res = with_res
+
+        if model_dim_out is None:
+            model_dim_out = model_dim_in
+            self.res_lin_layer = nn.Identity()
+
+        elif with_res:
+            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False)
+
+        model_dim_out = int(model_dim_out)
+        model_dim_chunked = int(model_dim_in // n_chunks_channel)
+        model_dim_chunked_out = int(model_dim_out // n_chunks_channel)
+
+        self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+        self.layer_norm_k = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+
+        model_dim_att = model_dim_chunked if att_dim is None else att_dim
+
+        n_heads = model_dim_att//n_head_channels if model_dim_att > n_head_channels else 1
+
+        self.MHA = MultiHeadAttentionBlock(
+            model_dim_att, model_dim_chunked_out, n_heads, input_dim=model_dim_chunked, qkv_proj=True
+            )   
+
+        if with_res:
+            self.gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+            self.res_layer = ResLayer(model_dim_out)
+    
+
+    def forward(self, x, x_cross, mask=None):
+        b,n,nv,f=x.shape
+        x = x.view(b,n,nv,f)
+
+        if self.with_res:
+            x_res = self.res_lin_layer(x)
+
+        x = x.view(b*n,nv,f)
+        x = x.view(b*n,nv*self.n_chunks_channels,-1)
+
+        x_cross = x_cross.view(b*n,nv*self.n_chunks_channels,-1)
+
+        q = self.layer_norm(x)
+        k = self.layer_norm_k(x_cross)
+        
+        mask_chunk=mask
+        if mask_chunk is not None:
+            mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
+            
+        x = self.MHA(q=q, k=k, v=x_cross, mask=mask_chunk)
+        x = x.view(b*n,nv,-1)
+        x = x.view(b,n,nv,-1)
+
+        if self.with_res:
+            x = x_res + self.gamma * x
+            x = self.res_layer(x)
+
+        if mask is not None:
+            mask = mask.view(b, x.shape[1], -1)
+            mask[mask.sum(dim=-1)!=mask.shape[-1]] = False
+            mask = mask.view(b,n,nv)
+
+        return x, mask
     
 
 class MultiGridChannelAttention(nn.Module):
