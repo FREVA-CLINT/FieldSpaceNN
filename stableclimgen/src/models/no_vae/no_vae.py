@@ -10,7 +10,8 @@ import omegaconf
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
 from ...modules.icon_grids.icon_grids import GridLayer
-from .no_block import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock
+from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock
+from ..vae.quantization import Quantization
 
 from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
 
@@ -28,6 +29,8 @@ class NOBlockConfig:
 
     def __init__(self, 
                  block_type: str,
+                 is_encoder_only: bool,
+                 is_decoder_only: bool,
                  neural_operator_type: int|list,
                  global_levels: int|list, 
                  model_dims_out: int|list,
@@ -51,16 +54,36 @@ class NOBlockConfig:
         inputs = copy.deepcopy(locals())
         self.block_type = block_type
         self.multi_grid_attention = multi_grid_attention
+        self.is_encoder_only = is_encoder_only
+        self.is_decoder_only = is_decoder_only
+
+        exceptions = ['self','block_type','multi_grid_attention','is_encoder_only','is_decoder_only']
 
         for input, value in inputs.items():
-            if input != 'self' and input != 'block_type' and input !=multi_grid_attention:
+            if input not in exceptions:
                 setattr(self, input, check_value(value, n_no_layers))
         
 
-class ICON_Transformer(nn.Module):
+class QuantConfig:
+    """
+    Configuration class for defining quantization parameters in the VAE model.
+
+    :param z_ch: Number of latent channels in the quantized representation.
+    :param latent_ch: Number of latent channels in the bottleneck.
+    :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
+    """
+
+    def __init__(self, z_ch: int, latent_ch: int, block_type: str):
+        self.z_ch = z_ch
+        self.latent_ch = latent_ch
+        self.block_type = block_type
+
+
+class NOVAE(nn.Module):
     def __init__(self, 
                  icon_grid: str,
                  block_configs: List[NOBlockConfig],
+  #               quant_config: QuantConfig,
                  nh: int=1,
                  seq_lvl_att: int=2,
                  model_dim_in: int=1,
@@ -97,7 +120,8 @@ class ICON_Transformer(nn.Module):
         n = 0
         global_level_in = 0
         # Construct blocks based on configurations
-        self.Blocks = nn.ModuleList()
+        self.encoder_only_blocks = nn.ModuleList()
+        self.decoder_only_blocks = nn.ModuleList()
 
         for block_conf in block_configs:
 
@@ -154,9 +178,9 @@ class ICON_Transformer(nn.Module):
 
             elif block_conf.block_type == 'Parallel':
                 block = Stacked_NOBlock
+            
 
-
-            self.Blocks.append(block(model_dim_in,
+            Block = block(model_dim_in,
                         block_conf.model_dims_out,
                         no_layers,
                         n_params=block_conf.n_params,
@@ -167,28 +191,22 @@ class ICON_Transformer(nn.Module):
                         att_dims=block_conf.att_dims,
                         with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,
-                        multi_grid_attention=block_conf.multi_grid_attention))
+                        multi_grid_attention=block_conf.multi_grid_attention)
+            
+            if block_conf.is_encoder_only:
+                self.encoder_only_blocks.append(Block)
 
-         
+            elif block_conf.is_decoder_only:
+                self.decoder_only_blocks.append(Block)
+
+            else:
+                self.vae_block = Block
+
         
+   #     self.quantization = Quantization(in_ch=self.vae_block.model_dim_out_encode, z_ch=quant_config.z_ch, latent_ch=quant_config.latent_ch,
+   #                                      block_type=quant_config.block_type, spatial_dim_count=2)
         
-        
-        
-
-
-    def forward(self, x, coords_input, coords_output, sampled_indices_batch_dict=None, mask=None):
-
-        """
-        Forward pass for the ICON_Transformer model.
-
-        :param x: Input tensor of shape (batch_size, num_cells, input_dim).
-        :param coords_input: Input coordinates for x
-        :param coords_output: Output coordinates for position embedding.
-        :param sampled_indices_batch_dict: Dictionary of sampled indices for regional models.
-        :param mask: Mask for dropping cells in the input tensor.
-        :return: Output tensor of shape (batch_size, num_cells, output_dim).
-        """
-
+    def prepare_data(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, mask=None):
         b,n = x.shape[:2]
         x = x.view(b,n,-1,self.model_dim_in)
 
@@ -211,23 +229,54 @@ class ICON_Transformer(nn.Module):
                                                for global_level in self.global_levels]))
 
         # Use global cell coordinates if none are provided
-        if coords_input.numel()==0:
+        if coords_input is None or coords_input.numel()==0:
             coords_input = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
 
-        if coords_output.numel()==0:
+        if coords_output is None or coords_output.numel()==0:
             coords_output = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
 
+    
+        return x, mask, indices_layers, coords_input, coords_output
 
-        for k, block in enumerate(self.Blocks):
-            
-            coords_in = coords_input if k==0 else None
-            coords_out = coords_output if k==len(self.Blocks)-1  else None
-            
-            # Process input through the block
-            x, mask = block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_in, coords_out=coords_out)
-
+    def encode(self, x, coords_input=None, sampled_indices_batch_dict=None, mask=None):
         
-        x = x.view(b,n,-1)
+        x, mask, indices_layers, coords_input, _ = self.prepare_data(x, 
+                                                                coords_input, 
+                                                                sampled_indices_batch_dict=sampled_indices_batch_dict, 
+                                                                mask=mask)
+        
+        for k, block in enumerate(self.encoder_only_blocks):
+            coords_input = coords_input if k==0 else None
+            x, mask = block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_input, coords_out=None)
+   
+        x = self.vae_block.encode(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_input)
+
+        return x
+
+
+    def decode(self, x, coords_output=None, sampled_indices_batch_dict=None):
+        
+        _, _, indices_layers, _, coords_output = self.prepare_data(x, 
+                                                        coords_output, 
+                                                        sampled_indices_batch_dict=sampled_indices_batch_dict, 
+                                                        mask=None)
+        
+        x = self.vae_block.decode(x, indices_layers, sampled_indices_batch_dict)
+
+        for k, block in enumerate(self.decoder_only_blocks):
+            
+            coords_out = coords_output if k==len(self.decoder_only_blocks)-1  else None
+            
+            x, _ = block(x, indices_layers, sampled_indices_batch_dict, coords_out=coords_out)
+
+        return x.view(x.shape[0], x.shape[1], -1)
+
+
+    def forward(self, x, coords_input, coords_output, sampled_indices_batch_dict=None, mask=None):
+
+        x = self.encode(x, coords_input, sampled_indices_batch_dict=sampled_indices_batch_dict, mask=mask)
+
+        x = self.decode(x, coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict)
 
         return x
 

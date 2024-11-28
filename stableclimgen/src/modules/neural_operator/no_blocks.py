@@ -3,9 +3,9 @@ import torch.nn.functional as F
 import torch.nn as nn
 
 
-from ...modules.neural_operator.neural_operator import NoLayer
-from ...modules.transformer.attention import ChannelVariableAttention
-from .mg_attention import MultiGridAttention
+from .neural_operator import NoLayer
+from ..transformer.attention import ChannelVariableAttention
+from ...models.mgno_transformer.mg_attention import MultiGridAttention
 
 class NOBlock(nn.Module):
   
@@ -214,22 +214,34 @@ class Stacked_NOBlock(nn.Module):
                 no_layer_nh=no_layers_nh[n]
             ))
 
-    
-    def forward(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None, coords_out=None):
-        
-        shapes = []
+        self.model_dim_out_encode = model_dim_out_encode
+
+    def encode(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None):
+
         for layer in self.NO_Blocks:
             x, mask = layer.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
-            shapes.append(x.shape)
             x, mask = shape_to_att(x, mask=mask)
 
+        return x
+    
+    def decode(self, x, indices_layers=None, sample_dict=None, mask=None,  coords_out=None):
 
         for layer_idx in range(len(self.NO_Blocks)-1,-1,-1):
             layer = self.NO_Blocks[layer_idx]
-            x = shape_to_x(x, shapes[layer_idx])
-            x, mask = layer.decode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+            x_shape_origin = (*x.shape[:3], *layer.n_params, -1)
+            x = shape_to_x(x, x_shape_origin)
+            x, mask = layer.decode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_out=coords_out)
 
+        return x
+
+
+    
+    def forward(self, x, indices_layers=None, sample_dict=None, mask=None, coords_in=None, coords_out=None):
         
+        x, shapes = self.encode(x, indices_layers=indices_layers, sample_dict=sample_dict, mask=mask, coords_in=coords_in)
+
+        x = self.decode(x,shapes, indices_layers=indices_layers, sample_dict=sample_dict, mask=None, coords_out=coords_out)
+
         return x, mask
 
 

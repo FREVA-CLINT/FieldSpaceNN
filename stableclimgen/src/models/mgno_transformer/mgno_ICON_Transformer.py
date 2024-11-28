@@ -10,7 +10,7 @@ import omegaconf
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
 from ...modules.icon_grids.icon_grids import GridLayer
-from .no_block import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock
+from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock
 
 from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
 
@@ -167,14 +167,9 @@ class ICON_Transformer(nn.Module):
                         att_dims=block_conf.att_dims,
                         with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,
-                        multi_grid_attention=block_conf.multi_grid_attention))
-
-         
+                        multi_grid_attention=block_conf.multi_grid_attention))     
         
         
-        
-        
-
 
     def forward(self, x, coords_input, coords_output, sampled_indices_batch_dict=None, mask=None):
 

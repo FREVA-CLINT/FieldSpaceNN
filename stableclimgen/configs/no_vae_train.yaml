@@ -1,0 +1,13 @@
+defaults:
+  - trainer: icon_transformer
+  - logger: wandb
+  - model: no_vae
+  - dataloader: netcdf_icon
+  - hydra: default
+  - embedding: default
+  - _self_
+
+ckpt_path: null
+
+run_name: icon_transformer
+run_dir: /Users/maxwitte/work/climgen_out

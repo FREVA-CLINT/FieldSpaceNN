@@ -40,7 +40,7 @@ class MSE_loss(nn.Module):
         return loss
 
 
-class LightningICONTransformer(pl.LightningModule):
+class LightningNOVAE(pl.LightningModule):
     def __init__(self, model, lr, lr_warmup=None):
         super().__init__()
         # maybe create multi_grid structure here?
