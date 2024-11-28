@@ -1,5 +1,5 @@
 dataset:
-  _target_: stableclimgen.src.utils.datasets.MaskClimateDataset
+  _target_: stableclimgen.src.utils.datasets_regular.MaskClimateDataset
   data_dict: ../../input/data_netcdf.json
   norm_dict: ../../input/norm_dict.json
   seq_length: 1

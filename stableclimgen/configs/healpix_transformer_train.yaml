@@ -2,7 +2,7 @@ defaults:
   - trainer: icon_transformer
   - logger: wandb
   - model: healpix_transformer
-  - dataloader: zarr
+  - dataloader: zarr_healpix
   - hydra: default
   - _self_
 
