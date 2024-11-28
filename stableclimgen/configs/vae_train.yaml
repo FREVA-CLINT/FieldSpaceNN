@@ -2,7 +2,7 @@ defaults:
   - trainer: trainer
   - logger: wandb
   - model: vae_cnn
-  - dataloader: xarray
+  - dataloader: netcdf_regular
   - hydra: default
   - _self_
 
