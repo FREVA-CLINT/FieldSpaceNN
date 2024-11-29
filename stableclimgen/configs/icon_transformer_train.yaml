@@ -3,6 +3,7 @@ defaults:
   - logger: wandb
   - model: icon_transformer
   - dataloader: netcdf_icon
+  - embedding: default
   - hydra: default
   - _self_
 

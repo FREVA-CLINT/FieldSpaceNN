@@ -272,6 +272,7 @@ class RelativeCoordinateManager(nn.Module):
                 grid_layer_ref: GridLayer,
                 nh_in:bool= False,
                 nh_ref:bool= True,
+                seq_lvl:int = -1,
                 precompute:bool=False,
                 coord_system:str='polar',
                 rotate_coord_system=True) -> None:
@@ -282,6 +283,7 @@ class RelativeCoordinateManager(nn.Module):
         self.grid_layer_ref = grid_layer_ref
         self.nh_in = nh_in
         self.nh_ref = nh_ref
+        self.seq_lvl = seq_lvl
         self.rotate_coord_system = rotate_coord_system
 
         self.coord_system = coord_system
@@ -317,9 +319,14 @@ class RelativeCoordinateManager(nn.Module):
 
         elif coordinates_in is not None and nh_in:
             coordinates_in,_ = self.grid_layer_in.get_nh(coordinates_in, indices_in, sample_dict=sample_dict)
- 
+
+            
         if coordinates_ref is None:
             coordinates_ref = self.grid_layer_ref.get_coordinates_from_grid_indices(indices_ref, nh=nh_ref)
+
+        if self.seq_lvl != -1:
+            coordinates_ref = sequenize(coordinates_ref, max_seq_level=self.seq_lvl)[:,:,[0]]
+            coordinates_in = sequenize(coordinates_in, max_seq_level=self.seq_lvl)
 
         b, seq_dim_in, n_nh_in = coordinates_in.shape[:3]
         _, seq_dim_ref, n_nh_ref = coordinates_ref.shape[:3]
@@ -332,14 +339,17 @@ class RelativeCoordinateManager(nn.Module):
         coordinates_ref = coordinates_ref.unsqueeze(dim=-2)
 
         coordinates_rel = get_distance_angle(
-                                coordinates_ref[:,:,:,:,0], coordinates_ref[:,:,:,:,1], 
-                                coordinates_in[:,:,:,:,0], coordinates_in[:,:,:,:,1], 
+                                coordinates_ref[...,0], coordinates_ref[...,1], 
+                                coordinates_in[...,0], coordinates_in[...,1], 
                                 base=self.coord_system, periodic_fov=None,
                                 rotate_coords=self.rotate_coord_system
                                 )
-        
-        coordinates_rel = (coordinates_rel[0].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in),
-                           coordinates_rel[1].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in))
+        if self.seq_lvl == -1:
+            coordinates_rel = (coordinates_rel[0].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in),
+                            coordinates_rel[1].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in))
+        else:
+            coordinates_rel = (coordinates_rel[0].view(b, -1, 1),
+                            coordinates_rel[1].view(b, -1, 1))
         
         return coordinates_rel
 
@@ -363,7 +373,7 @@ class RelativeCoordinateManager(nn.Module):
             c_shape = coordinates_rel.shape
             coordinates_rel = coordinates_rel[:,indices_ref].view(indices_ref.shape[0],-1,*c_shape[2:])
 
-            coordinates_rel = (coordinates_rel[:,:,:,:,:,0],
-                           coordinates_rel[:,:,:,:,:,1])
+            coordinates_rel = (coordinates_rel[...,0],
+                           coordinates_rel[...,1])
 
         return coordinates_rel

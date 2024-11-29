@@ -644,7 +644,7 @@ def sequenize(tensor, max_seq_level, seq_dim=1):
         elif tensor.dim()==5:
             tensor = tensor.view(tensor.shape[0], -1, 4**(seq_level), tensor.shape[-3], tensor.shape[-2], tensor.shape[-1])
 
-    else:
+    elif seq_dim==2:
         if tensor.dim()==3:
             tensor = tensor.view(tensor.shape[0], tensor.shape[1], -1, 4**(seq_level))
         elif tensor.dim()==4:
