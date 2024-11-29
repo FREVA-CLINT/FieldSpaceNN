@@ -16,11 +16,12 @@ class RearrangeBlock(EmbedBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, pattern: str, reverse_pattern: str, spatial_dim_count: int = 1, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, fn, pattern: str, reverse_pattern: str, spatial_dim_count: int = 1, seq_len: int = None):
+        super().__init__()
         self.fn = fn
         self.pattern = pattern
         self.reverse_pattern = reverse_pattern
+        self.seq_len = seq_len
         if spatial_dim_count == 2:
             # Replace the variable dimension 'g' with height and width dimensions for 2D spatial arrangements
             self.pattern = self.pattern.replace('g', 'h w')
@@ -50,11 +51,23 @@ class RearrangeBlock(EmbedBlock):
             for tensor in (x, mask, cond)
         ]
 
+        if self.seq_len and self.seq_len < x.shape[1]:
+            x, mask, cond = [
+                rearrange(tensor, 'b (n s) ... -> (b n) s ...', s=self.seq_len) if torch.is_tensor(tensor) else tensor
+                for tensor in (x, mask, cond)
+            ]
+
         # Apply the specified function (fn) to the rearranged tensor
         if isinstance(self.fn, EmbedBlock):
             x = self.fn(x, emb, mask, cond, *args)
         else:
             x = self.fn(x, *args)
+
+        if self.seq_len and self.seq_len < x.shape[1]:
+            x, mask, cond = [
+                rearrange(tensor, '(b n) s  ... -> b (n s)  ...', s=self.seq_len) if torch.is_tensor(tensor) else tensor
+                for tensor in (x, mask, cond)
+            ]
 
         # Reverse rearrange to restore the original shape
         if dim == 6:
@@ -72,12 +85,13 @@ class RearrangeTimeCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b g v) t c',
             reverse_pattern='(b g v) t c -> b t g v c',
-            spatial_dim_count=spatial_dim_count
+            spatial_dim_count=spatial_dim_count,
+            seq_len=seq_len
         )
 
 
@@ -89,12 +103,13 @@ class RearrangeSpaceCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b t v) (g) c',
             reverse_pattern='(b t v) (g) c -> b t g v c',
-            spatial_dim_count=spatial_dim_count
+            spatial_dim_count=spatial_dim_count,
+            seq_len=seq_len
         )
 
 
@@ -106,12 +121,13 @@ class RearrangeVarCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b t g) v c',
             reverse_pattern='(b t g) v c -> b t g v c',
-            spatial_dim_count=spatial_dim_count
+            spatial_dim_count=spatial_dim_count,
+            seq_len=seq_len
         )
 
 
@@ -123,12 +139,13 @@ class RearrangeConvCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b v) c t g',
             reverse_pattern='(b v) c t g -> b t g v c',
-            spatial_dim_count=spatial_dim_count
+            spatial_dim_count=spatial_dim_count,
+            seq_len=seq_len
         )
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
