@@ -51,9 +51,11 @@ class RearrangeBlock(EmbedBlock):
             for tensor in (x, mask, cond)
         ]
 
-        if self.seq_len and self.seq_len < x.shape[1]:
+        s = x.shape[1]
+        if self.seq_len and self.seq_len < s:
+            n = s // self.seq_len
             x, mask, cond = [
-                rearrange(tensor, 'b (n s) ... -> (b n) s ...', s=self.seq_len) if torch.is_tensor(tensor) else tensor
+                rearrange(tensor, 'b (n s) ... -> (b n) s ...', n=n, s=self.seq_len) if torch.is_tensor(tensor) else tensor
                 for tensor in (x, mask, cond)
             ]
 
@@ -63,9 +65,9 @@ class RearrangeBlock(EmbedBlock):
         else:
             x = self.fn(x, *args)
 
-        if self.seq_len and self.seq_len < x.shape[1]:
+        if self.seq_len and self.seq_len < s:
             x, mask, cond = [
-                rearrange(tensor, '(b n) s  ... -> b (n s)  ...', s=self.seq_len) if torch.is_tensor(tensor) else tensor
+                rearrange(tensor, '(b n) s  ... -> b (n s)  ...', n=n, s=self.seq_len) if torch.is_tensor(tensor) else tensor
                 for tensor in (x, mask, cond)
             ]
 
