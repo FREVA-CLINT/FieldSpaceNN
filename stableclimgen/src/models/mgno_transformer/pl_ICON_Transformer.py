@@ -39,6 +39,14 @@ class MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
 
+class NH_TV_loss(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.loss_fcn = torch.nn.MSELoss() 
+
+    def forward(self, output, target):
+        loss = self.loss_fcn(output, target.view(output.shape))
+        return loss
 
 class LightningICONTransformer(pl.LightningModule):
     def __init__(self, model, lr, lr_warmup=None):

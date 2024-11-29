@@ -12,16 +12,16 @@ model:
   rotate_coord_system: true
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_ICON_Transformer.NOBlockConfig
-      block_type: "Serial"
+      block_type: "UNet"
       neural_operator_type: "Normal"
-      global_levels: [0,1,2,4]
-      model_dims_out: [1,1,1,1]
-      n_params: [[2,2], [2,2], [2,2], [4,4]]
+      global_levels: [1,2,4]
+      model_dims_out: [1,1,1]
+      n_params: [[2,2], [2,2], [4,4]]
       global_params_learnable: [[true,true, true]]
-      att_block_types_encode: [["var"],["var"],["var"],["trans"]]
-      att_block_types_decode: [["var"],["var"],["var"],["var"]]
-      nh_transformation: false
-      nh_inverse_transformation: false
+      att_block_types_encode: [["var"],["var"],["var"]]
+      att_block_types_decode: [["var_cross"],["var_cross", "nh"],["var"]]
+      nh_transformation: [false, true, true, true]
+      nh_inverse_transformation: [false, true, true, true]
       att_dims: 64
       multi_grid_attention: true
       with_res: false
@@ -29,7 +29,6 @@ model:
         nh: false
         seq_lvl: 2 
         blocks: ["s", "mlp"]
-        embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+        embedder_names: [["CoordinateEmbedder"],[]]
         embed_confs: ${embedding}
         embed_mode: "sum"
-      
