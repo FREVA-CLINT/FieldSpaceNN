@@ -171,7 +171,7 @@ class TransformerBlock(EmbedBlock):
             in_ch: int,
             out_ch: List[int],
             blocks: List[str],
-            seq_lenths: List[int] = None,
+            seq_lengths: List[int] = None,
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
             embed_mode: str = "sum",
@@ -189,7 +189,7 @@ class TransformerBlock(EmbedBlock):
         num_heads = check_value(num_heads, len(blocks))
         mlp_mult = check_value(mlp_mult, len(blocks))
         dropout = check_value(dropout, len(blocks))
-        seq_lenths = check_value(seq_lenths, len(blocks))
+        seq_lengths = check_value(seq_lengths, len(blocks))
         assert len(out_ch) == len(blocks)
 
         trans_blocks, embedders, embedding_layers, norms, residuals = [], [], [], [], []
@@ -207,7 +207,7 @@ class TransformerBlock(EmbedBlock):
                 else:
                     assert block == "v"
                     rearrange_fn = RearrangeVarCentric
-                trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count, seq_lenths[i])
+                trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count, seq_lengths[i])
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
             if embedder_names[i]:

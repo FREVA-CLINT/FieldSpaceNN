@@ -33,6 +33,7 @@ class GridAttention(nn.Module):
                 coord_system= "cartesian",
                 rotate_coord_system=rotate_coord_system)
 
+        spatial_attention_configs['seq_lengths'] = 4**seq_lvl
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
                                                 num_heads=n_heads,
