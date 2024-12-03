@@ -166,8 +166,12 @@ class NetCDFLoader_lazy(Dataset):
         
         global_indices = np.arange(coords_processing.shape[0])
 
-        self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
-        self.global_cells_input = self.global_cells[:,0]
+        if coarsen_sample_level == -1:
+            self.global_cells = global_indices.reshape(1, -1)
+            self.global_cells_input = np.array([1]).reshape(-1,1)
+        else:
+            self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
+            self.global_cells_input = self.global_cells[:,0]
             
         ds_source = xr.open_dataset(self.files_source[0])
         self.len_dataset = 200#len(ds_source)*self.global_cells.shape[1] 
@@ -321,7 +325,10 @@ class NetCDFLoader_lazy(Dataset):
 
         ds_target = ds_source = output_mapping = input_mapping = global_cells = global_cells = []
 
-        indices_sample = {'sample': sample_index,
+        if self.coarsen_sample_level==-1:
+            indices_sample= torch.tensor([])
+        else:
+            indices_sample = {'sample': sample_index,
                 'sample_level': self.coarsen_sample_level}
                 
         embed_data = {'VariableEmbedder': sample_vars}

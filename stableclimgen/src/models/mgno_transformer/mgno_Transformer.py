@@ -189,7 +189,7 @@ class MGNO_Transformer(nn.Module):
         if mask is not None:
             mask = mask[:,:,:,:x.shape[2]]
 
-        if indices_sample is not None:
+        if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
                 self.global_levels.tolist(),
                 [self.get_global_indices_local(indices_sample['sample'], 
@@ -197,19 +197,17 @@ class MGNO_Transformer(nn.Module):
                                                global_level) 
                                                for global_level in self.global_levels]))
 
-        else:
-            indices_layers = dict(zip(
-                self.global_levels.tolist(),
-                [None for _ in self.global_levels]))
-            
-        indices_sample['indices_layers'] = indices_layers
+            indices_sample['indices_layers'] = indices_layers
+            indices_base = indices_layers[0]
+        else:           
+            indices_base = indices_sample = None
 
         # Use global cell coordinates if none are provided
-        if coords_input.numel()==0:
-            coords_input = self.cell_coords_global[indices_layers[0]].unsqueeze(dim=-2)
+        if coords_input is None or coords_input.numel()==0:
+            coords_input = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
 
-        if coords_output.numel()==0:
-            coords_output = self.cell_coords_global[indices_layers[0]].unsqueeze(dim=-2)
+        if coords_output is None or coords_output.numel()==0:
+            coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
 
 
         for k, block in enumerate(self.Blocks):

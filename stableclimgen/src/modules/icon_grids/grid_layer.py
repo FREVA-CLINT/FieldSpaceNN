@@ -138,7 +138,7 @@ class GridLayer(nn.Module):
         self.mean_dist = dists[dists > 1e-10].mean()
         self.median_dist = dists[dists > 1e-10].median()
 
-    def get_nh(self, x: torch.Tensor, local_indices: torch.Tensor, sample_dict: dict, mask: torch.Tensor = None) -> tuple:
+    def get_nh(self, x: torch.Tensor, local_indices: torch.Tensor=None, sample_dict: dict=None, mask: torch.Tensor = None) -> tuple:
         """
         Get the neighborhood data, mask, and coordinates.
 
@@ -150,6 +150,12 @@ class GridLayer(nn.Module):
         :param mask: Optional mask tensor. Defaults to None.
         :return: A tuple containing neighborhood data, mask, and coordinates.
         """
+        if local_indices is None or sample_dict is None:
+            x = x[:,self.adjc]
+            if mask is not None:
+                mask = mask[:,self.adjc]
+            return x, mask
+
         # Get neighborhood indices and adjacency mask
         indices_nh, adjc_mask = get_nh_indices(self.adjc, local_cell_indices=local_indices, global_level=int(self.global_level))
         
@@ -178,12 +184,15 @@ class GridLayer(nn.Module):
         :return: Coordinates corresponding to the indices.
         """
         if nh:
-            local_indices = self.adjc[local_indices]
+            local_indices = self.adjc[local_indices] if local_indices is not None else self.adjc.unsqueeze(dim=0)
+            return self.coordinates[local_indices]
+        
+        elif local_indices is None:
+            return self.coordinates.unsqueeze(dim=1).unsqueeze(dim=0)
+        
         else:
             local_indices = local_indices.unsqueeze(dim=-1) if local_indices.dim()<3 else local_indices
-
-        coords = self.coordinates[local_indices]
-        return coords
+            return self.coordinates[local_indices]
 
     def get_relative_coordinates_from_grid_indices(self, local_indices: torch.Tensor, coords: torch.Tensor = None, coord_system: str = None) -> torch.Tensor:
         """
@@ -320,7 +329,6 @@ class RelativeCoordinateManager(nn.Module):
         elif coordinates_in is not None and nh_in:
             coordinates_in,_ = self.grid_layer_in.get_nh(coordinates_in, indices_in, sample_dict=sample_dict)
 
-            
         if coordinates_ref is None:
             coordinates_ref = self.grid_layer_ref.get_coordinates_from_grid_indices(indices_ref, nh=nh_ref)
 
@@ -371,7 +379,11 @@ class RelativeCoordinateManager(nn.Module):
                 coordinates_rel = self.coordinates_rel
 
             c_shape = coordinates_rel.shape
-            coordinates_rel = coordinates_rel[:,indices_ref].view(indices_ref.shape[0],-1,*c_shape[2:])
+
+            if indices_ref is not None:
+                coordinates_rel = coordinates_rel[:,indices_ref].view(indices_ref.shape[0],-1,*c_shape[2:])
+            else:
+                coordinates_rel = coordinates_rel.view(1,-1,*c_shape[2:])
 
             coordinates_rel = (coordinates_rel[...,0],
                            coordinates_rel[...,1])

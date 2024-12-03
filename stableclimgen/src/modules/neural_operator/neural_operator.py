@@ -38,9 +38,12 @@ class NoLayer(nn.Module):
 
 
     def transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None, mask=None):
-  
-        coordinates_rel = self.rel_coord_mngr(indices_in=indices_sample["indices_layers"][self.global_level_in],
-                                              indices_ref=indices_sample["indices_layers"][self.global_level_no],
+        
+        indices_in = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
+        indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
+
+        coordinates_rel = self.rel_coord_mngr(indices_in=indices_in,
+                                              indices_ref=indices_ref,
                                               coordinates_in=coordinates,
                                               coordinates_ref=coordinates_ref,
                                               sample_dict=indices_sample,
@@ -48,7 +51,7 @@ class NoLayer(nn.Module):
 
         if self.nh_projection:
             x, mask = self.grid_layers[str(self.global_level_in)].get_nh(x, 
-                                                                indices_sample["indices_layers"][self.global_level_in], 
+                                                                indices_in, 
                                                                 indices_sample, 
                                                                 mask=mask)
             
@@ -57,9 +60,12 @@ class NoLayer(nn.Module):
         
 
     def inverse_transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None,  mask=None):
+        
+        indices_in = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
+        indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
 
-        coordinates_rel = self.rel_coord_mngr(indices_in=indices_sample["indices_layers"][self.global_level_in],
-                                              indices_ref=indices_sample["indices_layers"][self.global_level_no],
+        coordinates_rel = self.rel_coord_mngr(indices_in=indices_in,
+                                              indices_ref=indices_ref,
                                               coordinates_in=coordinates,
                                               coordinates_ref=coordinates_ref,
                                               sample_dict=indices_sample,
@@ -67,7 +73,7 @@ class NoLayer(nn.Module):
 
         if self.nh_backprojection:
             x, mask = self.grid_layers[str(self.global_level_no)].get_nh(x, 
-                                                                indices_sample["indices_layers"][self.global_level_no], 
+                                                                indices_ref, 
                                                                 indices_sample, 
                                                                 mask=mask)
         else: 
@@ -162,7 +168,7 @@ class Normal_VM_NoLayer(NoLayer):
     def transform_(self, x, coordinates_rel, mask=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
-        c_shape = (b, n, seq_ref, seq_in*nh_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
@@ -196,12 +202,12 @@ class Normal_VM_NoLayer(NoLayer):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
-        c_shape = (b, n, seq_ref, seq_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
-        weights = weights.view(*c_shape, len(self.phis), len(self.mus))
+        weights = weights.view(*c_shape, len(self.phis), len(self.mus), 1)
 
         if mask is not None:
             mask = mask.sum(dim=-2)==mask.shape[-2]
@@ -209,7 +215,6 @@ class Normal_VM_NoLayer(NoLayer):
         
         x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
         
-        weights = weights.view(b,n,seq_ref,-1,nv,n_lon,n_lat,1)
         weights = weights/(weights.sum(dim=[2,-2,-3], keepdim=True)+1e-10)
 
         x = (x * weights).sum(dim=[2, -2,-3])
@@ -285,7 +290,7 @@ class Normal_NoLayer(NoLayer):
     def transform_(self, x, coordinates_rel, mask=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
-        c_shape = (b, n, seq_ref, seq_in*nh_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
@@ -320,15 +325,14 @@ class Normal_NoLayer(NoLayer):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
-        c_shape = (b, n, seq_ref, seq_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
-        weights = weights.view(*c_shape, len(self.mus_lon), len(self.mus_lat))
+        weights = weights.view(*c_shape, len(self.mus_lon), len(self.mus_lat), 1)
 
         x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
-        weights = weights.view(b,n,seq_ref,-1,nv,n_lon,n_lat,1)
 
         if mask is not None:
             mask = mask.view(b,n,seq_ref,nv)
@@ -403,9 +407,11 @@ class polNormal_NoLayer(NoLayer):
 
 
     def transform_(self, x, coordinates_rel, mask=None):
-        b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
+        _, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
-        c_shape = (b, n, seq_ref, seq_in*nh_in, nv)
+        b = x.shape[0]
+
+        c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
@@ -440,15 +446,14 @@ class polNormal_NoLayer(NoLayer):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
-        c_shape = (b, n, seq_ref, seq_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in, nv)
 
         weights = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
-        weights = weights.view(*c_shape, len(self.phis), len(self.dists))
+        weights = weights.view(*c_shape, len(self.phis), len(self.dists), 1)
 
         x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
-        weights = weights.view(b,n,seq_ref,-1,nv,n_lon,n_lat,1)
 
         if mask is not None:
             mask = mask.view(b,n,seq_ref,nv)
@@ -530,7 +535,7 @@ class FT_NOLayer(NoLayer):
     def transform_(self, x, coordinates_rel, mask=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
-        c_shape = (b, n, seq_ref, seq_in*nh_in, nv)
+        c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
 
         weights = self.get_fft_weights(coordinates_rel, mask=mask.view(*c_shape))
 
@@ -565,12 +570,12 @@ class FT_NOLayer(NoLayer):
 
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, n_lon, n_lat, nc = x.shape[-4:]
-        c_shape = (b, n*seq_ref, seq_in*nh_in, nv)
+        c_shape = (-1, n*seq_ref, seq_in*nh_in, nv)
 
         weights = self.get_fft_weights(coordinates_rel, inv=False)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
-        weights = weights.view(*c_shape, len(self.freqs), len(self.angles))
+        weights = weights.view(*c_shape, len(self.freqs), len(self.angles), 1)
 
         if mask is not None:
             mask = mask.sum(dim=-2)==mask.shape[-2]
@@ -578,9 +583,9 @@ class FT_NOLayer(NoLayer):
         
         x = x.view(b, n*seq_ref, 1, nv, n_lon, n_lat, nc)
 
-        weights = weights/(weights.abs().sum(dim=[-1,-2], keepdim=True))
+        weights = weights/(weights.abs().sum(dim=[-2,-3], keepdim=True))
 
-        x = (x * weights.unsqueeze(dim=-1)).sum(dim=[-2,-3])/n_lon
+        x = (x * weights).sum(dim=[-2,-3])/n_lon
         
         x = x.view(b, n, seq_ref, seq_in, nv, nc).sum(dim=2)
 

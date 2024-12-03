@@ -26,5 +26,5 @@ model:
       embed_confs: ${embedding}
       embed_mode: "sum"
       nh_transformation: false
-      nh_inverse_transformation: false
+      nh_inverse_transformation: true
       att_dims: 64

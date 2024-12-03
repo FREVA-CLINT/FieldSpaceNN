@@ -10,7 +10,7 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
 
-@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs", config_name="mgno_vae_train")
+@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs", config_name="mgno_transformer_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
