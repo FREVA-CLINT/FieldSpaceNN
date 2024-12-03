@@ -1,18 +1,14 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 import copy
-from typing import List
-import xarray as xr
+from typing import List, Dict
 import omegaconf
 
-from ...utils.grid_utils_icon import icon_grid_to_mgrid
-
-from ...modules.icon_grids.icon_grids import GridLayer
+from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock,UNet_NOBlock
 
-from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
+from ...modules.neural_operator.neural_operator import get_no_layer
 
 
 
@@ -36,11 +32,14 @@ class NOBlockConfig:
                  global_params_learnable : List[bool],
                  att_block_types_decode: List[bool] = [],
                  global_params_init : List[float] = [],
+                 embed_names_encode: List[List[str]] = None,
+                 embed_names_decode: List[List[str]] = None,
+                 embed_confs: Dict = None,
+                 embed_mode: str = "sum",
                  nh_transformation: bool = False,
                  nh_inverse_transformation: bool = False,
                  att_dims: int = None,
                  multi_grid_attention: bool=False,
-                 with_res: bool = True,
                  neural_operator_type_nh: str='Normal_VM',
                  n_params_nh: List[int] = [[3,2]],
                  global_params_init_nh: List[float] = [[3.0]],
@@ -57,12 +56,10 @@ class NOBlockConfig:
                 setattr(self, input, check_value(value, n_no_layers))
         
 
-class ICON_Transformer(nn.Module):
+class MGNO_Transformer(nn.Module):
     def __init__(self, 
-                 icon_grid: str,
+                 mgrids,
                  block_configs: List[NOBlockConfig],
-                 nh: int=1,
-                 seq_lvl_att: int=2,
                  model_dim_in: int=1,
                  model_dim_out: int=1,
                  n_head_channels:int=16,
@@ -81,10 +78,6 @@ class ICON_Transformer(nn.Module):
         global_levels = torch.concat(global_levels).unique()
         
         self.register_buffer('global_levels', global_levels, persistent=False)
-
-        mgrids = icon_grid_to_mgrid(xr.open_dataset(icon_grid),
-                                    int(torch.tensor(global_levels).max()) + 1, 
-                                    nh=nh)
 
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
@@ -165,16 +158,19 @@ class ICON_Transformer(nn.Module):
                         n_params=block_conf.n_params,
                         att_block_types_encode=block_conf.att_block_types_encode,
                         att_block_types_decode=block_conf.att_block_types_decode,
+                        embed_names_encode=block_conf.embed_names_encode,
+                        embed_names_decode=block_conf.embed_names_decode,
+                        embed_confs=block_conf.embed_confs,
+                        embed_mode=block_conf.embed_mode,
                         n_head_channels=n_head_channels,
                         att_dims=block_conf.att_dims,
-                        with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,
                         multi_grid_attention=block_conf.multi_grid_attention,
                         spatial_attention_configs=block_conf.spatial_attention_configs))     
         
         
 
-    def forward(self, x, coords_input, coords_output, sampled_indices_batch_dict=None, mask=None):
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -193,27 +189,27 @@ class ICON_Transformer(nn.Module):
         if mask is not None:
             mask = mask[:,:,:,:x.shape[2]]
 
-        if sampled_indices_batch_dict is None:
-            sampled_indices_batch_dict = {
-                'global_cell': self.global_indices,
-                'local_cell': self.global_indices,
-                'sample': None,
-                'sample_level': None,
-                'output_indices': None}
-        else:
+        if indices_sample is not None:
             indices_layers = dict(zip(
                 self.global_levels.tolist(),
-                [self.get_global_indices_local(sampled_indices_batch_dict['sample'], 
-                                               sampled_indices_batch_dict['sample_level'], 
+                [self.get_global_indices_local(indices_sample['sample'], 
+                                               indices_sample['sample_level'], 
                                                global_level) 
                                                for global_level in self.global_levels]))
 
+        else:
+            indices_layers = dict(zip(
+                self.global_levels.tolist(),
+                [None for _ in self.global_levels]))
+            
+        indices_sample['indices_layers'] = indices_layers
+
         # Use global cell coordinates if none are provided
         if coords_input.numel()==0:
-            coords_input = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
+            coords_input = self.cell_coords_global[indices_layers[0]].unsqueeze(dim=-2)
 
         if coords_output.numel()==0:
-            coords_output = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
+            coords_output = self.cell_coords_global[indices_layers[0]].unsqueeze(dim=-2)
 
 
         for k, block in enumerate(self.Blocks):
@@ -222,7 +218,7 @@ class ICON_Transformer(nn.Module):
             coords_out = coords_output if k==len(self.Blocks)-1  else None
             
             # Process input through the block
-            x, mask = block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_in, coords_out=coords_out)
+            x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
         
         x = x.view(b,n,-1)
@@ -236,68 +232,3 @@ class ICON_Transformer(nn.Module):
         global_indices_sampled = global_indices_sampled.view(global_indices_sampled.shape[0], -1, 4**global_level)[:,:,0]   
         
         return global_indices_sampled // 4**global_level
-    
-
-def get_no_layer(neural_operator_type, 
-                 grid_layers, 
-                 global_level_in, 
-                 global_level_no,
-                 n_params=[],
-                 params_init=[],
-                 params_learnable=[],
-                 nh_projection=False,
-                 nh_backprojection=False,
-                 precompute_coordinates=True,
-                 rotate_coordinate_system=True,
-                 nh=1):
-    
-    #if global_level_in==global_level_no:
-    #    if nh==1:
-    #        n_params = [3,1]
-    #        neural_operator_type = 'Normal_VM'
-
-    #    elif nh==2:
-    #        n_params = [3,2]
-    #        neural_operator_type = 'Normal'
-
-    if neural_operator_type == 'Normal_VM':
-        no_layer = Normal_VM_NoLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_phi=n_params[0],
-                            n_dist=n_params[1],
-                            kappa_init=params_init[0],
-                            kappa_learnable=params_learnable[0],
-                            dist_learnable=params_learnable[1],
-                            sigma_learnable=params_learnable[2],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-                    
-    elif neural_operator_type == 'Normal':
-        no_layer = Normal_NoLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_dist_lon=n_params[0],
-                            n_dist_lat=n_params[1],
-                            dist_learnable=params_learnable[0],
-                            sigma_learnable=params_learnable[1],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-        
-    elif neural_operator_type == 'FT':
-        no_layer = FT_NOLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_freq_lon=n_params[0],
-                            n_freq_lat=n_params[1],
-                            freq_learnable=params_learnable[0],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-    
-    return no_layer

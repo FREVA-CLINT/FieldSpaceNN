@@ -1,0 +1,30 @@
+_target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
+lr: 1e-3
+lr_warmup: 400
+model:
+  _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
+  mgrids: ${mgrids}
+  model_dim_in: 1
+  model_dim_out: 1
+  n_vars_total: 3
+  n_head_channels: 16
+  rotate_coord_system: true
+  block_configs:
+    - _target_: stableclimgen.src.models.mgno_vae.mgno_vae.NOBlockConfig
+      block_type: "Stacked"
+      is_encoder_only: false
+      is_decoder_only: false
+      neural_operator_type: "polNormal"
+      global_levels: [0,1,2,4]
+      model_dims_out: [1,1,1,1]
+      n_params: [[4,2], [4,2], [4,2], [4,2]]
+      global_params_learnable: [[true,true, true]]
+      att_block_types_encode: [["var"],["var"],["var"],["param0","param1"]]
+      att_block_types_decode: [["var"],["var"],["var"],["param0","param1"]]
+      embed_names_encode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"],["VariableEmbedder"]]]
+      embed_names_decode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"],["VariableEmbedder"]]]
+      embed_confs: ${embedding}
+      embed_mode: "sum"
+      nh_transformation: false
+      nh_inverse_transformation: false
+      att_dims: 64

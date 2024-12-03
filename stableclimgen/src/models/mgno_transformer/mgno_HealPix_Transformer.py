@@ -9,7 +9,7 @@ from ...utils.grid_utils_healpix import healpix_grid_to_mgrid
 from ...utils.grid_utils_icon import icon_grid_to_mgrid
 
 from .mg_network import MultiGridBlock
-from ...modules.icon_grids.icon_grids import GridLayer
+from ...modules.icon_grids.grid_layer import GridLayer
 
 
 

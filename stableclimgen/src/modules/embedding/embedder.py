@@ -59,6 +59,21 @@ class CoordinateEmbedder(BaseEmbedder):
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
 
+class VariableEmbedder(BaseEmbedder):
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
+        super().__init__(name, in_channels, embed_dim)
+
+        self.keep_dims = ["b", "v", "c"]
+
+        self.embedding_fn = torch.nn.Sequential(
+            nn.Embedding(self.in_channels, self.embed_dim),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+    
 
 class DiffusionStepEmbedder(BaseEmbedder):
     """

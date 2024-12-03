@@ -1,0 +1,33 @@
+_target_: stableclimgen.src.models.mgno_transformer.pl_mgno_Transformer.LightningMGNOTransformer
+lr: 1e-3
+lr_warmup: 400
+model:
+  _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.MGNO_Transformer
+  mgrids: ${mgrids}
+  model_dim_in: 1
+  model_dim_out: 1
+  n_vars_total: 3
+  n_head_channels: 16
+  rotate_coord_system: true
+  block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
+      block_type: "Stacked"
+      neural_operator_type: "polNormal"
+      global_levels: [1,2,4]
+      model_dims_out: [1,1,1]
+      n_params: [[4,2], [4,2], [4,2]]
+      global_params_learnable: [[true,true, true]]
+      att_block_types_encode: [["var"],["var"],["trans"]]
+      att_block_types_decode: [["cross_var"],["cross_var"],["param1"]]
+      embed_names_encode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["CoordinateEmbedder"]]]
+      embed_names_decode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"]]]
+      embed_confs: ${embedding}
+      embed_mode: "sum"
+      nh_transformation: [false, true, true, true]
+      nh_inverse_transformation: [true, true, true, true]
+      att_dims: 64
+      multi_grid_attention: false
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 2 
+        blocks: ["s", "mlp"]
