@@ -6,3 +6,7 @@ DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
   shared: true
+VariableEmbedder:
+  in_channels: 15
+  embed_dim: 64
+  shared: false

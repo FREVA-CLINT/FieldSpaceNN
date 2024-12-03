@@ -60,7 +60,7 @@ def get_stats(files, variable, norm_dict, n_sample=None):
 class NetCDFLoader_lazy(Dataset):
     def __init__(self, data_dict,
                  norm_dict,
-                 grid_processing,
+                 grid_processing: str,
                  coarsen_sample_level,
                  search_radius=2,
                  nh_input=1,
@@ -166,8 +166,12 @@ class NetCDFLoader_lazy(Dataset):
         
         global_indices = np.arange(coords_processing.shape[0])
 
-        self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
-        self.global_cells_input = self.global_cells[:,0]
+        if coarsen_sample_level == -1:
+            self.global_cells = global_indices.reshape(1, -1)
+            self.global_cells_input = np.array([1]).reshape(-1,1)
+        else:
+            self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
+            self.global_cells_input = self.global_cells[:,0]
             
         ds_source = xr.open_dataset(self.files_source[0])
         self.len_dataset = 200#len(ds_source)*self.global_cells.shape[1] 
@@ -267,11 +271,7 @@ class NetCDFLoader_lazy(Dataset):
         else:
             data_target = data_source
 
-        indices = {'global_cell': torch.tensor(global_cells[sample_index]),
-                    'local_cell': torch.tensor(global_cells[sample_index]),
-                    'sample': sample_index,
-                    'sample_level': self.coarsen_sample_level,
-                    'variables': sample_vars}
+
 
         if self.input_coordinates is not None:
             coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[sample_index]]])
@@ -325,7 +325,15 @@ class NetCDFLoader_lazy(Dataset):
 
         ds_target = ds_source = output_mapping = input_mapping = global_cells = global_cells = []
 
-        return data_source.float(), data_target.float(), indices, drop_mask, coords_input.float(), coords_output.float()
+        if self.coarsen_sample_level==-1:
+            indices_sample= torch.tensor([])
+        else:
+            indices_sample = {'sample': sample_index,
+                'sample_level': self.coarsen_sample_level}
+                
+        embed_data = {'VariableEmbedder': sample_vars}
+
+        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data 
 
     def __len__(self):
         return self.len_dataset

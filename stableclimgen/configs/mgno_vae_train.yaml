@@ -1,13 +1,14 @@
 defaults:
-  - trainer: icon_transformer
+  - trainer: mgno_transformer
   - logger: wandb
-  - model: no_vae
-  - dataloader: netcdf_icon
+  - model: mgno_vae
+  - mgrids: icon
+  - dataloader: netcdf_mgno
   - hydra: default
   - embedding: default
   - _self_
 
 ckpt_path: null
 
-run_name: icon_transformer
+run_name: mgno_vae
 run_dir: /Users/maxwitte/work/climgen_out

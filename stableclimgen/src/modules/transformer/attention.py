@@ -25,7 +25,7 @@ class ResLayer(nn.Module):
         return x + self.gamma * self.mlp_layer(x)
 
 class ChannelVariableAttention(nn.Module):
-    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True):
+    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True, emb_dim=None):
         super().__init__()
         """
         Channel-wise variable attention module for applying multi-head attention across variable dimensions.
@@ -45,16 +45,18 @@ class ChannelVariableAttention(nn.Module):
             model_dim_out = model_dim_in
             self.res_lin_layer = nn.Identity()
 
-        elif with_res:
-            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False)
-
         model_dim_out = int(model_dim_out)
         model_dim_chunked = int(model_dim_in // n_chunks_channel)
         model_dim_chunked_out = int(model_dim_out // n_chunks_channel)
 
-        self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
-
         model_dim_att = model_dim_chunked if att_dim is None else att_dim
+
+        if with_res:
+            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False) if model_dim_out is not None and model_dim_in != model_dim_out else nn.Identity()
+            self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+
+            if emb_dim is not None:
+                self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_chunked*2)
 
         n_heads = model_dim_att//n_head_channels if model_dim_att > n_head_channels else 1
 
@@ -67,18 +69,23 @@ class ChannelVariableAttention(nn.Module):
             self.res_layer = ResLayer(model_dim_out)
     
 
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, emb=None):
         b,n,nv,f=x.shape
         x = x.view(b,n,nv,f)
 
         if self.with_res:
             x_res = self.res_lin_layer(x)
 
+        if self.with_res:
+            if hasattr(self,"embedding_layer"):
+                scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
+                x = self.layer_norm(x) * (scale + 1) + shift    
+            else:
+                x = self.layer_norm(x)
+
         x = x.view(b*n,nv,f)
         x = x.view(b*n,nv*self.n_chunks_channels,-1)
 
-        x = self.layer_norm(x)
-        
         mask_chunk=mask
         if mask_chunk is not None:
             mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
@@ -99,7 +106,7 @@ class ChannelVariableAttention(nn.Module):
         return x, mask
 
 class CrossChannelVariableAttention(nn.Module):
-    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True):
+    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True, emb_dim=None):
         super().__init__()
         """
         Channel-wise variable attention module for applying multi-head attention across variable dimensions.
@@ -119,15 +126,17 @@ class CrossChannelVariableAttention(nn.Module):
             model_dim_out = model_dim_in
             self.res_lin_layer = nn.Identity()
 
-        elif with_res:
-            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False)
-
         model_dim_out = int(model_dim_out)
         model_dim_chunked = int(model_dim_in // n_chunks_channel)
         model_dim_chunked_out = int(model_dim_out // n_chunks_channel)
 
-        self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
-        self.layer_norm_k = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+        if with_res:
+            self.res_lin_layer = nn.Linear(model_dim_in, model_dim_out, bias=False) if model_dim_out is not None and model_dim_in != model_dim_out else nn.Identity()
+            self.layer_norm = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+            self.layer_norm_k = nn.LayerNorm(model_dim_chunked, elementwise_affine=True)
+
+            if emb_dim is not None:
+                self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_chunked*2)
 
         model_dim_att = model_dim_chunked if att_dim is None else att_dim
 
@@ -142,26 +151,31 @@ class CrossChannelVariableAttention(nn.Module):
             self.res_layer = ResLayer(model_dim_out)
     
 
-    def forward(self, x, x_cross, mask=None):
+    def forward(self, x, x_cross, mask=None, emb=None):
         b,n,nv,f=x.shape
         x = x.view(b,n,nv,f)
 
         if self.with_res:
             x_res = self.res_lin_layer(x)
-
+            
+        if self.with_res:
+            if hasattr(self,"embedding_layer"):
+                scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)
+                x = self.layer_norm(x) * (scale + 1) + shift
+                x_cross = self.layer_norm_k(x_cross) * (scale + 1) + shift     
+            else:
+                x = self.layer_norm(x)
+                x_cross = self.layer_norm_k(x_cross)
+        
         x = x.view(b*n,nv,f)
         x = x.view(b*n,nv*self.n_chunks_channels,-1)
-
         x_cross = x_cross.view(b*n,nv*self.n_chunks_channels,-1)
 
-        q = self.layer_norm(x)
-        k = self.layer_norm_k(x_cross)
-        
         mask_chunk=mask
         if mask_chunk is not None:
             mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
             
-        x = self.MHA(q=q, k=k, v=x_cross, mask=mask_chunk)
+        x = self.MHA(q=x, k=x_cross, v=x_cross, mask=mask_chunk)
         x = x.view(b*n,nv,-1)
         x = x.view(b,n,nv,-1)
 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ...modules.icon_grids.icon_spatial_attention import IconSpatialAttention
+from ...modules.icon_grids.grid_attention import IconSpatialAttention
 from ...modules.neural_operator.neural_operator import NoLayer
 
 class ProcessingLayer(nn.Module):

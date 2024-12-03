@@ -507,7 +507,7 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
     return mapping_icon, in_range
 
 
-def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, clat_fov:list=None, nh:int=0, extension:float=0.1)->list:
+def icon_grid_to_mgrid(grid_file:str, n_grid_levels:int, clon_fov:list=None, clat_fov:list=None, nh:int=0, extension:float=0.1)->list:
     """
     Convert an ICON grid to a multi-level grid by calculating coordinates and adjacency
     information at each grid level.
@@ -533,6 +533,8 @@ def icon_grid_to_mgrid(grid:xr.Dataset, n_grid_levels:int, clon_fov:list=None, c
         A list of dictionaries, each representing a grid level with coordinates, adjacency 
         information, and masking details for each cell at that level.
     """
+    grid = xr.open_dataset(grid_file)
+    
     clon =  torch.tensor(grid.clon.values)
     clat =  torch.tensor(grid.clat.values)
 

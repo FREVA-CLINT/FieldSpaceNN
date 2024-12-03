@@ -1,19 +1,14 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 import copy
-from typing import List
-import xarray as xr
+from typing import List, Dict
 import omegaconf
 
-from ...utils.grid_utils_icon import icon_grid_to_mgrid
+from ...modules.icon_grids.grid_layer import GridLayer
+from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock, UNet_NOBlock
 
-from ...modules.icon_grids.icon_grids import GridLayer
-from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock
-from ..vae.quantization import Quantization
-
-from ...modules.neural_operator.neural_operator import Normal_VM_NoLayer, Normal_NoLayer, FT_NOLayer
+from ...modules.neural_operator.neural_operator import get_no_layer
 
 
 
@@ -39,25 +34,31 @@ class NOBlockConfig:
                  global_params_learnable : List[bool],
                  att_block_types_decode: List[bool] = [],
                  global_params_init : List[float] = [],
+                 bottle_neck_dims: int=None,
+                 embed_names_encode: List[List[str]] = None,
+                 embed_names_decode: List[List[str]] = None,
+                 embed_confs: Dict = None,
+                 embed_mode: str = "sum",
                  nh_transformation: bool = False,
                  nh_inverse_transformation: bool = False,
                  att_dims: int = None,
-                 bottle_neck_dims: int = None,
                  multi_grid_attention: bool=False,
-                 with_res: bool = True,
                  neural_operator_type_nh: str='Normal_VM',
                  n_params_nh: List[int] = [[3,2]],
-                 global_params_init_nh: List[float] = [[3.0]]):
+                 global_params_init_nh: List[float] = [[3.0]],
+                 spatial_attention_configs: dict = {}):
+        
 
         n_no_layers = len(global_levels)
 
         inputs = copy.deepcopy(locals())
         self.block_type = block_type
-        self.multi_grid_attention = multi_grid_attention
         self.is_encoder_only = is_encoder_only
         self.is_decoder_only = is_decoder_only
+        self.multi_grid_attention = multi_grid_attention
+        self.bottle_neck_dims = bottle_neck_dims
 
-        exceptions = ['self','block_type','multi_grid_attention','is_encoder_only','is_decoder_only']
+        exceptions = ['self','block_type','multi_grid_attention','is_encoder_only','is_decoder_only', "bottle_neck_dims"]
 
         for input, value in inputs.items():
             if input not in exceptions:
@@ -79,13 +80,10 @@ class QuantConfig:
         self.block_type = block_type
 
 
-class NOVAE(nn.Module):
+class MGNO_VAE(nn.Module):
     def __init__(self, 
-                 icon_grid: str,
+                 mgrids,
                  block_configs: List[NOBlockConfig],
-  #               quant_config: QuantConfig,
-                 nh: int=1,
-                 seq_lvl_att: int=2,
                  model_dim_in: int=1,
                  model_dim_out: int=1,
                  n_head_channels:int=16,
@@ -105,9 +103,6 @@ class NOVAE(nn.Module):
         
         self.register_buffer('global_levels', global_levels, persistent=False)
 
-        mgrids = icon_grid_to_mgrid(xr.open_dataset(icon_grid),
-                                    int(torch.tensor(global_levels).max()) + 1, 
-                                    nh=nh)
 
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
@@ -177,21 +172,26 @@ class NOVAE(nn.Module):
                 block = Stacked_NOBlock
 
             elif block_conf.block_type == 'Parallel':
-                block = Stacked_NOBlock
+                block = Parallel_NOBlock
             
-
+            elif block_conf.block_type == 'UNet':
+                block = UNet_NOBlock
+            
             Block = block(model_dim_in,
                         block_conf.model_dims_out,
                         no_layers,
                         n_params=block_conf.n_params,
                         att_block_types_encode=block_conf.att_block_types_encode,
                         att_block_types_decode=block_conf.att_block_types_decode,
+                        embed_names_encode=block_conf.embed_names_encode,
+                        embed_names_decode=block_conf.embed_names_decode,
+                        embed_confs=block_conf.embed_confs,
+                        embed_mode=block_conf.embed_mode,
                         n_head_channels=n_head_channels,
-                        bottle_neck_dims=block_conf.bottle_neck_dims,
                         att_dims=block_conf.att_dims,
-                        with_res= block_conf.with_res,
                         no_layers_nh=nh_no_layers,
-                        multi_grid_attention=block_conf.multi_grid_attention)
+                        multi_grid_attention=block_conf.multi_grid_attention,
+                        spatial_attention_configs=block_conf.spatial_attention_configs)
             
             if block_conf.is_encoder_only:
                 self.encoder_only_blocks.append(Block)
@@ -203,80 +203,75 @@ class NOVAE(nn.Module):
                 self.vae_block = Block
 
         
-   #     self.quantization = Quantization(in_ch=self.vae_block.model_dim_out_encode, z_ch=quant_config.z_ch, latent_ch=quant_config.latent_ch,
-   #                                      block_type=quant_config.block_type, spatial_dim_count=2)
-        
-    def prepare_data(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, mask=None):
+    def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
         x = x.view(b,n,-1,self.model_dim_in)
 
         if mask is not None:
             mask = mask[:,:,:,:x.shape[2]]
 
-        if sampled_indices_batch_dict is None:
-            sampled_indices_batch_dict = {
-                'global_cell': self.global_indices,
-                'local_cell': self.global_indices,
-                'sample': None,
-                'sample_level': None,
-                'output_indices': None}
-        else:
+        if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
                 self.global_levels.tolist(),
-                [self.get_global_indices_local(sampled_indices_batch_dict['sample'], 
-                                               sampled_indices_batch_dict['sample_level'], 
+                [self.get_global_indices_local(indices_sample['sample'], 
+                                               indices_sample['sample_level'], 
                                                global_level) 
                                                for global_level in self.global_levels]))
+            indices_sample['indices_layers'] = indices_layers
+            indices_base = indices_layers[0]
+        else:           
+            indices_base = indices_sample = None
 
         # Use global cell coordinates if none are provided
         if coords_input is None or coords_input.numel()==0:
-            coords_input = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
+            coords_input = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
 
         if coords_output is None or coords_output.numel()==0:
-            coords_output = self.cell_coords_global[sampled_indices_batch_dict['local_cell']].unsqueeze(dim=-2)
-
+            coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
     
-        return x, mask, indices_layers, coords_input, coords_output
+        return x, mask, indices_sample, coords_input, coords_output
 
-    def encode(self, x, coords_input=None, sampled_indices_batch_dict=None, mask=None):
+
+
+    def encode(self, x, coords_input=None, indices_sample=None, mask=None, emb=None):
         
-        x, mask, indices_layers, coords_input, _ = self.prepare_data(x, 
+        x, mask, indices_sample, coords_input, _ = self.prepare_data(x, 
                                                                 coords_input, 
-                                                                sampled_indices_batch_dict=sampled_indices_batch_dict, 
+                                                                indices_sample=indices_sample, 
                                                                 mask=mask)
         
         for k, block in enumerate(self.encoder_only_blocks):
             coords_input = coords_input if k==0 else None
-            x, mask = block(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_input, coords_out=None)
+            x, mask = block(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
    
-        x = self.vae_block.encode(x, indices_layers, sampled_indices_batch_dict, mask=mask, coords_in=coords_input)
+        x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         return x
 
 
-    def decode(self, x, coords_output=None, sampled_indices_batch_dict=None):
+
+    def decode(self, x, coords_output=None, indices_sample=None, emb=None):
         
-        _, _, indices_layers, _, coords_output = self.prepare_data(x, 
-                                                        coords_output, 
-                                                        sampled_indices_batch_dict=sampled_indices_batch_dict, 
-                                                        mask=None)
+        _, _, indices_sample, _, coords_output = self.prepare_data(x, 
+                                                    coords_output, 
+                                                    indices_sample=indices_sample)
         
-        x = self.vae_block.decode(x, indices_layers, sampled_indices_batch_dict)
+        x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
         for k, block in enumerate(self.decoder_only_blocks):
             
             coords_out = coords_output if k==len(self.decoder_only_blocks)-1  else None
             
-            x, _ = block(x, indices_layers, sampled_indices_batch_dict, coords_out=coords_out)
+            x, _ = block(x, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
 
         return x.view(x.shape[0], x.shape[1], -1)
 
 
-    def forward(self, x, coords_input, coords_output, sampled_indices_batch_dict=None, mask=None):
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
-        x = self.encode(x, coords_input, sampled_indices_batch_dict=sampled_indices_batch_dict, mask=mask)
+        x = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.decode(x, coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict)
+        x = self.decode(x, coords_output, indices_sample=indices_sample, emb=emb)
 
         return x
 
@@ -287,68 +282,3 @@ class NOVAE(nn.Module):
         global_indices_sampled = global_indices_sampled.view(global_indices_sampled.shape[0], -1, 4**global_level)[:,:,0]   
         
         return global_indices_sampled // 4**global_level
-    
-
-def get_no_layer(neural_operator_type, 
-                 grid_layers, 
-                 global_level_in, 
-                 global_level_no,
-                 n_params=[],
-                 params_init=[],
-                 params_learnable=[],
-                 nh_projection=False,
-                 nh_backprojection=False,
-                 precompute_coordinates=True,
-                 rotate_coordinate_system=True,
-                 nh=1):
-    
-    #if global_level_in==global_level_no:
-    #    if nh==1:
-    #        n_params = [3,1]
-    #        neural_operator_type = 'Normal_VM'
-
-    #    elif nh==2:
-    #        n_params = [3,2]
-    #        neural_operator_type = 'Normal'
-
-    if neural_operator_type == 'Normal_VM':
-        no_layer = Normal_VM_NoLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_phi=n_params[0],
-                            n_dist=n_params[1],
-                            kappa_init=params_init[0],
-                            kappa_learnable=params_learnable[0],
-                            dist_learnable=params_learnable[1],
-                            sigma_learnable=params_learnable[2],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-                    
-    elif neural_operator_type == 'Normal':
-        no_layer = Normal_NoLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_dist_lon=n_params[0],
-                            n_dist_lat=n_params[1],
-                            dist_learnable=params_learnable[0],
-                            sigma_learnable=params_learnable[1],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-        
-    elif neural_operator_type == 'FT':
-        no_layer = FT_NOLayer(grid_layers,
-                            global_level_in,
-                            global_level_no,
-                            n_freq_lon=n_params[0],
-                            n_freq_lat=n_params[1],
-                            freq_learnable=params_learnable[0],
-                            nh_projection=nh_projection,
-                            nh_backprojection=nh_backprojection,
-                            precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
-    
-    return no_layer

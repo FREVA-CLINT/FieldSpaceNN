@@ -40,7 +40,7 @@ class MSE_loss(nn.Module):
         return loss
 
 
-class LightningNOVAE(pl.LightningModule):
+class Lightning_MGNO_VAE(pl.LightningModule):
     def __init__(self, model, lr, lr_warmup=None):
         super().__init__()
         # maybe create multi_grid structure here?
@@ -51,37 +51,37 @@ class LightningNOVAE(pl.LightningModule):
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
 
-    def forward(self, x, coords_input=None, coords_output=None, sampled_indices_batch_dict=None, mask=None):
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=sampled_indices_batch_dict, mask=mask)
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
         return x
 
     def training_step(self, batch, batch_idx):
-        source, target, indices, mask, coords_input, coords_output = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, mask=mask)
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
         self.log_dict({"train/loss": loss.item()}, prog_bar=True, sync_dist=True)
         return loss
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, indices, mask, coords_input, coords_output = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sampled_indices_batch_dict=indices, mask=mask)
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
         self.log_dict({"loss": loss.item()}, sync_dist=True)
 
         if batch_idx == 0:
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}")
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
 
         return loss
 
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name):
+    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
         
         sample = 0
         for k in range(input.shape[-2]):
-            var_idx = indices_dict['variables'][sample, k]
+            var_idx = emb['VariableEmbedder'][sample, k]
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
 
@@ -91,9 +91,22 @@ class LightningNOVAE(pl.LightningModule):
                 mask_p = None
             
             if coords_input.numel()==0:
-                coords_input = coords_output = self.model.cell_coords_global[indices_dict['local_cell']]
+                if indices_dict is not None and isinstance(indices_dict, dict):
+                    indices = self.model.get_global_indices_local(indices_dict['sample'], 
+                                                                                indices_dict['sample_level'], 
+                                                                                0)
+                    coords_input = coords_output = self.model.cell_coords_global[indices]
+                else:
+                    coords_input = coords_output = self.model.cell_coords_global.unsqueeze(dim=0)
+            
+            if coords_input.shape[0]==1:
+                coords_input_plot = coords_input[0]
+                coords_output_plot = coords_output[0]
+            else:
+                coords_input_plot = coords_input[sample]
+                coords_output_plot = coords_output[sample]
 
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input[sample], coords_output[sample], mask_p, save_path=save_path)
+            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 
