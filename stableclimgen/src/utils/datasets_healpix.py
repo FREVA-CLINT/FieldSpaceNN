@@ -175,7 +175,7 @@ class HealPixLoader(Dataset):
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
-        self.len_dataset = 400#ds_source["time"].shape[0]*self.global_cells.shape[0]
+        self.len_dataset = ds_source["time"].shape[0]*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
