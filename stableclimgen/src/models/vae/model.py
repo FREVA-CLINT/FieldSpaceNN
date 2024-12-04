@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 from ...modules.distributions.distributions import DiagonalGaussianDistribution
-from .quantization import Quantization
+from stableclimgen.src.modules.vae.quantization import Quantization
 from ...modules.embedding.patch import PatchEmbedder3D, ConvUnpatchify, LinearUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
@@ -60,7 +60,6 @@ class VAE(nn.Module):
     :param quant_config: QuantConfig instance defining quantization configuration.
     :param model_channels: Number of model channels (default 64).
     :param embed_dim: Optional embedding dimension.
-    :param patch_emb_type: Patch embedding type ("conv" or "linear").
     :param patch_emb_size: Patch embedding size (tuple of dimensions).
     :param patch_emb_kernel: Kernel size for patch embedding.
     :param concat_cond: Whether to concatenate conditional data.
@@ -74,7 +73,6 @@ class VAE(nn.Module):
                  quant_config: QuantConfig,
                  model_channels: int = 64,
                  embed_dim: Optional[int] = None,
-                 patch_emb_type: str = "conv",
                  patch_emb_size: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
                  patch_emb_kernel: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
                  concat_cond: bool = False,
@@ -130,10 +128,7 @@ class VAE(nn.Module):
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
         # Define output unpatchifying layer
-        if patch_emb_type == "conv":
-            self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch), spatial_dim_count)
-        else:
-            self.out = LinearUnpatchify(in_ch, final_out_ch, patch_emb_size, embed_dim, spatial_dim_count)
+        self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch), spatial_dim_count)
 
     def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
         """

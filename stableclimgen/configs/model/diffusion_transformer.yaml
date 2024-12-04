@@ -1,24 +1,29 @@
 _target_: stableclimgen.src.models.diffusion.pl_diffusion.LightningDiffusionGenerator
 lr: 1e-4
-lr_warmup: 5000
+lr_warmup: 100
 model:
   _target_: stableclimgen.src.models.diffusion.model.DiffusionGenerator
   init_in_ch: 1
   final_out_ch: 1
-  embed_dim: 64
   model_channels: 64
-  patch_emb_size: [1, 1, 1]
-  patch_emb_kernel: [1, 1, 1]
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "trans"
-      depth: 4
+      depth: 8
       ch_mult: 1
       sub_confs:
         blocks: ["s", "mlp"]
-        embedder_names: [["CoordinateEmbedder", "DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embedder_names: [[ "DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
         embed_mode: "sum"
+  patch_emb_config:
+    block_type: "linear"
+    patch_emb_size: [ 1, 12, 12 ]
+    patch_emb_kernel: [ 1, 12, 12 ]
+    sub_confs:
+      embedder_names: [ "DiffusionStepEmbedder" ]
+      embed_confs: ${embedding}
+      embed_mode: "sum"
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
   diffusion_steps: 1000

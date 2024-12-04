@@ -125,7 +125,7 @@ def healpix_pixel_lonlat_torch(nside):
     theta_tensor = torch.tensor(theta, dtype=torch.float32) - 0.5 * torch.pi
     phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
 
-    return torch.stack([phi_tensor, theta_tensor]).float()
+    return torch.stack([phi_tensor, theta_tensor], dim=-1).float()
 
 
 def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor,
