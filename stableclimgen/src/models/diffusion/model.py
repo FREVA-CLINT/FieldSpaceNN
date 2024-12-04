@@ -36,6 +36,29 @@ class DiffusionBlockConfig:
         self.embedders = embedders
 
 
+class PatchEmbConfig:
+    """
+    Configuration class for defining diffusion blocks in the model.
+
+    :param depth: Number of layers in the block.
+    :param block_type: Type of block (e.g., 'conv', 'resnet').
+    :param ch_mult: Channel multiplier for the block.
+    :param sub_confs: Sub-configuration details specific to the block type.
+    :param enc: Whether the block is an encoder block. Default is False.
+    :param dec: Whether the block is a decoder block. Default is False.
+    """
+
+    def __init__(self,
+                 block_type: str = "conv",
+                 patch_emb_size: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
+                 patch_emb_kernel: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
+                 sub_confs=None):
+        self.block_type = block_type
+        self.patch_emb_size = patch_emb_size
+        self.patch_emb_kernel = patch_emb_kernel
+        self.sub_confs = sub_confs
+
+
 class DiffusionGenerator(nn.Module):
     """
     Diffusion Generator model class for generating data through a diffusion process.
@@ -59,13 +82,9 @@ class DiffusionGenerator(nn.Module):
             init_in_ch: int,
             final_out_ch: int,
             block_configs: List[DiffusionBlockConfig],
+            patch_emb_config: PatchEmbConfig,
             model_channels: int = 64,
-            embed_dim: Optional[int] = None,
-            embed_conf: Dict = None,
             skip_connections: bool = False,
-            patch_emb_type: str = "conv",
-            patch_emb_size: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
-            patch_emb_kernel: Union[tuple[int, int], tuple[int, int, int]] = (1, 1, 1),
             concat_mask: bool = False,
             concat_cond: bool = False,
             spatial_dim_count: int = 2
@@ -79,12 +98,9 @@ class DiffusionGenerator(nn.Module):
         self.concat_mask = concat_mask
         self.concat_cond = concat_cond
 
-        # Define embedding dimensions and diffusion step embedding
-        self.embed_dim = embed_dim
-
         # Define input patch embedding
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(
-            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_kernel, patch_emb_size
+            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_config.patch_emb_kernel, patch_emb_config.patch_emb_size
         ), spatial_dim_count)
 
         # Define encoder, processor, and decoder block lists
@@ -129,10 +145,11 @@ class DiffusionGenerator(nn.Module):
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
         # Define output unpatchifying layer
-        if patch_emb_type == "conv":
+        if patch_emb_config.block_type == "conv":
             self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch), spatial_dim_count)
         else:
-            self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_size, embed_dim, spatial_dim_count)
+            self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_config.patch_emb_size,
+                                        **patch_emb_config.sub_confs, spatial_dim_count=spatial_dim_count)
 
     def forward(
             self,

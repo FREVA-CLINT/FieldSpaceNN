@@ -3,7 +3,11 @@ import torch.nn as nn
 from einops import rearrange
 import torch.nn.functional as F
 
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, List
+
+from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
+
+from stableclimgen.src.utils.helpers import expand_tensor
 
 from ..utils import EmbedBlock
 
@@ -85,7 +89,13 @@ class LinearUnpatchify(EmbedBlock):
     :param spatial_dim_count: Number of spatial dimensions (2 or 3).
     """
 
-    def __init__(self, in_channels: int, out_channels: int, patch_size: Tuple[int, int, int], embed_dim: Optional[int] = None, spatial_dim_count: int = 1):
+    def __init__(self, in_channels: int,
+                 out_channels: int,
+                 patch_size: Tuple[int, int, int],
+                 embedder_names: List[str] = None,
+                 embed_confs: Dict = None,
+                 embed_mode: str = "sum",
+                 spatial_dim_count: int = 1):
         super().__init__()
         # Normalization layer for linear unpatchifying
         self.norm = nn.LayerNorm(in_channels, elementwise_affine=False, eps=1e-6)
@@ -95,11 +105,14 @@ class LinearUnpatchify(EmbedBlock):
         self.out_channels = out_channels
         self.spatial_dim_count = spatial_dim_count
         # Optional embedding layer
-        if embed_dim is not None:
-            self.embedding_layer = nn.Sequential(
-                nn.SiLU(),
-                nn.Linear(embed_dim, 2 * in_channels, bias=True)
-            )
+        if embedder_names:
+            emb_dict = nn.ModuleDict()
+            for emb_name in embedder_names:
+                emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
+                emb_dict[emb.name] = emb
+            self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=spatial_dim_count)
+            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, 2 * in_channels)
+
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, out_shape: Optional[Tuple[int, int, int]] = None, *args) -> torch.Tensor:
@@ -113,16 +126,15 @@ class LinearUnpatchify(EmbedBlock):
         :param out_shape: Target output shape for the unpatchifying operation.
         :return: Reconstructed output tensor.
         """
-        b, v = x.shape[0], x.shape[1]
-        x = rearrange(x, 'b v ... c -> (b v) (...) c')  # Flatten dimensions for linear layer
+        b, v = x.shape[0], x.shape[-2]
         if hasattr(self, 'embedding_layer'):
-            emb = rearrange(emb, 'b v ... c -> (b v) (...) c')
-            scale, shift = self.embedding_layer(emb).chunk(2, dim=-1)  # Split embedding into scale and shift
-            x = self.norm(x) * (scale + 1) + shift  # Apply scale-shift normalization
+            scale, shift = self.embedding_layer(self.embedder_seq(emb)).chunk(2, dim=-1)
+            x = self.norm(x) * (scale + 1) + shift
         else:
             x = self.norm(x)
-        x = self.linear(x)  # Linear transformation
-        return rearrange(self.unpatchify(x, out_shape), '(b v) ... -> b v ...', b=b, v=v)
+        x = rearrange(x, 'b ... v c -> (b v) (...) c')  # Flatten dimensions for linear layer
+        x = self.linear(x)
+        return rearrange(self.unpatchify(x, out_shape), '(b v) ... c -> b ... v c', b=b, v=v)
 
     def unpatchify(self, x: torch.Tensor, out_shape: Tuple[int, int, int]) -> torch.Tensor:
         """
@@ -135,12 +147,12 @@ class LinearUnpatchify(EmbedBlock):
         c = self.out_channels
         p = self.patch_size
         if self.spatial_dim_count == 2:
-            t, h, w = out_shape
+            t, h, w = tuple(o // p_i for o, p_i in zip(out_shape, p))
             x = x.reshape(shape=(x.shape[0], t, h, w, p[0], p[1], p[2], c))
             x = torch.einsum('nthwpqrc->nctphqwr', x)  # Rearrange to match target shape
-            return x.reshape(shape=(x.shape[0], c, t * p[0], h * p[1], w * p[2]))
+            return x.reshape(shape=(x.shape[0], t * p[0], h * p[1], w * p[2], c))
         else:
-            t, g = out_shape
+            t, g = tuple(o // p_i for o, p_i in zip(out_shape, p))
             x = x.reshape(shape=(x.shape[0], t, g, p[0], p[1], c))
             x = torch.einsum('ntgpqc->nctpgq', x)  # Rearrange to match target shape
-            return x.reshape(shape=(x.shape[0], c, t * p[0], g * p[1]))
+            return x.reshape(shape=(x.shape[0], t * p[0], g * p[1], c))
