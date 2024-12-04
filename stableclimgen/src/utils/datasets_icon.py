@@ -271,7 +271,8 @@ class NetCDFLoader_lazy(Dataset):
         else:
             data_target = data_source
 
-
+        ds_source.close()
+        ds_target.close()   
 
         if self.input_coordinates is not None:
             coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[sample_index]]])
