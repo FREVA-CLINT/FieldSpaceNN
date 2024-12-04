@@ -106,7 +106,7 @@ class NOBlock(nn.Module):
     def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None):
 
         for layer in self.att_block_types_decode:
-            if isinstance(layer, NHAttention):
+            if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:    
                 x = layer(x, mask=mask, emb=emb)

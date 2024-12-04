@@ -6,6 +6,7 @@ import hydra
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
+from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
@@ -45,11 +46,12 @@ def train(cfg: DictConfig) -> None:
     # Initialize model and trainer  
     model: Any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer, logger=logger)
-
-    # Log model config
-    logger.experiment.config.update(OmegaConf.to_container(
-        cfg.model, resolve=True, throw_on_missing=False
-    ))
+    
+    if rank_zero_only.rank == 0:
+        # Log model config
+        logger.experiment.config.update(OmegaConf.to_container(
+            cfg.model, resolve=True, throw_on_missing=False
+        ))
 
     # Start the training process
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,
