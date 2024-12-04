@@ -18,9 +18,9 @@ model:
       n_params: [[4,2], [4,2], [4,2]]
       global_params_learnable: [[true,true, true]]
       att_block_types_encode: [["var"],["var"],["param0"]]
-      att_block_types_decode: [["cross_var"],["cross_var"],["param1"]]
+      att_block_types_decode: [["cross_var"],["cross_var"],["trans"]]
       embed_names_encode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"]]]
-      embed_names_decode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["VariableEmbedder"]]]
+      embed_names_decode: [[["VariableEmbedder"]],[["VariableEmbedder"]],[["CoordinateEmbedder"]]]
       embed_confs: ${embedding}
       embed_mode: "sum"
       nh_transformation: [false, false, false, false]

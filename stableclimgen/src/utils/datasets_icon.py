@@ -174,7 +174,7 @@ class NetCDFLoader_lazy(Dataset):
             self.global_cells_input = self.global_cells[:,0]
             
         ds_source = xr.open_dataset(self.files_source[0])
-        self.len_dataset = len(ds_source)*self.global_cells.shape[1] 
+        self.len_dataset = len(self.files_source)*self.global_cells.shape[0]*len(ds_source.time)
     
     def get_files(self, file_path_source, file_path_target=None):
       
