@@ -1,4 +1,4 @@
 _target_: stableclimgen.src.utils.grid_utils_healpix.healpix_grid_to_mgrid
 reference_grid_level: 3
-n_grid_levels: 8 
-nh: 0
+n_grid_levels: 5
+nh: 1

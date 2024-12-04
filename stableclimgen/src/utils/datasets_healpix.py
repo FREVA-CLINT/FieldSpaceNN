@@ -117,8 +117,8 @@ class HealPixLoader(Dataset):
 
         coords_processing = healpix_pixel_lonlat_torch(processing_nside)
 
-        if processing_nside == in_nside and False:
-            input_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+        if processing_nside == in_nside:
+            input_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
             input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
             input_coordinates = None
         else:
@@ -138,7 +138,7 @@ class HealPixLoader(Dataset):
             input_in_range = mapping["in_rng_mask"]
 
         if processing_nside == out_nside:
-            output_mapping = np.arange(coords_processing.shape[1])[:, np.newaxis]
+            output_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
             output_in_range = np.ones_like(output_mapping, dtype=bool)[:, np.newaxis]
             output_coordinates = None
         else:
@@ -164,10 +164,15 @@ class HealPixLoader(Dataset):
         self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
 
-        global_indices = np.arange(coords_processing.shape[1])
+        global_indices = np.arange(coords_processing.shape[0])
 
-        self.global_cells = global_indices.reshape(-1,4**coarsen_sample_level)
-        self.global_cells_input = self.global_cells[:,0]
+
+        if coarsen_sample_level == -1:
+            self.global_cells = global_indices.reshape(1, -1)
+            self.global_cells_input = np.array([1]).reshape(-1, 1)
+        else:
+            self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
         self.len_dataset = 400#ds_source["time"].shape[0]*self.global_cells.shape[0]
@@ -320,8 +325,15 @@ class HealPixLoader(Dataset):
 
         data_source[drop_mask] = 0
 
-        ds_target = ds_source = output_mapping = input_mapping = global_cells = global_cells = []
-        return data_source.float(), data_target.float(), indices, drop_mask, coords_input.float(), coords_output.float()
+        if self.coarsen_sample_level == -1:
+            indices_sample = torch.tensor([])
+        else:
+            indices_sample = {'sample': sample_index,
+                              'sample_level': self.coarsen_sample_level}
+
+        embed_data = {'VariableEmbedder': sample_vars}
+
+        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data
 
     def __len__(self):
         return self.len_dataset
