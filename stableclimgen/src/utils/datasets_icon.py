@@ -173,11 +173,10 @@ class NetCDFLoader_lazy(Dataset):
             self.global_cells = global_indices.reshape(-1, 4**coarsen_sample_level)
             self.global_cells_input = self.global_cells[:,0]
             
-        ds_source = xr.open_dataset(self.files_source[0])
-        self.len_dataset = len(self.files_source)*self.global_cells.shape[0]*len(ds_source.time)
+
         self.n_files = len(self.files_source)
         self.n_regions = self.global_cells.shape[0]
-        self.n_time_points =  len(ds_source.time)
+
         
 
         self.global_indices = []
@@ -187,6 +186,7 @@ class NetCDFLoader_lazy(Dataset):
             self.global_indices.append((idx+len(ds.time))*self.n_regions)
             idx += len(ds.time)
         self.global_indices = np.array(self.global_indices)
+        self.len_dataset = self.global_indices[-1]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -248,7 +248,7 @@ class NetCDFLoader_lazy(Dataset):
         file_idx = np.abs(diff).argmin()
 
         start_idx = self.global_indices[file_idx-1] if file_idx >0 else 0
-        index_in_file = (index - start_idx)
+        index_in_file = (index - start_idx)-1
         time_point_idx = index_in_file // self.n_regions
         region_idx = index_in_file - time_point_idx*self.n_regions
 
