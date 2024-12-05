@@ -2,11 +2,13 @@ from typing import Optional, List, Dict
 import torch
 import torch.nn as nn
 
+from ..icon_grids.grid_attention import GridAttention
 from ..rearrange import RearrangeConvCentric
 from ..cnn.conv import ConvBlockSequential
 from ..cnn.resnet import ResBlockSequential
 from ..transformer.transformer_base import TransformerBlock
 from ..utils import EmbedBlockSequential
+from ...utils.grid_utils_icon import rotate_coord_system
 
 
 class Quantization(nn.Module):
@@ -29,7 +31,9 @@ class Quantization(nn.Module):
             blocks: List[str],
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
-            embed_mode: str = "sum",):
+            embed_mode: str = "sum",
+            **kwargs
+    ):
         super().__init__()
         # Choose the block type based on provided configuration
         if block_type == "conv":
@@ -37,38 +41,52 @@ class Quantization(nn.Module):
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
                     nn.GroupNorm(32, in_ch),  # Normalize input channels
-                    ConvBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, [(1, 3, 3), (1, 1, 1)])
+                    ConvBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, **kwargs)
                 ), spatial_dim_count
             )
             # Define convolutional block for post-quantization decoding
             self.post_quant = RearrangeConvCentric(
-                ConvBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, [(1, 1, 1), (1, 3, 3)]),
+                ConvBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, **kwargs),
                 spatial_dim_count
             )
         elif block_type == "resnet":
             # Define ResNet block for quantization
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
-                    nn.GroupNorm(32, in_ch),  # Normalize input channels
-                    ResBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, [(1, 3, 3), (1, 1, 1)],
-                                       embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode)
+                    ResBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks,
+                                       embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode,
+                                       **kwargs)
                 ), spatial_dim_count
             )
             # Define ResNet block for post-quantization decoding
             self.post_quant = RearrangeConvCentric(
-                ResBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, [(1, 1, 1), (1, 3, 3)],
-                                   embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode),
+                ResBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks,
+                                   embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode,
+                                   **kwargs),
                 spatial_dim_count
             )
-        else:
+        elif block_type == "trans":
             # Use Transformer block for quantization and post-quantization
             self.quant = TransformerBlock(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, spatial_dim_count=spatial_dim_count,
-                                          embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode)
+                                          embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
             self.post_quant = TransformerBlock(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, spatial_dim_count=spatial_dim_count,
-                                               embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode)
+                                               embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
+        elif block_type == "grid_trans":
+            grid_layer = kwargs.pop("grid_layer")
+            n_head_channels = kwargs.pop("n_head_channels")
+            rotate_coord_system = kwargs.pop("rotate_coord_system")
+
+            spatial_attention_configs = kwargs
+            spatial_attention_configs["embedder_names"] = embedder_names
+            spatial_attention_configs["embed_confs"] = embed_confs
+            spatial_attention_configs["embed_mode"] = embed_mode
+            spatial_attention_configs["blocks"] = blocks
+
+            self.quant = GridAttention(grid_layer, in_ch, [2 * l_ch for l_ch in latent_ch], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+            self.post_quant = GridAttention(grid_layer, latent_ch[-1], latent_ch[::-1][1:] + [in_ch], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
 
     def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                 cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+                 cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Encodes the input tensor x into a quantized latent space.
 
@@ -76,13 +94,12 @@ class Quantization(nn.Module):
         :param emb: Optional embedding tensor.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Quantized tensor.
         """
-        return self.quant(x, emb, mask, cond, coords, *args, **kwargs)
+        return self.quant(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
 
     def post_quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                      cond: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+                      cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Decodes the quantized tensor x back to the original space.
 
@@ -90,7 +107,6 @@ class Quantization(nn.Module):
         :param emb: Optional embedding tensor.
         :param mask: Optional mask tensor.
         :param cond: Optional conditioning tensor.
-        :param coords: Optional coordinates tensor.
         :return: Decoded tensor.
         """
-        return self.post_quant(x, emb, mask, cond, coords, *args, **kwargs)
+        return self.post_quant(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)

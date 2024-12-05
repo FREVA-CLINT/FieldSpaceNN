@@ -173,7 +173,7 @@ class RearrangeConvCentric(RearrangeBlock):
         if isinstance(self.fn, EmbedBlock):
             x = self.fn(x, emb, mask, cond, *args, **kwargs)
         else:
-            x = self.fn(x, *args)
+            x = self.fn(x, *args, **kwargs)
 
         # Reverse rearrange to restore the original shape
         return rearrange(x, self.reverse_pattern, b=b, t=t, v=v)

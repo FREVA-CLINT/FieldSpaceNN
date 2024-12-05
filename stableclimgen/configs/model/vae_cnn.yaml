@@ -14,15 +14,19 @@ model:
       depth: 1
       enc: true
       ch_mult: [1, 1, 1, 2, 2, 2, 2, 2, 2, 4, 4]
-      blocks: [ "id", "id", "down", "id", "id", "down", "id", "id", "down", "id", "id" ]
+      sub_confs:
+        blocks: [ "id", "id", "down", "id", "id", "down", "id", "id", "down", "id", "id" ]
     - _target_: stableclimgen.src.models.vae.model.VAEBlockConfig
       block_type: "resnet"
       depth: 1
       dec: true
       ch_mult: [ 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1 ]
-      blocks: [ "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id" ]
+      sub_confs:
+        blocks: [ "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id" ]
   quant_config:
     _target_: stableclimgen.src.models.vae.model.QuantConfig
     block_type: "conv"
-    z_ch: 4
-    latent_ch: 4
+    latent_ch: [4, 4]
+    sub_confs:
+      blocks: ["id", "id"]
+      kernel_size: [[1, 1, 1], [1, 1, 1]]

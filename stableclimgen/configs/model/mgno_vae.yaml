@@ -6,7 +6,7 @@ model:
   mgrids: ${mgrids}
   model_dim_in: 1
   model_dim_out: 1
-  n_vars_total: 3
+  n_vars_total: 1
   n_head_channels: 16
   rotate_coord_system: true
   block_configs:
@@ -28,3 +28,14 @@ model:
       nh_transformation: false
       nh_inverse_transformation: true
       att_dims: 64
+  quant_config:
+    _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
+    block_type: "grid_trans"
+    latent_ch: [ 16, 16 ]
+    sub_confs:
+      blocks: [ "s", "mlp" ]
+      nh: 0
+      seq_lvl: -1
+      embedder_names: [ ["CoordinateEmbedder"], [] ]
+      embed_confs: ${embedding}
+      embed_mode: "sum"

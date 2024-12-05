@@ -33,7 +33,8 @@ class NOBlock(nn.Module):
                 ) -> None: 
       
         super().__init__()
-        
+
+        self.model_dim_in = model_dim_in
         self.n_params = n_params
         self.no_layer = no_layer
         self.att_block_types_encode = nn.ModuleList()
