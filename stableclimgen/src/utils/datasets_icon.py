@@ -108,8 +108,8 @@ class NetCDFLoader_lazy(Dataset):
                 norm_dict[var]['normalizer'])
 
 
-        self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
-        self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
+        self.files_source = np.random.permutation(np.loadtxt(data_dict["source"]["files"],dtype='str'))
+        self.files_target = np.random.permutation(np.loadtxt(data_dict["target"]["files"],dtype='str'))
         grid_input = data_dict["source"]["grid"]
         grid_output = data_dict["target"]["grid"]
 
@@ -175,6 +175,9 @@ class NetCDFLoader_lazy(Dataset):
             
         ds_source = xr.open_dataset(self.files_source[0])
         self.len_dataset = len(self.files_source)*self.global_cells.shape[0]*len(ds_source.time)
+        self.n_files = len(self.files_source)
+        self.n_regions = self.global_cells.shape[0]
+        self.n_time_points =  len(ds_source.time)
     
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -227,24 +230,20 @@ class NetCDFLoader_lazy(Dataset):
         ds.close()
 
         return data_g
+    
 
     def __getitem__(self, index):
         
-        if len(self.files_source)>0:
-            source_index = torch.randint(0, len(self.files_source), (1,1))
-            source_file = self.files_source[source_index]   
-        
-        target_file = self.files_target[source_index]
+        file_idx = index // (self.n_time_points*self.n_regions)
+        index_in_file = index - file_idx * (self.n_time_points*self.n_regions)
 
-        
+        time_point_idx = index_in_file // self.n_regions
+        region_idx = index_in_file - time_point_idx*self.n_regions
+
+        source_file = self.files_source[file_idx]   
+        target_file = self.files_target[file_idx]
+
         ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
-
-        if self.random_time_idx:
-            index = int(torch.randint(0, len(ds_source.time.values), (1,1)))
-            if self.index_range_source is not None:
-                if (index < self.index_range_source[0]) or (index > self.index_range_source[1]):
-                    index = int(torch.randint(self.index_range_source[0], self.index_range_source[1]+1, (1,1)))
-
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
@@ -252,9 +251,6 @@ class NetCDFLoader_lazy(Dataset):
         input_in_range = self.input_in_range
         output_mapping = self.output_mapping
         output_in_range = self.output_in_range
-
-    
-        sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
 
         if self.n_sample_vars !=-1 and self.n_sample_vars != len(self.variables_source):
             sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
@@ -264,10 +260,10 @@ class NetCDFLoader_lazy(Dataset):
         variables_source = np.array(self.variables_source)[sample_vars]
         variables_target = np.array(self.variables_target)[sample_vars]
 
-        data_source = self.get_data(ds_source, index, global_cells[sample_index] , variables_source, 0, input_mapping)
+        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx] , variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, index, global_cells[sample_index] , variables_target, 0, output_mapping)
+            data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, output_mapping)
         else:
             data_target = data_source
 
@@ -275,12 +271,12 @@ class NetCDFLoader_lazy(Dataset):
         ds_target.close()   
 
         if self.input_coordinates is not None:
-            coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[sample_index]]])
+            coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[region_idx]]])
         else:
             coords_input = torch.tensor([])
 
         if self.output_coordinates is not None:
-            coords_output = torch.tensor(self.output_coordinates[output_mapping[global_cells[sample_index]]])
+            coords_output = torch.tensor(self.output_coordinates[output_mapping[global_cells[region_idx]]])
         else:
             coords_output = torch.tensor([])
 
@@ -329,7 +325,7 @@ class NetCDFLoader_lazy(Dataset):
         if self.coarsen_sample_level==-1:
             indices_sample= torch.tensor([])
         else:
-            indices_sample = {'sample': sample_index,
+            indices_sample = {'sample': region_idx,
                 'sample_level': self.coarsen_sample_level}
                 
         embed_data = {'VariableEmbedder': sample_vars}
