@@ -183,8 +183,9 @@ class NetCDFLoader_lazy(Dataset):
         idx = 0
         for k, file in enumerate(self.files_source):
             ds = xr.open_dataset(file)
-            self.global_indices.append((idx+len(ds.time))*self.n_regions)
-            idx += len(ds.time)
+            new_idx = idx+len(ds.time) + self.n_regions -1
+            self.global_indices.append(new_idx)
+            idx += new_idx
         self.global_indices = np.array(self.global_indices)
         self.len_dataset = self.global_indices[-1]
 
@@ -248,7 +249,7 @@ class NetCDFLoader_lazy(Dataset):
         file_idx = np.abs(diff).argmin()
 
         start_idx = self.global_indices[file_idx-1] if file_idx >0 else 0
-        index_in_file = (index - start_idx)-1
+        index_in_file = (index - start_idx)
         time_point_idx = index_in_file // self.n_regions
         region_idx = index_in_file - time_point_idx*self.n_regions
 
