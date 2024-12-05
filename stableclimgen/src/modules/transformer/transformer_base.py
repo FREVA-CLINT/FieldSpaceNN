@@ -190,7 +190,6 @@ class TransformerBlock(EmbedBlock):
         mlp_mult = check_value(mlp_mult, len(blocks))
         dropout = check_value(dropout, len(blocks))
         seq_lengths = check_value(seq_lengths, len(blocks))
-        assert len(out_ch) == len(blocks)
 
         trans_blocks, embedders, embedding_layers, norms, residuals = [], [], [], [], []
         for i, block in enumerate(blocks):
@@ -210,7 +209,7 @@ class TransformerBlock(EmbedBlock):
                 trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count, seq_lengths[i])
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
-            if embedder_names[i]:
+            if embedder_names and embedder_names[i]:
                 emb_dict = nn.ModuleDict()
                 for emb_name in embedder_names[i]:
                     emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
@@ -226,7 +225,7 @@ class TransformerBlock(EmbedBlock):
 
             # Skip connection layer: Identity if in_ch == out_ch, else a linear projection
             if in_ch != out_ch[i]:
-                residual = torch.nn.Linear(in_ch, out_ch)
+                residual = torch.nn.Linear(in_ch, out_ch[i])
             else:
                 residual = torch.nn.Identity()
 

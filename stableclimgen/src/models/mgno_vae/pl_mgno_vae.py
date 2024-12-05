@@ -41,36 +41,65 @@ class MSE_loss(nn.Module):
 
 
 class Lightning_MGNO_VAE(pl.LightningModule):
-    def __init__(self, model, lr, lr_warmup=None):
+    def __init__(self, model, lr, lr_warmup=None, kl_weight: float = 1e-6):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
 
         self.lr = lr
         self.lr_warmup = lr_warmup
+        self.kl_weight = kl_weight
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
-        return x
+        return self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
-        loss = self.loss(output, target)
-        self.log_dict({"train/loss": loss.item()}, prog_bar=True, sync_dist=True)
-        return loss
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        rec_loss = self.loss(output, target)
+
+        # Compute KL divergence loss
+        kl_loss = posterior.kl()
+        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+
+        # Calculate total loss
+        loss = rec_loss + self.kl_weight * kl_loss
+
+        self.log_dict({
+            'train/kl_loss': kl_loss.mean(),
+            'train/rec_loss': rec_loss.mean(),
+            'train/total_loss': loss.mean()
+        }, prog_bar=True, sync_dist=True)
+        return loss.mean()
 
 
     def validation_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
-        loss = self.loss(output, target)
-        self.log_dict({"loss": loss.item()}, sync_dist=True)
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        rec_loss = self.loss(output, target)
+
+        # Compute KL divergence loss
+        kl_loss = posterior.kl()
+        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+
+        # Calculate total loss
+        loss = rec_loss + self.kl_weight * kl_loss
 
         if batch_idx == 0:
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
+            try:
+                self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
+            except Exception as e:
+                pass
+
+        # Log validation losses
+        self.log("val_loss", loss.mean(), sync_dist=True)
+        self.log_dict({
+            'val/kl_loss': kl_loss.mean(),
+            'val/rec_loss': rec_loss.mean(),
+            'val/total_loss': loss.mean()
+        }, sync_dist=True)
 
         return loss
 

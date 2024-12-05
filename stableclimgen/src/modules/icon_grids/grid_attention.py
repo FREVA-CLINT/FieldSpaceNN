@@ -20,6 +20,7 @@ class GridAttention(nn.Module):
         n_heads = ch_in // n_head_channels
 
         nh = spatial_attention_configs.pop('nh')
+
         seq_lvl = spatial_attention_configs.pop('seq_lvl')
 
         if seq_lvl != -1 or nh:
@@ -33,7 +34,7 @@ class GridAttention(nn.Module):
                 coord_system= "cartesian",
                 rotate_coord_system=rotate_coord_system)
 
-        spatial_attention_configs['seq_lengths'] = 4**seq_lvl
+        spatial_attention_configs['seq_lengths'] = 4**seq_lvl if seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
                                                 num_heads=n_heads,
@@ -42,7 +43,7 @@ class GridAttention(nn.Module):
         self.grid_layer = grid_layer
         self.global_level = int(grid_layer.global_level)
     
-    def get_coordinates(self, indices_layers):
+    def get_coordinates(self, indices_layers, emb):
 
         if hasattr(self, 'rel_coord_mngr'):
             coords = self.rel_coord_mngr(indices_ref=indices_layers[self.global_level])
@@ -50,13 +51,15 @@ class GridAttention(nn.Module):
         else:
             coords = self.grid_layer.get_coordinates_from_grid_indices(indices_layers[self.global_level])
 
-        emb = {'CoordinateEmbedder': coords}
+        if emb is None:
+            emb = {}
+        emb['CoordinateEmbedder'] = coords
         return emb
 
 
-    def forward(self, x, indices_sample=None, mask=None, emb=None):
+    def forward(self, x, indices_sample=None, mask=None, emb=None, *args, **kwargs):
 
-        emb = self.get_coordinates(indices_sample["indices_layers"])
+        emb = self.get_coordinates(indices_sample["indices_layers"], emb)
         
         x = self.attention_layer(x.unsqueeze(dim=1), emb=emb, mask=mask)
 

@@ -4,6 +4,8 @@ import torch.nn as nn
 import copy
 from typing import List, Dict
 import omegaconf
+from stableclimgen.src.modules.vae.quantization import Quantization
+from ...modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock, UNet_NOBlock
@@ -74,16 +76,17 @@ class QuantConfig:
     :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
     """
 
-    def __init__(self, z_ch: int, latent_ch: int, block_type: str):
-        self.z_ch = z_ch
+    def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
         self.latent_ch = latent_ch
         self.block_type = block_type
+        self.sub_confs = sub_confs
 
 
 class MGNO_VAE(nn.Module):
     def __init__(self, 
                  mgrids,
                  block_configs: List[NOBlockConfig],
+                 quant_config: QuantConfig,
                  model_dim_in: int=1,
                  model_dim_out: int=1,
                  n_head_channels:int=16,
@@ -201,8 +204,13 @@ class MGNO_VAE(nn.Module):
 
             else:
                 self.vae_block = Block
+        quant_no_block = self.vae_block.NO_Blocks[-1]
+        quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
+        self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 2,
+                                         **quant_config.sub_confs,
+                                         grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
+                                         n_head_channels=n_head_channels, rotate_coord_system=rotate_coord_system)
 
-        
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
         x = x.view(b,n,-1,self.model_dim_in)
@@ -246,7 +254,10 @@ class MGNO_VAE(nn.Module):
    
         x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        return x
+        moments = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+        posterior = DiagonalGaussianDistribution(moments)
+
+        return posterior
 
 
 
@@ -255,8 +266,10 @@ class MGNO_VAE(nn.Module):
         _, _, indices_sample, _, coords_output = self.prepare_data(x, 
                                                     coords_output, 
                                                     indices_sample=indices_sample)
+
+        z = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
         
-        x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
+        x = self.vae_block.decode(z, indices_sample=indices_sample, emb=emb)
 
         for k, block in enumerate(self.decoder_only_blocks):
             
@@ -269,11 +282,13 @@ class MGNO_VAE(nn.Module):
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
-        x = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        posterior = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.decode(x, coords_output, indices_sample=indices_sample, emb=emb)
+        z = posterior.sample()
 
-        return x
+        dec = self.decode(z, coords_output, indices_sample=indices_sample, emb=emb)
+
+        return dec, posterior
 
     
     def get_global_indices_local(self, batch_sample_indices, sampled_level_fov, global_level):

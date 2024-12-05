@@ -2,6 +2,7 @@ from typing import Optional, Union, List, Tuple
 
 import torch
 import torch.nn as nn
+from triton.language import block_type
 
 from ...modules.distributions.distributions import DiagonalGaussianDistribution
 from stableclimgen.src.modules.vae.quantization import Quantization
@@ -25,14 +26,14 @@ class VAEBlockConfig:
     :param dec: Boolean indicating if this is a decoder block. Default is False.
     """
 
-    def __init__(self, depth: int, block_type: str, ch_mult: Union[int, List[int]], blocks: List[str],
-                 enc: bool = False, dec: bool = False):
+    def __init__(self, depth: int, block_type: str, ch_mult: int | List[int], sub_confs: dict, enc: bool = False,
+                 dec: bool = False):
         self.depth = depth
         self.block_type = block_type
-        self.ch_mult = ch_mult
-        self.blocks = blocks
+        self.sub_confs = sub_confs
         self.enc = enc
         self.dec = dec
+        self.ch_mult = ch_mult
 
 
 class QuantConfig:
@@ -44,10 +45,10 @@ class QuantConfig:
     :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
     """
 
-    def __init__(self, z_ch: int, latent_ch: int, block_type: str):
-        self.z_ch = z_ch
+    def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
         self.latent_ch = latent_ch
         self.block_type = block_type
+        self.sub_confs = sub_confs
 
 
 class VAE(nn.Module):
@@ -59,7 +60,6 @@ class VAE(nn.Module):
     :param block_configs: List of VAEBlockConfig instances defining encoder/decoder blocks.
     :param quant_config: QuantConfig instance defining quantization configuration.
     :param model_channels: Number of model channels (default 64).
-    :param embed_dim: Optional embedding dimension.
     :param patch_emb_size: Patch embedding size (tuple of dimensions).
     :param patch_emb_kernel: Kernel size for patch embedding.
     :param concat_cond: Whether to concatenate conditional data.
@@ -72,14 +72,12 @@ class VAE(nn.Module):
                  block_configs: List[VAEBlockConfig],
                  quant_config: QuantConfig,
                  model_channels: int = 64,
-                 embed_dim: Optional[int] = None,
                  patch_emb_size: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
                  patch_emb_kernel: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
                  concat_cond: bool = False,
                  spatial_dim_count: int = 2):
         super().__init__()
 
-        self.embed_dim = embed_dim
         in_ch = init_in_ch * (1 + concat_cond)  # Adjust input channels if concat_cond is used
 
         # Define input patch embedding layer
@@ -101,14 +99,14 @@ class VAE(nn.Module):
                 # Select the block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
-                        ConvBlockSequential(in_ch, out_ch, block_conf.blocks), spatial_dim_count
+                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
                     )
                 elif block_conf.block_type == "resnet":
                     block = RearrangeConvCentric(
-                        ResBlockSequential(in_ch, out_ch, block_conf.blocks), spatial_dim_count
+                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
                     )
                 else:
-                    block = TransformerBlock(in_ch, out_ch, block_conf.blocks, spatial_dim_count=spatial_dim_count)
+                    block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
 
                 in_ch = out_ch if isinstance(out_ch, int) else out_ch[-1]  # Update input channels for next layer
 
@@ -120,8 +118,8 @@ class VAE(nn.Module):
                     dec_blocks.append(block)
 
         # Define quantization block
-        self.quantization = Quantization(in_ch=bottleneck_ch, z_ch=quant_config.z_ch, latent_ch=quant_config.latent_ch,
-                                         block_type=quant_config.block_type, spatial_dim_count=spatial_dim_count)
+        self.quantization = Quantization(in_ch=bottleneck_ch, latent_ch=quant_config.latent_ch, block_type=quant_config.block_type,
+                                         **quant_config.sub_confs, spatial_dim_count=spatial_dim_count)
 
         # Assemble encoder and decoder layers
         self.encoder = EmbedBlockSequential(*enc_blocks)
