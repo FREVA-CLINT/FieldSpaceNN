@@ -18,8 +18,6 @@ class GridAttention(nn.Module):
 
         super().__init__()
 
-        n_heads = ch_in // n_head_channels
-
         nh = spatial_attention_configs.pop('nh')
 
         seq_lvl = spatial_attention_configs.pop('seq_lvl')
@@ -38,7 +36,7 @@ class GridAttention(nn.Module):
         spatial_attention_configs['seq_lengths'] = 4 ** seq_lvl if seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
-                                                num_heads=n_heads,
+                                                n_head_channels=n_head_channels,
                                                 **spatial_attention_configs)
 
         self.grid_layer = grid_layer

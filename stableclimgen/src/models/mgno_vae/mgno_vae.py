@@ -209,7 +209,7 @@ class MGNO_VAE(nn.Module):
         self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 2,
                                          **quant_config.sub_confs,
                                          grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
-                                         n_head_channels=n_head_channels, rotate_coord_system=rotate_coord_system)
+                                         rotate_coord_system=rotate_coord_system)
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
