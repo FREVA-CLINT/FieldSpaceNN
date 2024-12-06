@@ -176,6 +176,7 @@ class TransformerBlock(EmbedBlock):
             embed_confs: Dict = None,
             embed_mode: str = "sum",
             num_heads: List[int] = 1,
+            n_head_channels: List[int] = None,
             mlp_mult: List[int] = 1,
             dropout: List[float] = 0.,
             spatial_dim_count: int = 1,
@@ -187,6 +188,7 @@ class TransformerBlock(EmbedBlock):
             out_ch = in_ch  # Default output channels to input channels if not provided
         out_ch = check_value(out_ch, len(blocks))
         num_heads = check_value(num_heads, len(blocks))
+        n_head_channels = check_value(n_head_channels, len(blocks))
         mlp_mult = check_value(mlp_mult, len(blocks))
         dropout = check_value(dropout, len(blocks))
         seq_lengths = check_value(seq_lengths, len(blocks))
@@ -206,7 +208,8 @@ class TransformerBlock(EmbedBlock):
                 else:
                     assert block == "v"
                     rearrange_fn = RearrangeVarCentric
-                trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], num_heads[i],), spatial_dim_count, seq_lengths[i])
+                n_heads = num_heads[i] if not n_head_channels[i] else in_ch // n_head_channels[i]
+                trans_block = rearrange_fn(SelfAttention(in_ch, out_ch[i], n_heads,), spatial_dim_count, seq_lengths[i])
                 norm = torch.nn.LayerNorm(in_ch, elementwise_affine=True)
 
             if embedder_names and embedder_names[i]:
