@@ -4,17 +4,18 @@ import torch.nn as nn
 from .grid_layer import RelativeCoordinateManager, GridLayer
 from ..transformer.transformer_base import TransformerBlock
 
+
 class GridAttention(nn.Module):
-  
+
     def __init__(self,
                  grid_layer: GridLayer,
-                 ch_in, 
+                 ch_in,
                  ch_out,
                  n_head_channels,
-                 spatial_attention_configs = None,
+                 spatial_attention_configs=None,
                  rotate_coord_system=True
-                ) -> None: 
-      
+                 ) -> None:
+
         super().__init__()
 
         n_heads = ch_in // n_head_channels
@@ -27,14 +28,14 @@ class GridAttention(nn.Module):
             self.rel_coord_mngr = RelativeCoordinateManager(
                 grid_layer,
                 grid_layer,
-                nh_in= nh,
+                nh_in=nh,
                 nh_ref=nh,
                 seq_lvl=seq_lvl,
-                precompute = True,
-                coord_system= "cartesian",
+                precompute=True,
+                coord_system="cartesian",
                 rotate_coord_system=rotate_coord_system)
 
-        spatial_attention_configs['seq_lengths'] = 4**seq_lvl if seq_lvl != -1 else None
+        spatial_attention_configs['seq_lengths'] = 4 ** seq_lvl if seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
                                                 num_heads=n_heads,
@@ -42,25 +43,25 @@ class GridAttention(nn.Module):
 
         self.grid_layer = grid_layer
         self.global_level = int(grid_layer.global_level)
-    
+
     def get_coordinates(self, indices_layers, emb):
 
         if hasattr(self, 'rel_coord_mngr'):
-            coords = self.rel_coord_mngr(indices_ref=indices_layers[self.global_level])
+            coords = self.rel_coord_mngr(indices_ref=indices_layers[self.global_level] if indices_layers else None)
             coords = torch.stack(coords, dim=-1)
         else:
-            coords = self.grid_layer.get_coordinates_from_grid_indices(indices_layers[self.global_level])
+            coords = self.grid_layer.get_coordinates_from_grid_indices(
+                indices_layers[self.global_level] if indices_layers else None)
 
         if emb is None:
             emb = {}
         emb['CoordinateEmbedder'] = coords
         return emb
 
-
     def forward(self, x, indices_sample=None, mask=None, emb=None, *args, **kwargs):
 
-        emb = self.get_coordinates(indices_sample["indices_layers"], emb)
-        
+        emb = self.get_coordinates(indices_sample["indices_layers"] if indices_sample else None, emb)
+
         x = self.attention_layer(x.unsqueeze(dim=1), emb=emb, mask=mask)
 
         x = x.squeeze(dim=1)
