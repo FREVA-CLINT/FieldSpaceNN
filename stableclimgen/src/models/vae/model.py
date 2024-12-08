@@ -2,11 +2,10 @@ from typing import Optional, Union, List, Tuple
 
 import torch
 import torch.nn as nn
-from triton.language import block_type
 
 from ...modules.distributions.distributions import DiagonalGaussianDistribution
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ...modules.embedding.patch import PatchEmbedder3D, ConvUnpatchify, LinearUnpatchify
+from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify, LinearUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
@@ -72,18 +71,20 @@ class VAE(nn.Module):
                  block_configs: List[VAEBlockConfig],
                  quant_config: QuantConfig,
                  model_channels: int = 64,
-                 patch_emb_size: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
-                 patch_emb_kernel: Union[Tuple[int, int], Tuple[int, int, int]] = (1, 1, 1),
+                 patch_emb_size: Tuple = (1, 1),
+                 patch_emb_kernel: Tuple = (1, 1),
                  concat_cond: bool = False,
                  spatial_dim_count: int = 2):
         super().__init__()
 
         in_ch = init_in_ch * (1 + concat_cond)  # Adjust input channels if concat_cond is used
 
+        self.dims = len(patch_emb_size)
+
         # Define input patch embedding layer
-        self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(
-            in_ch, int(model_channels), patch_emb_kernel, patch_emb_size
-        ), spatial_dim_count)
+        self.input_patch_embedding = RearrangeConvCentric(PatchEmbedderND(
+            in_ch, int(model_channels), patch_emb_kernel, patch_emb_size, self.dims
+        ), spatial_dim_count, dims=self.dims)
 
         # Define encoder and decoder block lists
         enc_blocks, dec_blocks = [], []
@@ -99,11 +100,11 @@ class VAE(nn.Module):
                 # Select the block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
-                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
+                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
                 elif block_conf.block_type == "resnet":
                     block = RearrangeConvCentric(
-                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
+                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
                 else:
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
@@ -119,14 +120,14 @@ class VAE(nn.Module):
 
         # Define quantization block
         self.quantization = Quantization(in_ch=bottleneck_ch, latent_ch=quant_config.latent_ch, block_type=quant_config.block_type,
-                                         **quant_config.sub_confs, spatial_dim_count=spatial_dim_count)
+                                         **quant_config.sub_confs, spatial_dim_count=spatial_dim_count, dims=self.dims)
 
         # Assemble encoder and decoder layers
         self.encoder = EmbedBlockSequential(*enc_blocks)
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
         # Define output unpatchifying layer
-        self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch), spatial_dim_count)
+        self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch, dims=self.dims), spatial_dim_count, dims=self.dims)
 
     def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
         """
@@ -168,7 +169,7 @@ class VAE(nn.Module):
         :return: Tuple of reconstructed tensor and posterior distribution.
         """
         # Define output shape for reconstruction
-        out_shape = x.shape[1:-2]
+        out_shape = x.shape[1:-2][-self.dims:]
 
         posterior = self.encode(x)
         z = posterior.sample() if sample_posterior else posterior.mode()

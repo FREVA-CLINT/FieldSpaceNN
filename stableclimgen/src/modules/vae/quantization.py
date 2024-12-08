@@ -32,6 +32,7 @@ class Quantization(nn.Module):
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
             embed_mode: str = "sum",
+            dims: int = 2,
             **kwargs
     ):
         super().__init__()
@@ -41,29 +42,29 @@ class Quantization(nn.Module):
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
                     nn.GroupNorm(32, in_ch),  # Normalize input channels
-                    ConvBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, **kwargs)
-                ), spatial_dim_count
+                    ConvBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, dims=dims, **kwargs)
+                ), spatial_dim_count, dims=dims
             )
             # Define convolutional block for post-quantization decoding
             self.post_quant = RearrangeConvCentric(
-                ConvBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, **kwargs),
-                spatial_dim_count
+                ConvBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, dims=dims, **kwargs),
+                spatial_dim_count, dims=dims
             )
         elif block_type == "resnet":
             # Define ResNet block for quantization
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
                     ResBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks,
-                                       embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode,
+                                       embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, dims=dims,
                                        **kwargs)
-                ), spatial_dim_count
+                ), spatial_dim_count, dims=dims
             )
             # Define ResNet block for post-quantization decoding
             self.post_quant = RearrangeConvCentric(
                 ResBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks,
-                                   embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode,
+                                   embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, dims=dims,
                                    **kwargs),
-                spatial_dim_count
+                spatial_dim_count, dims=dims
             )
         elif block_type == "trans":
             # Use Transformer block for quantization and post-quantization
