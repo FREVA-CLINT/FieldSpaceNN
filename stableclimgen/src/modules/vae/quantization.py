@@ -83,7 +83,7 @@ class Quantization(nn.Module):
             spatial_attention_configs["blocks"] = blocks
 
             self.quant = GridAttention(grid_layer, in_ch, [2 * l_ch for l_ch in latent_ch], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
-            self.post_quant = GridAttention(grid_layer, latent_ch[-1], latent_ch[::-1][1:] + [in_ch], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+            self.post_quant = GridAttention(grid_layer, latent_ch[-1], latent_ch[::-1][1:] + [in_ch], n_head_channels[::-1], spatial_attention_configs.copy(), rotate_coord_system)
 
     def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
                  cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
