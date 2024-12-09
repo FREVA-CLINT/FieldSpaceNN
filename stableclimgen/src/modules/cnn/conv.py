@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Optional, Union, List, Tuple
+
+from stableclimgen.src.utils.helpers import check_value
 from stableclimgen.src.modules.utils import EmbedBlockSequential
 
 
@@ -122,19 +124,16 @@ class ConvBlockSequential(nn.Module):
     """
 
     def __init__(self, in_ch: int, out_ch: List[int], blocks: Union[str, List[str]],
-                 kernel_size: int | List[int] | List[Tuple] = 3, dims=2):
+                 kernel_size: int | List[int] | List[List[int]] = 3, dims=2):
         super().__init__()
         if isinstance(blocks, str):
-            blocks = [blocks]  # Convert single block type to list
-        if isinstance(kernel_size, tuple):
-            kernel_size = len(blocks) * [kernel_size]  # Repeat kernel size for each block
-        print(dims)
+            blocks = [blocks]
+        kernel_size = check_value(kernel_size, len(blocks))
         conv_blocks = []
         for i, block in enumerate(blocks):
+            kernel_size[i] = check_value(kernel_size[i], dims)
             # Calculate padding for each dimension based on kernel size
             padding = [kernel_size[i][j] // 2 for j in range(len(kernel_size[i]))]
-            print(kernel_size[i])
-            print(padding)
             out_channels = out_ch if isinstance(out_ch, int) else out_ch[i]  # Determine output channels
             if block == "up":
                 # Add an upsampling block

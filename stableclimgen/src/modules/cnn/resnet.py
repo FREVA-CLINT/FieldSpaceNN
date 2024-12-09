@@ -75,7 +75,7 @@ class ResBlock(EmbedBlock):
             nn.GroupNorm(32, out_ch),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            conv_nd(out_ch, out_ch, kernel_size, padding=padding)
+            conv_nd(out_ch, out_ch, kernel_size, padding=padding, dims=dims)
         )
 
         # Define the skip connection layer
@@ -146,14 +146,14 @@ class ResBlockSequential(EmbedBlock):
             in_ch: int,
             out_ch: List[int],
             blocks: Union[str, List[str]],
-            kernel_size: Tuple[int, int, int] | List[Tuple[int, int, int]] = (1, 3, 3),
+            kernel_size: int | List[int] | List[List[int]] = 3,
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
             embed_mode: str = "sum",
             dropout: Union[float, List[float]] = 0.0,
             use_conv: Union[bool, List[bool]] = False,
             use_scale_shift_norm: Union[bool, List[bool]] = False,
-            dims: int = 3):
+            dims: int = 2):
         super().__init__()
         out_ch = check_value(out_ch, len(blocks))
         kernel_size = check_value(kernel_size, len(blocks))
@@ -163,7 +163,8 @@ class ResBlockSequential(EmbedBlock):
 
         res_blocks = []
         for i, block in enumerate(blocks):
-            padding = tuple(kernel_size[i][j] // 2 for j in range(len(kernel_size[i])))
+            kernel_size[i] = check_value(kernel_size[i], dims)
+            padding = [kernel_size[i][j] // 2 for j in range(len(kernel_size[i]))]
             res_blocks.append(ResBlock(
                 in_ch,
                 out_ch[i],

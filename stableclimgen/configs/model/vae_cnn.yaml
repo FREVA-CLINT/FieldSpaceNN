@@ -6,8 +6,8 @@ model:
   init_in_ch: 1
   final_out_ch: 1
   model_channels: 64
-  patch_emb_size: [1, 1, 1]
-  patch_emb_kernel: [1, 3, 3]
+  patch_emb_size: [1, 1]
+  patch_emb_kernel: [3, 3]
   block_configs:
     - _target_: stableclimgen.src.models.vae.model.VAEBlockConfig
       block_type: "resnet"
@@ -29,4 +29,4 @@ model:
     latent_ch: [4, 4]
     sub_confs:
       blocks: ["id", "id"]
-      kernel_size: [[1, 1, 1], [1, 1, 1]]
+      kernel_size: [1, 1]
