@@ -124,7 +124,7 @@ class ConvBlockSequential(nn.Module):
     """
 
     def __init__(self, in_ch: int, out_ch: List[int], blocks: Union[str, List[str]],
-                 kernel_size: int | List[int] | List[List[int]] = 3, dims=2):
+                 kernel_size: int | List[int] | List[List[int]] = 3, dims=2, **kwargs):
         super().__init__()
         if isinstance(blocks, str):
             blocks = [blocks]
@@ -148,9 +148,8 @@ class ConvBlockSequential(nn.Module):
 
         # Create a sequential container for the convolutional blocks
         self.conv_blocks = EmbedBlockSequential(*conv_blocks)
-        print(self.conv_blocks)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass through the sequence of convolutional blocks.
 

@@ -153,7 +153,7 @@ class ResBlockSequential(EmbedBlock):
             dropout: Union[float, List[float]] = 0.0,
             use_conv: Union[bool, List[bool]] = False,
             use_scale_shift_norm: Union[bool, List[bool]] = False,
-            dims: int = 2):
+            dims: int = 2, **kwargs):
         super().__init__()
         out_ch = check_value(out_ch, len(blocks))
         kernel_size = check_value(kernel_size, len(blocks))
@@ -184,7 +184,7 @@ class ResBlockSequential(EmbedBlock):
         self.res_blocks = EmbedBlockSequential(*res_blocks)
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
+                cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass for the ResBlockSequential.
 

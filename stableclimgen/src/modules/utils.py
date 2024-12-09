@@ -33,7 +33,7 @@ class EmbedBlockSequential(nn.Sequential, EmbedBlock):
     """
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None,
-                mask: Optional[torch.Tensor] = None, cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
+                mask: Optional[torch.Tensor] = None, cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass for the EmbedBlockSequential.
 

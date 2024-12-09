@@ -1,6 +1,7 @@
 from typing import Optional, List, Dict
 import torch
 import torch.nn as nn
+from stableclimgen.src.utils.helpers import check_value
 
 from ..icon_grids.grid_attention import GridAttention
 from ..rearrange import RearrangeConvCentric
@@ -8,7 +9,6 @@ from ..cnn.conv import ConvBlockSequential
 from ..cnn.resnet import ResBlockSequential
 from ..transformer.transformer_base import TransformerBlock
 from ..utils import EmbedBlockSequential
-from ...utils.grid_utils_icon import rotate_coord_system
 
 
 class Quantization(nn.Module):
@@ -74,7 +74,7 @@ class Quantization(nn.Module):
                                                embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
         elif block_type == "grid_trans":
             grid_layer = kwargs.pop("grid_layer")
-            n_head_channels = kwargs.pop("n_head_channels")
+            n_head_channels = check_value(kwargs.pop("n_head_channels"), len(blocks))
             rotate_coord_system = kwargs.pop("rotate_coord_system")
 
             spatial_attention_configs = kwargs
