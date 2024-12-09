@@ -7,12 +7,12 @@ from typing import Tuple, Optional, Dict, List
 
 from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
 
-from stableclimgen.src.utils.helpers import expand_tensor
+from stableclimgen.src.modules.cnn.conv import conv_nd
 
 from ..utils import EmbedBlock
 
 
-class PatchEmbedder3D(EmbedBlock):
+class PatchEmbedderND(EmbedBlock):
     """
     Embeds a 3D patch from the input using a convolutional layer.
 
@@ -22,12 +22,12 @@ class PatchEmbedder3D(EmbedBlock):
     :param patch_size: Size of the patch as a tuple of three integers.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: Tuple[int, int, int], patch_size: Tuple[int, int, int]):
+    def __init__(self, in_channels: int, out_channels: int, kernel_size: Tuple[int, int, int], patch_size: Tuple[int, int, int], dims=2):
         super().__init__()
-        assert len(patch_size) == len(kernel_size) == 3
+        assert len(patch_size) == len(kernel_size) == dims
         # Compute padding to match patch size
         padding = tuple((kernel_size[i] - patch_size[i]) // 2 for i in range(len(kernel_size)))
-        self.conv = nn.Conv3d(in_channels, out_channels, kernel_size, stride=patch_size, padding=padding)
+        self.conv = conv_nd(in_channels, out_channels, kernel_size, patch_size, padding, dims=dims)
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
@@ -53,13 +53,14 @@ class ConvUnpatchify(EmbedBlock):
     :param out_channels: Number of output channels.
     """
 
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(self, in_channels: int, out_channels: int, dims: int=2):
         super().__init__()
         # Convolution to reconstruct output shape
+        self.dims = dims
         self.out = nn.Sequential(
             nn.GroupNorm(32, in_channels),
             nn.SiLU(),
-            nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+            conv_nd(in_channels, out_channels, 3, 1, 1, dims=dims)
         )
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,

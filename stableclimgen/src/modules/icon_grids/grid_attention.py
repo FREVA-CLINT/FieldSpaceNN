@@ -60,8 +60,6 @@ class GridAttention(nn.Module):
 
         emb = self.get_coordinates(indices_sample["indices_layers"] if indices_sample else None, emb)
 
-        x = self.attention_layer(x.unsqueeze(dim=1), emb=emb, mask=mask)
-
-        x = x.squeeze(dim=1)
+        x = self.attention_layer(x, emb=emb, mask=mask)
 
         return x

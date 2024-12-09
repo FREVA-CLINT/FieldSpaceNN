@@ -468,7 +468,9 @@ class SpatialAttention(nn.Module):
 
         x_shape = x.shape
         x, mask = shape_to_att(x, mask=mask)
+        x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
         x = self.grid_attention_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+        x = x.squeeze(dim=1)
         x = shape_to_x(x, x_shape)
         return x
 

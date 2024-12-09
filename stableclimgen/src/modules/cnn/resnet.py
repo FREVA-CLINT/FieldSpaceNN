@@ -4,10 +4,10 @@ from typing import Optional, Union, List, Tuple, Dict
 
 from einops import rearrange
 
-from stableclimgen.src.modules.cnn.conv import Upsample, Downsample
+from stableclimgen.src.modules.cnn.conv import Upsample, Downsample, conv_nd
 from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
 from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
-from stableclimgen.src.utils.helpers import expand_tensor, check_value
+from stableclimgen.src.utils.helpers import check_value
 
 
 class ResBlock(EmbedBlock):
@@ -29,17 +29,16 @@ class ResBlock(EmbedBlock):
                  in_ch: int,
                  out_ch: int,
                  block_type: str,
-                 kernel_size: Tuple[int, int, int],
-                 padding: Tuple[int, int, int],
+                 kernel_size: int | Tuple,
+                 padding: int | Tuple,
                  embedder_names: List[str] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  dropout: float = 0.0,
                  use_conv: bool = False,
-                 use_scale_shift_norm: bool = False):
+                 use_scale_shift_norm: bool = False,
+                 dims: int = 2):
         super().__init__()
-        self.in_ch = in_ch
-        self.out_ch = out_ch
         self.dropout = dropout
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
@@ -48,17 +47,17 @@ class ResBlock(EmbedBlock):
         self.in_layers = nn.Sequential(
             nn.GroupNorm(32, in_ch),
             nn.SiLU(),
-            nn.Conv3d(in_ch, self.out_ch, kernel_size, padding=padding),
+            conv_nd(in_ch, out_ch, kernel_size, padding=padding, dims=dims),
         )
 
         # Set up/down-sampling based on block type
         self.updown = block_type in {"up", "down"}
         if block_type == "up":
-            self.h_upd = Upsample(in_ch, in_ch, kernel_size, padding)
-            self.x_upd = Upsample(in_ch, in_ch, kernel_size, padding)
+            self.h_upd = Upsample(in_ch, in_ch, kernel_size, padding, dims=dims)
+            self.x_upd = Upsample(in_ch, in_ch, kernel_size, padding, dims=dims)
         elif block_type == "down":
-            self.h_upd = Downsample(in_ch, in_ch, kernel_size, padding)
-            self.x_upd = Downsample(in_ch, in_ch, kernel_size, padding)
+            self.h_upd = Downsample(in_ch, in_ch, kernel_size, padding, dims=dims)
+            self.x_upd = Downsample(in_ch, in_ch, kernel_size, padding, dims=dims)
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
@@ -73,19 +72,19 @@ class ResBlock(EmbedBlock):
 
         # Define the output layers including dropout and convolution
         self.out_layers = nn.Sequential(
-            nn.GroupNorm(32, self.out_ch),
+            nn.GroupNorm(32, out_ch),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            nn.Conv3d(self.out_ch, self.out_ch, kernel_size, padding=padding)
+            conv_nd(out_ch, out_ch, kernel_size, padding=padding, dims=dims)
         )
 
         # Define the skip connection layer
-        if self.out_ch == in_ch:
+        if out_ch == in_ch:
             self.skip_connection = nn.Identity()
         elif use_conv:
-            self.skip_connection = nn.Conv3d(in_ch, self.out_ch, kernel_size, padding=padding)
+            self.skip_connection = conv_nd(in_ch, out_ch, kernel_size, padding=padding, dims=dims)
         else:
-            self.skip_connection = nn.Conv3d(in_ch, self.out_ch, 1)
+            self.skip_connection = conv_nd(in_ch, out_ch, 1, dims=dims)
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
@@ -147,13 +146,14 @@ class ResBlockSequential(EmbedBlock):
             in_ch: int,
             out_ch: List[int],
             blocks: Union[str, List[str]],
-            kernel_size: Union[Tuple[int, int, int], List[Tuple[int, int, int]]] = (1, 3, 3),
+            kernel_size: int | List[int] | List[List[int]] = 3,
             embedder_names: List[List[str]] = None,
             embed_confs: Dict = None,
             embed_mode: str = "sum",
             dropout: Union[float, List[float]] = 0.0,
             use_conv: Union[bool, List[bool]] = False,
-            use_scale_shift_norm: Union[bool, List[bool]] = False):
+            use_scale_shift_norm: Union[bool, List[bool]] = False,
+            dims: int = 2, **kwargs):
         super().__init__()
         out_ch = check_value(out_ch, len(blocks))
         kernel_size = check_value(kernel_size, len(blocks))
@@ -163,7 +163,8 @@ class ResBlockSequential(EmbedBlock):
 
         res_blocks = []
         for i, block in enumerate(blocks):
-            padding = tuple(kernel_size[i][j] // 2 for j in range(len(kernel_size[i])))
+            kernel_size[i] = check_value(kernel_size[i], dims)
+            padding = [kernel_size[i][j] // 2 for j in range(len(kernel_size[i]))]
             res_blocks.append(ResBlock(
                 in_ch,
                 out_ch[i],
@@ -175,14 +176,15 @@ class ResBlockSequential(EmbedBlock):
                 embed_mode,
                 dropout[i],
                 use_conv[i],
-                use_scale_shift_norm[i]
+                use_scale_shift_norm[i],
+                dims
             ))
             in_ch = out_ch if isinstance(out_ch, int) else out_ch[i]
         # Sequential container for ResBlocks
         self.res_blocks = EmbedBlockSequential(*res_blocks)
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, *args) -> torch.Tensor:
+                cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass for the ResBlockSequential.
 

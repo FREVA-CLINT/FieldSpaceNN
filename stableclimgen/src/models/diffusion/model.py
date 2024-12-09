@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 # Import necessary modules for the diffusion generator architecture
-from ...modules.embedding.patch import PatchEmbedder3D, LinearUnpatchify, ConvUnpatchify
+from ...modules.embedding.patch import PatchEmbedderND, LinearUnpatchify, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
@@ -99,7 +99,7 @@ class DiffusionGenerator(nn.Module):
         self.concat_cond = concat_cond
 
         # Define input patch embedding
-        self.input_patch_embedding = RearrangeConvCentric(PatchEmbedder3D(
+        self.input_patch_embedding = RearrangeConvCentric(PatchEmbedderND(
             in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_config.patch_emb_kernel, patch_emb_config.patch_emb_size
         ), spatial_dim_count)
 

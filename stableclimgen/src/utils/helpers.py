@@ -2,7 +2,7 @@ import omegaconf
 
 
 def check_value(value, n_repeat):
-    if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig):
+    if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig) and not isinstance(value, tuple):
         value = [value]*n_repeat
     return value
 

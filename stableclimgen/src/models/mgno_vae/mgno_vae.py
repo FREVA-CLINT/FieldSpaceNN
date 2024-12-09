@@ -206,7 +206,7 @@ class MGNO_VAE(nn.Module):
                 self.vae_block = Block
         quant_no_block = self.vae_block.NO_Blocks[-1]
         quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
-        self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 2,
+        self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
                                          **quant_config.sub_confs,
                                          grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
                                          rotate_coord_system=rotate_coord_system)
@@ -251,11 +251,13 @@ class MGNO_VAE(nn.Module):
         for k, block in enumerate(self.encoder_only_blocks):
             coords_input = coords_input if k==0 else None
             x, mask = block(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
-   
+
         x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        moments = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
-        posterior = DiagonalGaussianDistribution(moments)
+        x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
+        x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+        x = x.squeeze(dim=1)
+        posterior = DiagonalGaussianDistribution(x)
 
         return posterior
 
@@ -267,9 +269,11 @@ class MGNO_VAE(nn.Module):
                                                     coords_output, 
                                                     indices_sample=indices_sample)
 
-        z = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
-        
-        x = self.vae_block.decode(z, indices_sample=indices_sample, emb=emb)
+        x = x.unsqueeze(dim=1)
+        x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
+        x = x.squeeze(dim=1)
+
+        x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
         for k, block in enumerate(self.decoder_only_blocks):
             

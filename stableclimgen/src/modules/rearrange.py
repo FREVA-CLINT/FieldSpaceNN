@@ -141,11 +141,22 @@ class RearrangeConvCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, dims: int = 2):
+        assert dims == 1 or dims == 2 or dims == 3
+        if dims - spatial_dim_count == 0:
+            pattern = 'b t g v c -> (b t v) c g'
+            reverse_pattern = '(b t v) c g -> b t g v c'
+        elif dims - spatial_dim_count == 1:
+            pattern = 'b t g v c -> (b v) c t g'
+            reverse_pattern = '(b v) c t g -> b t g v c'
+        else:
+            pattern = 'b t g v c -> b c t g v'
+            reverse_pattern = 'b c t g v -> b t g v c'
+
         super().__init__(
             fn,
-            pattern='b t g v c -> (b v) c t g',
-            reverse_pattern='(b v) c t g -> b t g v c',
+            pattern=pattern,
+            reverse_pattern=reverse_pattern,
             spatial_dim_count=spatial_dim_count,
             seq_len=seq_len
         )
@@ -161,7 +172,7 @@ class RearrangeConvCentric(RearrangeBlock):
         :param cond: Optional conditioning tensor.
         :return: Tensor after rearrangement, function application, and reverse rearrangement.
         """
-        b, t, h, w, v, c = x.shape
+        b, t, v, c = x.shape[0], x.shape[1], x.shape[-2], x.shape[-1]
 
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [
