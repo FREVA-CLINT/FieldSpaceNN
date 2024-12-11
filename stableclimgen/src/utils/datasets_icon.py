@@ -244,7 +244,7 @@ class NetCDFLoader_lazy(Dataset):
 
     def __getitem__(self, index):
         
-        diff = self.global_indices - index
+        diff = (self.global_indices - 1) - index
         diff[diff<0]=1e10
         file_idx = np.abs(diff).argmin()
 
