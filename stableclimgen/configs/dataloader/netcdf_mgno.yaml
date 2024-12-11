@@ -7,7 +7,7 @@ dataset:
   search_radius: 2
   nh_input: 1
   sample_for_norm: 2
-  lazy_load: false
+  lazy_load: true
   p_dropout: 0.9
   p_average: 0
   p_average_dropout: 0.5

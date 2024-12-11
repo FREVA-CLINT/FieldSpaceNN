@@ -314,7 +314,7 @@ class Normal_NoLayer(NoLayer):
         x = x.view(*c_shape,1, 1, nc)
         x = (x * weights.unsqueeze(dim=-1)).sum(dim=3)
         
-        x = x.view(b, n, nv, len(self.mus_lon), len(self.mus_lat), nc)
+        x = x.view(-1, n, nv, len(self.mus_lon), len(self.mus_lat), nc)
 
         if mask is not None:
             mask = mask.view(b,n,-1)
@@ -332,7 +332,7 @@ class Normal_NoLayer(NoLayer):
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
         weights = weights.view(*c_shape, len(self.mus_lon), len(self.mus_lat), 1)
 
-        x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
+        x = x.view(-1, n, seq_ref, 1, nv, n_lon, n_lat, nc)
 
         if mask is not None:
             mask = mask.view(b,n,seq_ref,nv)
