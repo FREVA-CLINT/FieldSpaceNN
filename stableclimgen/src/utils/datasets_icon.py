@@ -108,8 +108,15 @@ class NetCDFLoader_lazy(Dataset):
                 norm_dict[var]['normalizer'])
 
 
-        self.files_source = np.random.permutation(np.loadtxt(data_dict["source"]["files"],dtype='str'))
-        self.files_target = np.random.permutation(np.loadtxt(data_dict["target"]["files"],dtype='str'))
+        self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
+        self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
+
+        permutation_indices =  np.random.permutation(np.arange(len(self.files_source)))
+
+        self.files_source = self.files_source[permutation_indices]
+        self.files_target = self.files_target[permutation_indices]
+
+
         grid_input = data_dict["source"]["grid"]
         grid_output = data_dict["target"]["grid"]
 
@@ -188,7 +195,7 @@ class NetCDFLoader_lazy(Dataset):
             idx += idx_add
         self.global_indices = np.array(self.global_indices)
         self.len_dataset = self.global_indices[-1]
-        print(self.global_indices)
+
 
     def get_files(self, file_path_source, file_path_target=None):
       
