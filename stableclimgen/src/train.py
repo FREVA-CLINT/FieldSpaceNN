@@ -37,8 +37,8 @@ def train(cfg: DictConfig) -> None:
     val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
     if 'ddp_sampler' in cfg.dataloader.keys():
-        sampler_train: DistributedSampler = instantiate(cfg.dataloader.sampler, dataset=train_dataset)
-        sampler_val: DistributedSampler = instantiate(cfg.dataloader.sampler, dataset=val_dataset)
+        sampler_train: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=train_dataset)
+        sampler_val: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=val_dataset)
     else:
         sampler_train = sampler_val = None
 
