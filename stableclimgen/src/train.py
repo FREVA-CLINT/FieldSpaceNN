@@ -36,15 +36,6 @@ def train(cfg: DictConfig) -> None:
     train_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["train"])
     val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
-    if 'ddp_sampler' in cfg.dataloader.keys():
-        sampler_train: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=train_dataset)
-        sampler_val: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=val_dataset)
-    else:
-        sampler_train = sampler_val = None
-
-    # Instantiate DataLoaders for training and validation
-    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_val)
-    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_train)
 
     # Initialize the logger (e.g., Weights & Biases)
     logger: WandbLogger = instantiate(cfg.logger)
@@ -58,6 +49,16 @@ def train(cfg: DictConfig) -> None:
         logger.experiment.config.update(OmegaConf.to_container(
             cfg.model, resolve=True, throw_on_missing=False
         ))
+
+    if 'ddp_sampler' in cfg.dataloader.keys():
+        sampler_train: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=train_dataset)
+        sampler_val: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=val_dataset)
+    else:
+        sampler_train = sampler_val = None
+
+    # Instantiate DataLoaders for training and validation
+    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_val)
+    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_train)
 
     # Start the training process
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,
