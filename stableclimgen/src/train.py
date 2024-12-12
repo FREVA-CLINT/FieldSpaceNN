@@ -8,32 +8,10 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader, DistributedSampler
-import torch.distributed as dist
-from torch.cuda import set_device
+from .utils.pl_data_module import DataModule
 import torch
 
 torch.manual_seed(42)
-
-def set_device_and_init_torch_dist():
-    
-    # check out https://gist.github.com/TengdaHan/1dd10d335c7ca6f13810fff41e809904
-
-    world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NTASKS')))
-
-    rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID')))
-
-    dist_url = 'env://'
-    backend = 'nccl'
-
-    dist.init_process_group(backend=backend, init_method=dist_url,
-                                world_size=world_size, rank=rank)
-       
-    local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID')))
-
-    set_device(local_rank)
-
-    return rank, local_rank
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
@@ -75,20 +53,10 @@ def train(cfg: DictConfig) -> None:
             cfg.model, resolve=True, throw_on_missing=False
         ))
 
-    if 'ddp_sampler' in cfg.dataloader.keys():
-        set_device_and_init_torch_dist()
-        sampler_train: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=train_dataset)
-        sampler_val: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=val_dataset)
-    else:
-        sampler_train = sampler_val = None
-
-    # Instantiate DataLoaders for training and validation
-    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_train)
-    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_val)
+    data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
 
     # Start the training process
-    trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,
-                ckpt_path=cfg.ckpt_path)
+    trainer.fit(model=model, datamodule=data_module, ckpt_path=cfg.ckpt_path)
 
 
 if __name__ == "__main__":
