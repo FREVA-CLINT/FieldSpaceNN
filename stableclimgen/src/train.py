@@ -9,6 +9,29 @@ from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
+import torch.distributed as dist
+from torch.cuda import set_device
+
+
+def set_device_and_init_torch_dist():
+    
+    # check out https://gist.github.com/TengdaHan/1dd10d335c7ca6f13810fff41e809904
+
+    world_size = int(os.environ.get('WORLD_SIZE', os.environ.get('SLURM_NTASKS')))
+
+    rank = int(os.environ.get('RANK', os.environ.get('SLURM_PROCID')))
+
+    dist_url = 'env://'
+    backend = 'nccl'
+
+    dist.init_process_group(backend=backend, init_method=dist_url,
+                                world_size=world_size, rank=rank)
+       
+    local_rank = int(os.environ.get('LOCAL_RANK', os.environ.get('SLURM_LOCALID')))
+
+    set_device(local_rank)
+
+    return rank, local_rank
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
@@ -51,6 +74,7 @@ def train(cfg: DictConfig) -> None:
         ))
 
     if 'ddp_sampler' in cfg.dataloader.keys():
+        set_device_and_init_torch_dist()
         sampler_train: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=train_dataset)
         sampler_val: DistributedSampler = instantiate(cfg.dataloader.ddp_sampler, dataset=val_dataset)
     else:
