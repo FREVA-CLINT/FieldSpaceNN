@@ -8,7 +8,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
@@ -36,9 +36,15 @@ def train(cfg: DictConfig) -> None:
     train_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["train"])
     val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
+    if 'ddp_sampler' in cfg.dataloader.keys():
+        sampler_train: DistributedSampler = instantiate(cfg.dataloader.sampler, dataset=train_dataset)
+        sampler_val: DistributedSampler = instantiate(cfg.dataloader.sampler, dataset=val_dataset)
+    else:
+        sampler_train = sampler_val = None
+
     # Instantiate DataLoaders for training and validation
-    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset)
-    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset)
+    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_val)
+    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_train)
 
     # Initialize the logger (e.g., Weights & Biases)
     logger: WandbLogger = instantiate(cfg.logger)
