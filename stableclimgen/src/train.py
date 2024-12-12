@@ -11,7 +11,9 @@ from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
 from torch.cuda import set_device
+import torch
 
+torch.manual_seed(42)
 
 def set_device_and_init_torch_dist():
     
@@ -81,8 +83,8 @@ def train(cfg: DictConfig) -> None:
         sampler_train = sampler_val = None
 
     # Instantiate DataLoaders for training and validation
-    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_val)
-    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_train)
+    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset, sampler=sampler_train)
+    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset, sampler=sampler_val)
 
     # Start the training process
     trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,
