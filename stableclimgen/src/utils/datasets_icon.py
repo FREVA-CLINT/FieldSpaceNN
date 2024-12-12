@@ -111,11 +111,11 @@ class NetCDFLoader_lazy(Dataset):
         self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
         self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
 
+        """
         permutation_indices =  np.random.permutation(np.arange(len(self.files_source)))
-
         self.files_source = self.files_source[permutation_indices]
         self.files_target = self.files_target[permutation_indices]
-
+        """
 
         grid_input = data_dict["source"]["grid"]
         grid_output = data_dict["target"]["grid"]
@@ -251,7 +251,6 @@ class NetCDFLoader_lazy(Dataset):
     
 
     def __getitem__(self, index):
-        
         diff = (self.global_indices - 1) - index
         diff[diff<0]=1e10
         file_idx = np.abs(diff).argmin()
