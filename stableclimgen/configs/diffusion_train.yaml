@@ -10,4 +10,5 @@ defaults:
 ckpt_path: null
 
 run_name: diffusion
+config_name: default
 run_dir: ../..

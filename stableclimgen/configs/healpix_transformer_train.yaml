@@ -11,4 +11,5 @@ defaults:
 ckpt_path: null
 
 run_name: healpix_transformer
+config_name: default
 run_dir: ../..

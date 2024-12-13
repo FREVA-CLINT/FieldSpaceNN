@@ -11,4 +11,5 @@ defaults:
 ckpt_path: null
 
 run_name: mgno_vae
+config_name: default
 run_dir: /Users/maxwitte/work/climgen_out

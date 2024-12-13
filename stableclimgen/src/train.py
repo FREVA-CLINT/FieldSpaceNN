@@ -25,7 +25,7 @@ def train(cfg: DictConfig) -> None:
         os.makedirs(cfg.trainer.default_root_dir)
 
     # Create YAML config of training configuration
-    composed_config_path = f'{cfg.trainer.default_root_dir}/composed_config.yaml'
+    composed_config_path = f'{cfg.trainer.default_root_dir}/{cfg.logger.name}_config.yaml'
     with open(composed_config_path, 'w') as file:
         OmegaConf.save(config=cfg, f=file)
 
