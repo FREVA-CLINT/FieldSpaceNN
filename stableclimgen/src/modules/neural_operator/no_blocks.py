@@ -104,7 +104,7 @@ class NOBlock(nn.Module):
     def check_add_coordinate_embeddings(self, emb, indices_sample):
   
         coords = self.grid_layer.get_coordinates_from_grid_indices(
-            indices_sample['indices_layers'][self.global_level] if indices_sample['indices_layers'] else None)
+            indices_sample['indices_layers'][self.global_level] if indices_sample is not None else None)
         emb['CoordinateEmbedder'] = coords
         return emb
 
