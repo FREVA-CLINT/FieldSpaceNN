@@ -110,12 +110,13 @@ def test(cfg: DictConfig) -> None:
 
             data = torch.tensor(data[np.newaxis,...,np.newaxis])
             embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=1)}
-            output = model(data, coords_input=input_coordinates,coords_output=None, indices_sample=None, mask=None, emb=embed_data)
+            with torch.no_grad():
+                output = model(data, coords_input=input_coordinates,coords_output=None, indices_sample=None, mask=None, emb=embed_data)
 
             for k, var in enumerate(variables):
                 output[:,:,k] = var_normalizers[var].denormalize(output[:,:,k])
             
-            output = dict(zip(variables, output.split(len(variables), dim=-1)))
+            output = dict(zip(variables, output.split(1, dim=-1)))
 
             torch.save(output, os.path.join(cfg.output_dir,os.path.basename(file).replace('.nc',f'_{tp}.pt')))
 
