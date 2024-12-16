@@ -101,30 +101,35 @@ class NOBlock(nn.Module):
                 self.att_block_types_encode.append(layer)
 
 
+    def check_add_coordinate_embeddings(self, emb, indices_sample):
+  
+        coords = self.grid_layer.get_coordinates_from_grid_indices(
+            indices_sample['indices_layers'][self.global_level] if indices_sample['indices_layers'] else None)
+        emb['CoordinateEmbedder'] = coords
+        return emb
+
+
     def encode(self, x, coords_in=None, indices_sample=None, mask=None, emb=None):
 
         x, mask = self.no_layer.transform(x, coordinates=coords_in, indices_sample=indices_sample, mask=mask)
 
-        if self.prepare_coordinates:
-            coords = self.grid_layer.get_coordinates_from_grid_indices(
-                indices_sample['indices_layers'][self.global_level] if indices_sample['indices_layers'] else None)
-            emb['CoordinateEmbedder'] = coords
-
         for layer in self.att_block_types_encode:
             if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            else:    
+            else:
+                emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
                 x = layer(x, mask=mask, emb=emb)
 
         return x, mask
 
 
     def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None):
-
+        
         for layer in self.att_block_types_decode:
             if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            else:    
+            else:
+                emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
                 x = layer(x, mask=mask, emb=emb)
 
         x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask)
