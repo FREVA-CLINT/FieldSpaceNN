@@ -173,15 +173,15 @@ class EmbedderSequential(nn.Module):
             return torch.cat(embeddings, dim=-1)
         elif self.mode == 'sum':
             # Sum the embeddings
-            emb_sum = embeddings.pop(0)
-            for emb in embeddings:
-                emb_sum.add_(emb)
+            emb_sum = embeddings[0]
+            for emb in embeddings[1:]:
+                emb_sum = emb_sum + emb
             return emb_sum
         elif self.mode == 'average':
             # Sum the embeddings
-            emb_sum = embeddings.pop(0)
-            for emb in embeddings:
-                emb_sum.add_(emb)
+            emb_sum = embeddings[0]
+            for emb in embeddings[1:]:
+                emb_sum = emb_sum + emb
             return emb_sum / (len(embeddings) + 1)
 
     @property
