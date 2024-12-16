@@ -1,3 +1,5 @@
+import copy
+
 import torch
 import torch.nn as nn
 
@@ -18,6 +20,7 @@ class GridAttention(nn.Module):
 
         super().__init__()
 
+        spatial_attention_configs = copy.deepcopy(spatial_attention_configs)
         nh = spatial_attention_configs.pop('nh')
 
         seq_lvl = spatial_attention_configs.pop('seq_lvl')

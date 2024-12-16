@@ -4,7 +4,7 @@ import torch.nn as nn
 from .transformer_modules import MultiHeadAttentionBlock
 
 class ResLayer(nn.Module):
-    def __init__(self, model_dim):
+    def __init__(self, model_dim, with_res=True):
         """
         A residual layer that applies a learnable scalar weighting (gamma) to an MLP-based transformation of the input.
 
@@ -12,7 +12,10 @@ class ResLayer(nn.Module):
         """
 
         super().__init__()
-        self.gamma = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
+        if with_res:
+            self.gamma = nn.Parameter(torch.ones(model_dim)*1e-6, requires_grad=True)
+
+        self.with_res = with_res
 
         self.mlp_layer = nn.Sequential(
             nn.LayerNorm(model_dim, elementwise_affine=True),
@@ -22,8 +25,38 @@ class ResLayer(nn.Module):
         )
     
     def forward(self, x):
-        return x + self.gamma * self.mlp_layer(x)
+        if self.with_res:
+            return x + self.gamma * self.mlp_layer(x)
+        else:
+            return self.mlp_layer(x)
 
+
+class AdaptiveLayerNorm(nn.Module):
+  
+    def __init__(self, layer_norm_dims, model_dim, embedder=None):
+        super().__init__()
+
+        emb_dim = embedder.get_out_channels if embedder is not None else None
+
+        self.embedder = embedder
+        self.layer_norm = nn.LayerNorm(layer_norm_dims)
+
+        if embedder is not None:
+            self.embedding_layer = torch.nn.Linear(emb_dim, model_dim*2)
+    
+    def forward(self, x, emb=None):
+        x_shape = x.shape
+
+        if hasattr(self,"embedding_layer"):
+            emb_ = self.embedder(emb).squeeze(dim=1)
+            scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
+            scale, shift = scale.view(x_shape[0],-1,*x_shape[2:]), shift.view(x_shape[0],-1,*x_shape[2:])
+            x = self.layer_norm(x) * (scale + 1) + shift    
+        else:
+            x = self.layer_norm(x)
+
+        return x
+    
 class ChannelVariableAttention(nn.Module):
     def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True, emb_dim=None):
         super().__init__()

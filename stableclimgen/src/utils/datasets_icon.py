@@ -111,11 +111,11 @@ class NetCDFLoader_lazy(Dataset):
         self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
         self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
 
+        """
         permutation_indices =  np.random.permutation(np.arange(len(self.files_source)))
-
         self.files_source = self.files_source[permutation_indices]
         self.files_target = self.files_target[permutation_indices]
-
+        """
 
         grid_input = data_dict["source"]["grid"]
         grid_output = data_dict["target"]["grid"]
@@ -137,7 +137,7 @@ class NetCDFLoader_lazy(Dataset):
                             
             input_mapping = input_mapping['cell']['cell']
             input_in_range = input_in_range['cell']['cell']
-            input_coordinates = get_coords_as_tensor(grid_input, lon='clon', lat='clat', target='numpy')
+            input_coordinates = get_coords_as_tensor(xr.open_dataset(grid_input), lon='clon', lat='clat', target='numpy')
         else:
             input_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
             input_in_range = np.ones_like(input_mapping, dtype=bool)[:,np.newaxis]
@@ -157,7 +157,7 @@ class NetCDFLoader_lazy(Dataset):
             
             output_mapping = output_mapping['cell']['cell']
             output_in_range = output_in_range['cell']['cell']
-            output_coordinates = get_coords_as_tensor(grid_output, lon='clon', lat='clat', target='numpy')
+            output_coordinates = get_coords_as_tensor(xr.open_dataset(grid_output), lon='clon', lat='clat', target='numpy')
         else:
             output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
             output_in_range = np.ones_like(output_mapping, dtype=bool)[:,np.newaxis]
@@ -251,7 +251,6 @@ class NetCDFLoader_lazy(Dataset):
     
 
     def __getitem__(self, index):
-        
         diff = (self.global_indices - 1) - index
         diff[diff<0]=1e10
         file_idx = np.abs(diff).argmin()
@@ -281,7 +280,7 @@ class NetCDFLoader_lazy(Dataset):
         variables_source = np.array(self.variables_source)[sample_vars]
         variables_target = np.array(self.variables_target)[sample_vars]
 
-        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx] , variables_source, 0, input_mapping)
+        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping)
 
         if ds_target is not None:
             data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, output_mapping)
@@ -332,7 +331,6 @@ class NetCDFLoader_lazy(Dataset):
                 drop_mask_p = (torch.rand((n,nh,nv))<self.p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
-    
         for k, var in enumerate(variables_source):
             data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
         

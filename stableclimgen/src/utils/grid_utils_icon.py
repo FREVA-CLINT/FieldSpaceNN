@@ -317,8 +317,8 @@ def get_nearest_to_icon_recursive(c_t_global: torch.tensor, c_i: torch.tensor, l
     """
 
 
-    _, n_sec_i, _ = c_i.shape
-    n_target = c_t_global.shape[-1]
+   # _, n_sec_i, _ = c_i.shape
+    n_target = c_t_global.shape[0]
 
     id_t = torch.arange(n_target)
 
@@ -332,17 +332,17 @@ def get_nearest_to_icon_recursive(c_t_global: torch.tensor, c_i: torch.tensor, l
         mid_points = id_t.unsqueeze(dim=-1)
 
     # get radius
-    c_t_ = c_t_global[:,mid_points_corners]
-    c_t_m = c_t_global[:,mid_points]
+    c_t_ = c_t_global[mid_points_corners]
+    c_t_m = c_t_global[mid_points]
 
-    dist_corners = get_distance_angle(c_t_[0].unsqueeze(dim=-1),c_t_[1].unsqueeze(dim=-1), c_t_m[0].unsqueeze(dim=-2),c_t_m[1].unsqueeze(dim=-2))[0]
-    dist_corners_max = search_radius*dist_corners.max(dim=-1).values.max()
+    dist_corners = get_distance_angle(c_t_[:,:,0].unsqueeze(dim=-1),c_t_[:,:,1].unsqueeze(dim=-1), c_t_m[:,:,0].unsqueeze(dim=-2),c_t_m[:,:,1].unsqueeze(dim=-2))[0]
+    dist_corners_max = search_radius*dist_corners.max(dim=1).values
 
     c_i_ = c_i
 
-    c_t_m = c_t_m.reshape(2, n_sec_i, -1)
+    c_t_m = c_t_m.reshape(c_i.shape[0], -1, 2)
 
-    dist, phi = get_distance_angle(c_t_m[0].unsqueeze(dim=-1),c_t_m[1].unsqueeze(dim=-1), c_i_[0].unsqueeze(dim=-2), c_i_[1].unsqueeze(dim=-2), periodic_fov=periodic_fov)
+    dist, phi = get_distance_angle(c_t_m[:,:,0].unsqueeze(dim=-1),c_t_m[:,:,1].unsqueeze(dim=-1), c_i_[:,:,0].unsqueeze(dim=-2), c_i_[:,:,1].unsqueeze(dim=-2), periodic_fov=periodic_fov)
     dist = dist.reshape(n_level, -1)
     phi = phi.reshape(n_level, -1)
 
@@ -358,7 +358,7 @@ def get_nearest_to_icon_recursive(c_t_global: torch.tensor, c_i: torch.tensor, l
         global_indices = global_indices.reshape(n_level,-1)
     
     if nh is not None:
-        n_keep = nh
+        n_keep = torch.tensor([nh,dist_values.shape[1]]).min()
     else:
         n_keep = dist_values.shape[1]
 
@@ -387,20 +387,23 @@ def get_mapping_to_icon_grid(coords_icon: torch.tensor, coords_input: torch.tens
 
     :returns: grid mapping (dict)
     """
+    if not isinstance(coords_icon, torch.Tensor):
+        coords_icon = torch.tensor(coords_icon)
 
-    level_start = int(math.log(coords_icon.shape[-1])/math.log(4))
+    if not isinstance(coords_input, torch.Tensor):
+        coords_input = torch.tensor(coords_input)
+
+    level_start = int(math.log(coords_icon.shape[0])/math.log(4))
     
     r = coords_icon.shape[-1]/4**level_start
 
     while math.floor(r)!=math.ceil(r):
         level_start -= 1
-        r = coords_icon.shape[-1]/4**level_start
+        r = coords_icon.shape[0]/4**level_start
 
     grid_mapping = []
     for k in range(level_start + 1 - lowest_level):
         level = level_start - (k)
-
-        nh = max_nh*4**level
 
         if level == lowest_level:
             nh = max_nh
@@ -408,9 +411,9 @@ def get_mapping_to_icon_grid(coords_icon: torch.tensor, coords_input: torch.tens
             nh = None
 
         if k == 0:
-            indices, in_rng, pos = get_nearest_to_icon_recursive(coords_icon, coords_input.unsqueeze(dim=1), level=level, nh=nh, search_radius=search_radius, periodic_fov=periodic_fov)
+            indices, in_rng, pos = get_nearest_to_icon_recursive(coords_icon, coords_input.unsqueeze(dim=0), level=level, nh=nh, search_radius=search_radius, periodic_fov=periodic_fov)
         else:
-            indices, in_rng, pos = get_nearest_to_icon_recursive(coords_icon, coords_input[:,indices], level=level, global_indices_i=indices, nh=nh, search_radius=search_radius, periodic_fov=periodic_fov)
+            indices, in_rng, pos = get_nearest_to_icon_recursive(coords_icon, coords_input[indices], level=level, global_indices_i=indices, nh=nh, search_radius=search_radius, periodic_fov=periodic_fov)
 
         grid_mapping.append({'level': level, 'indices': indices, 'pos': pos, 'in_rng_mask': in_rng}) 
 
@@ -490,13 +493,13 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
                 mapping = get_mapping_to_icon_grid(
                     coords_icon,
                     coords_input,
-                    search_raadius=search_radius,
+                    search_radius=search_radius,
                     max_nh=max_nh,
                     lowest_level=lowest_level,
                     periodic_fov=periodic_fov)
                                 
-                indices = mapping['indices']
-                in_rng_mask = mapping['in_rng_mask']
+                indices = mapping[-1]['indices']
+                in_rng_mask = mapping[-1]['in_rng_mask']
 
             mapping_grid_type[grid_type] = indices
             in_range_grid_type[grid_type] = in_rng_mask

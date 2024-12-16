@@ -8,7 +8,10 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from torch.utils.data import DataLoader
+from .utils.pl_data_module import DataModule
+import torch
+
+torch.manual_seed(42)
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
@@ -36,9 +39,6 @@ def train(cfg: DictConfig) -> None:
     train_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["train"])
     val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
-    # Instantiate DataLoaders for training and validation
-    train_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=train_dataset)
-    val_dataloader: DataLoader = instantiate(cfg.dataloader.dataloader, dataset=val_dataset)
 
     # Initialize the logger (e.g., Weights & Biases)
     logger: WandbLogger = instantiate(cfg.logger)
@@ -53,9 +53,10 @@ def train(cfg: DictConfig) -> None:
             cfg.model, resolve=True, throw_on_missing=False
         ))
 
+    data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
+
     # Start the training process
-    trainer.fit(model=model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader,
-                ckpt_path=cfg.ckpt_path)
+    trainer.fit(model=model, datamodule=data_module, ckpt_path=cfg.ckpt_path)
 
 
 if __name__ == "__main__":

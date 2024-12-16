@@ -103,6 +103,17 @@ class Lightning_MGNO_VAE(pl.LightningModule):
 
         return loss
 
+    def get_coords_from_model(self, indices_dict=None):
+        if indices_dict is not None and isinstance(indices_dict, dict):
+            indices = self.model.get_global_indices_local(indices_dict['sample'], 
+                                                            indices_dict['sample_level'], 
+                                                            0)
+            coords = self.model.cell_coords_global[indices].unsqueeze(dim=-2)
+        else:
+            coords = self.model.cell_coords_global.unsqueeze(dim=0).unsqueeze(dim=-2)
+
+        return coords
+    
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
@@ -120,14 +131,11 @@ class Lightning_MGNO_VAE(pl.LightningModule):
                 mask_p = None
             
             if coords_input.numel()==0:
-                if indices_dict is not None and isinstance(indices_dict, dict):
-                    indices = self.model.get_global_indices_local(indices_dict['sample'], 
-                                                                                indices_dict['sample_level'], 
-                                                                                0)
-                    coords_input = coords_output = self.model.cell_coords_global[indices]
-                else:
-                    coords_input = coords_output = self.model.cell_coords_global.unsqueeze(dim=0)
-            
+                coords_input = self.get_coords_from_model(indices_dict)
+                
+            if coords_output.numel()==0:
+                coords_output = self.get_coords_from_model(indices_dict)
+
             if coords_input.shape[0]==1:
                 coords_input_plot = coords_input[0]
                 coords_output_plot = coords_output[0]

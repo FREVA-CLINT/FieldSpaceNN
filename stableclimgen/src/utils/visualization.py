@@ -20,8 +20,10 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, save_path
     if mask is not None:
         mask = mask.cpu().numpy()
         input = input[mask==False]
-        coords_input = coords_input[mask.squeeze()==False]
+        coords_input = coords_input[mask==False]
 
+    coords_input = coords_input.reshape(-1,2)
+    coords_output = coords_output.reshape(-1,2)
 
     projection = ccrs.Mollweide()
 

@@ -183,11 +183,11 @@ class MGNO_Transformer(nn.Module):
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
-        b,n = x.shape[:2]
-        x = x.view(b,n,-1,self.model_dim_in)
+        b,n,nh = x.shape[:3]
+        x = x.view(b,n,nh,-1,self.model_dim_in)
 
         if mask is not None:
-            mask = mask[:,:,:,:x.shape[2]]
+            mask = mask[:,:,:,:x.shape[3]]
 
         if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
