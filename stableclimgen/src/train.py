@@ -8,7 +8,7 @@ from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from .utils.pl_data_module import DataModule
+from stableclimgen.src.utils.pl_data_module import DataModule
 import torch
 
 torch.manual_seed(42)

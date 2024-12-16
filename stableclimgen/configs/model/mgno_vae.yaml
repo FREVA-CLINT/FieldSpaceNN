@@ -17,7 +17,7 @@ model:
       neural_operator_type: "polNormal"
       global_levels: [0,1,2,3]
       model_dims_out: [1,1,1,1]
-      n_params: [[2,1], [2,2], [4,2], [4,2]]
+      n_params: [[4,2], [4,2], [4,2], [4,2]]
       global_params_learnable: [[true,true, true]]
       att_block_types_encode: [["var"],["var"],["var"],["param0","param1"]]
       att_block_types_decode: [["var"],["var"],["var"],["param0","param1"]]
@@ -37,6 +37,6 @@ model:
       n_head_channels: 2
       nh: 0
       seq_lvl: -1
-      embedder_names: [ ["CoordinateEmbedder"], ["CoordinateEmbedder"], [] ]
+      embedder_names: [ ["VariableEmbedder","CoordinateEmbedder"], ["VariableEmbedder","CoordinateEmbedder"], [] ]
       embed_confs: ${embedding}
       embed_mode: "sum"
