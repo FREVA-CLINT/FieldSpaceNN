@@ -1,15 +1,15 @@
 _target_: lightning.Trainer
 max_steps: 100000
 accelerator: "cpu"
-default_root_dir: ${run_dir}/snapshots/${run_name}/
+default_root_dir: ${run_dir}/snapshots/${run_name}/${config_name}/
 check_val_every_n_epoch: 1
 accumulate_grad_batches: 1
 gradient_clip_val: 1.0
 callbacks:
   - _target_: lightning.pytorch.callbacks.ModelCheckpoint
-    dirpath: ${run_dir}/snapshots/${run_name}/
+    dirpath: ${run_dir}/snapshots/${run_name}/${config_name}/
     auto_insert_metric_name: false
-    filename: ${config_name}_{epoch}
+    filename: $epoch_{epoch}
     save_top_k: -1
     every_n_epochs: 1
     save_last: true
