@@ -428,10 +428,10 @@ class polNormal_NoLayer(NoLayer):
 
         if mask is not None:
             mask = mask.view(*c_shape)
-            mask = torch.logical_or(mask, mask_cut)
+            mask = torch.logical_or(mask, mask_cut.view(*c_shape[:-1],1))
             mask = mask.view(*c_shape,1,1)
         else:
-            mask = mask_cut.repeat_interleave(nv, dim=-1).view(*c_shape,1,1)
+            mask = mask_cut.repeat_interleave(nv, dim=-1).view(*c_shape[:-1],1)
         
         weights_weights = (mask == False)
         weights = (weights * weights_weights)
