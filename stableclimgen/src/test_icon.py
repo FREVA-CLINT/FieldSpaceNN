@@ -131,7 +131,10 @@ def test(cfg: DictConfig) -> None:
             mask = torch.zeros(*data.shape, dtype=bool)
 
             if input_in_range is not None:
-                input_in_range = input_in_range.view(len(indices_sample['sample']),-1,input_in_range.shape[-1])
+                if indices_sample is not None:
+                    input_in_range = input_in_range.view(len(indices_sample['sample']),-1,input_in_range.shape[-1])
+                else:
+                    input_in_range = input_in_range.view(1,-1)
                 mask[input_in_range==False] = True
 
             b,n,nh,nv = data.shape[:4]
