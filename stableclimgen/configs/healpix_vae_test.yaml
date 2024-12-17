@@ -1,0 +1,14 @@
+defaults:
+  - model: mgno_vae
+  - mgrids: healpix
+  - embedding: default
+  - dataloader: zarr_healpix
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+output_dir: ../../evaluations/${run_name}/${config_name}/
+
+config_name: default
+run_name: healpix_vae
+run_dir: ../..
