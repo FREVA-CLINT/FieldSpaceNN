@@ -143,7 +143,7 @@ def test(cfg: DictConfig) -> None:
                 mask[drop_mask_p]=True
 
             elif drop_vars:
-                drop_mask_p = (torch.rand((b,n,nh,nv,nv))<p_dropout).bool()
+                drop_mask_p = (torch.rand((b,n,nh,nv))<p_dropout).bool()
                 mask[drop_mask_p]=True
             
             data[mask]=0
