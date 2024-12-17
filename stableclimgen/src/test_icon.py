@@ -55,12 +55,13 @@ def test(cfg: DictConfig) -> None:
     variables = data_dict["test"]["variables"]
     files = np.loadtxt(data_dict["test"]["files"], dtype='str')
     grid_input = data_dict["test"]["grid"]
+    coarsen_level_batches = cfg.coarsen_level_batches if "coarsen_level_batches" in cfg.keys() else -1
 
     model: Any = instantiate(cfg.model)
     ckpt = torch.load(cfg.ckpt_path)
     model.load_state_dict(ckpt["state_dict"])
     model.eval()
-
+    
     with open(cfg.dataloader.dataset.norm_dict) as json_file:
         norm_dict = json.load(json_file)
 
@@ -108,13 +109,29 @@ def test(cfg: DictConfig) -> None:
             for k, var in enumerate(variables):
                 data[:,:,k] = var_normalizers[var].normalize(data[:,:,k])
 
-            data = torch.tensor(data[np.newaxis,...,np.newaxis])
             embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=1)}
-            with torch.no_grad():
-                output = model(data, coords_input=input_coordinates,coords_output=None, indices_sample=None, mask=None, emb=embed_data)
+            
+            if coarsen_level_batches!=-1:
+                indices_sample = {'sample': torch.arange(input_coordinates.shape[1]//4**coarsen_level_batches),
+                    'sample_level': torch.ones(input_coordinates.shape[1]//4**coarsen_level_batches, dtype=int).view(-1)*coarsen_level_batches}
+                
+                data = data.view(len(indices_sample['sample']),-1,data.shape[1],data.shape[-1],1)
+                if input_coordinates is not None:
+                    input_coordinates = input_coordinates.view(len(indices_sample['sample']),-1,input_coordinates.shape[2],2)
 
+                embed_data['VariableEmbedder'] = embed_data['VariableEmbedder'].repeat_interleave(data.shape[0],dim=0)
+            else:
+                data = torch.tensor(data[np.newaxis,...,np.newaxis])
+                indices_sample=None
+            
+            mask = torch.zeros(*data.shape)
+
+            with torch.no_grad():
+                output = model(data, coords_input=input_coordinates, coords_output=None, indices_sample=indices_sample, mask=mask, emb=embed_data)
+
+            output = output.view(-1,output.shape[-1])
             for k, var in enumerate(variables):
-                output[:,:,k] = var_normalizers[var].denormalize(output[:,:,k])
+                output[:,k] = var_normalizers[var].denormalize(output[:,k])
             
             output = dict(zip(variables, output.split(1, dim=-1)))
 
