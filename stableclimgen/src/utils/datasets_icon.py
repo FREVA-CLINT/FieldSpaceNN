@@ -140,7 +140,7 @@ class NetCDFLoader_lazy(Dataset):
             input_coordinates = get_coords_as_tensor(xr.open_dataset(grid_input), lon='clon', lat='clat', target='numpy')
         else:
             input_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            input_in_range = np.ones_like(input_mapping, dtype=bool)[:,np.newaxis]
+            input_in_range = np.ones_like(input_mapping, dtype=bool)
             input_coordinates = None
             
         if grid_output != grid_processing:
@@ -161,7 +161,7 @@ class NetCDFLoader_lazy(Dataset):
             output_coordinates = get_coords_as_tensor(xr.open_dataset(grid_output), lon='clon', lat='clat', target='numpy')
         else:
             output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            output_in_range = np.ones_like(output_mapping, dtype=bool)[:,np.newaxis]
+            output_in_range = np.ones_like(output_mapping, dtype=bool)
             output_coordinates = None
             
         
