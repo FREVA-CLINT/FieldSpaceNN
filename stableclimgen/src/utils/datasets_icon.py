@@ -280,6 +280,10 @@ class NetCDFLoader_lazy(Dataset):
         variables_source = np.array(self.variables_source)[sample_vars]
         variables_target = np.array(self.variables_target)[sample_vars]
 
+        if len(sample_vars)==1:
+            variables_source = [variables_source]
+            variables_target = [variables_target]
+
         data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping)
 
         if ds_target is not None:
