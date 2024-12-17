@@ -112,8 +112,8 @@ def test(cfg: DictConfig) -> None:
             embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=1)}
             
             if coarsen_level_batches!=-1:
-                indices_sample = {'sample': torch.arange(input_coordinates.shape[1]//4**coarsen_level_batches),
-                    'sample_level': torch.ones(input_coordinates.shape[1]//4**coarsen_level_batches, dtype=int).view(-1)*coarsen_level_batches}
+                indices_sample = {'sample': torch.arange(data.shape[0]//4**coarsen_level_batches),
+                    'sample_level': torch.ones(data.shape[0]//4**coarsen_level_batches, dtype=int).view(-1)*coarsen_level_batches}
                 
                 data = data.view(len(indices_sample['sample']),-1,data.shape[1],data.shape[-1],1)
                 if input_coordinates is not None:
