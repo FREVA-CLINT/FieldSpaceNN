@@ -124,7 +124,7 @@ class NetCDFLoader_lazy(Dataset):
 
         
         if  grid_input != grid_processing:
-            input_mapping, input_in_range = get_nh_variable_mapping_icon(grid_processing, 
+            input_mapping, input_in_range, positions = get_nh_variable_mapping_icon(grid_processing, 
                                                                         ['cell'], 
                                                                         grid_input, 
                                                                         ['cell'], 
@@ -144,7 +144,7 @@ class NetCDFLoader_lazy(Dataset):
             input_coordinates = None
             
         if grid_output != grid_processing:
-            output_mapping, output_in_range = get_nh_variable_mapping_icon(
+            output_mapping, output_in_range, positions = get_nh_variable_mapping_icon(
                                                         grid_processing, ['cell'], 
                                                         grid_input, 
                                                         ['cell'], 
@@ -157,6 +157,7 @@ class NetCDFLoader_lazy(Dataset):
             
             output_mapping = output_mapping['cell']['cell']
             output_in_range = output_in_range['cell']['cell']
+            positions = positions['cell']['cell']
             output_coordinates = get_coords_as_tensor(xr.open_dataset(grid_output), lon='clon', lat='clat', target='numpy')
         else:
             output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
@@ -340,6 +341,10 @@ class NetCDFLoader_lazy(Dataset):
         
         for k, var in enumerate(variables_target):
             data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
+
+        if hasattr(self,'input_in_range'):
+            input_in_range = input_in_range[global_cells[region_idx]]
+            drop_mask[input_in_range==False] = True
 
         data_source[drop_mask] = 0
 

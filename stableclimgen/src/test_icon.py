@@ -56,6 +56,8 @@ def test(cfg: DictConfig) -> None:
     files = np.loadtxt(data_dict["test"]["files"], dtype='str')
     grid_input = data_dict["test"]["grid"]
     coarsen_level_batches = cfg.coarsen_level_batches if "coarsen_level_batches" in cfg.keys() else -1
+    p_dropout = cfg.p_dropout if "p_dropout" in cfg.keys() else 0
+    drop_vars = cfg.drop_vars if "drop_vars" in cfg.keys() else False
 
     model: Any = instantiate(cfg.model)
     ckpt = torch.load(cfg.ckpt_path)
@@ -78,7 +80,7 @@ def test(cfg: DictConfig) -> None:
     coords_processing = get_coords_as_tensor(xr.open_dataset(grid_processing), lon='clon', lat='clat', target='numpy')
     
     if  grid_input != grid_processing:
-        input_mapping, input_in_range = get_nh_variable_mapping_icon(grid_processing, 
+        input_mapping, input_in_range, positions = get_nh_variable_mapping_icon(grid_processing, 
                                                                     ['cell'], 
                                                                     grid_input, 
                                                                     ['cell'], 
@@ -91,11 +93,13 @@ def test(cfg: DictConfig) -> None:
                         
         input_mapping = input_mapping['cell']['cell']
         input_in_range = input_in_range['cell']['cell']
+        positions = positions['cell']['cell']
         input_coordinates = get_coords_as_tensor(xr.open_dataset(grid_input), lon='clon', lat='clat', target='torch')
     else:
         input_mapping = torch.arange(coords_processing.shape[0]).unsqueeze(dim=-1)
         input_in_range = torch.ones_like(input_mapping, dtype=bool).unsqueeze(dim=-1)
         input_coordinates = None
+        input_in_range = None
 
     var_indices = [np.where(var==np.array(variables_train))[0][0] for var in variables]
 
@@ -124,7 +128,22 @@ def test(cfg: DictConfig) -> None:
                 data = torch.tensor(data[np.newaxis,...,np.newaxis])
                 indices_sample=None
             
-            mask = torch.zeros(*data.shape)
+            mask = torch.zeros(*data.shape, dtype=bool)
+
+            if input_in_range is not None:
+                input_in_range = input_in_range.view(len(indices_sample['sample']),-1,input_in_range.shape[-1])
+                mask[input_in_range==False] = True
+
+            b,n,nh,nv = data.shape[:4]
+            if p_dropout > 0 and not drop_vars:
+                drop_mask_p = (torch.rand((b,n,nh))<p_dropout).bool()
+                mask[drop_mask_p]=True
+
+            elif drop_vars:
+                drop_mask_p = (torch.rand((b,n,nh,nv,nv))<p_dropout).bool()
+                mask[drop_mask_p]=True
+            
+            data[mask]=0
 
             with torch.no_grad():
                 output = model(data, coords_input=input_coordinates, coords_output=None, indices_sample=indices_sample, mask=mask, emb=embed_data)
@@ -136,6 +155,7 @@ def test(cfg: DictConfig) -> None:
             output = dict(zip(variables, output.split(1, dim=-1)))
 
             torch.save(output, os.path.join(cfg.output_dir,os.path.basename(file).replace('.nc',f'_{tp}.pt')))
+            torch.save(mask, os.path.join(cfg.output_dir,os.path.basename(file).replace('.nc',f'_{tp}_mask.pt')))
 
 if __name__ == "__main__":
     test()
