@@ -51,3 +51,4 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
 stableclimgen-train = "stableclimgen.src.train:train"
+stableclimgen-test-healpix = "stableclimgen.src.test_healpix:test"
