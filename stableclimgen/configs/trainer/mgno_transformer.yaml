@@ -9,7 +9,7 @@ callbacks:
   - _target_: lightning.pytorch.callbacks.ModelCheckpoint
     dirpath: ${run_dir}/snapshots/${run_name}/${config_name}/
     auto_insert_metric_name: false
-    filename: $epoch_{epoch}
+    filename: epoch_{epoch}
     save_top_k: -1
     every_n_epochs: 1
     save_last: true
