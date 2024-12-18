@@ -108,8 +108,8 @@ def test(cfg: DictConfig) -> None:
             for k, var in enumerate(variables):
                 data[:,:,k] = var_normalizers[var].normalize(data[:,:,k])
 
-            embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=1)}
-            
+            embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=0)}
+
             if coarsen_level_batches!=-1:
                 indices_sample = {'sample': torch.arange(data.shape[0]//4**coarsen_level_batches),
                     'sample_level': torch.ones(data.shape[0]//4**coarsen_level_batches, dtype=int).view(-1)*coarsen_level_batches}
