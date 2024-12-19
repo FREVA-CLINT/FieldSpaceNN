@@ -219,7 +219,8 @@ class MGNO_Transformer(nn.Module):
             # Process input through the block
             x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
             x = x.view(b,n,-1,nv,nc)
-            mask = mask.view(x.shape[:4])
+            if mask is not None:
+                mask = mask.view(x.shape[:4])
 
         
         x = x.view(b,n,-1)

@@ -292,7 +292,7 @@ class Stacked_NOBlock(nn.Module):
             layer = self.NO_Blocks[layer_idx]
             x_shape_origin = (*x.shape[:3], *layer.n_params, -1)
             x = shape_to_x(x, x_shape_origin)
-            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
+            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, emb=emb, mask=mask)
 
         return x, mask
 
