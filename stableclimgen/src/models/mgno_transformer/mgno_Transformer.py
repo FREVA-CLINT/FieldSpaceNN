@@ -74,8 +74,8 @@ class MGNO_Transformer(nn.Module):
         self.model_dim_out = model_dim_out
         self.n_vars_total = n_vars_total
 
-        global_levels = [torch.tensor(block_conf.global_levels) for block_conf in block_configs] + [torch.tensor(0).view(-1)]
-        global_levels = torch.concat(global_levels).unique()
+        global_levels_tot = [torch.tensor(block_conf.global_levels) for block_conf in block_configs] 
+        global_levels = torch.concat(global_levels_tot+ [torch.tensor(0).view(-1)]).unique()
         
         self.register_buffer('global_levels', global_levels, persistent=False)
 
@@ -87,6 +87,7 @@ class MGNO_Transformer(nn.Module):
         for global_level in global_levels:
             grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system='polar')
 
+        n_no_layers_total = len((torch.concat(global_levels_tot)))
         n = 0
         global_level_in = 0
         # Construct blocks based on configurations
@@ -113,7 +114,7 @@ class MGNO_Transformer(nn.Module):
                                     params_learnable=block_conf.global_params_learnable[k],
                                     nh_projection=block_conf.nh_transformation[k],
                                     nh_backprojection=block_conf.nh_inverse_transformation[k],
-                                    precompute_coordinates=True if n!=0 and n<n_no_layers else False,
+                                    precompute_coordinates=True if n!=0 and n<n_no_layers_total else False,
                                     rotate_coordinate_system=rotate_coord_system)
 
                 no_layers.append(no_layer)
@@ -183,7 +184,7 @@ class MGNO_Transformer(nn.Module):
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
-        b,n,nh = x.shape[:3]
+        b,n,nh,nv,nc = x.shape[:5]
         x = x.view(b,n,nh,-1,self.model_dim_in)
 
         if mask is not None:
@@ -217,6 +218,8 @@ class MGNO_Transformer(nn.Module):
             
             # Process input through the block
             x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+            x = x.view(b,n,-1,nv,nc)
+            mask = mask.view(x.shape[:4])
 
         
         x = x.view(b,n,-1)

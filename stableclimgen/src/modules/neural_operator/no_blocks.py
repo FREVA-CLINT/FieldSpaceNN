@@ -28,6 +28,7 @@ class NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_config={},
+                 NO_weights=None
                 ) -> None: 
       
         super().__init__()
@@ -114,25 +115,33 @@ class NOBlock(nn.Module):
         x, mask = self.no_layer.transform(x, coordinates=coords_in, indices_sample=indices_sample, mask=mask)
 
         for layer in self.att_block_types_encode:
-            if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
+            if isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+            elif isinstance(layer, NHAttention):
+                x, mask = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:
                 emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
-                x = layer(x, mask=mask, emb=emb)
+                x, mask = layer(x, mask=mask, emb=emb)
 
         return x, mask
 
 
-    def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None):
+    def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None, inv_transform_mask=None):
         
         for layer in self.att_block_types_decode:
-            if isinstance(layer, NHAttention) or isinstance(layer, SpatialAttention):
+            if isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+            elif isinstance(layer, NHAttention):
+                x, mask = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:
                 emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
                 x = layer(x, mask=mask, emb=emb)
 
-        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask)
+        if mask is not None:
+            if inv_transform_mask is None:
+                inv_transform_mask = mask 
+
+        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=inv_transform_mask)
 
         return x, mask
     
@@ -164,7 +173,8 @@ class Serial_NOBlock(nn.Module):
                  embed_names_decode: List[List[str]] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
-                 spatial_attention_configs: dict = {}
+                 spatial_attention_configs: dict = {},
+                 Block_NO_weights=None
                 ) -> None: 
       
         super().__init__()
@@ -228,7 +238,8 @@ class Stacked_NOBlock(nn.Module):
                  embed_names_decode: List[List[str]] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
-                 spatial_attention_configs = {}
+                 spatial_attention_configs = {},
+                 Block_NO_weights=None
                 ) -> None: 
       
         super().__init__()
@@ -273,7 +284,7 @@ class Stacked_NOBlock(nn.Module):
             x, mask = layer.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
             x, mask = shape_to_att(x, mask=mask)
 
-        return x
+        return x, mask
     
     def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None):
 
@@ -283,15 +294,15 @@ class Stacked_NOBlock(nn.Module):
             x = shape_to_x(x, x_shape_origin)
             x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
 
-        return x
+        return x, mask
 
 
     
     def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
         
-        x = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, mask = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, mask = self.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
         return x, mask
 
@@ -313,7 +324,8 @@ class UNet_NOBlock(nn.Module):
                  embed_names_decode: List[List[str]] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
-                 spatial_attention_configs = {}
+                 spatial_attention_configs = {},
+                 Block_NO_weights=None
                 ) -> None: 
       
         super().__init__()
@@ -366,21 +378,24 @@ class UNet_NOBlock(nn.Module):
 
         return x_skip, mask_skip
     
-    def decode(self, x_skip, mask_skip, coords_out=None, indices_sample=None, emb=None):
-
+    def decode(self, x_skip, masks_skip, coords_out=None, indices_sample=None, emb=None):
+        
+        mask = masks_skip[-1] 
         for layer_idx in range(len(self.NO_Blocks)-1,-1,-1):
             
-            mask = mask_skip[layer_idx] 
             layer = self.NO_Blocks[layer_idx]
             x_shape_origin = (*x_skip[layer_idx].shape[:3], *layer.n_params, -1)
 
             if layer_idx<len(self.NO_Blocks)-1:
-                x = torch.cat((shape_to_x(x, x_shape_origin),
-                               shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=-1)
+            #   x = torch.cat((shape_to_x(x, x_shape_origin),
+             #                  shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=-1)
+                x = torch.cat((shape_to_x(x_skip[layer_idx], x_shape_origin),
+                               shape_to_x(x, x_shape_origin)), dim=-1)
             else:
                 x = shape_to_x(x_skip[layer_idx], x_shape_origin)
-                              
-            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+            
+           # coords_out_ = None if layer_idx !=0 else coords_out
+            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=masks_skip[layer_idx], emb=emb, inv_transform_mask=mask)
 
         return x
 
@@ -412,7 +427,8 @@ class Parallel_NOBlock(nn.Module):
                  embed_names_decode: List[List[str]] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
-                 spatial_attention_configs = {}
+                 spatial_attention_configs = {},
+                 Block_NO_weights=None
                 ) -> None: 
       
         super().__init__()
@@ -538,7 +554,7 @@ class ParamAttention(nn.Module):
 
         x, _ = shape_to_att(x, self.param_idx_att)
         
-        x, _  = self.attention_layer(x, mask=mask)
+        x, mask  = self.attention_layer(x, mask=mask)
 
         x = x_res + self.gamma*x
 
@@ -553,7 +569,13 @@ class ParamAttention(nn.Module):
         x = x_res + self.gamma_mlp*x
 
         x = shape_to_x(x, x_shape, self.param_idx_att)
-        return x
+
+        if mask is not None:
+            mask = mask.view(*x.shape[:3],-1)
+            mask = mask.sum(dim=-1).bool()
+            
+
+        return x, mask
     
 class CrossAttention(nn.Module):
   
@@ -644,12 +666,13 @@ class NHAttention(nn.Module):
 
         x, mask = self.no_layer_nh.transform(x, indices_sample=indices_sample, mask=mask)
 
-        x = self.attention_layer(x, mask=mask, emb=emb)
+        x, mask = self.attention_layer(x, mask=mask, emb=emb)
  
         x, mask = self.no_layer_nh.inverse_transform(x, indices_sample=indices_sample, mask=mask)
 
         x = shape_to_x(x, x_shape)
-        return x
+
+        return x, mask
 
 
 

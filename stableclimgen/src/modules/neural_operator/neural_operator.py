@@ -301,18 +301,12 @@ class Normal_NoLayer(NoLayer):
         weights = weights.view(*c_shape, len(self.mus_lon), len(self.mus_lat))
 
         if mask is not None:
-       #     mask = mask.view(*c_shape)
-       #     mask = torch.logical_or(mask, mask_cut)
             mask = mask.view(*c_shape,1,1)
-        else:
-            mask = mask_cut.repeat_interleave(nv, dim=-1).view(*c_shape,1,1)
-        
-        weights_weights = (mask == False)
-        weights = (weights * weights_weights)
-
-        mask = mask.view(*c_shape)
-        mask = mask.sum(dim=-2)==mask.shape[-2]
-        mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
+            weights_weights = (mask == False)
+            weights = (weights * weights_weights)
+            mask = mask.view(*c_shape)
+            mask = mask.sum(dim=-2)==mask.shape[-2]
+            mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
         
         weights = weights/(weights.sum(dim=3,keepdim=True)+1e-10)
 
@@ -340,6 +334,8 @@ class Normal_NoLayer(NoLayer):
         x = x.view(-1, n, seq_ref, 1, nv, n_lon, n_lat, nc)
 
         if mask is not None:
+            mask_norm = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            weights = weights.masked_fill(mask_norm, 0)
             mask = mask.view(b,n,seq_ref,nv)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
@@ -430,17 +426,17 @@ class polNormal_NoLayer(NoLayer):
        #     mask = mask.view(*c_shape)
         #    mask = torch.logical_or(mask, mask_cut.view(*c_shape[:-1],1))
             mask = mask.view(*c_shape,1,1)
-        else:
-            mask = mask_cut.repeat_interleave(nv, dim=-1).view(*c_shape[:-1],1)
         
-        weights_weights = (mask == False)
-        weights = (weights * weights_weights)
+            weights_weights = (mask == False)
+            weights = (weights * weights_weights)
 
-        mask = mask.view(*c_shape)
-        mask = mask.sum(dim=-2)==mask.shape[-2]
-        mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
+            norm = weights_weights.sum(dim=3, keepdim=True) 
+            mask = mask.view(*c_shape)
+            mask = mask.sum(dim=-2)==mask.shape[-2]
+            mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
 
         weights = weights/(weights.sum(dim=3,keepdim=True)+1e-10)
+        #weights = weights/(norm+1e-10)
 
         x = x.view(*c_shape,1, 1, nc)
         x = (x * weights.unsqueeze(dim=-1)).sum(dim=3)
@@ -466,6 +462,10 @@ class polNormal_NoLayer(NoLayer):
         x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
 
         if mask is not None:
+            #mask = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            mask_norm = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            weights = weights.masked_fill(mask_norm, 0)
+
             mask = mask.view(b,n,seq_ref,nv)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)

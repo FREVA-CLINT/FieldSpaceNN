@@ -252,7 +252,7 @@ class MGNO_VAE(nn.Module):
             coords_input = coords_input if k==0 else None
             x, mask = block(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, _ = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
         x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
@@ -273,7 +273,7 @@ class MGNO_VAE(nn.Module):
         x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
         x = x.squeeze(dim=1)
 
-        x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
+        x, _ = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
         for k, block in enumerate(self.decoder_only_blocks):
             
