@@ -376,7 +376,7 @@ class polNormal_NoLayer(NoLayer):
                  coord_system='cartesian',
                  rotate_coord_system=rotate_coord_system)
         
-        self.n_params = [n_dist, n_phi]
+        self.n_params = [n_phi, n_dist]
       
         grid_dist_out = self.nh_dist
 
