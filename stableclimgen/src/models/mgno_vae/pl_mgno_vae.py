@@ -64,7 +64,7 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = rec_loss + (self.kl_weight * kl_loss if self.kl_loss != 0.0)
+            loss = rec_loss + self.kl_weight * kl_loss
         else:
             loss = rec_loss
 
@@ -85,7 +85,7 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = rec_loss + (self.kl_weight * kl_loss if self.kl_loss != 0.0)
+            loss = rec_loss + self.kl_weight * kl_loss
         else:
             loss = rec_loss
 
