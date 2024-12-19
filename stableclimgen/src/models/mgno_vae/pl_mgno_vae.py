@@ -64,11 +64,9 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            loss = rec_loss + (self.kl_weight * kl_loss if self.kl_loss != 0.0)
         else:
-            kl_loss = torch.tensor([0.0])
-
-        # Calculate total loss
-        loss = rec_loss + self.kl_weight * kl_loss
+            loss = rec_loss
 
         self.log_dict({
             'train/kl_loss': kl_loss.mean(),
@@ -87,11 +85,12 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            loss = rec_loss + (self.kl_weight * kl_loss if self.kl_loss != 0.0)
         else:
-            kl_loss = torch.tensor([0.0])
+            loss = rec_loss
+
 
         # Calculate total loss
-        loss = rec_loss + self.kl_weight * kl_loss
 
         if batch_idx == 0:
             try:
