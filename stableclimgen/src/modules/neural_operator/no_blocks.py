@@ -135,7 +135,7 @@ class NOBlock(nn.Module):
                 x, mask = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:
                 emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
-                x = layer(x, mask=mask, emb=emb)
+                x, mask = layer(x, mask=mask, emb=emb)
 
         if mask is not None:
             if inv_transform_mask is None:
@@ -638,7 +638,7 @@ class CrossAttention(nn.Module):
 
         x = shape_to_x(x, x_shape, self.param_idx_att)
 
-        return x
+        return x, mask
 
 
 class NHAttention(nn.Module):
