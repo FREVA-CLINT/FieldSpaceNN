@@ -61,8 +61,11 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         rec_loss = self.loss(output, target)
 
         # Compute KL divergence loss
-        kl_loss = posterior.kl()
-        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        if self.kl_weight != 0.0:
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        else:
+            kl_loss = torch.tensor([0.0])
 
         # Calculate total loss
         loss = rec_loss + self.kl_weight * kl_loss
@@ -81,8 +84,11 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         rec_loss = self.loss(output, target)
 
         # Compute KL divergence loss
-        kl_loss = posterior.kl()
-        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        if self.kl_weight != 0.0:
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        else:
+            kl_loss = torch.tensor([0.0])
 
         # Calculate total loss
         loss = rec_loss + self.kl_weight * kl_loss

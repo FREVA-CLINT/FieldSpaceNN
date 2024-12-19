@@ -204,12 +204,14 @@ class MGNO_VAE(nn.Module):
 
             else:
                 self.vae_block = Block
-        quant_no_block = self.vae_block.NO_Blocks[-1]
-        quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
-        self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
-                                         **quant_config.sub_confs,
-                                         grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
-                                         rotate_coord_system=rotate_coord_system)
+
+        if quant_config:
+            quant_no_block = self.vae_block.NO_Blocks[-1]
+            quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
+            self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
+                                             **quant_config.sub_confs,
+                                             grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
+                                             rotate_coord_system=rotate_coord_system)
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
@@ -254,12 +256,14 @@ class MGNO_VAE(nn.Module):
 
         x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
-        x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
-        posterior = DiagonalGaussianDistribution(x)
-
-        return posterior
+        if hasattr(self, "quantization"):
+            x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
+            x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+            x = x.squeeze(dim=1)
+            posterior = DiagonalGaussianDistribution(x)
+            return posterior
+        else:
+            return x
 
 
 
@@ -269,9 +273,10 @@ class MGNO_VAE(nn.Module):
                                                     coords_output, 
                                                     indices_sample=indices_sample)
 
-        x = x.unsqueeze(dim=1)
-        x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
+        if hasattr(self, "quantization"):
+            x = x.unsqueeze(dim=1)
+            x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
+            x = x.squeeze(dim=1)
 
         x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
@@ -288,7 +293,10 @@ class MGNO_VAE(nn.Module):
 
         posterior = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        z = posterior.sample()
+        if hasattr(self, "quantization"):
+            z = posterior.sample()
+        else:
+            z = posterior
 
         dec = self.decode(z, coords_output, indices_sample=indices_sample, emb=emb)
 
