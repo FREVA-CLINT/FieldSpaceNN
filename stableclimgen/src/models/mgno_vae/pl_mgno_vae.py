@@ -67,6 +67,7 @@ class Lightning_MGNO_VAE(pl.LightningModule):
             loss = rec_loss + self.kl_weight * kl_loss
         else:
             loss = rec_loss
+            kl_loss = torch.tensor([0.0])
 
         self.log_dict({
             'train/kl_loss': kl_loss.mean(),
@@ -88,6 +89,7 @@ class Lightning_MGNO_VAE(pl.LightningModule):
             loss = rec_loss + self.kl_weight * kl_loss
         else:
             loss = rec_loss
+            kl_loss = torch.tensor([0.0])
 
 
         # Calculate total loss
