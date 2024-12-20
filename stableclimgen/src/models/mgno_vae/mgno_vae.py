@@ -5,7 +5,7 @@ import copy
 from typing import List, Dict
 import omegaconf
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ...modules.distributions.distributions import DiagonalGaussianDistribution
+from ...modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
 
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock, UNet_NOBlock
@@ -206,12 +206,14 @@ class MGNO_VAE(nn.Module):
                 self.vae_block = Block
 
         if quant_config:
+            enc_params = [block.n_params for block in self.vae_block.NO_Blocks]
             quant_no_block = self.vae_block.NO_Blocks[-1]
             quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
             self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
                                              **quant_config.sub_confs,
                                              grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
-                                             rotate_coord_system=rotate_coord_system)
+                                             rotate_coord_system=rotate_coord_system,
+                                             n_params=enc_params)
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
@@ -260,7 +262,8 @@ class MGNO_VAE(nn.Module):
             x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
             x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
             x = x.squeeze(dim=1)
-            posterior = DiagonalGaussianDistribution(x)
+            #posterior = DiagonalGaussianDistribution(x)
+            posterior = DiracDistribution(x)
             return posterior
         else:
             return x

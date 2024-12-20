@@ -1,6 +1,7 @@
 _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
 lr: 1e-3
 lr_warmup: 400
+kl_weight: 0.0
 model:
   _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
   mgrids: ${mgrids}
@@ -15,9 +16,9 @@ model:
       is_encoder_only: false
       is_decoder_only: false
       neural_operator_type: "polNormal"
-      global_levels: [0,1,2,3]
+      global_levels: [0,1,2,4]
       model_dims_out: [1,1,1,1]
-      n_params: [[4,2], [4,2], [4,2], [4,2]]
+      n_params: [[4,2], [2,2], [2,2], [2,2]]
       global_params_learnable: [[true,true, true]]
       att_block_types_encode: [["var"],["var"],["var"],["param0","param1"]]
       att_block_types_decode: [["var"],["var"],["var"],["param0","param1"]]
@@ -31,12 +32,12 @@ model:
   quant_config:
     _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
     block_type: "grid_trans"
-    latent_ch: [ 16, 4, 4 ]
+    latent_ch: [ 4 ]
     sub_confs:
-      blocks: [ "s", "s", "mlp" ]
+      blocks: [ "s", "mlp" ]
       n_head_channels: 2
       nh: 0
       seq_lvl: -1
-      embedder_names: [ ["VariableEmbedder","CoordinateEmbedder"], ["VariableEmbedder","CoordinateEmbedder"], [] ]
+      embedder_names: [ ["VariableEmbedder","CoordinateEmbedder"], ["VariableEmbedder","CoordinateEmbedder"] ]
       embed_confs: ${embedding}
       embed_mode: "sum"
