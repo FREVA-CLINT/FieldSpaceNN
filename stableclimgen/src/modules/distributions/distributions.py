@@ -7,7 +7,7 @@ class AbstractDistribution:
     Abstract base class for probability distributions.
     """
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
         """
         Generate a sample from the distribution.
         Raises NotImplementedError if not implemented in subclass.
@@ -35,7 +35,7 @@ class DiracDistribution(AbstractDistribution):
         """
         self.value = value
 
-    def sample(self) -> torch.Tensor:
+    def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
         """
         Return the fixed value as a sample.
         """
@@ -48,7 +48,7 @@ class DiracDistribution(AbstractDistribution):
         return self.value
 
 
-class DiagonalGaussianDistribution:
+class DiagonalGaussianDistribution(AbstractDistribution):
     """
     Diagonal Gaussian distribution, supporting sampling and KL divergence calculations.
     """

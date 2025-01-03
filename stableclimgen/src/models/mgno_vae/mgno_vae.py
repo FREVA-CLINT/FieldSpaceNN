@@ -5,7 +5,6 @@ import copy
 from typing import List, Dict
 import omegaconf
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ...modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
 
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock, UNet_NOBlock
@@ -214,6 +213,7 @@ class MGNO_VAE(nn.Module):
                                              grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
                                              rotate_coord_system=rotate_coord_system,
                                              n_params=enc_params)
+            self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
@@ -262,8 +262,7 @@ class MGNO_VAE(nn.Module):
             x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
             x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
             x = x.squeeze(dim=1)
-            #posterior = DiagonalGaussianDistribution(x)
-            posterior = DiracDistribution(x)
+            posterior = self.quantization.get_distribution(x)
             return posterior
         else:
             return x
@@ -297,7 +296,8 @@ class MGNO_VAE(nn.Module):
         posterior = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         if hasattr(self, "quantization"):
-            z = posterior.sample()
+            noise = torch.randn_like(posterior.mean) * self.noise_gamma
+            z = posterior.sample(noise)
         else:
             z = posterior
 

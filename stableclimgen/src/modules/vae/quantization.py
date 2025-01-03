@@ -2,13 +2,14 @@ from typing import Optional, List, Dict
 import torch
 import torch.nn as nn
 from stableclimgen.src.utils.helpers import check_value
+from ..distributions.distributions import AbstractDistribution
 from ..embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
 
 from ..icon_grids.grid_attention import GridAttention
 from ..rearrange import RearrangeConvCentric
 from ..cnn.conv import ConvBlockSequential
 from ..cnn.resnet import ResBlockSequential
-from ..transformer.attention import AdaptiveLayerNorm
+from ...modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
 from ..transformer.transformer_base import TransformerBlock
 from ..utils import EmbedBlockSequential
 
@@ -35,16 +36,18 @@ class Quantization(nn.Module):
             embed_confs: Dict = None,
             embed_mode: str = "sum",
             dims: int = 2,
+            distribution: str = "gaussian",
             **kwargs
     ):
         super().__init__()
         # Choose the block type based on provided configuration
+        self.distribution = distribution
         if block_type == "conv":
             # Define convolutional block for quantization
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
                     nn.GroupNorm(32, in_ch),  # Normalize input channels
-                    ConvBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, dims=dims, **kwargs)
+                    ConvBlockSequential(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks, dims=dims, **kwargs)
                 ), spatial_dim_count, dims=dims
             )
             # Define convolutional block for post-quantization decoding
@@ -56,7 +59,7 @@ class Quantization(nn.Module):
             # Define ResNet block for quantization
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
-                    ResBlockSequential(in_ch, [2 * l_ch for l_ch in latent_ch], blocks,
+                    ResBlockSequential(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks,
                                        embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, dims=dims,
                                        **kwargs)
                 ), spatial_dim_count, dims=dims
@@ -70,7 +73,7 @@ class Quantization(nn.Module):
             )
         elif block_type == "trans":
             # Use Transformer block for quantization and post-quantization
-            self.quant = TransformerBlock(in_ch, [2 * l_ch for l_ch in latent_ch], blocks, spatial_dim_count=spatial_dim_count,
+            self.quant = TransformerBlock(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks, spatial_dim_count=spatial_dim_count,
                                           embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
             self.post_quant = TransformerBlock(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, spatial_dim_count=spatial_dim_count,
                                                embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
@@ -86,7 +89,7 @@ class Quantization(nn.Module):
             spatial_attention_configs["embed_mode"] = embed_mode
             spatial_attention_configs["blocks"] = blocks
 
-            self.quant = GridQuantizationEnc(n_params, grid_layer, in_ch, latent_ch[-1], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+            self.quant = GridQuantizationEnc(n_params, grid_layer, in_ch, latent_ch[-1], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system, (distribution == "gaussian"))
             self.post_quant = GridQuantizationDec(n_params[:len(self.quant.layers)][::-1], grid_layer, in_ch, latent_ch[-1], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
 
     def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
@@ -115,6 +118,19 @@ class Quantization(nn.Module):
         """
         return self.post_quant(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
 
+    def get_distribution(self, x: torch.Tensor) -> AbstractDistribution:
+        """
+        Encodes the input tensor x into a quantized latent space.
+
+        :param x: Input tensor.
+        :return: Distribution for tensor.
+        """
+        assert self.distribution == "gaussian" or self.distribution == "dirac"
+        if self.distribution == "gaussian":
+            return DiagonalGaussianDistribution(x)
+        elif self.distribution == "dirac":
+            return DiracDistribution(x)
+
 
 class GridQuantizationEnc(nn.Module):
     def __init__(
@@ -125,25 +141,29 @@ class GridQuantizationEnc(nn.Module):
             latent_ch: int,
             n_head_channels: List[int],
             spatial_attention_configs,
-            rotate_coord_system
+            rotate_coord_system,
+            log_var
     ):
         super().__init__()
         self.layers = torch.nn.ModuleList()
+        self.log_var = log_var
         for n_param in n_params:
             in_ch = n_param[0] * n_param[1]
             model_channels = model_channels // in_ch
             layer = GridQuantLayer(in_ch*model_channels, grid_layer, model_channels, in_ch, 1, n_head_channels, spatial_attention_configs, rotate_coord_system)
             if model_channels >= latent_ch:
                 self.layers.append(layer)
-        #self.log_var_layer = GridAttention(grid_layer, latent_ch, latent_ch, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+        if log_var:
+            self.log_var_layer = GridAttention(grid_layer, latent_ch, latent_ch, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
 
     def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
                 cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         for layer in self.layers:
             x = layer(x, emb, mask, cond, *args, **kwargs)
 
-        #log_var = self.log_var_layer(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
-        #return torch.cat([x, log_var], dim=-1)
+        if self.log_var:
+            log_var = self.log_var_layer(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
+            x = torch.cat([x, log_var], dim=-1)
         return x
 
 

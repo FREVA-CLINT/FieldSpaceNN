@@ -1,14 +1,14 @@
-from typing import Optional, Union, List, Tuple
+from typing import Optional, List, Tuple
 
 import torch
 import torch.nn as nn
 
-from ...modules.distributions.distributions import DiagonalGaussianDistribution
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify, LinearUnpatchify
-from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
+from ...modules.distributions.distributions import DiagonalGaussianDistribution, AbstractDistribution
+from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify
+from ...modules.rearrange import RearrangeConvCentric
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...modules.utils import EmbedBlockSequential
 
@@ -129,17 +129,17 @@ class VAE(nn.Module):
         # Define output unpatchifying layer
         self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch, dims=self.dims), spatial_dim_count, dims=self.dims)
 
-    def encode(self, x: torch.Tensor) -> DiagonalGaussianDistribution:
+    def encode(self, x: torch.Tensor) -> AbstractDistribution:
         """
         Encodes input data to latent space, returning a posterior distribution.
 
         :param x: Input tensor.
-        :return: DiagonalGaussianDistribution posterior distribution.
+        :return: AbstractDistribution posterior distribution.
         """
         x = self.input_patch_embedding(x)
         h = self.encoder(x)
         moments = self.quantization.quantize(h)
-        posterior = DiagonalGaussianDistribution(moments)
+        posterior = self.quantization.get_distribution(moments)
         return posterior
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
@@ -156,7 +156,7 @@ class VAE(nn.Module):
     def forward(self, x: torch.Tensor, embeddings: Optional[torch.Tensor] = None,
                 mask_data: Optional[torch.Tensor] = None,
                 cond_data: Optional[torch.Tensor] = None, coords: Optional[torch.Tensor] = None,
-                sample_posterior: bool = True) -> Tuple[torch.Tensor, DiagonalGaussianDistribution]:
+                sample_posterior: bool = True) -> Tuple[torch.Tensor, AbstractDistribution]:
         """
         Forward pass through the VAE, encoding and decoding the input.
 
