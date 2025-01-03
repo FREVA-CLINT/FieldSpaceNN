@@ -27,25 +27,25 @@ class DiracDistribution(AbstractDistribution):
     Dirac delta distribution, representing a deterministic point value.
     """
 
-    def __init__(self, value: torch.Tensor):
+    def __init__(self, mean: torch.Tensor):
         """
-        Initialize the Dirac distribution with a fixed value.
+        Initialize the Dirac distribution with a fixed mean.
 
-        :param value: Fixed value of the distribution.
+        :param mean: Fixed value of the distribution.
         """
-        self.value = value
+        self.mean = mean
 
     def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
         """
-        Return the fixed value as a sample.
+        Return the fixed mean as a sample.
         """
-        return self.value
+        return self.mean
 
     def mode(self) -> torch.Tensor:
         """
-        Return the fixed value as the mode.
+        Return the fixed mean as the mode.
         """
-        return self.value
+        return self.mean
 
 
 class DiagonalGaussianDistribution(AbstractDistribution):
