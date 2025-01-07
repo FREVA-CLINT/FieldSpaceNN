@@ -276,12 +276,12 @@ class HealPixLoader(Dataset):
                     'variables': sample_vars}
 
         if self.input_coordinates is not None:
-            coords_input = self.input_coordinates[:, input_mapping[global_cells[sample_index]]]
+            coords_input = self.input_coordinates[input_mapping[global_cells[sample_index]]]
         else:
             coords_input = torch.tensor([])
 
         if self.output_coordinates is not None:
-            coords_output = self.output_coordinates[:, output_mapping[global_cells[sample_index]]]
+            coords_output = self.output_coordinates[output_mapping[global_cells[sample_index]]]
         else:
             coords_output = torch.tensor([])
 

@@ -60,18 +60,21 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         rec_loss = self.loss(output, target)
 
+        loss_dict = {}
+
         # Compute KL divergence loss
-        kl_loss = posterior.kl()
-        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        if self.kl_weight != 0.0:
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            loss = rec_loss + self.kl_weight * kl_loss
+            loss_dict['train/kl_loss'] = self.kl_weight * kl_loss
+        else:
+            loss = rec_loss
 
-        # Calculate total loss
-        loss = rec_loss + self.kl_weight * kl_loss
+        loss_dict['train/rec_loss'] = rec_loss.mean()
+        loss_dict['train/total_loss'] = loss.mean()
 
-        self.log_dict({
-            'train/kl_loss': kl_loss.mean(),
-            'train/rec_loss': rec_loss.mean(),
-            'train/total_loss': loss.mean()
-        }, prog_bar=True, sync_dist=True)
+        self.log_dict(loss_dict, prog_bar=True, sync_dist=True)
         return loss.mean()
 
 
@@ -80,12 +83,23 @@ class Lightning_MGNO_VAE(pl.LightningModule):
         output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         rec_loss = self.loss(output, target)
 
+        loss_dict = {}
+
         # Compute KL divergence loss
-        kl_loss = posterior.kl()
-        kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+        if self.kl_weight != 0.0:
+            kl_loss = posterior.kl()
+            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
+            loss = rec_loss + self.kl_weight * kl_loss
+            loss_dict['val/kl_loss'] = self.kl_weight * kl_loss
+        else:
+            loss = rec_loss
+
+        loss_dict['val/rec_loss'] = rec_loss.mean()
+        loss_dict['val/total_loss'] = loss.mean()
+
+
 
         # Calculate total loss
-        loss = rec_loss + self.kl_weight * kl_loss
 
         if batch_idx == 0:
             try:
@@ -95,11 +109,7 @@ class Lightning_MGNO_VAE(pl.LightningModule):
 
         # Log validation losses
         self.log("val_loss", loss.mean(), sync_dist=True)
-        self.log_dict({
-            'val/kl_loss': kl_loss.mean(),
-            'val/rec_loss': rec_loss.mean(),
-            'val/total_loss': loss.mean()
-        }, sync_dist=True)
+        self.log_dict(loss_dict, prog_bar=True, sync_dist=True)
 
         return loss
 

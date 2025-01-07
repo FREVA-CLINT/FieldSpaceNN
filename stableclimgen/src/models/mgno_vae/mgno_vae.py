@@ -5,7 +5,6 @@ import copy
 from typing import List, Dict
 import omegaconf
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ...modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Stacked_NOBlock, Serial_NOBlock, Parallel_NOBlock, UNet_NOBlock
@@ -76,10 +75,11 @@ class QuantConfig:
     :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
     """
 
-    def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
+    def __init__(self, latent_ch: List[int], n_head_channels: List[int], block_type: str, sub_confs: dict):
         self.latent_ch = latent_ch
         self.block_type = block_type
         self.sub_confs = sub_confs
+        self.n_head_channels = n_head_channels
 
 
 class MGNO_VAE(nn.Module):
@@ -204,12 +204,19 @@ class MGNO_VAE(nn.Module):
 
             else:
                 self.vae_block = Block
-        quant_no_block = self.vae_block.NO_Blocks[-1]
-        quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
-        self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
-                                         **quant_config.sub_confs,
-                                         grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
-                                         rotate_coord_system=rotate_coord_system)
+
+        if quant_config:
+            enc_params = [block.n_params for block in self.vae_block.NO_Blocks]
+            quant_no_block = self.vae_block.NO_Blocks[-1]
+            quant_in_ch = int(quant_no_block.model_dim_in*torch.tensor(quant_no_block.n_params).prod())
+            self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
+                                             **quant_config.sub_confs,
+                                             grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
+                                             rotate_coord_system=rotate_coord_system,
+                                             n_params=enc_params,
+                                             n_head_channels=quant_config.n_head_channels)
+            if self.quantization.distribution == "gaussian":
+                self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
         b,n = x.shape[:2]
@@ -254,12 +261,14 @@ class MGNO_VAE(nn.Module):
 
         x, _ = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
-        x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
-        posterior = DiagonalGaussianDistribution(x)
-
-        return posterior
+        if hasattr(self, "quantization"):
+            x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
+            x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+            x = x.squeeze(dim=1)
+            posterior = self.quantization.get_distribution(x)
+            return posterior
+        else:
+            return x
 
 
 
@@ -269,9 +278,10 @@ class MGNO_VAE(nn.Module):
                                                     coords_output, 
                                                     indices_sample=indices_sample)
 
-        x = x.unsqueeze(dim=1)
-        x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
+        if hasattr(self, "quantization"):
+            x = x.unsqueeze(dim=1)
+            x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
+            x = x.squeeze(dim=1)
 
         x, _ = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
@@ -288,7 +298,14 @@ class MGNO_VAE(nn.Module):
 
         posterior = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        z = posterior.sample()
+        if hasattr(self, "quantization"):
+            if self.quantization.distribution == "gaussian":
+                noise = torch.randn_like(posterior.mean) * self.noise_gamma
+            else:
+                noise = None
+            z = posterior.sample(noise)
+        else:
+            z = posterior
 
         dec = self.decode(z, coords_output, indices_sample=indices_sample, emb=emb)
 
