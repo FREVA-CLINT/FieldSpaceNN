@@ -36,6 +36,7 @@ class NoLayer(nn.Module):
             coord_system=coord_system,
             rotate_coord_system=rotate_coord_system)
 
+        self.nh_dist = self.grid_layers[str(global_level_no)].nh_dist
 
     def transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None, mask=None):
         
@@ -106,7 +107,8 @@ class Normal_VM_NoLayer(NoLayer):
                  nh_backprojection=True,
                  seq_level_attention=2, 
                  precompute_coordinates=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 pretrained_weights=None
                 ) -> None: 
     
         super().__init__(grid_layers, 
@@ -239,7 +241,8 @@ class Normal_NoLayer(NoLayer):
                  nh_backprojection=True,
                  seq_level_attention=2, 
                  precompute_coordinates=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 pretrained_weights=None
                 ) -> None: 
     
         super().__init__(grid_layers, 
@@ -254,17 +257,29 @@ class Normal_NoLayer(NoLayer):
         
         self.n_params = [n_dist_lon, n_dist_lat]
       
-        grid_dist_out = grid_layers[str(global_level_no)].min_dist
+        grid_dist_out = self.nh_dist/2**0.5
 
-        mus_lon = torch.linspace(-grid_dist_out, grid_dist_out, n_dist_lon)
+        if pretrained_weights is None:
+            mus_lon = torch.linspace(-grid_dist_out, grid_dist_out, n_dist_lon)
+        else:
+            mus_lon = pretrained_weights['mus_lon']
+
         self.mus_lon = nn.Parameter(mus_lon, requires_grad=dist_learnable)
         
-        mus_lat = torch.linspace(-grid_dist_out, grid_dist_out, n_dist_lat)
+        if pretrained_weights is None:
+            mus_lat = torch.linspace(-grid_dist_out, grid_dist_out, n_dist_lat)
+        else:
+            mus_lat = pretrained_weights['mus_lat']
+            
         self.mus_lat = nn.Parameter(mus_lat, requires_grad=dist_learnable)
 
         self.min_sigma = 1e-10
 
-        sigma = torch.tensor([grid_dist_out/((n_dist_lon+n_dist_lat)/2), grid_layers[str(global_level_in)].min_dist]).max()
+        if pretrained_weights is None:
+            sigma = torch.tensor([grid_dist_out/((n_dist_lon+n_dist_lat)/2), grid_layers[str(global_level_in)].nh_dist/2**0.5]).max()
+        else:
+            sigma = pretrained_weights['sigma']
+        
         self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
                   
 
@@ -284,15 +299,16 @@ class Normal_NoLayer(NoLayer):
 
         weights = weights_dists_lon.unsqueeze(dim=-1) * (weights_dists_lat).unsqueeze(dim=-2)
 
-        return weights
+        mask = torch.logical_or(coordinates_rel[0].abs() > (self.mus_lon.abs().max() + 1.5*self.sigma),
+                                coordinates_rel[1].abs() > (self.mus_lat.abs().max() + 1.5*self.sigma))
+        return weights, mask
 
 
     def transform_(self, x, coordinates_rel, mask=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
         c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
-
-        weights = self.get_weights(coordinates_rel)
+        weights, mask_cut = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
         
@@ -302,12 +318,9 @@ class Normal_NoLayer(NoLayer):
             mask = mask.view(*c_shape,1,1)
             weights_weights = (mask == False)
             weights = (weights * weights_weights)
-
             mask = mask.view(*c_shape)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
-        else:
-            norm=1
         
         weights = weights/(weights.sum(dim=3,keepdim=True)+1e-10)
 
@@ -327,7 +340,7 @@ class Normal_NoLayer(NoLayer):
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
         c_shape = (-1, n, seq_ref, seq_in, nv)
 
-        weights = self.get_weights(coordinates_rel)
+        weights,_ = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
         weights = weights.view(*c_shape, len(self.mus_lon), len(self.mus_lat), 1)
@@ -335,6 +348,8 @@ class Normal_NoLayer(NoLayer):
         x = x.view(-1, n, seq_ref, 1, nv, n_lon, n_lat, nc)
 
         if mask is not None:
+            mask_norm = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            weights = weights.masked_fill(mask_norm, 0)
             mask = mask.view(b,n,seq_ref,nv)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
@@ -362,7 +377,8 @@ class polNormal_NoLayer(NoLayer):
                  nh_backprojection=True,
                  seq_level_attention=2, 
                  precompute_coordinates=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 pretrained_weights=None
                 ) -> None: 
     
         super().__init__(grid_layers, 
@@ -375,19 +391,31 @@ class polNormal_NoLayer(NoLayer):
                  coord_system='cartesian',
                  rotate_coord_system=rotate_coord_system)
         
-        self.n_params = [n_dist, n_phi]
+        self.n_params = [n_phi, n_dist]
       
-        grid_dist_out = grid_layers[str(global_level_no)].min_dist
+        grid_dist_out = self.nh_dist
 
-        phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
+        if pretrained_weights is None:
+            phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
+        else:
+            phis = pretrained_weights['phis']
+
         self.phis =  nn.Parameter(phis, requires_grad=False)
         
-        dists = torch.linspace(grid_layers[str(global_level_in)].min_dist, grid_dist_out, n_dist)
+        if pretrained_weights is None:
+            dists = torch.linspace(grid_layers[str(global_level_in)].min_dist, grid_dist_out, n_dist)
+        else:
+            dists = pretrained_weights['dists']
+        
         self.dists = nn.Parameter(dists, requires_grad=dist_learnable)
 
         self.min_sigma = 1e-10
 
-        sigma = torch.tensor([grid_dist_out/n_dist, grid_layers[str(global_level_in)].min_dist]).max()
+        if pretrained_weights is None:
+            sigma = torch.tensor([grid_dist_out/n_dist, grid_layers[str(global_level_in)].min_dist]).max()
+        else:
+            sigma = pretrained_weights['sigma']
+        
         self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
                   
 
@@ -403,7 +431,9 @@ class polNormal_NoLayer(NoLayer):
         
         weights = torch.exp(-0.5 * ((dx**2 + dy**2) / sigma** 2) )
 
-        return weights
+        mask = (coordinates_rel[0]**2 + coordinates_rel[1]**2).sqrt() > (self.dists.max() + 1.5*self.sigma)
+
+        return weights, mask
 
 
     def transform_(self, x, coordinates_rel, mask=None):
@@ -413,24 +443,27 @@ class polNormal_NoLayer(NoLayer):
 
         c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
 
-        weights = self.get_weights(coordinates_rel)
+        weights, mask_cut = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
         
         weights = weights.view(*c_shape, len(self.phis), len(self.dists))
 
         if mask is not None:
+       #     mask = mask.view(*c_shape)
+        #    mask = torch.logical_or(mask, mask_cut.view(*c_shape[:-1],1))
             mask = mask.view(*c_shape,1,1)
+        
             weights_weights = (mask == False)
             weights = (weights * weights_weights)
 
+            norm = weights_weights.sum(dim=3, keepdim=True) 
             mask = mask.view(*c_shape)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_ref, dim=-2)
-        else:
-            norm=1
-        
+
         weights = weights/(weights.sum(dim=3,keepdim=True)+1e-10)
+        #weights = weights/(norm+1e-10)
 
         x = x.view(*c_shape,1, 1, nc)
         x = (x * weights.unsqueeze(dim=-1)).sum(dim=3)
@@ -448,7 +481,7 @@ class polNormal_NoLayer(NoLayer):
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
         c_shape = (-1, n, seq_ref, seq_in, nv)
 
-        weights = self.get_weights(coordinates_rel)
+        weights,_ = self.get_weights(coordinates_rel)
 
         weights = weights.unsqueeze(dim=-3).repeat_interleave(nv, dim=-3)
         weights = weights.view(*c_shape, len(self.phis), len(self.dists), 1)
@@ -456,6 +489,10 @@ class polNormal_NoLayer(NoLayer):
         x = x.view(b, n, seq_ref, 1, nv, n_lon, n_lat, nc)
 
         if mask is not None:
+            #mask = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            mask_norm = mask.view(b,n, seq_ref, 1, nv, 1, 1, 1)
+            weights = weights.masked_fill(mask_norm, 0)
+
             mask = mask.view(b,n,seq_ref,nv)
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
@@ -482,7 +519,8 @@ class FT_NOLayer(NoLayer):
                  nh_backprojection=True,
                  seq_level_attention=2, 
                  precompute_coordinates=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 pretrained_weights=None
                 ) -> None: 
     
         super().__init__(grid_layers, 
@@ -607,7 +645,8 @@ def get_no_layer(neural_operator_type,
                  nh_projection=False,
                  nh_backprojection=False,
                  precompute_coordinates=True,
-                 rotate_coordinate_system=True):
+                 rotate_coordinate_system=True,
+                 pretrained_weights=None):
     
     if neural_operator_type == 'Normal_VM':
         no_layer = Normal_VM_NoLayer(grid_layers,
@@ -622,7 +661,8 @@ def get_no_layer(neural_operator_type,
                             nh_projection=nh_projection,
                             nh_backprojection=nh_backprojection,
                             precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
+                            rotate_coord_system=rotate_coordinate_system,
+                            pretrained_weights=pretrained_weights)
                     
     elif neural_operator_type == 'Normal':
         no_layer = Normal_NoLayer(grid_layers,
@@ -635,7 +675,8 @@ def get_no_layer(neural_operator_type,
                             nh_projection=nh_projection,
                             nh_backprojection=nh_backprojection,
                             precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
+                            rotate_coord_system=rotate_coordinate_system,
+                            pretrained_weights=pretrained_weights)
     
     elif neural_operator_type == 'polNormal':
         no_layer = polNormal_NoLayer(grid_layers,
@@ -648,7 +689,8 @@ def get_no_layer(neural_operator_type,
                             nh_projection=nh_projection,
                             nh_backprojection=nh_backprojection,
                             precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
+                            rotate_coord_system=rotate_coordinate_system,
+                            pretrained_weights=pretrained_weights)
         
     elif neural_operator_type == 'FT':
         no_layer = FT_NOLayer(grid_layers,
@@ -660,6 +702,7 @@ def get_no_layer(neural_operator_type,
                             nh_projection=nh_projection,
                             nh_backprojection=nh_backprojection,
                             precompute_coordinates=precompute_coordinates,
-                            rotate_coord_system=rotate_coordinate_system)
+                            rotate_coord_system=rotate_coordinate_system,
+                            pretrained_weights=pretrained_weights)
     
     return no_layer

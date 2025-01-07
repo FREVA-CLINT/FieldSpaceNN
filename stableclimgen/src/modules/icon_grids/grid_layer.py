@@ -129,7 +129,12 @@ class GridLayer(nn.Module):
         coords_lon_1, coords_lat_1 = coords_nh[:,:,0].unsqueeze(dim=-2), coords_nh[:,:,1].unsqueeze(dim=-2)
         coords_lon_2, coords_lat_2 = coords_nh[:,:,0].unsqueeze(dim=-1), coords_nh[:,:,1].unsqueeze(dim=-1)
 
-        dists, _ = get_distance_angle(coords_lon_1, coords_lat_1, coords_lon_2, coords_lat_2, base="polar")
+        dists, _ = get_distance_angle(coords_lon_1, coords_lat_1, coords_lon_2, coords_lat_2, base="polar", rotate_coords=True)
+        dists_lon, dists_lat = get_distance_angle(coords_lon_1, coords_lat_1, coords_lon_2, coords_lat_2, base="cartesian", rotate_coords=True)
+
+        self.nh_dist = dists[:,0,1].mean()
+        self.nh_dist_lon = dists_lon[:,0,1].abs().mean()
+        self.nh_dist_lat = dists_lat[:,0,1].abs().mean()
         # Compute distance statistics
         self.dist_quantiles = dists[dists > 1e-10].quantile(torch.linspace(0.01,0.99,20))
 

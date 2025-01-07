@@ -91,7 +91,8 @@ class MGNO_VAE(nn.Module):
                  model_dim_out: int=1,
                  n_head_channels:int=16,
                  n_vars_total:int=1,
-                 rotate_coord_system: bool=True
+                 rotate_coord_system: bool=True,
+                 p_dropout=0.
                  ) -> None: 
         
                 
@@ -105,8 +106,6 @@ class MGNO_VAE(nn.Module):
         global_levels = torch.concat(global_levels).unique()
         
         self.register_buffer('global_levels', global_levels, persistent=False)
-
-
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
@@ -121,7 +120,7 @@ class MGNO_VAE(nn.Module):
         self.encoder_only_blocks = nn.ModuleList()
         self.decoder_only_blocks = nn.ModuleList()
 
-        for block_conf in block_configs:
+        for block_idx, block_conf in enumerate(block_configs):
 
             n_no_layers = len(block_conf.global_levels) 
             global_levels = block_conf.global_levels
@@ -194,7 +193,8 @@ class MGNO_VAE(nn.Module):
                         att_dims=block_conf.att_dims,
                         no_layers_nh=nh_no_layers,
                         multi_grid_attention=block_conf.multi_grid_attention,
-                        spatial_attention_configs=block_conf.spatial_attention_configs)
+                        spatial_attention_configs=block_conf.spatial_attention_configs,
+                        p_dropout=p_dropout)
             
             if block_conf.is_encoder_only:
                 self.encoder_only_blocks.append(Block)
@@ -252,7 +252,7 @@ class MGNO_VAE(nn.Module):
             coords_input = coords_input if k==0 else None
             x, mask = block(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, _ = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
         x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
@@ -273,7 +273,7 @@ class MGNO_VAE(nn.Module):
         x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
         x = x.squeeze(dim=1)
 
-        x = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
+        x, _ = self.vae_block.decode(x, indices_sample=indices_sample, emb=emb)
 
         for k, block in enumerate(self.decoder_only_blocks):
             

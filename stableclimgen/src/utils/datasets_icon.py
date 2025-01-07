@@ -124,7 +124,7 @@ class NetCDFLoader_lazy(Dataset):
 
         
         if  grid_input != grid_processing:
-            input_mapping, input_in_range = get_nh_variable_mapping_icon(grid_processing, 
+            input_mapping, input_in_range, positions = get_nh_variable_mapping_icon(grid_processing, 
                                                                         ['cell'], 
                                                                         grid_input, 
                                                                         ['cell'], 
@@ -140,11 +140,11 @@ class NetCDFLoader_lazy(Dataset):
             input_coordinates = get_coords_as_tensor(xr.open_dataset(grid_input), lon='clon', lat='clat', target='numpy')
         else:
             input_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            input_in_range = np.ones_like(input_mapping, dtype=bool)[:,np.newaxis]
+            input_in_range = np.ones_like(input_mapping, dtype=bool)
             input_coordinates = None
             
         if grid_output != grid_processing:
-            output_mapping, output_in_range = get_nh_variable_mapping_icon(
+            output_mapping, output_in_range, positions = get_nh_variable_mapping_icon(
                                                         grid_processing, ['cell'], 
                                                         grid_input, 
                                                         ['cell'], 
@@ -157,10 +157,11 @@ class NetCDFLoader_lazy(Dataset):
             
             output_mapping = output_mapping['cell']['cell']
             output_in_range = output_in_range['cell']['cell']
+            positions = positions['cell']['cell']
             output_coordinates = get_coords_as_tensor(xr.open_dataset(grid_output), lon='clon', lat='clat', target='numpy')
         else:
             output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            output_in_range = np.ones_like(output_mapping, dtype=bool)[:,np.newaxis]
+            output_in_range = np.ones_like(output_mapping, dtype=bool)
             output_coordinates = None
             
         
@@ -280,6 +281,10 @@ class NetCDFLoader_lazy(Dataset):
         variables_source = np.array(self.variables_source)[sample_vars]
         variables_target = np.array(self.variables_target)[sample_vars]
 
+        if len(sample_vars)==1:
+            variables_source = [variables_source]
+            variables_target = [variables_target]
+
         data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping)
 
         if ds_target is not None:
@@ -336,6 +341,10 @@ class NetCDFLoader_lazy(Dataset):
         
         for k, var in enumerate(variables_target):
             data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
+
+        if hasattr(self,'input_in_range'):
+            input_in_range = input_in_range[global_cells[region_idx]]
+            drop_mask[input_in_range==False] = True
 
         data_source[drop_mask] = 0
 

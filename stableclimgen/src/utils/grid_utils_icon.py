@@ -365,12 +365,13 @@ def get_nearest_to_icon_recursive(c_t_global: torch.tensor, c_i: torch.tensor, l
     indices_keep = dist_values.topk(int(n_keep), dim=-1, largest=False, sorted=True)[1]
 
     dist_values = torch.gather(dist_values, index=indices_keep, dim=-1)
-    in_rad = torch.gather(in_rad.reshape(n_level, -1), index=indices_keep, dim=-1)
     global_indices = torch.gather(global_indices, index=indices_keep, dim=-1)
+
+    in_range_unique = dist_values <= dist_corners.max(dim=1).values
 
     phi_values = torch.gather(phi, index=indices_keep, dim=-1)
 
-    return global_indices, in_rad, (dist_values, phi_values)
+    return global_indices, in_range_unique, (dist_values, phi_values)
 
 
 def get_mapping_to_icon_grid(coords_icon: torch.tensor, coords_input: torch.tensor, search_radius:int=3, max_nh:int=10, lowest_level:int=0, periodic_fov=None)->dict:
@@ -472,6 +473,7 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
     
     mapping_icon = {}
     in_range = {}
+    positions = {}
     for grid_type_icon in grid_types_icon:
         
         if coords_icon is None:
@@ -479,6 +481,7 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
 
         mapping_grid_type = {}
         in_range_grid_type = {}
+        positions_grid_type = {}
 
         for grid_type in grid_types:
             coords_input = get_coords_as_tensor(grid, grid_type=grid_type)
@@ -500,14 +503,17 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
                                 
                 indices = mapping[-1]['indices']
                 in_rng_mask = mapping[-1]['in_rng_mask']
+                pos = mapping[-1]['pos']
 
             mapping_grid_type[grid_type] = indices
             in_range_grid_type[grid_type] = in_rng_mask
+            positions_grid_type[grid_type] = pos
 
         mapping_icon[grid_type_icon] = mapping_grid_type
         in_range[grid_type_icon] = in_range_grid_type
+        positions[grid_type_icon] = positions_grid_type
 
-    return mapping_icon, in_range
+    return mapping_icon, in_range, positions
 
 
 def icon_grid_to_mgrid(grid_file:str, n_grid_levels:int, clon_fov:list=None, clat_fov:list=None, nh:int=0, extension:float=0.1)->list:

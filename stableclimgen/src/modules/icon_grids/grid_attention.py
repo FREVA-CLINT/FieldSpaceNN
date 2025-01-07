@@ -15,7 +15,8 @@ class GridAttention(nn.Module):
                  ch_out,
                  n_head_channels,
                  spatial_attention_configs=None,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 p_dropout=0
                  ) -> None:
 
         super().__init__()
@@ -40,6 +41,7 @@ class GridAttention(nn.Module):
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
                                                 n_head_channels=n_head_channels,
+                                                dropout=p_dropout,
                                                 **spatial_attention_configs)
 
         self.grid_layer = grid_layer
