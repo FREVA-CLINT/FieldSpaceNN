@@ -70,7 +70,14 @@ class NOBlock(nn.Module):
                                        embedder=embedder_seq,
                                        embedder_mlp=embedder_mlp)
             elif 'var' in att_block_type:
-                block = ParamAttention if 'cross' not in att_block_type else CrossAttention
+
+                if 'self_cross_var' in att_block_type:
+                    block = SelfCrossAttention
+                elif 'cross' in att_block_type:
+                    block = CrossAttention
+                else:
+                    block = ParamAttention
+    
                 layer = block(model_dim_in, 
                                 n_head_channels,
                                 att_dim=att_dim,
@@ -145,7 +152,7 @@ class NOBlock(nn.Module):
             if inv_transform_mask is None:
                 inv_transform_mask = mask 
 
-        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=inv_transform_mask)
+        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask)
 
         return x, mask
     
@@ -394,15 +401,16 @@ class UNet_NOBlock(nn.Module):
             x_shape_origin = (*x_skip[layer_idx].shape[:3], *layer.n_params, -1)
 
             if layer_idx<len(self.NO_Blocks)-1:
-            #   x = torch.cat((shape_to_x(x, x_shape_origin),
-             #                  shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=-1)
-                x = torch.cat((shape_to_x(x_skip[layer_idx], x_shape_origin),
-                               shape_to_x(x, x_shape_origin)), dim=-1)
+               x = torch.cat((shape_to_x(x, x_shape_origin),
+                               shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=2)
+             #   x = torch.cat((shape_to_x(x_skip[layer_idx], x_shape_origin),
+             #                  shape_to_x(x, x_shape_origin)), dim=-1)
+               mask = torch.cat([mask, masks_skip[layer_idx]], dim=2)
             else:
                 x = shape_to_x(x_skip[layer_idx], x_shape_origin)
             
            # coords_out_ = None if layer_idx !=0 else coords_out
-            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=masks_skip[layer_idx], emb=emb, inv_transform_mask=mask)
+            x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb, inv_transform_mask=mask)
 
         return x
 
@@ -540,7 +548,7 @@ class ParamAttention(nn.Module):
         model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
         model_dim_param = int(model_dim_param)
 
-        att_dim = model_dim_param if att_dim is None else att_dim
+        att_dim = att_dim if att_dim is not None and model_dim_param < att_dim else model_dim_param
 
         self.attention_layer = ChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
 
@@ -591,6 +599,96 @@ class ParamAttention(nn.Module):
 
         return x, mask
     
+class SelfCrossAttention(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in, 
+                 n_head_channels, 
+                 att_dim=None,
+                 p_dropout = 0,
+                 n_params = [],
+                 param_idx_att = None,
+                 embedder: BaseEmbedder=None,
+                 embedder_mlp: BaseEmbedder=None
+                ) -> None: 
+      
+        super().__init__()
+
+        model_dim_total = model_dim_in*torch.tensor(n_params).prod()
+        model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
+        model_dim_param = int(model_dim_param)
+
+        att_dim = att_dim if att_dim is not None and model_dim_param < att_dim else model_dim_param
+
+        self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
+
+        self.ada_ln = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+        self.ada_ln_cross = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+
+        self.ada_ln_mlp = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder_mlp)
+
+        self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
+        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
+
+        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
+
+        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
+
+        self.res_gamma = nn.Parameter(torch.tensor(0.01), requires_grad=True)
+        self.res_gamma_activation = nn.GELU()
+
+        self.param_idx_att = param_idx_att
+
+    def forward(self, x, mask=None, emb=None):
+  
+        x_shape = x.shape
+
+        res_gamma = self.res_gamma_activation(self.res_gamma).clamp(max=1)
+
+        if mask is not None:
+            b,n = mask.shape[:2]
+            f_mask = (mask==False).view(b,n,-1,2) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)])
+            f_mask = f_mask/(f_mask+1e-10).sum(dim=-1, keepdim=True)
+            x_q = f_mask.view(*f_mask.shape,1,1,1) * x.view(b,n,-1,2,*x_shape[3:])
+
+        else:
+            x_q = x.view(b,n,-1,2,*x_shape[3:]) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)]).view(1,1,2,1,1,1)
+
+        x_q = x_q.sum(dim=3)
+
+        x_shape = x_q.shape
+
+        x_q, _ = shape_to_att(x_q, self.param_idx_att, mask=mask)
+
+        x_kv1, x_kv2 = x.chunk(2,dim=2)
+        x_kv1 = self.ada_ln(x_kv1, emb=emb).contiguous()
+        x_kv2 = self.ada_ln_cross(x_kv2, emb=emb).contiguous()
+        
+        x_kv, mask = shape_to_att(torch.concat((x_kv1,x_kv2), dim=2), self.param_idx_att, mask=mask)
+        
+        x, _  = self.attention_layer(x_q, x_kv, mask=mask)
+
+        x = self.dropout(x)
+
+        x = x_q + self.gamma*x
+
+        x_res = x
+
+        x = shape_to_x(x, x_shape, self.param_idx_att)
+        x = self.ada_ln_mlp(x, emb=emb)
+        x, _ = shape_to_att(x, self.param_idx_att)
+    
+        x = self.res_layer(x)
+
+        x = x_res + self.gamma_mlp*x
+
+        x = shape_to_x(x, x_shape, self.param_idx_att)
+
+        if mask is not None:
+            mask = mask.chunk(2,dim=-1)[0]
+
+        return x, mask
+    
 class CrossAttention(nn.Module):
   
     def __init__(self,
@@ -610,7 +708,7 @@ class CrossAttention(nn.Module):
         model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
         model_dim_param = int(model_dim_param)
 
-        att_dim = model_dim_param if att_dim is None else att_dim
+        att_dim = att_dim if att_dim is not None and model_dim_param < att_dim else model_dim_param
 
         self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
 
@@ -629,17 +727,23 @@ class CrossAttention(nn.Module):
         self.param_idx_att = param_idx_att
 
     def forward(self, x, mask=None, emb=None):
-        x, x_cross = x.chunk(2,dim=-1)
+        x, x_cross = x.chunk(2,dim=2)
         x_shape = x.shape
+
+        if mask is not None:
+            _, mask = mask.chunk(2,dim=2)
+
         x_res, mask = shape_to_att(x.contiguous(), self.param_idx_att, mask=mask)
 
         x = self.ada_ln(x, emb=emb)
+        x_cross_v = x_cross
         x_cross = self.ada_ln_cross(x_cross, emb=emb)
         
         x, _ = shape_to_att(x.contiguous(), self.param_idx_att)
         x_cross, _ = shape_to_att(x_cross.contiguous(), self.param_idx_att)
+        x_cross_v, _ = shape_to_att(x_cross_v.contiguous(), self.param_idx_att)
 
-        x, _  = self.attention_layer(x, x_cross, mask=mask)
+        x, _  = self.attention_layer(x, x_cross, x_cross_v=x_cross_v, mask=mask)
 
         x = self.dropout(x)
 

@@ -185,8 +185,9 @@ class CrossChannelVariableAttention(nn.Module):
             self.res_layer = ResLayer(model_dim_out)
     
 
-    def forward(self, x, x_cross, mask=None, emb=None):
+    def forward(self, x, x_cross, x_cross_v=None ,mask=None, emb=None):
         b,n,nv,f=x.shape
+        _,_,nv_c,_=x_cross.shape
         x = x.view(b,n,nv,f)
 
         if self.with_res:
@@ -203,13 +204,18 @@ class CrossChannelVariableAttention(nn.Module):
         
         x = x.view(b*n,nv,f)
         x = x.view(b*n,nv*self.n_chunks_channels,-1)
-        x_cross = x_cross.view(b*n,nv*self.n_chunks_channels,-1)
+        x_cross = x_cross.view(b*n,nv_c*self.n_chunks_channels,-1)
+
+        if x_cross_v is None:
+            x_cross_v = x_cross
+        else:
+            x_cross_v = x_cross_v.view(x_cross.shape)
 
         mask_chunk=mask
         if mask_chunk is not None:
-            mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
+            mask_chunk = mask_chunk.view(b*n,nv_c).repeat_interleave(self.n_chunks_channels,dim=1)
             
-        x = self.MHA(q=x, k=x_cross, v=x_cross, mask=mask_chunk)
+        x = self.MHA(q=x, k=x_cross, v=x_cross_v, mask=mask_chunk)
         x = x.view(b*n,nv,-1)
         x = x.view(b,n,nv,-1)
 
@@ -220,7 +226,7 @@ class CrossChannelVariableAttention(nn.Module):
         if mask is not None:
             mask = mask.view(b, x.shape[1], -1)
             mask[mask.sum(dim=-1)!=mask.shape[-1]] = False
-            mask = mask.view(b,n,nv)
+            mask = mask.view(b,n,nv_c)
 
         return x, mask
     
