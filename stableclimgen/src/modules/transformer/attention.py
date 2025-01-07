@@ -4,7 +4,7 @@ import torch.nn as nn
 from .transformer_modules import MultiHeadAttentionBlock
 
 class ResLayer(nn.Module):
-    def __init__(self, model_dim, with_res=True):
+    def __init__(self, model_dim, with_res=True, p_dropout=0):
         """
         A residual layer that applies a learnable scalar weighting (gamma) to an MLP-based transformation of the input.
 
@@ -21,9 +21,10 @@ class ResLayer(nn.Module):
             nn.LayerNorm(model_dim, elementwise_affine=True),
             nn.Linear(model_dim, model_dim , bias=False),
             nn.SiLU(),
+            nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
             nn.Linear(model_dim, model_dim, bias=False)
         )
-    
+
     def forward(self, x):
         if self.with_res:
             return x + self.gamma * self.mlp_layer(x)

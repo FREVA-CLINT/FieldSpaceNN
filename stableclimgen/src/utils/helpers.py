@@ -6,6 +6,18 @@ def check_value(value, n_repeat):
         value = [value]*n_repeat
     return value
 
+def get_parameter_group_from_state_dict(state_dict, key, return_reduced_keys=False):
+    parameter_group = {}
+    for state_key, state_value in state_dict.items():
+        if key in state_key:
+            k = state_key.split('.')[-1] if return_reduced_keys else state_key
+            parameter_group[k] = state_value
+
+    if len(parameter_group)==0:
+        parameter_group=None
+    
+    return parameter_group
+
 def expand_tensor(tensor, dims=5, keep_dims=None):
     if dims == 5:
         dim_dict = {

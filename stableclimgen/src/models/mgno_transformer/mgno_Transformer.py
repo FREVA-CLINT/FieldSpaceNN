@@ -5,6 +5,7 @@ import copy
 from typing import List, Dict
 import omegaconf
 
+from ...utils.helpers import get_parameter_group_from_state_dict
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock,UNet_NOBlock
 
@@ -64,7 +65,9 @@ class MGNO_Transformer(nn.Module):
                  model_dim_out: int=1,
                  n_head_channels:int=16,
                  n_vars_total:int=1,
-                 rotate_coord_system: bool=True
+                 rotate_coord_system: bool=True,
+                 pretrained_no_model_path: str=None,
+                 p_dropout=0.,
                  ) -> None: 
         
                 
@@ -78,10 +81,14 @@ class MGNO_Transformer(nn.Module):
         global_levels = torch.concat(global_levels_tot+ [torch.tensor(0).view(-1)]).unique()
         
         self.register_buffer('global_levels', global_levels, persistent=False)
-
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
+        if pretrained_no_model_path is not None:
+            pretrained_model_weights = torch.load(pretrained_no_model_path)['state_dict']
+        else:
+            pretrained_model_weights = None
+
         # Create grid layers for each unique global level
         grid_layers = nn.ModuleDict()
         for global_level in global_levels:
@@ -90,10 +97,11 @@ class MGNO_Transformer(nn.Module):
         n_no_layers_total = len((torch.concat(global_levels_tot)))
         n = 0
         global_level_in = 0
+        no_weights = None
         # Construct blocks based on configurations
         self.Blocks = nn.ModuleList()
 
-        for block_conf in block_configs:
+        for block_idx, block_conf in enumerate(block_configs):
 
             n_no_layers = len(block_conf.global_levels) 
             global_levels = block_conf.global_levels
@@ -105,6 +113,11 @@ class MGNO_Transformer(nn.Module):
                 global_level_in = 0 if block_conf.block_type != 'Stacked' and block_conf.block_type != 'UNet' or k==0 else global_level_no
                 global_level_no = global_levels[k]
 
+                if pretrained_model_weights is not None:
+                    no_weights = get_parameter_group_from_state_dict(pretrained_model_weights, 
+                                                        f'model.Blocks.{block_idx}.NO_Blocks.{k}.no_layer',
+                                                        return_reduced_keys=True)
+
                 no_layer = get_no_layer(block_conf.neural_operator_type[k], 
                                     grid_layers, 
                                     global_level_in, 
@@ -115,7 +128,8 @@ class MGNO_Transformer(nn.Module):
                                     nh_projection=block_conf.nh_transformation[k],
                                     nh_backprojection=block_conf.nh_inverse_transformation[k],
                                     precompute_coordinates=True if n!=0 and n<n_no_layers_total else False,
-                                    rotate_coordinate_system=rotate_coord_system)
+                                    rotate_coordinate_system=rotate_coord_system,
+                                    pretrained_weights=no_weights)
 
                 no_layers.append(no_layer)
 
@@ -124,6 +138,7 @@ class MGNO_Transformer(nn.Module):
                 nh_no_layer_required = nh_no_layer_required_encode or nh_no_layer_required_decode
 
                 if nh_no_layer_required:
+                    
                     no_layer_nh = get_no_layer(block_conf.neural_operator_type_nh[k], 
                                     grid_layers, 
                                     global_level_no, 
@@ -132,7 +147,9 @@ class MGNO_Transformer(nn.Module):
                                     params_init=block_conf.global_params_init_nh[k],
                                     params_learnable=block_conf.global_params_learnable[k],
                                     nh_projection=True,
-                                    nh_backprojection=True)
+                                    nh_backprojection=True,
+                                    precompute_coordinates=True,
+                                    rotate_coordinate_system=rotate_coord_system)
                 else:
                     no_layer_nh = None
                 
@@ -167,7 +184,8 @@ class MGNO_Transformer(nn.Module):
                         att_dims=block_conf.att_dims,
                         no_layers_nh=nh_no_layers,
                         multi_grid_attention=block_conf.multi_grid_attention,
-                        spatial_attention_configs=block_conf.spatial_attention_configs))     
+                        spatial_attention_configs=block_conf.spatial_attention_configs,
+                        p_dropout=p_dropout))     
         
         
 

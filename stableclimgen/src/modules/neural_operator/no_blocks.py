@@ -22,13 +22,13 @@ class NOBlock(nn.Module):
                  n_params=list,
                  n_head_channels = 16,
                  att_dim=None,
+                 p_dropout=0.,
                  no_layer_nh: NoLayer=None,
                  is_decode:list=[],
                  embed_names: List[List[str]] = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
-                 spatial_attention_config={},
-                 NO_weights=None
+                 spatial_attention_config={}
                 ) -> None: 
       
         super().__init__()
@@ -63,7 +63,8 @@ class NOBlock(nn.Module):
                 param_att_idx = int(att_block_type.replace('param',''))
                 layer = ParamAttention(model_dim_in, 
                                        n_head_channels,
-                                       att_dim=att_dim, 
+                                       att_dim=att_dim,
+                                       p_dropout=p_dropout,
                                        n_params=n_params, 
                                        param_idx_att=param_att_idx,
                                        embedder=embedder_seq,
@@ -72,7 +73,8 @@ class NOBlock(nn.Module):
                 block = ParamAttention if 'cross' not in att_block_type else CrossAttention
                 layer = block(model_dim_in, 
                                 n_head_channels,
-                                att_dim=att_dim, 
+                                att_dim=att_dim,
+                                p_dropout=p_dropout,
                                 n_params=n_params, 
                                 param_idx_att=None,
                                 embedder=embedder_seq,
@@ -82,6 +84,7 @@ class NOBlock(nn.Module):
                 layer = NHAttention(no_layer_nh,
                                     model_dim_in, 
                                     n_head_channels,
+                                    p_dropout=p_dropout,
                                     n_params=n_params,
                                     embedder=embedder_seq,
                                     embedder_mlp=embedder_mlp)
@@ -94,7 +97,8 @@ class NOBlock(nn.Module):
                                          model_dim_in, 
                                          n_head_channels, 
                                          n_params,
-                                         spatial_attention_config)
+                                         spatial_attention_config,
+                                         p_dropout=p_dropout)
 
             if len(is_decode)>0 and is_decode[k]:
                 self.att_block_types_decode.append(layer)
@@ -174,7 +178,7 @@ class Serial_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs: dict = {},
-                 Block_NO_weights=None
+                 p_dropout=0.
                 ) -> None: 
       
         super().__init__()
@@ -199,7 +203,8 @@ class Serial_NOBlock(nn.Module):
                 embed_names=embed_names,
                 embed_confs=embed_confs[n],
                 embed_mode=embed_mode[n],
-                spatial_attention_config=spatial_attention_configs[n]
+                spatial_attention_config=spatial_attention_configs[n],
+                p_dropout=p_dropout
             ))
 
         if multi_grid_attention:
@@ -239,7 +244,7 @@ class Stacked_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 Block_NO_weights=None
+                 p_dropout=0.
                 ) -> None: 
       
         super().__init__()
@@ -273,7 +278,8 @@ class Stacked_NOBlock(nn.Module):
                 embed_names=embed_names,
                 embed_confs=embed_confs[n],
                 embed_mode=embed_mode[n],
-                spatial_attention_config=spatial_attention_configs[n]
+                spatial_attention_config=spatial_attention_configs[n],
+                p_dropout=p_dropout
             ))
 
         self.model_dim_out_encode = model_dim_out_encode
@@ -325,7 +331,7 @@ class UNet_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 Block_NO_weights=None
+                 p_dropout=0.
                 ) -> None: 
       
         super().__init__()
@@ -360,7 +366,8 @@ class UNet_NOBlock(nn.Module):
                 embed_names=embed_names,
                 embed_confs=embed_confs[n],
                 embed_mode=embed_mode[n],
-                spatial_attention_config=spatial_attention_configs[n]
+                spatial_attention_config=spatial_attention_configs[n],
+                p_dropout=p_dropout
             ))
 
         self.model_dim_out_encode = model_dim_out_encode
@@ -428,7 +435,7 @@ class Parallel_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 Block_NO_weights=None
+                 p_dropout=0.
                 ) -> None: 
       
         super().__init__()
@@ -453,7 +460,8 @@ class Parallel_NOBlock(nn.Module):
                 embed_names=embed_names,
                 embed_confs=embed_confs[n],
                 embed_mode=embed_mode[n],
-                spatial_attention_config = spatial_attention_configs[n]
+                spatial_attention_config = spatial_attention_configs[n],
+                p_dropout=p_dropout
             ))
 
         if multi_grid_attention:
@@ -484,7 +492,8 @@ class SpatialAttention(nn.Module):
                  model_dim_in, 
                  n_head_channels,
                  n_params, 
-                 spatial_attention_configs = None
+                 spatial_attention_configs = None,
+                 p_dropout=0.
                 ) -> None: 
       
         super().__init__()
@@ -518,6 +527,7 @@ class ParamAttention(nn.Module):
                  model_dim_in, 
                  n_head_channels, 
                  att_dim=None,
+                 p_dropout = 0,
                  n_params = [],
                  param_idx_att = None,
                  embedder: BaseEmbedder=None,
@@ -540,9 +550,11 @@ class ParamAttention(nn.Module):
         self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
         self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
 
-        self.res_layer = ResLayer(model_dim_param, with_res=False)
+        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
 
         self.param_idx_att = param_idx_att
+
+        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
 
 
     def forward(self, x, mask=None, emb=None):
@@ -556,11 +568,13 @@ class ParamAttention(nn.Module):
         
         x, mask  = self.attention_layer(x, mask=mask)
 
+        x = self.dropout(x)
+
         x = x_res + self.gamma*x
 
         x_res = x
 
-        x = shape_to_x(x, x_shape, self.param_idx_att)
+        x = shape_to_x(x, x_shape, self.param_idx_att)  
         x = self.ada_ln_mlp(x, emb=emb)
         x, _ = shape_to_att(x, self.param_idx_att)
 
@@ -583,6 +597,7 @@ class CrossAttention(nn.Module):
                  model_dim_in, 
                  n_head_channels, 
                  att_dim=None,
+                 p_dropout = 0,
                  n_params = [],
                  param_idx_att = None,
                  embedder: BaseEmbedder=None,
@@ -607,7 +622,9 @@ class CrossAttention(nn.Module):
         self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
         self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
 
-        self.res_layer = ResLayer(model_dim_param, with_res=False)
+        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
+
+        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
 
         self.param_idx_att = param_idx_att
 
@@ -623,6 +640,8 @@ class CrossAttention(nn.Module):
         x_cross, _ = shape_to_att(x_cross.contiguous(), self.param_idx_att)
 
         x, _  = self.attention_layer(x, x_cross, mask=mask)
+
+        x = self.dropout(x)
 
         x = x_res + self.gamma*x
 
@@ -647,6 +666,7 @@ class NHAttention(nn.Module):
                  no_layer_nh: NoLayer,
                  model_dim_in, 
                  n_head_channels, 
+                 p_dropout = 0,
                  n_params = [],
                  embedder: BaseEmbedder=None,
                  embedder_mlp: BaseEmbedder=None
@@ -658,7 +678,14 @@ class NHAttention(nn.Module):
 
         self.no_layer_nh = no_layer_nh
 
-        self.attention_layer = ParamAttention(model_dim_in, n_head_channels, att_dim=model_dim_in, param_idx_att=None, n_params=no_layer_nh.n_params, embedder=embedder, embedder_mlp=embedder_mlp)
+        self.attention_layer = ParamAttention(model_dim_in, 
+                                              n_head_channels, 
+                                              att_dim=model_dim_in, 
+                                              p_dropout=p_dropout, 
+                                              param_idx_att=None, 
+                                              n_params=no_layer_nh.n_params, 
+                                              embedder=embedder, 
+                                              embedder_mlp=embedder_mlp)
 
     def forward(self, x, indices_sample=None, mask=None, emb=None):
         x_shape = x.shape
@@ -708,12 +735,10 @@ def shape_to_x(x, x_shape_orig:tuple, param_att: int=None):
     
     elif param_att==1:
         x_shape_flat = (*x_shape_orig[:3],x_shape_orig[4], x_shape_orig[3], *x_shape_orig[5:])   
-        x = x.view(x_shape_flat)
-        x = x.view(x_shape_orig)
+        x = x.view(x_shape_flat).transpose(3,4).contiguous()
         
     elif param_att==2:
         x_shape_flat = (*x_shape_orig[:3], x_shape_orig[5], x_shape_orig[4], x_shape_orig[3], *x_shape_orig[6:])   
-        x = x.view(x_shape_flat)
-        x = x.view(x_shape_orig)
+        x = x.view(x_shape_flat).transpose(3,5).contiguous()
 
     return x  
