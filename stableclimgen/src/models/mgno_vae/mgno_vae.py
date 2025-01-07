@@ -75,10 +75,11 @@ class QuantConfig:
     :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
     """
 
-    def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
+    def __init__(self, latent_ch: List[int], n_head_channels: List[int], block_type: str, sub_confs: dict):
         self.latent_ch = latent_ch
         self.block_type = block_type
         self.sub_confs = sub_confs
+        self.n_head_channels = n_head_channels
 
 
 class MGNO_VAE(nn.Module):
@@ -212,7 +213,8 @@ class MGNO_VAE(nn.Module):
                                              **quant_config.sub_confs,
                                              grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
                                              rotate_coord_system=rotate_coord_system,
-                                             n_params=enc_params)
+                                             n_params=enc_params,
+                                             n_head_channels=quant_config.n_head_channels)
             if self.quantization.distribution == "gaussian":
                 self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
 

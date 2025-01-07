@@ -37,6 +37,7 @@ class Quantization(nn.Module):
             embed_mode: str = "sum",
             dims: int = 2,
             distribution: str = "gaussian",
+            n_head_channels: List[int] = None,
             **kwargs
     ):
         super().__init__()
@@ -79,7 +80,6 @@ class Quantization(nn.Module):
                                                embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
         elif block_type == "grid_trans":
             grid_layer = kwargs.pop("grid_layer")
-            n_head_channels = check_value(kwargs.pop("n_head_channels"), len(blocks))
             rotate_coord_system = kwargs.pop("rotate_coord_system")
             n_params = kwargs.pop("n_params")
 
@@ -89,8 +89,8 @@ class Quantization(nn.Module):
             spatial_attention_configs["embed_mode"] = embed_mode
             spatial_attention_configs["blocks"] = blocks
 
-            self.quant = GridQuantizationEnc(n_params, grid_layer, in_ch, latent_ch[-1], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system, (distribution == "gaussian"))
-            self.post_quant = GridQuantizationDec(n_params[:len(self.quant.layers)][::-1], grid_layer, in_ch, latent_ch[-1], n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+            self.quant = GridQuantizationEnc(n_params, grid_layer, in_ch, latent_ch[-1], n_head_channels.copy(), spatial_attention_configs.copy(), rotate_coord_system, (distribution == "gaussian"))
+            self.post_quant = GridQuantizationDec(n_params[:len(self.quant.layers)][::-1], grid_layer, in_ch, latent_ch[-1], n_head_channels[::-1].copy(), spatial_attention_configs.copy(), rotate_coord_system)
 
     def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
                  cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
@@ -150,7 +150,7 @@ class GridQuantizationEnc(nn.Module):
         for n_param in n_params:
             in_ch = n_param[0] * n_param[1]
             model_channels = model_channels // in_ch
-            layer = GridQuantLayer(in_ch*model_channels, grid_layer, model_channels, in_ch, 1, n_head_channels, spatial_attention_configs, rotate_coord_system)
+            layer = GridQuantLayer(in_ch*model_channels, grid_layer, model_channels, in_ch, 1, n_head_channels.pop(0), spatial_attention_configs, rotate_coord_system)
             if model_channels >= latent_ch:
                 self.layers.append(layer)
         if log_var:
@@ -183,7 +183,7 @@ class GridQuantizationDec(nn.Module):
         for n_param in n_params:
             out_ch = n_param[0] * n_param[1]
             latent_ch = latent_ch * out_ch
-            layer = GridQuantLayer(latent_ch // out_ch, grid_layer, latent_ch, 1, out_ch, n_head_channels, spatial_attention_configs, rotate_coord_system)
+            layer = GridQuantLayer(latent_ch // out_ch, grid_layer, latent_ch, 1, out_ch, n_head_channels.pop(0), spatial_attention_configs, rotate_coord_system)
             if model_channels >= latent_ch:
                 self.layers.append(layer)
 
@@ -202,7 +202,7 @@ class GridQuantLayer(nn.Module):
             model_channels: int,
             in_ch: int,
             out_ch: int,
-            n_head_channels: List[int],
+            n_head_channels: int,
             spatial_attention_configs,
             rotate_coord_system
     ):
