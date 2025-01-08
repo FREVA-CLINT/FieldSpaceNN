@@ -403,13 +403,10 @@ class UNet_NOBlock(nn.Module):
             if layer_idx<len(self.NO_Blocks)-1:
                x = torch.cat((shape_to_x(x, x_shape_origin),
                                shape_to_x(x_skip[layer_idx], x_shape_origin)), dim=2)
-             #   x = torch.cat((shape_to_x(x_skip[layer_idx], x_shape_origin),
-             #                  shape_to_x(x, x_shape_origin)), dim=-1)
                mask = torch.cat([mask, masks_skip[layer_idx]], dim=2)
             else:
                 x = shape_to_x(x_skip[layer_idx], x_shape_origin)
             
-           # coords_out_ = None if layer_idx !=0 else coords_out
             x, mask = layer.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb, inv_transform_mask=mask)
 
         return x
