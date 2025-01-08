@@ -622,8 +622,9 @@ class SelfCrossAttention(nn.Module):
 
         self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
 
-        self.ada_ln = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
-        self.ada_ln_cross = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+        self.ada_ln_q = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+        self.ada_ln_kv1 = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+        self.ada_ln_kv2 = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
 
         self.ada_ln_mlp = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder_mlp)
 
@@ -634,8 +635,9 @@ class SelfCrossAttention(nn.Module):
 
         self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
 
-        self.res_gamma = nn.Parameter(torch.tensor(0.01), requires_grad=True)
-        self.res_gamma_activation = nn.GELU()
+        self.res_gamma = nn.Parameter(torch.tensor(1e-6), requires_grad=True)
+
+        self.res_gamma_activation = nn.Sigmoid()
 
         self.param_idx_att = param_idx_att
 
@@ -643,34 +645,37 @@ class SelfCrossAttention(nn.Module):
   
         x_shape = x.shape
 
-        res_gamma = self.res_gamma_activation(self.res_gamma).clamp(max=1)
+        res_gamma = self.res_gamma_activation(self.res_gamma)
 
         if mask is not None:
-            b,n = mask.shape[:2]
-            f_mask = (mask==False).view(b,n,-1,2) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)])
+            f_mask = torch.stack((mask==False).chunk(2,dim=2), dim=3) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)])
             f_mask = f_mask/(f_mask+1e-10).sum(dim=-1, keepdim=True)
-            x_q = f_mask.view(*f_mask.shape,1,1,1) * x.view(b,n,-1,2,*x_shape[3:])
-
+            x_q = f_mask.view(*f_mask.shape,1,1,1) * torch.stack(x.chunk(2,dim=2), dim=3)
         else:
-            x_q = x.view(b,n,-1,2,*x_shape[3:]) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)]).view(1,1,2,1,1,1)
+            x_q = torch.stack(x.chunk(2,dim=2), dim=3) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)]).view(1,1,2,1,1,1)
 
         x_q = x_q.sum(dim=3)
 
         x_shape = x_q.shape
 
-        x_q, _ = shape_to_att(x_q, self.param_idx_att, mask=mask)
+        x_res = x_q
 
-        x_kv1, x_kv2 = x.chunk(2,dim=2)
-        x_kv1 = self.ada_ln(x_kv1, emb=emb).contiguous()
-        x_kv2 = self.ada_ln_cross(x_kv2, emb=emb).contiguous()
+        x_q = self.ada_ln_q(x_q, emb=emb).contiguous()
+
+        x1, x2 = x.chunk(2, dim=2) 
+        x1 = self.ada_ln_kv1(x1, emb=emb).contiguous()
+        x2 = self.ada_ln_kv2(x2, emb=emb).contiguous()
+        x = torch.concat((x1,x2), dim=2)
         
-        x_kv, mask = shape_to_att(torch.concat((x_kv1,x_kv2), dim=2), self.param_idx_att, mask=mask)
+        x_res , _ = shape_to_att(x_res, self.param_idx_att)
+        x_q, _ = shape_to_att(x_q, self.param_idx_att, mask=mask)
+        x, mask = shape_to_att(x, self.param_idx_att, mask=mask)
         
-        x, _  = self.attention_layer(x_q, x_kv, mask=mask)
+        x, _  = self.attention_layer(x_q, x, mask=mask)
 
         x = self.dropout(x)
 
-        x = x_q + self.gamma*x
+        x = x_res + self.gamma*x
 
         x_res = x
 
