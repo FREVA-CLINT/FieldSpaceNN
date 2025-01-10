@@ -67,10 +67,7 @@ class VariableEmbedder(BaseEmbedder):
         self.keep_dims = ["b", "v", "c"]
 
         self.embedding_fn = torch.nn.Sequential(
-            nn.Embedding(self.in_channels, self.embed_dim),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            nn.Embedding(self.in_channels, self.embed_dim)
         )
 
     
