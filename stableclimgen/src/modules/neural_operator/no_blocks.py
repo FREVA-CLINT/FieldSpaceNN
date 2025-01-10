@@ -152,7 +152,7 @@ class NOBlock(nn.Module):
             if inv_transform_mask is None:
                 inv_transform_mask = mask 
 
-        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask)
+        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
         return x, mask
     
@@ -185,7 +185,8 @@ class Serial_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs: dict = {},
-                 p_dropout=0.
+                 p_dropout=0.,
+                 global_res=False
                 ) -> None: 
       
         super().__init__()
@@ -251,7 +252,8 @@ class Stacked_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 p_dropout=0.
+                 p_dropout=0.,
+                 global_res=False
                 ) -> None: 
       
         super().__init__()
@@ -338,13 +340,15 @@ class UNet_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 p_dropout=0.
+                 p_dropout=0.,
+                 global_res=False
                 ) -> None: 
       
         super().__init__()
 
         self.multi_grid_attention = multi_grid_attention
         self.NO_Blocks = nn.ModuleList()
+        self.global_res=global_res
 
         for n, no_layer in enumerate(no_layers): 
             
@@ -415,9 +419,15 @@ class UNet_NOBlock(nn.Module):
     
     def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
         
+        if self.global_res:
+            x_res=x
+
         x_skip, mask_skip = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = self.decode(x_skip, mask_skip, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
+
+        if self.global_res:
+            x = x + x_res.view(x.shape)
 
         return x, mask
 
@@ -440,7 +450,8 @@ class Parallel_NOBlock(nn.Module):
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_attention_configs = {},
-                 p_dropout=0.
+                 p_dropout=0.,
+                 global_res=False
                 ) -> None: 
       
         super().__init__()

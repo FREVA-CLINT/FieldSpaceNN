@@ -11,6 +11,7 @@ class NoLayer(nn.Module):
                  grid_layers, 
                  global_level_in, 
                  global_level_no,
+                 global_level_out=None,
                  nh_projection=False,
                  nh_backprojection=True,
                  seq_level_attention=2, 
@@ -22,6 +23,7 @@ class NoLayer(nn.Module):
         self.grid_layers = grid_layers
         self.global_level_in = global_level_in
         self.global_level_no = global_level_no
+        self.global_level_out = global_level_out if global_level_out is not None else global_level_in
         self.nh_projection = nh_projection
         self.nh_backprojection = nh_backprojection
         self.rotate_coord_system = rotate_coord_system
@@ -38,7 +40,7 @@ class NoLayer(nn.Module):
 
         self.nh_dist = self.grid_layers[str(global_level_no)].nh_dist
 
-    def transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None, mask=None):
+    def transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None, mask=None, emb=None):
         
         indices_in = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
         indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
@@ -57,15 +59,15 @@ class NoLayer(nn.Module):
                                                                 mask=mask)
             
             
-        return self.transform_(x, coordinates_rel, mask=mask)
+        return self.transform_(x, coordinates_rel, mask=mask, emb=emb)
         
 
-    def inverse_transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None,  mask=None):
+    def inverse_transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None,  mask=None, emb=None):
         
-        indices_in = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
+        indices_out = indices_sample["indices_layers"][self.global_level_out] if indices_sample is not None else None
         indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
 
-        coordinates_rel = self.rel_coord_mngr(indices_in=indices_in,
+        coordinates_rel = self.rel_coord_mngr(indices_in=indices_out,
                                               indices_ref=indices_ref,
                                               coordinates_in=coordinates,
                                               coordinates_ref=coordinates_ref,
@@ -80,13 +82,13 @@ class NoLayer(nn.Module):
         else: 
             x = x.unsqueeze(dim=2)
         
-        return self.inverse_transform_(x, coordinates_rel, mask=mask)
+        return self.inverse_transform_(x, coordinates_rel, mask=mask, emb=emb)
 
 
-    def transform_(self, x, coordinates_rel, mask=None):
+    def transform_(self, x, coordinates_rel, mask=None, emb=None):
         raise NotImplementedError("This method should be implemented by subclasses.")
     
-    def inverse_transform_(self, x, coordinates_rel, mask=None):
+    def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
@@ -167,7 +169,7 @@ class Normal_VM_NoLayer(NoLayer):
         return weights
 
 
-    def transform_(self, x, coordinates_rel, mask=None):
+    def transform_(self, x, coordinates_rel, mask=None, emb=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
         c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
@@ -200,7 +202,7 @@ class Normal_VM_NoLayer(NoLayer):
 
         return x, mask
     
-    def inverse_transform_(self, x, coordinates_rel, mask=None):
+    def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
@@ -304,7 +306,7 @@ class Normal_NoLayer(NoLayer):
         return weights, mask
 
 
-    def transform_(self, x, coordinates_rel, mask=None):
+    def transform_(self, x, coordinates_rel, mask=None, emb=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
         c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
@@ -334,7 +336,7 @@ class Normal_NoLayer(NoLayer):
 
         return x, mask
     
-    def inverse_transform_(self, x, coordinates_rel, mask=None):
+    def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
@@ -373,12 +375,14 @@ class polNormal_NoLayer(NoLayer):
                  n_phi=4,
                  sigma_learnable=True,
                  dist_learnable=False,
+                 random_amplitudes=False,
                  nh_projection=False, 
                  nh_backprojection=True,
                  seq_level_attention=2, 
                  precompute_coordinates=True,
                  rotate_coord_system=True,
-                 pretrained_weights=None
+                 pretrained_weights=None,
+                 n_var_amplitudes=1
                 ) -> None: 
     
         super().__init__(grid_layers, 
@@ -402,6 +406,7 @@ class polNormal_NoLayer(NoLayer):
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         
+            
         if pretrained_weights is None:
             dists = torch.linspace(grid_layers[str(global_level_in)].min_dist, grid_dist_out, n_dist)
         else:
@@ -416,8 +421,18 @@ class polNormal_NoLayer(NoLayer):
         else:
             sigma = pretrained_weights['sigma']
         
+        if random_amplitudes:
+            self.amplitudes =nn.Parameter(torch.randn((n_var_amplitudes, n_phi, n_dist))*1e-6, requires_grad=sigma_learnable)
+
+        self.random_amplitudes=random_amplitudes
+
         self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
-                  
+    
+    def get_amplitudes(self, emb):
+        if self.amplitudes.shape[0]==1:
+            return self.amplitudes
+        else:
+            return self.amplitudes[emb['VariableEmbedder']].unsqueeze(dim=-1).unsqueeze(dim=1).unsqueeze(dim=2).unsqueeze(dim=3)
 
     def get_weights(self, coordinates_rel):
         
@@ -436,7 +451,7 @@ class polNormal_NoLayer(NoLayer):
         return weights, mask
 
 
-    def transform_(self, x, coordinates_rel, mask=None):
+    def transform_(self, x, coordinates_rel, mask=None, emb=None):
         _, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
         b = x.shape[0]
@@ -475,7 +490,7 @@ class polNormal_NoLayer(NoLayer):
 
         return x, mask
     
-    def inverse_transform_(self, x, coordinates_rel, mask=None):
+    def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
 
         b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
         b, n, seq_ref, nv, n_lon, n_lat, nc = x.shape
@@ -497,7 +512,12 @@ class polNormal_NoLayer(NoLayer):
             mask = mask.sum(dim=-2)==mask.shape[-2]
             mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
         
-        weights = weights/(weights.sum(dim=[2,-2,-3], keepdim=True) + 1e-10)
+        if self.random_amplitudes:
+            weights = weights/(weights.sum(dim=[2], keepdim=True) + 1e-10)
+            amplitudes = self.get_amplitudes(emb)
+            weights = weights*amplitudes
+        else:
+            weights = weights/(weights.sum(dim=[2,-2,-3], keepdim=True) + 1e-10)
 
         x = (x * weights).sum(dim=[2, -2,-3])
 
@@ -570,7 +590,7 @@ class FT_NOLayer(NoLayer):
 
 
 
-    def transform_(self, x, coordinates_rel, mask=None):
+    def transform_(self, x, coordinates_rel, mask=None, emb=None):
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
         c_shape = (-1, n, seq_ref, seq_in*nh_in, nv)
@@ -604,7 +624,7 @@ class FT_NOLayer(NoLayer):
 
         return x, mask
     
-    def inverse_transform_(self, x, coordinates_rel, mask=None):
+    def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
 
         b, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
         nv, n_lon, n_lat, nc = x.shape[-4:]
@@ -646,7 +666,9 @@ def get_no_layer(neural_operator_type,
                  nh_backprojection=False,
                  precompute_coordinates=True,
                  rotate_coordinate_system=True,
-                 pretrained_weights=None):
+                 pretrained_weights=None,
+                 random_amplitudes=False,
+                 n_var_amplitudes=1):
     
     if neural_operator_type == 'Normal_VM':
         no_layer = Normal_VM_NoLayer(grid_layers,
@@ -690,7 +712,9 @@ def get_no_layer(neural_operator_type,
                             nh_backprojection=nh_backprojection,
                             precompute_coordinates=precompute_coordinates,
                             rotate_coord_system=rotate_coordinate_system,
-                            pretrained_weights=pretrained_weights)
+                            pretrained_weights=pretrained_weights,
+                            random_amplitudes=random_amplitudes,
+                            n_var_amplitudes=n_var_amplitudes)
         
     elif neural_operator_type == 'FT':
         no_layer = FT_NOLayer(grid_layers,

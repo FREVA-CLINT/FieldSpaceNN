@@ -40,20 +40,24 @@ class NOBlockConfig:
                  nh_transformation: bool = False,
                  nh_inverse_transformation: bool = False,
                  att_dims: int = None,
+                 random_amplitudes: bool = False,
+                 n_var_amplitudes: int = 1,
                  multi_grid_attention: bool=False,
                  neural_operator_type_nh: str='polNormal',
                  n_params_nh: List[int] = [[4,2]],
                  global_params_init_nh: List[float] = [[3.0]],
-                 spatial_attention_configs: dict = {}):
+                 spatial_attention_configs: dict = {},
+                 global_res=False):
 
         n_no_layers = len(global_levels)
 
         inputs = copy.deepcopy(locals())
         self.block_type = block_type
         self.multi_grid_attention = multi_grid_attention
+        self.global_res = global_res
 
         for input, value in inputs.items():
-            if input != 'self' and input != 'block_type' and input !=multi_grid_attention:
+            if input != 'self' and input != 'block_type' and input !=multi_grid_attention and input != "global_res":
                 setattr(self, input, check_value(value, n_no_layers))
         
 
@@ -129,7 +133,9 @@ class MGNO_Transformer(nn.Module):
                                     nh_backprojection=block_conf.nh_inverse_transformation[k],
                                     precompute_coordinates=True if n!=0 and n<n_no_layers_total else False,
                                     rotate_coordinate_system=rotate_coord_system,
-                                    pretrained_weights=no_weights)
+                                    pretrained_weights=no_weights,
+                                    random_amplitudes=block_conf.random_amplitudes[k],
+                                    n_var_amplitudes=block_conf.n_var_amplitudes[k])
 
                 no_layers.append(no_layer)
 
@@ -185,7 +191,8 @@ class MGNO_Transformer(nn.Module):
                         no_layers_nh=nh_no_layers,
                         multi_grid_attention=block_conf.multi_grid_attention,
                         spatial_attention_configs=block_conf.spatial_attention_configs,
-                        p_dropout=p_dropout))     
+                        p_dropout=p_dropout,
+                        global_res=block_conf.global_res))     
         
         
 
@@ -204,6 +211,7 @@ class MGNO_Transformer(nn.Module):
 
         b,n,nh,nv,nc = x.shape[:5]
         x = x.view(b,n,nh,-1,self.model_dim_in)
+        b,n,nh,nv,nc = x.shape[:5]
 
         if mask is not None:
             mask = mask[:,:,:,:x.shape[3]]
