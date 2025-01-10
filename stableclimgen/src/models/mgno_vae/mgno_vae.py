@@ -44,8 +44,8 @@ class NOBlockConfig:
                  nh_inverse_transformation: bool = False,
                  att_dims: int = None,
                  multi_grid_attention: bool=False,
-                 neural_operator_type_nh: str='Normal_VM',
-                 n_params_nh: List[int] = [[3,2]],
+                 neural_operator_type_nh: str='polNormal',
+                 n_params_nh: List[int] = [[4,2]],
                  global_params_init_nh: List[float] = [[3.0]],
                  spatial_attention_configs: dict = {}):
         
