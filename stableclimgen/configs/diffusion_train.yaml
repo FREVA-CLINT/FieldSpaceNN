@@ -1,7 +1,7 @@
 defaults:
   - trainer: trainer
   - logger: wandb
-  - model: diffusion_transformer
+  - model: diffusion_cnn
   - dataloader: netcdf_regular
   - hydra: default
   - embedding: default

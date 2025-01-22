@@ -70,40 +70,63 @@ class ClimateDataset(Dataset):
     """
 
     def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], norm_dict: Dict, lazy_load: bool = True,
-                 seq_length: int = 1):
+                 seq_length: int = 1, n_sample_vars: int = -1, shared_files: bool = False):
         self.lazy_load = lazy_load
         self.seq_length = seq_length
 
-        self.vars, self.data_seq_lengths = [], []
+        self.data_seq_lengths = []
 
         self.var_normalizers = {}
+        self.variables_source = data_dict["source"]["variables"]
+        self.variables_target = data_dict["target"]["variables"]
         self.climate_in_data, self.in_coords = {}, {}
         self.climate_out_data, self.out_coords = {}, {}
+        self.n_sample_vars = n_sample_vars
 
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
-        # Load input data and coordinates
-        for i, var in enumerate(data_dict["input"].keys()):
-            climate_in_data, in_lengths, in_coords = load_data(data_dict["input"][var], var)
-            self.climate_in_data[var] = climate_in_data
-            if i == 0:
-                self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
-            self.in_coords[var] = in_coords
-
-        # Load output data and coordinates
-        for var in data_dict["output"].keys():
-            climate_out_data, _, out_coords = load_data(data_dict["output"][var], var)
-            self.climate_out_data[var] = climate_out_data
-            self.out_coords[var] = out_coords
-
+        for var in self.variables_source:
             # create normalizers
             norm_class = norm_dict[var]['normalizer']['class']
             assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-            self.vars.append(var)
             self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
                 norm_dict[var]['stats'],
                 norm_dict[var]['normalizer'])
+
+        # Load source data and coordinates
+        for i, file in enumerate(data_dict["source"]["files"]):
+            if shared_files:
+                for var in self.variables_source:
+                    climate_in_data, in_lengths, in_coords = load_data([file], var)
+                    self.climate_in_data[var] = climate_in_data
+                    if i == 0:
+                        self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
+                    self.in_coords[var] = in_coords
+            else:
+                var = self.variables_source[i]
+                climate_in_data, in_lengths, in_coords = load_data([file], var)
+                self.climate_in_data[var] = climate_in_data
+                if i == 0:
+                    self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
+                self.in_coords[var] = in_coords
+
+        # Load target data and coordinates
+        for i, file in enumerate(data_dict["target"]["files"]):
+            if shared_files:
+                for var in self.variables_target:
+                    climate_out_data, out_lengths, out_coords = load_data([file], var)
+                    self.climate_out_data[var] = climate_out_data
+                    if i == 0:
+                        self.data_seq_lengths = [length - self.seq_length + 1 for length in out_lengths]
+                    self.out_coords[var] = out_coords
+            else:
+                var = self.variables_target[i]
+                climate_out_data, out_lengths, out_coords = load_data([file], var)
+                self.climate_out_data[var] = climate_out_data
+                if i == 0:
+                    self.data_seq_lengths = [length - self.seq_length + 1 for length in out_lengths]
+                self.out_coords[var] = in_coords
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
@@ -140,7 +163,7 @@ class ClimateDataset(Dataset):
         :return: Processed data sample and coordinates for the given sequence.
         """
         data_sample, data_coords = [], []
-        for var in self.vars:
+        for var in self.variables_source:
             # Extract data sequence and convert to torch tensor
             data = torch.from_numpy(np.nan_to_num(dataset[var][file_index][seq_index:seq_index + self.seq_length]))
 

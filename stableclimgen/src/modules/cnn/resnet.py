@@ -42,6 +42,7 @@ class ResBlock(EmbedBlock):
         self.dropout = dropout
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
+        self.dims = dims
 
         # Define the input transformation layers
         self.in_layers = nn.Sequential(
@@ -108,7 +109,8 @@ class ResBlock(EmbedBlock):
 
         if hasattr(self, "embedding_layer"):
             emb_out = self.embedding_layer(self.embedder_seq(emb))
-            emb_out = rearrange(emb_out, 'b t h w v c -> (b v) c t h w')
+            pattern = 'b t h w v c -> (b v) c t h w' if self.dims == 3 else 'b t h w v c -> (b t v) c h w'
+            emb_out = rearrange(emb_out, pattern)
 
             # Apply scale-shift normalization if configured
             if self.use_scale_shift_norm:

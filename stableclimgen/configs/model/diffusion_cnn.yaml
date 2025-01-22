@@ -36,8 +36,8 @@ model:
         embed_confs: ${embedding}
   patch_emb_config:
     block_type: "conv"
-    patch_emb_size: [ 1, 1, 1 ]
-    patch_emb_kernel: [ 1, 3, 3 ]
+    patch_emb_size: [ 1, 1 ]
+    patch_emb_kernel: [ 3, 3 ]
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion
