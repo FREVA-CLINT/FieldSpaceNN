@@ -57,10 +57,11 @@ class LightningDiffusionGenerator(pl.LightningModule):
         torch.optim.swa_utils.update_bn(self.trainer.train_dataloader, self.ema_model)
 
     def forward(self, gt_data: torch.Tensor, diffusion_steps: torch.Tensor, mask_data: torch.Tensor = None,
-                cond_data: torch.Tensor = None, coords: torch.Tensor = None) -> Tuple[Dict[str, Tensor], Tensor]:
+                cond_data: torch.Tensor = None, coords: torch.Tensor = None, sample_vars: torch.Tensor = None) -> Tuple[Dict[str, Tensor], Tensor]:
         """
         Forward pass through the model for training loss computation.
 
+        :param sample_vars:
         :param gt_data: Ground truth data.
         :param diffusion_steps: Steps of the diffusion process.
         :param mask_data: Mask data. Defaults to None.
@@ -70,7 +71,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
         :return: Dictionary containing loss values for the training step and generated tensor.
         """
         return self.gaussian_diffusion.training_losses(self.model, gt_data, diffusion_steps, mask_data, cond_data,
-                                                       coords)
+                                                       coords, sample_vars)
 
     def training_step(self, batch: Tuple, batch_idx: int) -> torch.Tensor:
         """
@@ -81,9 +82,9 @@ class LightningDiffusionGenerator(pl.LightningModule):
 
         :return: Calculated loss for the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
+        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(gt_data.shape[0], gt_data.device)
-        l_dict, _ = self(gt_data, diffusion_steps, mask_data, cond_data, gt_coords)
+        l_dict, _ = self(gt_data, diffusion_steps, mask_data, cond_data, gt_coords, sample_vars)
         loss = (l_dict["loss"] * weights).mean()
 
         loss_dict = {f'train/{k}': v.mean() for k, v in l_dict.items()}
@@ -97,7 +98,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
         :param batch: Batch of input data.
         :param batch_idx: Index of the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
+        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
         loss_dict = {}
         loss = []
 
@@ -106,7 +107,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
             diff_steps = self.gaussian_diffusion.diffusion_steps
             t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
             cond = torch.stack(10 * [cond_data[i]])
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, torch.stack(10 * [gt_coords[i]]))
+            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, torch.stack(10 * [gt_coords[i]]), torch.stack(10 * [sample_vars[i]]))
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):

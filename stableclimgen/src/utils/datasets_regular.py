@@ -6,6 +6,7 @@ from typing import Tuple, List, Dict, Any, Union
 import numpy as np
 import torch
 import xarray as xr
+from torch import Tensor
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
@@ -128,7 +129,7 @@ class ClimateDataset(Dataset):
                     self.data_seq_lengths = [length - self.seq_length + 1 for length in out_lengths]
                 self.out_coords[var] = in_coords
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
         Retrieve a sequence from the dataset at a given index.
 
@@ -146,16 +147,22 @@ class ClimateDataset(Dataset):
                 break
         seq_index = index - current_index
 
+        if self.n_sample_vars == -1:
+            sample_vars = torch.arange(len(self.variables_source))
+        else:
+            sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
+
         # Load input and ground truth data for the selected sequence
-        in_data, in_coords = self.load_data(file_index, seq_index, self.climate_in_data, self.in_coords)
-        gt_data, gt_coords = self.load_data(file_index, seq_index, self.climate_out_data, self.out_coords)
+        in_data, in_coords = self.load_data(file_index, seq_index, self.climate_in_data, self.in_coords, sample_vars)
+        gt_data, gt_coords = self.load_data(file_index, seq_index, self.climate_out_data, self.out_coords, sample_vars)
 
-        return in_data.unsqueeze(-1), in_coords, gt_data.unsqueeze(-1), gt_coords
+        return in_data.unsqueeze(-1), in_coords, gt_data.unsqueeze(-1), gt_coords, sample_vars
 
-    def load_data(self, file_index: int, seq_index: int, dataset: Dict, coords: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def load_data(self, file_index: int, seq_index: int, dataset: Dict, coords: Dict, sample_vars) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Load and process a data sequence from a given dataset index.
 
+        :param sample_vars:
         :param file_index: Index of the file to retrieve data from.
         :param seq_index: Index of the sequence within the dataset.
         :param dataset: Dict of datasets to load data from.
@@ -163,7 +170,9 @@ class ClimateDataset(Dataset):
         :return: Processed data sample and coordinates for the given sequence.
         """
         data_sample, data_coords = [], []
-        for var in self.variables_source:
+
+        for i in range(len(sample_vars)):
+            var = self.variables_source[i]
             # Extract data sequence and convert to torch tensor
             data = torch.from_numpy(np.nan_to_num(dataset[var][file_index][seq_index:seq_index + self.seq_length]))
 
@@ -199,15 +208,14 @@ class MaskClimateDataset(ClimateDataset):
         super().__init__(**kwargs)
         self.mask_mode = mask_mode
 
-    def __getitem__(self, index: int) -> Tuple[
-        torch.Tensor, List[torch.Tensor], torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
         Retrieve a sequence from the dataset with a mask applied.
 
         :param index: Index of the sequence to retrieve.
         :return: A tuple containing input data, input coordinates, ground truth data, ground truth coordinates, and mask.
         """
-        in_data, in_coords, gt_data, gt_coords = super().__getitem__(index)
+        in_data, in_coords, gt_data, gt_coords, sample_vars = super().__getitem__(index)
         mask = torch.zeros_like(gt_data)
 
         # Define indices to set in mask based on mask mode
@@ -227,4 +235,4 @@ class MaskClimateDataset(ClimateDataset):
 
         # Apply mask based on selected indices
         mask[:, indices_to_set] = 1
-        return in_data, in_coords, gt_data, gt_coords, mask
+        return in_data, in_coords, gt_data, gt_coords, mask, sample_vars
