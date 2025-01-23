@@ -7,9 +7,8 @@ import omegaconf
 
 from ...utils.helpers import get_parameter_group_from_state_dict
 from ...modules.icon_grids.grid_layer import GridLayer
-from ...modules.neural_operator.no_blocks import Serial_NOBlock,Stacked_NOBlock,Parallel_NOBlock,UNet_NOBlock
+from ...modules.neural_operator.no_blocks import Serial_NOBlock,Parallel_NOBlock,UNet_NOBlock
 
-from ...modules.neural_operator.neural_operator import get_no_layer
 
 
 
@@ -25,29 +24,12 @@ class NOBlockConfig:
 
     def __init__(self, 
                  block_type: str,
-                 neural_operator_type: int|list,
                  global_levels: int|list, 
-                 model_dims_out: int|list,
-                 n_params: List[int],
-                 att_block_types_encode: List[bool],
-                 global_params_learnable : List[bool],
-                 att_block_types_decode: List[bool] = [],
-                 global_params_init : List[float] = [],
-                 embed_names_encode: List[List[str]] = None,
-                 embed_names_decode: List[List[str]] = None,
-                 embed_confs: Dict = None,
-                 embed_mode: str = "sum",
-                 nh_transformation: bool = False,
-                 nh_inverse_transformation: bool = False,
-                 att_dims: int = None,
-                 random_amplitudes: bool = False,
-                 n_var_amplitudes: int = 1,
+                 layer_settings: List[Dict],
                  multi_grid_attention: bool=False,
-                 neural_operator_type_nh: str='polNormal',
-                 n_params_nh: List[int] = [[4,2]],
-                 global_params_init_nh: List[float] = [[3.0]],
-                 spatial_attention_configs: dict = {},
-                 global_res=False):
+                 global_res: bool=False,
+                 skip_mode: str='',
+                 **kwargs):
 
         n_no_layers = len(global_levels)
 
@@ -55,11 +37,16 @@ class NOBlockConfig:
         self.block_type = block_type
         self.multi_grid_attention = multi_grid_attention
         self.global_res = global_res
+        self.skip_mode = skip_mode
 
         for input, value in inputs.items():
-            if input != 'self' and input != 'block_type' and input !=multi_grid_attention and input != "global_res":
+            if input != 'self' and input != 'block_type' and input !=multi_grid_attention and input != "global_res" and input != "skip_mode" and input not in kwargs.keys():
                 setattr(self, input, check_value(value, n_no_layers))
         
+        for key, value in kwargs.items():
+            for layer_settings in self.layer_settings:
+                if key not in layer_settings.keys():
+                    layer_settings[key]=value
 
 class MGNO_Transformer(nn.Module):
     def __init__(self, 
@@ -72,6 +59,8 @@ class MGNO_Transformer(nn.Module):
                  rotate_coord_system: bool=True,
                  pretrained_no_model_path: str=None,
                  p_dropout=0.,
+                 embed_confs: Dict = None,
+                 embed_mode: str = "sum", 
                  ) -> None: 
         
                 
@@ -106,68 +95,34 @@ class MGNO_Transformer(nn.Module):
         self.Blocks = nn.ModuleList()
 
         for block_idx, block_conf in enumerate(block_configs):
-
+            
+            model_d_in = model_dim_in if block_idx==0 else block.model_dim_out
             n_no_layers = len(block_conf.global_levels) 
             global_levels = block_conf.global_levels
 
-            no_layers = []
-            nh_no_layers = []
             for k in range(n_no_layers):
                 
-                global_level_in = 0 if block_conf.block_type != 'Stacked' and block_conf.block_type != 'UNet' or k==0 else global_level_no
-                global_level_no = global_levels[k]
-
                 if pretrained_model_weights is not None:
                     no_weights = get_parameter_group_from_state_dict(pretrained_model_weights, 
                                                         f'model.Blocks.{block_idx}.NO_Blocks.{k}.no_layer',
                                                         return_reduced_keys=True)
-
-                no_layer = get_no_layer(block_conf.neural_operator_type[k], 
-                                    grid_layers, 
-                                    global_level_in, 
-                                    global_level_no,
-                                    n_params=block_conf.n_params[k],
-                                    params_init=block_conf.global_params_init[k],
-                                    params_learnable=block_conf.global_params_learnable[k],
-                                    nh_projection=block_conf.nh_transformation[k],
-                                    nh_backprojection=block_conf.nh_inverse_transformation[k],
-                                    precompute_coordinates=True if n!=0 and n<n_no_layers_total else False,
-                                    rotate_coordinate_system=rotate_coord_system,
-                                    pretrained_weights=no_weights,
-                                    random_amplitudes=block_conf.random_amplitudes[k],
-                                    n_var_amplitudes=block_conf.n_var_amplitudes[k])
-
-                no_layers.append(no_layer)
-
-                nh_no_layer_required_encode = torch.tensor(['nh' in block_conf.att_block_types_encode[k]]).any()
-                nh_no_layer_required_decode = torch.tensor(['nh' in block_conf.att_block_types_decode[k]]).any()
-                nh_no_layer_required = nh_no_layer_required_encode or nh_no_layer_required_decode
-
-                if nh_no_layer_required:
                     
-                    no_layer_nh = get_no_layer(block_conf.neural_operator_type_nh[k], 
-                                    grid_layers, 
-                                    global_level_no, 
-                                    global_level_no,
-                                    n_params=block_conf.n_params_nh[k],
-                                    params_init=block_conf.global_params_init_nh[k],
-                                    params_learnable=block_conf.global_params_learnable[k],
-                                    nh_projection=True,
-                                    nh_backprojection=True,
-                                    precompute_coordinates=True,
-                                    rotate_coordinate_system=rotate_coord_system)
-                else:
-                    no_layer_nh = None
-                
-                nh_no_layers.append(no_layer_nh)
+                global_level_in = 0 if block_conf.block_type != 'Stacked' and block_conf.block_type != 'UNet' or k==0 else global_level_no
+                global_level_no = global_levels[k]
+
+                layer_settings = block_conf.layer_settings[k]
+                layer_settings['global_level_in'] = global_level_in
+                layer_settings['global_level_out'] = global_level_no
+                layer_settings['grid_layer_in'] = grid_layers[str(global_level_in)]
+                layer_settings['grid_layer_no'] = grid_layers[str(global_level_no)]
+                layer_settings['precompute_coordinates'] = True if n!=0 and n<n_no_layers_total else False
+                layer_settings['rotate_coordinate_system'] = rotate_coord_system
+                layer_settings['pretrained_weights'] = no_weights
 
                 n+=1
 
             if block_conf.block_type == 'Serial':
                 block = Serial_NOBlock
-
-            elif block_conf.block_type == 'Stacked':
-                block = Stacked_NOBlock
 
             elif block_conf.block_type == 'Parallel':
                 block = Parallel_NOBlock
@@ -175,25 +130,18 @@ class MGNO_Transformer(nn.Module):
             elif block_conf.block_type == 'UNet':
                 block = UNet_NOBlock
 
-
-            self.Blocks.append(block(model_dim_in,
-                        block_conf.model_dims_out,
-                        no_layers,
-                        n_params=block_conf.n_params,
-                        att_block_types_encode=block_conf.att_block_types_encode,
-                        att_block_types_decode=block_conf.att_block_types_decode,
-                        embed_names_encode=block_conf.embed_names_encode,
-                        embed_names_decode=block_conf.embed_names_decode,
-                        embed_confs=block_conf.embed_confs,
-                        embed_mode=block_conf.embed_mode,
+            block = block(model_d_in,
+                        None if block_idx < len(block_configs)-1 else model_dim_out,
+                        block_conf.layer_settings,
                         n_head_channels=n_head_channels,
-                        att_dims=block_conf.att_dims,
-                        no_layers_nh=nh_no_layers,
                         multi_grid_attention=block_conf.multi_grid_attention,
-                        spatial_attention_configs=block_conf.spatial_attention_configs,
                         p_dropout=p_dropout,
-                        global_res=block_conf.global_res))     
+                        skip_mode=block_conf.skip_mode,
+                        global_res=block_conf.global_res)
+
+            self.Blocks.append(block)     
         
+
         
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
@@ -210,7 +158,7 @@ class MGNO_Transformer(nn.Module):
         """
 
         b,n,nh,nv,nc = x.shape[:5]
-        x = x.view(b,n,nh,-1,self.model_dim_in)
+        x = x.view(b,n,nh,-1,1,self.model_dim_in)
         b,n,nh,nv,nc = x.shape[:5]
 
         if mask is not None:
@@ -244,7 +192,7 @@ class MGNO_Transformer(nn.Module):
             
             # Process input through the block
             x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
-            x = x.view(b,n,-1,nv,nc)
+
             if mask is not None:
                 mask = mask.view(x.shape[:4])
 
