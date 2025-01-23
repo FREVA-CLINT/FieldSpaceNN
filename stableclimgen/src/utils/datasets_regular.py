@@ -4,8 +4,10 @@ import random
 from typing import Tuple, List, Dict, Any, Union
 
 import numpy as np
+import omegaconf
 import torch
 import xarray as xr
+from attr.validators import instance_of
 from torch import Tensor
 from torch.utils.data import Dataset
 
@@ -99,14 +101,14 @@ class ClimateDataset(Dataset):
         for i, file in enumerate(data_dict["source"]["files"]):
             if shared_files:
                 for var in self.variables_source:
-                    climate_in_data, in_lengths, in_coords = load_data([file], var)
+                    climate_in_data, in_lengths, in_coords = load_data(file if isinstance(file, omegaconf.listconfig.ListConfig) else [file], var)
                     self.climate_in_data[var] = climate_in_data
                     if i == 0:
                         self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
                     self.in_coords[var] = in_coords
             else:
                 var = self.variables_source[i]
-                climate_in_data, in_lengths, in_coords = load_data([file], var)
+                climate_in_data, in_lengths, in_coords = load_data(file if isinstance(file, omegaconf.listconfig.ListConfig) else [file], var)
                 self.climate_in_data[var] = climate_in_data
                 if i == 0:
                     self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
@@ -116,14 +118,14 @@ class ClimateDataset(Dataset):
         for i, file in enumerate(data_dict["target"]["files"]):
             if shared_files:
                 for var in self.variables_target:
-                    climate_out_data, out_lengths, out_coords = load_data([file], var)
+                    climate_out_data, out_lengths, out_coords = load_data(file if isinstance(file, omegaconf.listconfig.ListConfig) else [file], var)
                     self.climate_out_data[var] = climate_out_data
                     if i == 0:
                         self.data_seq_lengths = [length - self.seq_length + 1 for length in out_lengths]
                     self.out_coords[var] = out_coords
             else:
                 var = self.variables_target[i]
-                climate_out_data, out_lengths, out_coords = load_data([file], var)
+                climate_out_data, out_lengths, out_coords = load_data(file if isinstance(file, omegaconf.listconfig.ListConfig) else [file], var)
                 self.climate_out_data[var] = climate_out_data
                 if i == 0:
                     self.data_seq_lengths = [length - self.seq_length + 1 for length in out_lengths]
