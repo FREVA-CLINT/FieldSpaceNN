@@ -147,7 +147,9 @@ class DiffusionGenerator(nn.Module):
 
         # Define output unpatchifying layer
         if patch_emb_config.block_type == "conv":
-            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch), spatial_dim_count)
+            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch,
+                                                           kernel_size=patch_emb_config.patch_emb_kernel, dims=self.dims),
+                                            spatial_dim_count, dims=self.dims)
         else:
             self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_config.patch_emb_size,
                                         **patch_emb_config.sub_confs, spatial_dim_count=spatial_dim_count)

@@ -10,6 +10,7 @@ from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderM
 from stableclimgen.src.modules.cnn.conv import conv_nd
 
 from ..utils import EmbedBlock
+from ...utils.helpers import check_value
 
 
 class PatchEmbedderND(EmbedBlock):
@@ -53,14 +54,16 @@ class ConvUnpatchify(EmbedBlock):
     :param out_channels: Number of output channels.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, dims: int=2):
+    def __init__(self, in_channels: int, out_channels: int, dims: int=2, kernel_size: int = 3):
         super().__init__()
         # Convolution to reconstruct output shape
         self.dims = dims
+        kernel_size = check_value(kernel_size, dims)
+        padding = tuple(k // 2 for k in kernel_size)
         self.out = nn.Sequential(
             nn.GroupNorm(32, in_channels),
             nn.SiLU(),
-            conv_nd(in_channels, out_channels, 3, 1, 1, dims=dims)
+            conv_nd(in_channels, out_channels, kernel_size, 1, padding, dims=dims)
         )
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,

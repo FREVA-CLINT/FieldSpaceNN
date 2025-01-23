@@ -162,7 +162,6 @@ class ResBlockSequential(EmbedBlock):
         dropout = check_value(dropout, len(blocks))
         use_conv = check_value(use_conv, len(blocks))
         use_scale_shift_norm = check_value(use_scale_shift_norm, len(blocks))
-
         res_blocks = []
         for i, block in enumerate(blocks):
             kernel_size[i] = check_value(kernel_size[i], dims)
