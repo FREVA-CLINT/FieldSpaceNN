@@ -123,7 +123,10 @@ class LightningVAE(pl.LightningModule):
 
         # Plot reconstruction samples on the first batch
         if batch_idx == 0:
-            self.log_tensor_plot(gt_data, cond_data, reconstructions, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
+            try:
+                self.log_tensor_plot(gt_data, cond_data, reconstructions, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
+            except Exception as e:
+                pass
 
         # Log validation losses
         self.log("val_loss", loss.mean(), sync_dist=True)

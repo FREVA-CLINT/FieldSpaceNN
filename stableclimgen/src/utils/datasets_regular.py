@@ -170,9 +170,8 @@ class ClimateDataset(Dataset):
         :return: Processed data sample and coordinates for the given sequence.
         """
         data_sample, data_coords = [], []
-
-        for i in range(len(sample_vars)):
-            var = self.variables_source[i]
+        for i in sample_vars:
+            var = self.variables_source[i.item()]
             # Extract data sequence and convert to torch tensor
             data = torch.from_numpy(np.nan_to_num(dataset[var][file_index][seq_index:seq_index + self.seq_length]))
 
