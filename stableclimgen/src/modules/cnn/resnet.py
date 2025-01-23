@@ -69,7 +69,7 @@ class ResBlock(EmbedBlock):
                 emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
                 emb_dict[emb.name] = emb
             self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=2)
-            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch)
+            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch * (2 ** use_scale_shift_norm))
 
         # Define the output layers including dropout and convolution
         self.out_layers = nn.Sequential(
