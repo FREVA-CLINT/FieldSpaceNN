@@ -35,15 +35,9 @@ def file_loadchecker(filename: str, data_type: str, lazy_load: bool = False) -> 
     except Exception as e:
         raise ValueError(f'Cannot read {basename}. Ensure it is a valid netCDF file and not corrupted. Error: {e}')
 
-    ds1 = ds.copy()
-    ds = ds.drop_vars(data_type, errors='ignore')
-
     # Retrieve data, optionally as a lazy-loaded xarray DataArray
-    data = ds1[data_type] if lazy_load else ds1[data_type].values
-    coords = {key: ds1[data_type].coords[key] for key in ds1[data_type].coords if key != "time"}
-
-    # Drop all other variables and the time dimension
-    ds1 = ds1.drop_vars(list(ds1.keys()), errors='ignore').drop_dims("time", errors='ignore')
+    data = ds[data_type] if lazy_load else ds[data_type].values
+    coords = {key: ds[data_type].coords[key] for key in ds[data_type].coords if key != "time"}
 
     return data, data.shape[0], coords
 
