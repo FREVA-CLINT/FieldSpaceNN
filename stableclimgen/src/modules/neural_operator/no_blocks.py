@@ -307,9 +307,9 @@ class UNet_NOBlock(nn.Module):
         if self.global_res:
             x_res = x #if isinstance(self.out_layer_res, nn.Identity) else self.out_layer_res(x, emb=emb)
 
-        x, mask, x_skip, mask_skip = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, mask_enc, x_skip, mask_skip = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x, mask_out = self.decode(x, mask, x_skip, mask_skip, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
+        x, mask_out = self.decode(x, mask_enc, x_skip, mask_skip, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
 
         mask_out = mask_out.view(*x.shape[:-1])
 
