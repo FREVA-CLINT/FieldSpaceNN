@@ -137,6 +137,7 @@ class EmbedderSequential(nn.Module):
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode = mode
         self.spatial_dim_count = spatial_dim_count
+        self.activation = nn.SiLU()
 
     def forward(self, inputs: Dict[str, torch.Tensor]):
         """
@@ -164,19 +165,20 @@ class EmbedderSequential(nn.Module):
         # Combine embeddings according to the mode
         if self.mode == 'concat':
             # Concatenate along the channel dimension
-            return torch.cat(embeddings, dim=-1)
+            embed_out = torch.cat(embeddings, dim=-1)
         elif self.mode == 'sum':
             # Sum the embeddings
             emb_sum = embeddings[0]
             for emb in embeddings[1:]:
                 emb_sum = emb_sum + emb
-            return emb_sum
+            embed_out = emb_sum
         elif self.mode == 'average':
             # Sum the embeddings
             emb_sum = embeddings[0]
             for emb in embeddings[1:]:
                 emb_sum = emb_sum + emb
-            return emb_sum / (len(embeddings) + 1)
+            embed_out = emb_sum / (len(embeddings) + 1)
+        return self.activation(embed_out)
 
     @property
     def get_out_channels(self):
