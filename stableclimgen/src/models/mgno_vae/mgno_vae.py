@@ -109,18 +109,18 @@ class MGNO_VAE(nn.Module):
             else:
                 self.vae_block = Block
 
-      if quant_config:
-          enc_params = [block.x_dims for block in self.vae_block.NO_Blocks]
-          quant_no_block = self.vae_block.NO_Blocks[-1]
-          quant_in_ch = int(torch.tensor(quant_no_block.x_dims).prod())
-          self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
-                                           **quant_config.sub_confs,
-                                           grid_layer=quant_no_block.no_layer.grid_layers[str(quant_no_block.no_layer.global_level_no)],
-                                           rotate_coord_system=rotate_coord_system,
-                                           n_params=enc_params,
-                                           n_head_channels=quant_config.n_head_channels)
-          if self.quantization.distribution == "gaussian":
-              self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
+        if quant_config:
+            enc_params = [block.x_dims for block in self.vae_block.NO_Blocks]
+            quant_no_block = self.vae_block.NO_Blocks[-1]
+            quant_in_ch = int(torch.tensor(quant_no_block.x_dims).prod())
+            self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
+                                            **quant_config.sub_confs,
+                                            grid_layer=quant_no_block.no_layer.grid_layer_no,
+                                            rotate_coord_system=rotate_coord_system,
+                                            n_params=enc_params,
+                                            n_head_channels=quant_config.n_head_channels)
+            if self.quantization.distribution == "gaussian":
+                self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
 
 
     def prepare_data(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None):
