@@ -1,52 +1,13 @@
 import torch
 import torch.nn as nn
 
-import copy
-from typing import List, Dict
-import omegaconf
+from typing import List
 
 from ...utils.helpers import get_parameter_group_from_state_dict
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...modules.neural_operator.no_blocks import Serial_NOBlock,Parallel_NOBlock,UNet_NOBlock
+from .mgno_block_confs import NOBlockConfig
 
-
-
-
-def check_value(value, n_repeat):
-    if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig):
-        value = [value]*n_repeat
-    elif (isinstance(value, list) or isinstance(value, omegaconf.listconfig.ListConfig)) and len(value)<=1 and len(value)< n_repeat:
-        value = [list(value) for _ in range(n_repeat)] if len(value)==0 else list(value)*n_repeat
-    return value
-
-
-class NOBlockConfig:
-
-    def __init__(self, 
-                 block_type: str,
-                 global_levels: int|list, 
-                 layer_settings: List[Dict],
-                 multi_grid_attention: bool=False,
-                 global_res: bool=False,
-                 skip_mode: str='',
-                 **kwargs):
-
-        n_no_layers = len(global_levels)
-
-        inputs = copy.deepcopy(locals())
-        self.block_type = block_type
-        self.multi_grid_attention = multi_grid_attention
-        self.global_res = global_res
-        self.skip_mode = skip_mode
-
-        for input, value in inputs.items():
-            if input != 'self' and input != 'block_type' and input !=multi_grid_attention and input != "global_res" and input != "skip_mode" and input not in kwargs.keys():
-                setattr(self, input, check_value(value, n_no_layers))
-        
-        for key, value in kwargs.items():
-            for layer_settings in self.layer_settings:
-                if key not in layer_settings.keys():
-                    layer_settings[key]=value
 
 class MGNO_Transformer(nn.Module):
     def __init__(self, 
@@ -59,8 +20,6 @@ class MGNO_Transformer(nn.Module):
                  rotate_coord_system: bool=True,
                  pretrained_no_model_path: str=None,
                  p_dropout=0.,
-                 embed_confs: Dict = None,
-                 embed_mode: str = "sum", 
                  ) -> None: 
         
                 
@@ -134,7 +93,6 @@ class MGNO_Transformer(nn.Module):
                         None if block_idx < len(block_configs)-1 else model_dim_out,
                         block_conf.layer_settings,
                         n_head_channels=n_head_channels,
-                        multi_grid_attention=block_conf.multi_grid_attention,
                         p_dropout=p_dropout,
                         skip_mode=block_conf.skip_mode,
                         global_res=block_conf.global_res)

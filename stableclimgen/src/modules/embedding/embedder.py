@@ -104,6 +104,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
 # Embedder manager to handle shared or non-shared instances
 class EmbedderManager:
     _instance = None
+    _initialized = False
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
             cls._instance = super(EmbedderManager, cls).__new__(
@@ -111,16 +112,17 @@ class EmbedderManager:
         return cls._instance
 
     def __init__(self):
-        self.shared_embedders = {}
+        if not self._initialized:
+            self.shared_embedders = {}
+            self._initialized = True
 
     def get_embedder(self, name, in_channels=None, embed_dim=None, shared=True):
         current_module = sys.modules[__name__]
 
         # Use getattr to get the class from the current module
         embedder_class = getattr(current_module, name)
-        embedder_class = getattr(current_module, name)
         if shared:
-            if name not in self.shared_embedders:
+            if name not in self.shared_embedders.keys():
                 self.shared_embedders[name] = embedder_class(name, in_channels, embed_dim)
             return self.shared_embedders[name]
         else:

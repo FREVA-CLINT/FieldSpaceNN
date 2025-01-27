@@ -112,7 +112,7 @@ class polNormal_NoLayer(NoLayer):
                  rotate_coord_system=True,
                  pretrained_weights=None,
                  n_var_amplitudes=1,
-                 with_res=True,
+                 with_res=False,
                 ) -> None: 
     
         super().__init__(grid_layer_in, 
@@ -123,6 +123,7 @@ class polNormal_NoLayer(NoLayer):
                  coord_system='cartesian',
                  rotate_coord_system=rotate_coord_system)
         
+        self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi*n_dist*n_sigma
 
         self.n_params_in = [n_phi, n_dist, n_sigma, n_amplitudes_out, n_amplitudes_in]
@@ -252,7 +253,7 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel)
         
-        weights = weights.view(*c_shape[:-1], weights.shape[4], len(self.phis), len(self.dists), len(self.sigma), 1 ,1)
+        weights = weights.view(weights.shape[0], n, seq_ref, seq_in*nh_in, 1, len(self.phis), len(self.dists), len(self.sigma), 1 ,1)
 
         if mask is not None:
             norm = (mask.view(*c_shape,1,1,1,1,1) == False)
@@ -302,7 +303,7 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel)
         
-        weights = weights.view(*c_shape[:-1], weights.shape[4], len(self.phis), len(self.dists), len(self.sigma), 1 ,1)
+        weights = weights.view(weights.shape[0], n, seq_ref, seq_in, 1, len(self.phis), len(self.dists), len(self.sigma), 1 ,1)
         
         if mask is not None:
             
@@ -341,27 +342,3 @@ class polNormal_NoLayer(NoLayer):
             mask = mask.view(b,-1,nv)
 
         return x.view(b,-1, nv, np, self.n_params_inv_out), mask
-
-'''
-    no_layer = polNormal_NoLayer(grid_layers,
-                        global_level_in,
-                        global_level_no,
-                        n_phi=n_params[0],
-                        n_dist=n_params[1],
-                        n_sigma=n_params[2],
-                        n_amplitudes=n_params[3],
-                        avg_phi=avg_params[0],
-                        avg_dist=avg_params[1],
-                        avg_sigma=avg_params[2],
-                        dist_learnable=params_learnable[0],
-                        sigma_learnable=params_learnable[1],
-                        amplitudes_learnable=params_learnable[2],
-                        nh_projection=nh_projection,
-                        nh_backprojection=nh_backprojection,
-                        precompute_coordinates=precompute_coordinates,
-                        rotate_coord_system=rotate_coordinate_system,
-                        pretrained_weights=pretrained_weights,
-                        random_amplitudes=random_amplitudes,
-                        n_var_amplitudes=n_var_amplitudes)
-    
-'''

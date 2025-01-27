@@ -3,11 +3,10 @@ from typing import List, Dict
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-
+import copy
 
 from .neural_operator import NoLayer, polNormal_NoLayer
-from ..transformer.attention import ChannelVariableAttention, CrossChannelVariableAttention, ResLayer, AdaptiveLayerNorm
-from ...models.mgno_transformer.mg_attention import MultiGridAttention
+from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
 
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, BaseEmbedder
@@ -15,13 +14,12 @@ from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, B
 class NOBlock(nn.Module):
   
     def __init__(self,
-                 model_dim,
+                 x_dims,
                  no_layer: NoLayer,
                  att_block_types:list,
                  n_head_channels = 16,
                  att_dim=None,
                  p_dropout=0.,
-                 no_layer_nh: NoLayer=None,
                  is_decode:list=[],
                  embed_names: List[List[str]] = None,
                  embed_confs: Dict = None,
@@ -31,8 +29,9 @@ class NOBlock(nn.Module):
       
         super().__init__()
 
-        self.model_dim = model_dim
-        self.n_params = no_layer.n_params_no
+
+       # self.n_params = no_layer.n_params_no
+        self.x_dims = x_dims
         self.no_layer = no_layer
         self.att_block_types_encode = nn.ModuleList()
         self.att_block_types_decode = nn.ModuleList()
@@ -57,51 +56,30 @@ class NOBlock(nn.Module):
                 embedder_seq = None
                 embedder_mlp = None
 
-            if 'param' in att_block_type:
-                param_att_idx = int(att_block_type.replace('param',''))
-                layer = ParamAttention(self.n_params, 
+            if 'param' in att_block_type or "var" in att_block_type:
+                param_idx_att = [c for c in att_block_type if c.isnumeric()]
+                param_idx_att = None if len(param_idx_att)==0 else int(param_idx_att[0])
+                cross_var = True if "var" in att_block_type else False
+
+                layer = ParamAttention(x_dims, 
                                        n_head_channels,
                                        att_dim=att_dim,
+                                       cross_var=cross_var,
                                        p_dropout=p_dropout,
-                                       param_idx_att=param_att_idx,
+                                       param_idx_att=param_idx_att,
                                        embedder=embedder_seq,
                                        embedder_mlp=embedder_mlp)
-            elif 'var' in att_block_type:
-
-                if 'self_cross_var' in att_block_type:
-                    block = SelfCrossAttention
-                elif 'cross' in att_block_type:
-                    block = CrossAttention
-                else:
-                    block = ParamAttention
-    
-                layer = block(self.n_params, 
-                                n_head_channels,
-                                att_dim=att_dim,
-                                p_dropout=p_dropout,
-                                param_idx_att=None,
-                                embedder=embedder_seq,
-                                embedder_mlp=embedder_mlp)
-
-            elif 'nh' in att_block_type:
-                layer = NHAttention(no_layer_nh,
-                                    model_dim, 
-                                    n_head_channels,
-                                    p_dropout=p_dropout,
-                                    n_params=self.n_params,
-                                    embedder=embedder_seq,
-                                    embedder_mlp=embedder_mlp)
             
             elif 'trans' in att_block_type:
                 spatial_attention_config['embedder_names'] = [embed_names[k], []]
                 spatial_attention_config['embed_confs'] = embed_confs
                 spatial_attention_config['embed_mode'] = embed_mode
-                layer = SpatialAttention(no_layer,
-                                         model_dim, 
+                layer = SpatialAttention(x_dims, 
+                                         no_layer.grid_layer_no,
                                          n_head_channels, 
-                                         self.n_params,
                                          spatial_attention_config,
-                                         p_dropout=p_dropout)
+                                         p_dropout=p_dropout,
+                                         rotate_coord_system=no_layer.rotate_coord_system)
 
             if len(is_decode)>0 and is_decode[k]:
                 self.att_block_types_decode.append(layer)
@@ -109,11 +87,11 @@ class NOBlock(nn.Module):
                 self.att_block_types_encode.append(layer)
 
     def squeeze_no_dims(self, x):
-        x = x.view(*x.shape[:3],-1,self.n_params[-1])
+        x = x.view(*x.shape[:3],-1,self.x_dims[-1])
         return x
 
     def unsqueeze_no_dims(self, x):
-        x = x.view(*x.shape[:3], *self.n_params[:-1], -1, x.shape[-1])
+        x = x.view(*x.shape[:3], *self.x_dims[:-2], -1, x.shape[-1])
         return x
 
     def check_add_coordinate_embeddings(self, emb, indices_sample):
@@ -131,8 +109,6 @@ class NOBlock(nn.Module):
         for layer in self.att_block_types_encode:
             if isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            elif isinstance(layer, NHAttention):
-                x, mask = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:
                 emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
                 x, mask = layer(x, mask=mask, emb=emb)
@@ -151,8 +127,6 @@ class NOBlock(nn.Module):
         for layer in self.att_block_types_decode:
             if isinstance(layer, SpatialAttention):
                 x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            elif isinstance(layer, NHAttention):
-                x, mask = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
             else:
                 emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
                 x, mask = layer(x, mask=mask, emb=emb)
@@ -179,15 +153,13 @@ class UNet_NOBlock(nn.Module):
                  model_dim_out,
                  layer_settings: list,     
                  n_head_channels = 16,
-                 multi_grid_attention: bool=False,
                  p_dropout=0.,
                  global_res=False,
-                 skip_mode='amp'
+                 skip_mode='amp_sum'
                 ) -> None: 
       
         super().__init__()
 
-        self.multi_grid_attention = multi_grid_attention
 
         self.Skip_Blocks = nn.ModuleList()
         self.NO_Blocks = nn.ModuleList()
@@ -201,30 +173,11 @@ class UNet_NOBlock(nn.Module):
 
         for n, layer_setting in enumerate(layer_settings):
             
-            no_layer = polNormal_NoLayer(
-                layer_setting['grid_layer_in'],
-                layer_setting['grid_layer_no'],
-                n_amplitudes_in=model_dim_in if n==0 else encoding_dims[n-1],
-                n_amplitudes_out=encoding_dims[n],
-                n_amplitdues_inv_in= encoding_dims[-1] if n==len(layer_settings) -1 else decoding_dims[-(n+1)],
-                n_amplitudes_inv_out=decoding_dims[-n],
-                n_phi=layer_setting["n_params"][0],
-                n_dist=layer_setting["n_params"][1],
-                n_sigma=layer_setting["n_params"][2],
-                avg_phi=layer_setting["avg_params"][0],
-                avg_dist=layer_setting["avg_params"][1],
-                avg_sigma=layer_setting["avg_params"][2],
-                dist_learnable=layer_setting["global_params_learnable"][0],
-                sigma_learnable=layer_setting["global_params_learnable"][1],
-                amplitudes_learnable=layer_setting["global_params_learnable"][2],
-                nh_projection=layer_setting["nh_transformation"], 
-                nh_backprojection=layer_setting["nh_inverse_transformation"],
-                precompute_coordinates=layer_setting["precompute_coordinates"],
-                rotate_coord_system=layer_setting["rotate_coordinate_system"],
-                pretrained_weights=layer_setting["pretrained_weights"],
-                n_var_amplitudes=layer_setting["n_var_amplitudes"],
-                with_res=layer_setting["with_res"]
-            )
+            no_layer = get_no_layer(layer_setting, 
+                                    model_dim_in if n==0 else encoding_dims[n-1], 
+                                    encoding_dims[n], 
+                                    encoding_dims[-1] if n==len(layer_settings) -1 else decoding_dims[-(n+1)], 
+                                    decoding_dims[-n])
             
             is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
             is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
@@ -233,18 +186,21 @@ class UNet_NOBlock(nn.Module):
             embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
             att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
 
-            model_dim = int(torch.tensor(no_layer.n_params_no).prod())
+            #model_dim = int(torch.tensor(no_layer.n_params_no).prod())
+            prior_dim = int(torch.tensor(self.NO_Blocks[n-1].no_layer.n_params_no[:-1]).prod()) if n>0 else model_dim_in
+            x_dims = copy.deepcopy(no_layer.n_params_no)
+            x_dims.insert(-1,prior_dim)
+
             self.NO_Blocks.append(NOBlock(
                 no_layer=no_layer,
-                model_dim=model_dim,
+                x_dims=x_dims,
                 att_block_types=att_block_types,
                 is_decode=is_decode,
                 n_head_channels=n_head_channels,
                 att_dim=layer_setting["att_dim"],
-                no_layer_nh=None,
                 embed_names=embed_names,
-                embed_confs=layer_setting['embed_confs'] ,
-                embed_mode=layer_setting['embed_mode'] ,
+                embed_confs=layer_setting['embed_confs'],
+                embed_mode=layer_setting['embed_mode'],
                 spatial_attention_config=layer_setting.get("spatial_attention_configs",{}),
                 p_dropout=p_dropout
             ))
@@ -255,7 +211,7 @@ class UNet_NOBlock(nn.Module):
                 x_dims = self.NO_Blocks[-(n+1)].no_layer.n_params_out
                 x_skip_dims = self.NO_Blocks[n].no_layer.n_params_no
 
-                if skip_mode=='amp':
+                if skip_mode=='amp_sum':
                     self.Skip_Blocks.append(
                         SkipAdd_Layer([x_dims[-1], x_skip_dims[-1]], x_dims[-1], n_var_amplitudes=layer_setting["n_var_amplitudes"])
                         )
@@ -376,6 +332,8 @@ class SkipAdd_Layer(nn.Module):
 
         if amps.shape[0]>1:
             amps =  amps[emb['VariableEmbedder']]
+        else:
+            amps = amps.unsqueeze(dim=0)
     
         amps = amps.view(amps.shape[0],1,*amps.shape[1:])
     
@@ -415,7 +373,7 @@ class Serial_NOBlock(nn.Module):
                  multi_grid_attention: bool=False,
                  p_dropout=0.,
                  global_res=False,
-                 skip_mode='amp'
+                 skip_mode='amp_sum'
                 ) -> None: 
       
         super().__init__()
@@ -438,31 +396,7 @@ class Serial_NOBlock(nn.Module):
             
             model_d_in = model_dim_in if n==0 else decoding_dims[n-1]
             
-
-            no_layer = polNormal_NoLayer(
-                layer_setting['grid_layer_in'],
-                layer_setting['grid_layer_no'],
-                n_amplitudes_in=model_d_in,
-                n_amplitudes_out=encoding_dims[n],
-                n_amplitdues_inv_in = encoding_dims[n],
-                n_amplitudes_inv_out = decoding_dims[n],
-                n_phi=layer_setting["n_params"][0],
-                n_dist=layer_setting["n_params"][1],
-                n_sigma=layer_setting["n_params"][2],
-                avg_phi=layer_setting["avg_params"][0],
-                avg_dist=layer_setting["avg_params"][1],
-                avg_sigma=layer_setting["avg_params"][2],
-                dist_learnable=layer_setting["global_params_learnable"][0],
-                sigma_learnable=layer_setting["global_params_learnable"][1],
-                amplitudes_learnable=layer_setting["global_params_learnable"][2],
-                nh_projection=layer_setting["nh_transformation"], 
-                nh_backprojection=layer_setting["nh_inverse_transformation"],
-                precompute_coordinates=layer_setting["precompute_coordinates"],
-                rotate_coord_system=layer_setting["rotate_coordinate_system"],
-                pretrained_weights=layer_setting["pretrained_weights"],
-                n_var_amplitudes=layer_setting["n_var_amplitudes"],
-                with_res=layer_setting["with_res"]
-            )
+            no_layer = get_no_layer(layer_setting, model_d_in, encoding_dims[n], encoding_dims[n], decoding_dims[n])
             
             is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
             is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
@@ -471,15 +405,16 @@ class Serial_NOBlock(nn.Module):
             embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
             att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
 
-            model_dim = int(torch.tensor(no_layer.n_params_no).prod())
+            #model_dim = int(torch.tensor(no_layer.n_params_no).prod())
+            x_dims = copy.deepcopy(no_layer.n_params_no)
+            x_dims.insert(-1,1)
             self.NO_Blocks.append(NOBlock(
                 no_layer=no_layer,
-                model_dim=model_dim,
+                x_dims=x_dims,
                 att_block_types=att_block_types,
                 is_decode=is_decode,
                 n_head_channels=n_head_channels,
                 att_dim=layer_setting["att_dim"],
-                no_layer_nh=None,
                 embed_names=embed_names,
                 embed_confs=layer_setting['embed_confs'] ,
                 embed_mode=layer_setting['embed_mode'] ,
@@ -489,7 +424,7 @@ class Serial_NOBlock(nn.Module):
 
             model_dim_out_layer = decoding_dims[n] if n < len(layer_settings)-1 and model_dim_out is not None else model_dim_out
 
-            if skip_mode=='amp':
+            if skip_mode=='amp_sum':
                 self.Skip_Blocks.append(SkipAdd_Layer([decoding_dims[n], model_d_in], model_dim_out_layer, n_var_amplitudes=layer_setting["n_var_amplitudes"]))
             elif decoding_dims[n]!=model_dim_out_layer:
                 self.Skip_Blocks.append(VarLin_Layer(decoding_dims[n], model_dim_out_layer, layer_settings[-1]['n_var_amplitudes']))
@@ -527,7 +462,7 @@ class Parallel_NOBlock(nn.Module):
                  multi_grid_attention: bool=False,
                  p_dropout=0.,
                  global_res=False,
-                 skip_mode='amp'
+                 skip_mode='amp_sum'
                 ) -> None: 
       
         super().__init__()
@@ -546,31 +481,12 @@ class Parallel_NOBlock(nn.Module):
 
    
         for n, layer_setting in enumerate(layer_settings):           
-
-            no_layer = polNormal_NoLayer(
-                layer_setting['grid_layer_in'],
-                layer_setting['grid_layer_no'],
-                n_amplitudes_in=model_dim_in,
-                n_amplitudes_out=encoding_dims[n],
-                n_amplitdues_inv_in = encoding_dims[n],
-                n_amplitudes_inv_out = decoding_dims[n],
-                n_phi=layer_setting["n_params"][0],
-                n_dist=layer_setting["n_params"][1],
-                n_sigma=layer_setting["n_params"][2],
-                avg_phi=layer_setting["avg_params"][0],
-                avg_dist=layer_setting["avg_params"][1],
-                avg_sigma=layer_setting["avg_params"][2],
-                dist_learnable=layer_setting["global_params_learnable"][0],
-                sigma_learnable=layer_setting["global_params_learnable"][1],
-                amplitudes_learnable=layer_setting["global_params_learnable"][2],
-                nh_projection=layer_setting["nh_transformation"], 
-                nh_backprojection=layer_setting["nh_inverse_transformation"],
-                precompute_coordinates=layer_setting["precompute_coordinates"],
-                rotate_coord_system=layer_setting["rotate_coordinate_system"],
-                pretrained_weights=layer_setting["pretrained_weights"],
-                n_var_amplitudes=layer_setting["n_var_amplitudes"],
-                with_res=layer_setting["with_res"]
-            )
+            
+            no_layer = get_no_layer(layer_setting, 
+                                    model_dim_in, 
+                                    encoding_dims[n], 
+                                    encoding_dims[n], 
+                                    decoding_dims[n])
             
             is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
             is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
@@ -579,15 +495,15 @@ class Parallel_NOBlock(nn.Module):
             embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
             att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
 
-            model_dim = int(torch.tensor(no_layer.n_params_no).prod())
+            x_dims = copy.deepcopy(no_layer.n_params_no)
+            x_dims.insert(-1,1)
             self.NO_Blocks.append(NOBlock(
                 no_layer=no_layer,
-                model_dim=model_dim,
+                x_dims=x_dims,
                 att_block_types=att_block_types,
                 is_decode=is_decode,
                 n_head_channels=n_head_channels,
                 att_dim=layer_setting["att_dim"],
-                no_layer_nh=None,
                 embed_names=embed_names,
                 embed_confs=layer_setting['embed_confs'] ,
                 embed_mode=layer_setting['embed_mode'] ,
@@ -636,36 +552,38 @@ class Parallel_NOBlock(nn.Module):
 class SpatialAttention(nn.Module):
   
     def __init__(self,
-                 no_layer: NoLayer,
-                 model_dim_in, 
+                 x_dims, 
+                 grid_layer,
                  n_head_channels,
-                 n_params, 
                  spatial_attention_configs = None,
-                 p_dropout=0.
+                 p_dropout=0.,
+                 rotate_coord_system=True
                 ) -> None: 
       
         super().__init__()
 
-        ch_in = int(model_dim_in*torch.tensor(n_params).prod())
+        self.reshaper = ReshapeAtt(x_dims, None, cross_var=True)
 
         self.grid_attention_layer = GridAttention(
-            no_layer.grid_layers[str(no_layer.global_level_no)],
-            ch_in,
-            ch_in,
+            grid_layer,
+            int(torch.tensor(x_dims).prod()),
+            int(torch.tensor(x_dims).prod()),
             n_head_channels=n_head_channels,
             spatial_attention_configs=spatial_attention_configs,
-            rotate_coord_system=no_layer.rotate_coord_system
+            rotate_coord_system=rotate_coord_system
         )
        
     def forward(self, x, indices_sample=None, mask=None, emb=None):
+        nv = x.shape[2]
+        x, mask = self.reshaper.shape_to_att(x, mask=mask)
 
-        x_shape = x.shape
-        x, mask = shape_to_att(x, mask=mask)
+        # insert time dimension
         x = x.unsqueeze(dim=1)
         mask = mask.unsqueeze(dim=1) if mask is not None else mask
+
         x = self.grid_attention_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
         x = x.squeeze(dim=1)
-        x = shape_to_x(x, x_shape)
+        x = self.reshaper.shape_to_x(x, nv_dim=nv)
         return x
 
 
@@ -673,7 +591,8 @@ class ParamAttention(nn.Module):
   
     def __init__(self,
                  model_dims, 
-                 n_head_channels, 
+                 n_head_channels,
+                 cross_var=False, 
                  att_dim=None,
                  p_dropout = 0,
                  param_idx_att = None,
@@ -686,6 +605,8 @@ class ParamAttention(nn.Module):
         model_dim_total = torch.tensor(model_dims).prod()
         model_dim_param = model_dim_total/float(model_dims[param_idx_att]) if param_idx_att is not None else model_dim_total
         model_dim_param = int(model_dim_param)
+
+        self.reshaper = ReshapeAtt(model_dims, param_idx_att, cross_var=cross_var)
 
         self.ada_ln = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder)
         self.ada_ln_mlp = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder_mlp)
@@ -700,332 +621,122 @@ class ParamAttention(nn.Module):
         self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
 
         self.param_idx_att = param_idx_att
+        self.cross_var = cross_var
 
         self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
 
 
     def forward(self, x, mask=None, emb=None):
-        x_shape = x.shape
+        nv = x.shape[2]
 
-        x_res, mask = shape_to_att(x, self.param_idx_att, mask=mask)
+        x_res, mask = self.reshaper.shape_to_att(x, mask=mask)
 
         x = self.ada_ln(x, emb=emb)
 
-        x, _ = shape_to_att(x, self.param_idx_att)
+        x, _ = self.reshaper.shape_to_att(x)
         
-        x, mask  = self.attention_layer(x, mask=mask)
+        x, mask_update = self.attention_layer(x, mask=mask)
 
         x = self.dropout(x)
+        
+        residual = x_res + self.gamma*x
 
-        x = x_res + self.gamma*x
+        x = torch.where(mask.unsqueeze(-1), x, residual)
 
         x_res = x
 
-        x = shape_to_x(x, x_shape, self.param_idx_att)  
+        x = self.reshaper.shape_to_x(x, nv)  
         x = self.ada_ln_mlp(x, emb=emb)
-        x, _ = shape_to_att(x, self.param_idx_att)
+        x, _ = self.reshaper.shape_to_att(x)
 
         x = self.res_layer(x)
 
         x = x_res + self.gamma_mlp*x
 
-        x = shape_to_x(x, x_shape, self.param_idx_att)
+        x = self.reshaper.shape_to_x(x, nv)
 
-        if mask is not None:
-            mask = mask.view(*x.shape[:3],-1)
-            mask = mask.sum(dim=-1).bool()
+        if mask_update is not None:
+            mask_update = mask_update.view(*x.shape[:3],-1)
+            mask_update = mask_update.sum(dim=-1).bool()
             
 
-        return x, mask
-    
-class SelfCrossAttention(nn.Module):
+        return x, mask_update
   
-    def __init__(self,
-                 model_dim_in, 
-                 n_head_channels, 
-                 att_dim=None,
-                 p_dropout = 0,
-                 n_params = [],
-                 param_idx_att = None,
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
+class ReshapeAtt:
+    def __init__(self, shape, param_att, cross_var=True):
+        self.shape = shape
+        self.param_att = param_att
+        self.cross_var = cross_var
 
-        model_dim_total = model_dim_in*torch.tensor(n_params).prod()
-        model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
-        model_dim_param = int(model_dim_param)
+    def shape_to_att(self, x, mask=None):
+        b,n,nv = x.shape[:3]
 
-        att_dim = att_dim if att_dim is not None and model_dim_param < att_dim else model_dim_param
+        if not self.cross_var:
+            x = x.view(b,n*nv,1,*self.shape)
 
-        self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
+        b,n2,nv2 = x.shape[:3]
 
-        self.ada_ln_q = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
-        self.ada_ln_kv1 = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
-        self.ada_ln_kv2 = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
+        if self.param_att == 0:
+            x = x.view(b,n2,nv2*self.shape[0],-1)
 
-        self.ada_ln_mlp = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder_mlp)
+        elif self.param_att==1:
+            x = x.transpose(3,4).contiguous()
+            x = x.view(b,n2,nv2*self.shape[1],-1)
 
-        self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-
-        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
-
-        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
-
-        self.res_gamma = nn.Parameter(torch.tensor(1e-6), requires_grad=True)
-
-        self.param_idx_att = param_idx_att
-
-    def forward(self, x, mask=None, emb=None):
-  
-        x_shape = x.shape
-
-        res_gamma = self.res_gamma
-
-        if mask is not None:
-            f_mask = torch.stack((mask==False).chunk(2,dim=2), dim=3) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)])
-            f_mask = f_mask/(f_mask+1e-10).sum(dim=-1, keepdim=True)
-            x_q = f_mask.view(*f_mask.shape,1,1,1) * torch.stack(x.chunk(2,dim=2), dim=3)
+        elif self.param_att==2:
+            x = x.transpose(3,5).contiguous()
+            x = x.view(b,n2,nv2*self.shape[2],-1)
+        
         else:
-            x_q = torch.stack(x.chunk(2,dim=2), dim=3) * torch.cat([1-res_gamma.view(-1), res_gamma.view(-1)]).view(1,1,2,1,1,1)
-
-        x_q = x_q.sum(dim=3)
-
-        x_shape = x_q.shape
-
-        x_res = x_q
-
-        x_q = self.ada_ln_q(x_q, emb=emb).contiguous()
-
-        x1, x2 = x.chunk(2, dim=2) 
-        x1 = self.ada_ln_kv1(x1, emb=emb).contiguous()
-        x2 = self.ada_ln_kv2(x2, emb=emb).contiguous()
-        x = torch.concat((x1,x2), dim=2)
-        
-        x_res , _ = shape_to_att(x_res, self.param_idx_att)
-        x_q, _ = shape_to_att(x_q, self.param_idx_att, mask=mask)
-        x, mask = shape_to_att(x, self.param_idx_att, mask=mask)
-        
-        x, _  = self.attention_layer(x_q, x, mask=mask)
-
-        x = self.dropout(x)
-
-        x = x_res + self.gamma*x
-
-        x_res = x
-
-        x = shape_to_x(x, x_shape, self.param_idx_att)
-        x = self.ada_ln_mlp(x, emb=emb)
-        x, _ = shape_to_att(x, self.param_idx_att)
-    
-        x = self.res_layer(x)
-
-        x = x_res + self.gamma_mlp*x
-
-        x = shape_to_x(x, x_shape, self.param_idx_att)
+            x = x.view(b,n2,nv2,-1)
 
         if mask is not None:
-            mask = mask.chunk(2,dim=-1)[0]
+            mask = mask.view(b,n2,nv2,1).repeat_interleave(x.shape[2]//nv2, dim=-1)
+            mask = mask.view(b,n2,-1)
 
         return x, mask
     
-class CrossAttention(nn.Module):
-  
-    def __init__(self,
-                 model_dim_in, 
-                 n_head_channels, 
-                 att_dim=None,
-                 p_dropout = 0,
-                 n_params = [],
-                 param_idx_att = None,
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
+    def shape_to_x(self, x, nv_dim):
+        b,n = x.shape[:2]
 
-        model_dim_total = model_dim_in*torch.tensor(n_params).prod()
-        model_dim_param = model_dim_total/float(n_params[param_idx_att]) if param_idx_att is not None else model_dim_total
-        model_dim_param = int(model_dim_param)
+        if self.param_att == 0 or self.param_att is None:
+            x = x.view(b,n,-1,*self.shape)
 
-        att_dim = att_dim if att_dim is not None and model_dim_param < att_dim else model_dim_param
+        elif self.param_att == 1:
+            shape = (self.shape[1], self.shape[0], self.shape[2], self.shape[3], self.shape[4])
+            x = x.view(b,n,-1,*shape).transpose(3,4)
 
-        self.attention_layer = CrossChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False)
-
-        self.ada_ln = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
-        self.ada_ln_cross = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder)
-
-        self.ada_ln_mlp = AdaptiveLayerNorm(n_params + [int(model_dim_in)], model_dim_param, embedder=embedder_mlp)
-
-        self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-
-        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
-
-        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
-
-        self.param_idx_att = param_idx_att
-
-    def forward(self, x, mask=None, emb=None):
-        x, x_cross = x.chunk(2,dim=2)
-        x_shape = x.shape
-
-        if mask is not None:
-            _, mask = mask.chunk(2,dim=2)
-
-        x_res, mask = shape_to_att(x.contiguous(), self.param_idx_att, mask=mask)
-
-        x = self.ada_ln(x, emb=emb)
-        x_cross_v = x_cross
-        x_cross = self.ada_ln_cross(x_cross, emb=emb)
+        elif self.param_att == 2:
+            shape = (self.shape[2], self.shape[1], self.shape[0], self.shape[3], self.shape[4])
+            x = x.view(b,n,-1,*shape).transpose(3,5)
         
-        x, _ = shape_to_att(x.contiguous(), self.param_idx_att)
-        x_cross, _ = shape_to_att(x_cross.contiguous(), self.param_idx_att)
-        x_cross_v, _ = shape_to_att(x_cross_v.contiguous(), self.param_idx_att)
+        x = x.view(b,-1,nv_dim,*self.shape)
 
-        x, _  = self.attention_layer(x, x_cross, x_cross_v=x_cross_v, mask=mask)
+        return x
 
-        x = self.dropout(x)
-
-        x = x_res + self.gamma*x
-
-        x_res = x
-
-        x = shape_to_x(x, x_shape, self.param_idx_att)
-        x = self.ada_ln_mlp(x, emb=emb)
-        x, _ = shape_to_att(x, self.param_idx_att)
-    
-        x = self.res_layer(x)
-
-        x = x_res + self.gamma_mlp*x
-
-        x = shape_to_x(x, x_shape, self.param_idx_att)
-
-        return x, mask
-
-class NH_skip(nn.Module):
-  
-    def __init__(self,
-                 no_layer_nh: NoLayer,
-                 model_dim_in, 
-                 n_head_channels, 
-                 p_dropout = 0,
-                 n_params = [],
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
-
-        model_dim_in = model_dim_in*torch.tensor(n_params).prod()
-
-        self.no_layer_nh = no_layer_nh
-
-        self.attention_layer = ParamAttention(model_dim_in, 
-                                              n_head_channels, 
-                                              att_dim=model_dim_in, 
-                                              p_dropout=p_dropout, 
-                                              param_idx_att=None, 
-                                              n_params=no_layer_nh.n_params, 
-                                              embedder=embedder, 
-                                              embedder_mlp=embedder_mlp)
-
-    def forward(self, x, indices_sample=None, mask=None, emb=None):
-        x_shape = x.shape
-        x, mask = shape_to_att(x, mask=mask)
-
-        x, mask = self.no_layer_nh.transform(x, indices_sample=indices_sample, mask=mask)
-
-        x, mask = self.attention_layer(x, mask=mask, emb=emb)
- 
-        x, mask = self.no_layer_nh.inverse_transform(x, indices_sample=indices_sample, mask=mask)
-
-        x = shape_to_x(x, x_shape)
-
-        return x, mask
-
-class NHAttention(nn.Module):
-  
-    def __init__(self,
-                 no_layer_nh: NoLayer,
-                 model_dim_in, 
-                 n_head_channels, 
-                 p_dropout = 0,
-                 n_params = [],
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
-
-        model_dim_in = model_dim_in*torch.tensor(n_params).prod()
-
-        self.no_layer_nh = no_layer_nh
-
-        self.attention_layer = ParamAttention(model_dim_in, 
-                                              n_head_channels, 
-                                              att_dim=model_dim_in, 
-                                              p_dropout=p_dropout, 
-                                              param_idx_att=None, 
-                                              n_params=no_layer_nh.n_params, 
-                                              embedder=embedder, 
-                                              embedder_mlp=embedder_mlp)
-
-    def forward(self, x, indices_sample=None, mask=None, emb=None):
-        x_shape = x.shape
-        x, mask = shape_to_att(x, mask=mask)
-
-        x, mask = self.no_layer_nh.transform(x, indices_sample=indices_sample, mask=mask)
-
-        x, mask = self.attention_layer(x, mask=mask, emb=emb)
- 
-        x, mask = self.no_layer_nh.inverse_transform(x, indices_sample=indices_sample, mask=mask)
-
-        x = shape_to_x(x, x_shape)
-
-        return x, mask
-
-
-
-
-def shape_to_att(x, param_att: int=None, mask=None):
-    b,n,nv = x.shape[:3]
-    param_shape = x.shape[3:]
-    n_c = x.shape[-1]
-
-    if param_att == 0:
-        x =  x.view(b,n*nv,param_shape[0],-1)
-    
-    elif param_att==1:
-        x = x.transpose(3,4).contiguous()
-        x = x.view(b,n*nv,param_shape[1],-1)
-    
-    elif param_att==2:
-        x = x.transpose(3,5)
-        x = x.view(b,n*nv,param_shape[2],-1)
-    else:
-        x = x.view(b,n,nv,-1)
-
-    if mask is not None:
-        mask = mask.view(b,x.shape[1],-1)
-        mask = mask.repeat_interleave(x.shape[2]//mask.shape[-1],dim=-1)
-
-    return x, mask
-    
-
-def shape_to_x(x, x_shape_orig:tuple, param_att: int=None):
-
-    if param_att == 0 or param_att is None:
-        x =  x.view(x_shape_orig)
-    
-    elif param_att==1:
-        x_shape_flat = (*x_shape_orig[:3],x_shape_orig[4], x_shape_orig[3], *x_shape_orig[5:])   
-        x = x.view(x_shape_flat).transpose(3,4).contiguous()
-        
-    elif param_att==2:
-        x_shape_flat = (*x_shape_orig[:3], x_shape_orig[5], x_shape_orig[4], x_shape_orig[3], *x_shape_orig[6:])   
-        x = x.view(x_shape_flat).transpose(3,5).contiguous()
-
-    return x  
+def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
+    no_layer = polNormal_NoLayer(
+            layer_setting['grid_layer_in'],
+            layer_setting['grid_layer_no'],
+            n_amplitudes_in=dim_in,
+            n_amplitudes_out=dim_out,
+            n_amplitdues_inv_in = inv_dim_in,
+            n_amplitudes_inv_out = inv_dim_out,
+            n_phi=layer_setting["n_params"][0],
+            n_dist=layer_setting["n_params"][1],
+            n_sigma=layer_setting["n_params"][2],
+            avg_phi=layer_setting["avg_params"][0],
+            avg_dist=layer_setting["avg_params"][1],
+            avg_sigma=layer_setting["avg_params"][2],
+            dist_learnable=layer_setting["global_params_learnable"][0],
+            sigma_learnable=layer_setting["global_params_learnable"][1],
+            amplitudes_learnable=layer_setting["global_params_learnable"][2],
+            nh_projection=layer_setting["nh_transformation"], 
+            nh_backprojection=layer_setting["nh_inverse_transformation"],
+            precompute_coordinates=layer_setting["precompute_coordinates"],
+            rotate_coord_system=layer_setting["rotate_coordinate_system"],
+            pretrained_weights=layer_setting.get("pretrained_weights",None),
+            n_var_amplitudes=layer_setting["n_var_amplitudes"],
+            with_res=layer_setting.get("with_res", False)
+        )
+    return no_layer

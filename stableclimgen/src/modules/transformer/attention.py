@@ -134,6 +134,7 @@ class ChannelVariableAttention(nn.Module):
             x = self.res_layer(x)
 
         if mask is not None:
+            mask = mask.clone()
             mask = mask.view(b, x.shape[1], -1)
             mask[mask.sum(dim=-1)!=mask.shape[-1]] = False
             mask = mask.view(b,n,nv)

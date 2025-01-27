@@ -143,17 +143,22 @@ class LightningMGNOTransformer(pl.LightningModule):
     
     def configure_optimizers(self):
         no_params = []
+        emb_params = []
         params = []
         for n, p in self.named_parameters():
             if 'sigma' in n or 'dist' in n:
                 no_params.append(p)
+            elif "Embedder" in n or "embedding" in n:
+                emb_params.append(p)
             else:
                 params.append(p)
-        
+                    
         param_groups = []
         for lr_group in self.lr_groups:
             if lr_group['param_group']=='no_params':
                 p = no_params
+            elif lr_group['param_group']=='emb_params':
+                p = emb_params
             else:
                 p = params
             param_groups.append({"params":p, "lr": lr_group["lr"], "name": lr_group['param_group']})
