@@ -42,6 +42,7 @@ class ResBlock(EmbedBlock):
         self.dropout = dropout
         self.use_conv = use_conv
         self.use_scale_shift_norm = use_scale_shift_norm
+        self.dims = dims
 
         # Define the input transformation layers
         self.in_layers = nn.Sequential(
@@ -68,7 +69,7 @@ class ResBlock(EmbedBlock):
                 emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
                 emb_dict[emb.name] = emb
             self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=2)
-            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch)
+            self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch * (2 ** use_scale_shift_norm))
 
         # Define the output layers including dropout and convolution
         self.out_layers = nn.Sequential(
@@ -108,7 +109,8 @@ class ResBlock(EmbedBlock):
 
         if hasattr(self, "embedding_layer"):
             emb_out = self.embedding_layer(self.embedder_seq(emb))
-            emb_out = rearrange(emb_out, 'b t h w v c -> (b v) c t h w')
+            pattern = 'b t h w v c -> (b v) c t h w' if self.dims == 3 else 'b t h w v c -> (b t v) c h w'
+            emb_out = rearrange(emb_out, pattern)
 
             # Apply scale-shift normalization if configured
             if self.use_scale_shift_norm:
@@ -160,7 +162,6 @@ class ResBlockSequential(EmbedBlock):
         dropout = check_value(dropout, len(blocks))
         use_conv = check_value(use_conv, len(blocks))
         use_scale_shift_norm = check_value(use_scale_shift_norm, len(blocks))
-
         res_blocks = []
         for i, block in enumerate(blocks):
             kernel_size[i] = check_value(kernel_size[i], dims)

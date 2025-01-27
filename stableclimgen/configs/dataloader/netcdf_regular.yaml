@@ -8,3 +8,9 @@ dataloader:
   _target_: torch.utils.data.DataLoader
   batch_size: 4
   num_workers: 12
+
+datamodule:
+  _target_: stableclimgen.src.utils.pl_data_module.DataModule
+  batch_size: 1
+  num_workers: 1
+  use_costum_ddp_sampler: false

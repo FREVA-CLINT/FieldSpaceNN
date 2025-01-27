@@ -97,11 +97,12 @@ class DiffusionGenerator(nn.Module):
         self.skip_connections = skip_connections
         self.concat_mask = concat_mask
         self.concat_cond = concat_cond
+        self.dims = len(patch_emb_config.patch_emb_size)
 
         # Define input patch embedding
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedderND(
-            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_config.patch_emb_kernel, patch_emb_config.patch_emb_size
-        ), spatial_dim_count)
+            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_config.patch_emb_kernel, patch_emb_config.patch_emb_size, dims=self.dims
+        ), spatial_dim_count, dims=self.dims)
 
         # Define encoder, processor, and decoder block lists
         enc_blocks, dec_blocks, prc_blocks = [], [], []
@@ -120,11 +121,11 @@ class DiffusionGenerator(nn.Module):
                 # Determine block type (conv, resnet, or transformer)
                 if block_conf.block_type == "conv":
                     block = RearrangeConvCentric(
-                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
+                        ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
                 elif block_conf.block_type == "resnet":
                     block = RearrangeConvCentric(
-                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs), spatial_dim_count
+                        ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
                 else:
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
@@ -146,7 +147,9 @@ class DiffusionGenerator(nn.Module):
 
         # Define output unpatchifying layer
         if patch_emb_config.block_type == "conv":
-            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch), spatial_dim_count)
+            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch,
+                                                           kernel_size=patch_emb_config.patch_emb_kernel, dims=self.dims),
+                                            spatial_dim_count, dims=self.dims)
         else:
             self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_config.patch_emb_size,
                                         **patch_emb_config.sub_confs, spatial_dim_count=spatial_dim_count)
@@ -170,7 +173,7 @@ class DiffusionGenerator(nn.Module):
         """
 
         # Define the output shape for reconstruction
-        out_shape = x.shape[1:-2]
+        out_shape = x.shape[-2-self.dims:-2]
 
         # Concatenate mask and conditioning if specified
         if self.concat_mask:

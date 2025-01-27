@@ -230,6 +230,7 @@ class GaussianDiffusion:
         mask_data: torch.Tensor,
         cond_data: torch.Tensor,
         coords: torch.Tensor,
+        sample_vars: torch.Tensor,
         t: torch.Tensor,
         denoised_fn: Optional[Callable] = None,
         model_kwargs: Optional[Dict[str, Union[torch.Tensor, np.ndarray]]] = None
@@ -237,6 +238,7 @@ class GaussianDiffusion:
         """
         Apply the model to get p(x_{t-1} | x_t) and predict x_0.
 
+        :param sample_vars:
         :param model: The model function to generate predictions.
         :param x: Input tensor at diffusion step t.
         :param mask_data: Mask tensor applied to x_t.
@@ -255,7 +257,8 @@ class GaussianDiffusion:
         assert t.shape == (b,)
         emb = {
             "DiffusionStepEmbedder": self._scale_steps(t),
-            "CoordinateEmbedder": coords
+            "CoordinateEmbedder": coords,
+            "VariableEmbedder": sample_vars
         }
         model_output = model(x, emb, mask_data, cond_data)
 
@@ -389,6 +392,7 @@ class GaussianDiffusion:
             mask_data: torch.Tensor,
             cond_data: torch.Tensor,
             coords: torch.Tensor,
+            sample_vars: torch.Tensor,
             t: torch.Tensor,
             model_kwargs: Optional[Dict[str, Union[torch.Tensor, np.ndarray]]] = None
     ) -> Dict[str, torch.Tensor]:
@@ -426,6 +430,7 @@ class GaussianDiffusion:
             mask_data=mask_data,
             cond_data=cond_data,
             coords=coords,
+            sample_vars=sample_vars,
             t=t,
             model_kwargs=model_kwargs
         )
@@ -459,11 +464,13 @@ class GaussianDiffusion:
             mask_data: torch.Tensor,
             cond_data: torch.Tensor,
             coords: torch.Tensor,
+            sample_vars: torch.Tensor,
             noise: Optional[torch.Tensor] = None
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         """
         Compute training losses for a single timestep.
 
+        :param sample_vars:
         :param model: The model function to evaluate loss on.
         :param gt_data: Ground truth tensor of shape [N x ...].
         :param t: Diffusion step tensor of shape [N].
@@ -495,6 +502,7 @@ class GaussianDiffusion:
                 mask_data=mask_data,
                 cond_data=cond_data,
                 coords=coords,
+                sample_vars=sample_vars,
                 t=t
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
@@ -504,7 +512,8 @@ class GaussianDiffusion:
         elif self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
             emb = {
                 "DiffusionStepEmbedder": self._scale_steps(t),
-                "CoordinateEmbedder": coords
+                "CoordinateEmbedder": coords,
+                "VariableEmbedder": sample_vars
             }
             model_output = model(x_t, emb, mask_data, cond_data)
 
@@ -521,6 +530,7 @@ class GaussianDiffusion:
                     mask_data=mask_data,
                     cond_data=cond_data,
                     coords=coords,
+                    sample_vars=sample_vars,
                     t=t,
                 )["output"]
                 if self.loss_type == LossType.RESCALED_MSE:

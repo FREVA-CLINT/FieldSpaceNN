@@ -56,7 +56,7 @@ class Upsample(nn.Module):
         super().__init__()
         self.use_conv = use_conv
         # Define upsampling operation, using nearest-neighbor if none is provided
-        self.upsample = upsample or nn.Upsample(scale_factor=2, mode="nearest")
+        self.upsample = upsample or nn.Upsample(scale_factor=tuple(x + 1 for x in padding), mode="nearest")
         # Define convolution layer if use_conv is True
         if use_conv:
             self.conv = conv_nd(in_channels, out_channels, kernel_size, 1, padding, dims)

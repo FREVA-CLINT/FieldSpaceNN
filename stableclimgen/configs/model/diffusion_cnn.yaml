@@ -15,7 +15,7 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal", "normal", "down"]
-        embedder_names: [["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
@@ -23,7 +23,7 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal"]
-        embedder_names: [["DiffusionStepEmbedder"]]
+        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
@@ -32,12 +32,12 @@ model:
       ch_mult: 0.5
       sub_confs:
         blocks: ["normal", "normal", "up"]
-        embedder_names: [["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"], ["DiffusionStepEmbedder"]]
+        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
   patch_emb_config:
     block_type: "conv"
-    patch_emb_size: [ 1, 1, 1 ]
-    patch_emb_kernel: [ 1, 3, 3 ]
+    patch_emb_size: [ 1, 1 ]
+    patch_emb_kernel: [ 3, 3 ]
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion

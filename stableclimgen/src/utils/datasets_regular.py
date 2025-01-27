@@ -1,11 +1,15 @@
+import copy
 import json
 import os
 import random
 from typing import Tuple, List, Dict, Any, Union
 
 import numpy as np
+import omegaconf
 import torch
 import xarray as xr
+from attr.validators import instance_of
+from torch import Tensor
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
@@ -32,15 +36,9 @@ def file_loadchecker(filename: str, data_type: str, lazy_load: bool = False) -> 
     except Exception as e:
         raise ValueError(f'Cannot read {basename}. Ensure it is a valid netCDF file and not corrupted. Error: {e}')
 
-    ds1 = ds.copy()
-    ds = ds.drop_vars(data_type, errors='ignore')
-
     # Retrieve data, optionally as a lazy-loaded xarray DataArray
-    data = ds1[data_type] if lazy_load else ds1[data_type].values
-    coords = {key: ds1[data_type].coords[key] for key in ds1[data_type].coords if key != "time"}
-
-    # Drop all other variables and the time dimension
-    ds1 = ds1.drop_vars(list(ds1.keys()), errors='ignore').drop_dims("time", errors='ignore')
+    data = ds[data_type] if lazy_load else ds[data_type].values
+    coords = {key: ds[data_type].coords[key] for key in ds[data_type].coords if key != "time"}
 
     return data, data.shape[0], coords
 
@@ -70,91 +68,152 @@ class ClimateDataset(Dataset):
     """
 
     def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], norm_dict: Dict, lazy_load: bool = True,
-                 seq_length: int = 1):
+                 seq_length: int = 1, n_sample_vars: int = -1, shared_files: bool = False):
         self.lazy_load = lazy_load
         self.seq_length = seq_length
 
-        self.vars, self.data_seq_lengths = [], []
-
         self.var_normalizers = {}
-        self.climate_in_data, self.in_coords = {}, {}
-        self.climate_out_data, self.out_coords = {}, {}
+        self.variables_source = data_dict["source"]["variables"]
+        self.variables_target = data_dict["target"]["variables"]
+        self.climate_in_files = {}
+        self.climate_out_files = {}
+        self.n_sample_vars = n_sample_vars
 
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
-        # Load input data and coordinates
-        for i, var in enumerate(data_dict["input"].keys()):
-            climate_in_data, in_lengths, in_coords = load_data(data_dict["input"][var], var)
-            self.climate_in_data[var] = climate_in_data
-            if i == 0:
-                self.data_seq_lengths = [length - self.seq_length + 1 for length in in_lengths]
-            self.in_coords[var] = in_coords
-
-        # Load output data and coordinates
-        for var in data_dict["output"].keys():
-            climate_out_data, _, out_coords = load_data(data_dict["output"][var], var)
-            self.climate_out_data[var] = climate_out_data
-            self.out_coords[var] = out_coords
-
+        for var in self.variables_source:
             # create normalizers
             norm_class = norm_dict[var]['normalizer']['class']
             assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-            self.vars.append(var)
             self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
                 norm_dict[var]['stats'],
                 norm_dict[var]['normalizer'])
 
-    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Load source data and coordinates
+        for i, file in enumerate(data_dict["source"]["files"]):
+            if shared_files:
+                for var in self.variables_source:
+                    if var in self.climate_in_files.keys():
+                        if isinstance(file, str):
+                            self.climate_in_files[var].append(file)
+                        else:
+                            self.climate_in_files[var] += file
+                    else:
+                        self.climate_in_files[var] = [file] if isinstance(file, str) else file
+            else:
+                var = self.variables_source[i]
+                if var in self.climate_in_files.keys():
+                    if isinstance(file, str):
+                        self.climate_in_files[var].append(file)
+                    else:
+                        self.climate_in_files[var] += file
+                else:
+                    self.climate_in_files[var] = [file] if isinstance(file, str) else file
+
+        # Load target data and coordinates
+        for i, file in enumerate(data_dict["target"]["files"]):
+            if shared_files:
+                for var in self.variables_target:
+                    if var in self.climate_out_files.keys():
+                        if isinstance(file, str):
+                            self.climate_out_files[var].append(file)
+                        else:
+                            self.climate_out_files[var] += file
+                    else:
+                        self.climate_out_files[var] = [file] if isinstance(file, str) else file
+            else:
+                var = self.variables_target[i]
+                if var in self.climate_out_files.keys():
+                    if isinstance(file, str):
+                        self.climate_out_files[var].append(file)
+                    else:
+                        self.climate_out_files[var] += file
+                else:
+                    self.climate_out_files[var] = [file] if isinstance(file, str) else file
+        ds_source = xr.open_dataset(self.climate_in_files[self.variables_source[0]][0], decode_times=False)
+        self.data_file_length = ds_source["time"].shape[0] - self.seq_length + 1
+        self.len_dataset = self.data_file_length * len(self.climate_in_files[self.variables_source[0]])
+
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
         Retrieve a sequence from the dataset at a given index.
 
         :param index: Index of the sequence to retrieve.
         :return: A tuple containing input data, input coordinates, ground truth data, and ground truth coordinates.
         """
-        file_index = 0
-        current_index = 0
-        # Determine the dataset and sequence index for the requested index
-        for length in self.data_seq_lengths:
-            if index >= current_index + length:
-                current_index += length
-                file_index += 1
-            else:
-                break
-        seq_index = index - current_index
+        file_index = index // self.data_file_length
+        seq_index = index % self.data_file_length
+
+        if self.n_sample_vars == -1:
+            sample_vars = torch.arange(len(self.variables_source))
+        else:
+            sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
 
         # Load input and ground truth data for the selected sequence
-        in_data, in_coords = self.load_data(file_index, seq_index, self.climate_in_data, self.in_coords)
-        gt_data, gt_coords = self.load_data(file_index, seq_index, self.climate_out_data, self.out_coords)
+        in_data, in_coords, out_data, out_coords = self.load_data(file_index, seq_index, sample_vars)
 
-        return in_data.unsqueeze(-1), in_coords, gt_data.unsqueeze(-1), gt_coords
+        return in_data.unsqueeze(-1), in_coords, out_data.unsqueeze(-1), out_coords, sample_vars
 
-    def load_data(self, file_index: int, seq_index: int, dataset: Dict, coords: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_files(self, file_path_source, file_path_target=None):
+
+        if self.lazy_load:
+            ds_source = xr.open_dataset(file_path_source, decode_times=False)
+        else:
+            ds_source = xr.load_dataset(file_path_source, decode_times=False)
+
+        if file_path_target is None:
+            ds_target = copy.deepcopy(ds_source)
+
+        elif file_path_target == file_path_source:
+            ds_target = ds_source
+
+        else:
+            if self.lazy_load:
+                ds_target = xr.open_dataset(file_path_target, decode_times=False)
+            else:
+                ds_target = xr.load_dataset(file_path_target, decode_times=False)
+
+        return ds_source, ds_target
+
+    def load_data(self, file_index: int, seq_index: int, sample_vars) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Load and process a data sequence from a given dataset index.
 
+        :param sample_vars:
         :param file_index: Index of the file to retrieve data from.
         :param seq_index: Index of the sequence within the dataset.
         :param dataset: Dict of datasets to load data from.
         :param coords: Dict of coordinates for each dataset.
         :return: Processed data sample and coordinates for the given sequence.
         """
-        data_sample, data_coords = [], []
-        for var in self.vars:
+
+        data_in, coords_in, data_out, coords_out = [], [], [], []
+        for i in sample_vars:
+            var = self.variables_source[i.item()]
             # Extract data sequence and convert to torch tensor
-            data = torch.from_numpy(np.nan_to_num(dataset[var][file_index][seq_index:seq_index + self.seq_length]))
+            ds_source, ds_target = self.get_files(self.climate_in_files[var][file_index], self.climate_out_files[var][file_index])
+
+            data_src = torch.from_numpy(np.nan_to_num(ds_source[var][seq_index:seq_index + self.seq_length]))
+            data_tgt = torch.from_numpy(np.nan_to_num(ds_target[var][seq_index:seq_index + self.seq_length]))
 
             # Apply normalization if a normalizer is provided
-            data = self.var_normalizers[var].normalize(data)
-            data_sample.append(data)
+            data_in.append(self.var_normalizers[var].normalize(data_src))
+            data_out.append(self.var_normalizers[var].normalize(data_tgt))
 
             # Load and arrange latitude and longitude coordinates
-            lats = torch.from_numpy(coords[var][file_index]["lat"].values)
-            lons = torch.from_numpy(coords[var][file_index]["lon"].values)
+            lats = torch.from_numpy(ds_source[var].coords["lat"].values)
+            lons = torch.from_numpy(ds_source[var].coords["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
-            data_coords.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
+            coords_in.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
 
-        return torch.stack(data_sample, dim=-1), torch.stack(data_coords, dim=-2)
+            # Load and arrange latitude and longitude coordinates
+            lats = torch.from_numpy(ds_target[var].coords["lat"].values)
+            lons = torch.from_numpy(ds_target[var].coords["lon"].values)
+            lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
+            coords_out.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
+
+        return torch.stack(data_in, dim=-1), torch.stack(coords_in, dim=-2), torch.stack(data_out, dim=-1), torch.stack(coords_out, dim=-2)
 
     def __len__(self) -> int:
         """
@@ -162,7 +221,7 @@ class ClimateDataset(Dataset):
 
         :return: Total sequence count.
         """
-        return sum(self.data_seq_lengths)
+        return self.len_dataset
 
 
 class MaskClimateDataset(ClimateDataset):
@@ -176,15 +235,14 @@ class MaskClimateDataset(ClimateDataset):
         super().__init__(**kwargs)
         self.mask_mode = mask_mode
 
-    def __getitem__(self, index: int) -> Tuple[
-        torch.Tensor, List[torch.Tensor], torch.Tensor, List[torch.Tensor], torch.Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
         Retrieve a sequence from the dataset with a mask applied.
 
         :param index: Index of the sequence to retrieve.
         :return: A tuple containing input data, input coordinates, ground truth data, ground truth coordinates, and mask.
         """
-        in_data, in_coords, gt_data, gt_coords = super().__getitem__(index)
+        in_data, in_coords, gt_data, gt_coords, sample_vars = super().__getitem__(index)
         mask = torch.zeros_like(gt_data)
 
         # Define indices to set in mask based on mask mode
@@ -204,4 +262,4 @@ class MaskClimateDataset(ClimateDataset):
 
         # Apply mask based on selected indices
         mask[:, indices_to_set] = 1
-        return in_data, in_coords, gt_data, gt_coords, mask
+        return in_data, in_coords, gt_data, gt_coords, mask, sample_vars

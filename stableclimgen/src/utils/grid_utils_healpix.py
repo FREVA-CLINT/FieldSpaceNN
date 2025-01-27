@@ -212,6 +212,8 @@ def get_nearest_to_healpix_recursive(c_t_global: torch.tensor, c_i: torch.tensor
 
     :returns: indices in range, in radius mask, tuple(distances, angles) between points
     """
+    c_t_global = c_t_global.transpose(0, 1)
+    c_i = c_i.transpose(0, 2)
 
     _, n_sec_i, _ = c_i.shape
     n_target = c_t_global.shape[-1]
@@ -308,7 +310,7 @@ def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torc
                                                                     level=level, nh=nh, search_radius=search_radius,
                                                                     periodic_fov=periodic_fov)
         else:
-            indices, in_rng, pos = get_nearest_to_healpix_recursive(coords_healpix, coords_input[:, indices], level=level,
+            indices, in_rng, pos = get_nearest_to_healpix_recursive(coords_healpix, coords_input[indices], level=level,
                                                                     global_indices_i=indices, nh=nh,
                                                                     search_radius=search_radius, periodic_fov=periodic_fov)
 
