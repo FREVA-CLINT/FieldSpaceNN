@@ -11,22 +11,24 @@ from ...utils.visualization import scatter_plot
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
-    def __init__(self, optimizer, warmup, max_iters, iter_start=0):
-        self.warmup = warmup
+    def __init__(self, optimizer, lr_groups, max_iters, iter_start=0):
         self.max_num_iters = max_iters
         self.iter_start = iter_start
+        self.warmups = [lr_group["lr_warmup"] for lr_group in lr_groups]
         super().__init__(optimizer)
 
     def get_lr(self):
-        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
-        return [base_lr * lr_factor for base_lr in self.base_lrs]
+        lr_factors = self.get_lr_factor(epoch=self.last_epoch)
+        return [base_lr * lr_factors[k] for k,base_lr in enumerate(self.base_lrs)]
 
     def get_lr_factor(self, epoch):
         epoch += self.iter_start
-        lr_factor = 0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters))
-        if epoch <= self.warmup:
-            lr_factor *= epoch * 1.0 / self.warmup
-        return lr_factor
+        lr_factors = [0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters)) for _ in range(len(self.warmups))]
+        
+        for k, lr_factor in enumerate(lr_factors):
+            if epoch <= self.warmups[k]:
+                lr_factors[k] = lr_factor*epoch * 1.0 / self.warmups[k]
+        return lr_factors
 
 
 class MSE_loss(nn.Module):
@@ -49,13 +51,12 @@ class NH_TV_loss(nn.Module):
         return loss
 
 class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr, lr_warmup=None):
+    def __init__(self, model, lr_groups):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
 
-        self.lr = lr
-        self.lr_warmup = lr_warmup
+        self.lr_groups=lr_groups
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
 
@@ -67,7 +68,9 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
-        self.log_dict({"train/loss": loss.item()}, prog_bar=True, sync_dist=True)
+        self.log_dict({"train/loss": loss.item()}, prog_bar=True)
+        self.log_dict(self.get_no_params_dict(), logger=True)
+        
         return loss
 
 
@@ -75,10 +78,11 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
-        self.log_dict({"loss": loss.item()}, sync_dist=True)
+        self.log_dict({"validate/loss": loss.item()}, sync_dist=True)
 
         if batch_idx == 0:
             self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
+            
 
         return loss
 
@@ -126,12 +130,44 @@ class LightningMGNOTransformer(pl.LightningModule):
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 
-
+    def get_no_params_dict(self):
+        param_dict = {}
+        for block_idx, block in enumerate(self.model.Blocks):
+            for  no_block in block.NO_Blocks:
+                for sigma_idx, sigma in enumerate(no_block.no_layer.sigma):
+                    param_dict[f'no_lvl_{no_block.no_layer.grid_layer_no.global_level.item()}/sigma_{sigma_idx}/block_{block_idx}'] = sigma.item()
+                for dist_idx, dist in enumerate(no_block.no_layer.dists):
+                    param_dict[f'no_lvl_{no_block.no_layer.grid_layer_no.global_level.item()}/dist_{dist_idx}/block_{block_idx}'] = dist.item()
+        
+        return param_dict
+    
     def configure_optimizers(self):
-        optimizer = AdamW(self.parameters(), lr=self.lr, weight_decay=0.0)
+        no_params = []
+        emb_params = []
+        params = []
+        for n, p in self.named_parameters():
+            if 'sigma' in n or 'dist' in n:
+                no_params.append(p)
+            elif "Embedder" in n or "embedding" in n:
+                emb_params.append(p)
+            else:
+                params.append(p)
+                    
+        param_groups = []
+        for lr_group in self.lr_groups:
+            if lr_group['param_group']=='no_params':
+                p = no_params
+            elif lr_group['param_group']=='emb_params':
+                p = emb_params
+            else:
+                p = params
+            param_groups.append({"params":p, "lr": lr_group["lr"], "name": lr_group['param_group']})
+
+
+        optimizer = AdamW(param_groups)
         scheduler = CosineWarmupScheduler(
                         optimizer=optimizer,
-                        warmup=self.lr_warmup,
+                        lr_groups=self.lr_groups,
                         max_iters=self.trainer.max_steps,
                         iter_start=0)
         

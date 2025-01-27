@@ -11,6 +11,12 @@ from .grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon
 from . import normalizer as normalizers
 
 
+def skewed_random_p(size, exponent=2, max_p=0.9):
+    uniform_random = torch.rand(size)
+    skewed_random =  max_p*(1 - uniform_random ** exponent)
+    return skewed_random
+
+
 def get_moments(data, type, level=0.9):
 
     if type == 'quantile':
@@ -70,11 +76,15 @@ class NetCDFLoader_lazy(Dataset):
                  lazy_load=False,
                  random_time_idx=True,
                  p_dropout=0,
+                 random_p = True,
+                 skewness_exp = 2,
                  p_average=0,
                  p_average_dropout=0,
                  max_average_lvl=0,
-                 drop_vars=False,
-                 n_sample_vars=-1):
+                 p_drop_vars=0,
+                 n_drop_vars=-1,
+                 n_sample_vars=-1,
+                 pert_coordinates=0):
         
         super(NetCDFLoader_lazy, self).__init__()
         
@@ -86,11 +96,15 @@ class NetCDFLoader_lazy(Dataset):
         self.lazy_load=lazy_load
         self.random_time_idx = random_time_idx
         self.p_dropout = p_dropout
+        self.random_p = random_p
+        self.skewness_exp = skewness_exp
         self.p_average = p_average
         self.p_average_dropout = p_average_dropout
         self.max_average_lvl = max_average_lvl
-        self.drop_vars = drop_vars
+        self.p_drop_vars = p_drop_vars
         self.n_sample_vars = n_sample_vars
+        self.pert_coordinates = pert_coordinates
+        self.n_drop_vars = n_drop_vars
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -185,8 +199,6 @@ class NetCDFLoader_lazy(Dataset):
         self.n_files = len(self.files_source)
         self.n_regions = self.global_cells.shape[0]
 
-        
-
         self.global_indices = []
         idx = 0
         for k, file in enumerate(self.files_source):
@@ -194,6 +206,16 @@ class NetCDFLoader_lazy(Dataset):
             idx_add = len(ds.time) * self.n_regions
             self.global_indices.append(idx + idx_add)
             idx += idx_add
+        
+        self.var_sizes_source = {}
+        for var in self.variables_source:
+            self.var_sizes_source[var] = list(ds[var].sizes)
+
+        self.var_sizes_target = {}
+        ds = xr.open_dataset(self.files_target[0])
+        for var in self.variables_source:
+            self.var_sizes_target[var] = list(ds[var].sizes)
+
         self.global_indices = np.array(self.global_indices)
         self.len_dataset = self.global_indices[-1]
 
@@ -221,7 +243,7 @@ class NetCDFLoader_lazy(Dataset):
         return ds_source, ds_target
 
 
-    def get_data(self, ds, ts, global_indices, variables, global_level_start, index_mapping_dict=None):
+    def get_data(self, ds, ts, global_indices, variables, global_level_start, index_mapping_dict=None, sizes=None):
         
         if index_mapping_dict is not None:
             indices = index_mapping_dict[global_indices // 4**global_level_start] 
@@ -285,10 +307,10 @@ class NetCDFLoader_lazy(Dataset):
             variables_source = [variables_source]
             variables_target = [variables_target]
 
-        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping)
+        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping, sizes=self.var_sizes_source)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, output_mapping)
+            data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, output_mapping, sizes=self.var_sizes_target)
         else:
             data_target = data_source
 
@@ -306,6 +328,10 @@ class NetCDFLoader_lazy(Dataset):
             coords_output = torch.tensor([])
 
         n, nh, nv, f = data_source.shape
+        
+        drop_vars = torch.rand(1)<self.p_drop_vars
+        drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+
         if self.p_average > 0 and torch.rand(1)<self.p_average:
             avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
             data_source_resh = data_source.view(-1,4**avg_level,nh,f)
@@ -314,10 +340,9 @@ class NetCDFLoader_lazy(Dataset):
             data_source_resh = data_source_resh.repeat_interleave(nh, dim=2)
             data_source = data_source_resh.view(n, nh, nv, f)
 
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
 
             if self.p_average_dropout >0:
-                if self.drop_vars:
+                if drop_vars:
                     drop_mask_p = (torch.rand((n//4**avg_level,nv))<self.p_average_dropout).bool()
                 else:
                     drop_mask_p = (torch.rand((n//4**avg_level))<self.p_average_dropout).bool()
@@ -326,15 +351,25 @@ class NetCDFLoader_lazy(Dataset):
                 drop_mask[drop_mask_p]=True
                 drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
         else:
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
 
-            if self.p_dropout > 0 and not self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh))<self.p_dropout).bool()
+            if self.random_p and drop_vars:
+                p_dropout = skewed_random_p(nv, exponent=self.skewness_exp, max_p=self.p_dropout)
+            elif self.random_p:
+                p_dropout = skewed_random_p(1, exponent=self.skewness_exp, max_p=self.p_dropout)
+            else:
+                p_dropout = torch.tensor(self.p_dropout)
+
+            if self.p_dropout > 0 and not drop_vars:
+                drop_mask_p = (torch.rand((n,nh))<p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
-            elif self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh,nv))<self.p_dropout).bool()
+            elif self.p_dropout > 0 and drop_vars:
+                drop_mask_p = (torch.rand((n,nh,nv))<p_dropout).bool()
                 drop_mask[drop_mask_p]=True
+
+        if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
+            not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
+            drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
 
         for k, var in enumerate(variables_source):
             data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
