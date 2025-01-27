@@ -85,7 +85,6 @@ class DiffusionStepEmbedder(BaseEmbedder):
         :param embed_dim: Number of output channels for the final embedding.
         """
         super().__init__(name, in_channels, embed_dim)
-
         # keep batch and channel dimensions
         self.keep_dims = ["b", "c"]
 
@@ -101,6 +100,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
 # Embedder manager to handle shared or non-shared instances
 class EmbedderManager:
     _instance = None
+    _initialized = False
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
             cls._instance = super(EmbedderManager, cls).__new__(
@@ -108,16 +108,17 @@ class EmbedderManager:
         return cls._instance
 
     def __init__(self):
-        self.shared_embedders = {}
+        if not self._initialized:
+            self.shared_embedders = {}
+            self._initialized = True
 
     def get_embedder(self, name, in_channels=None, embed_dim=None, shared=True):
         current_module = sys.modules[__name__]
 
         # Use getattr to get the class from the current module
         embedder_class = getattr(current_module, name)
-        embedder_class = getattr(current_module, name)
         if shared:
-            if name not in self.shared_embedders:
+            if name not in self.shared_embedders.keys():
                 self.shared_embedders[name] = embedder_class(name, in_channels, embed_dim)
             return self.shared_embedders[name]
         else:
@@ -137,6 +138,7 @@ class EmbedderSequential(nn.Module):
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode = mode
         self.spatial_dim_count = spatial_dim_count
+        self.activation = nn.SiLU()
 
     def forward(self, inputs: Dict[str, torch.Tensor]):
         """
@@ -164,19 +166,20 @@ class EmbedderSequential(nn.Module):
         # Combine embeddings according to the mode
         if self.mode == 'concat':
             # Concatenate along the channel dimension
-            return torch.cat(embeddings, dim=-1)
+            embed_out = torch.cat(embeddings, dim=-1)
         elif self.mode == 'sum':
             # Sum the embeddings
             emb_sum = embeddings[0]
             for emb in embeddings[1:]:
                 emb_sum = emb_sum + emb
-            return emb_sum
+            embed_out = emb_sum
         elif self.mode == 'average':
             # Sum the embeddings
             emb_sum = embeddings[0]
             for emb in embeddings[1:]:
                 emb_sum = emb_sum + emb
-            return emb_sum / (len(embeddings) + 1)
+            embed_out = emb_sum / (len(embeddings) + 1)
+        return self.activation(embed_out)
 
     @property
     def get_out_channels(self):
