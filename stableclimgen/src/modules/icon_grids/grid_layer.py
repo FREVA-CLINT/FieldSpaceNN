@@ -165,7 +165,7 @@ class GridLayer(nn.Module):
         indices_nh, adjc_mask = get_nh_indices(self.adjc, local_cell_indices=local_indices, global_level=int(self.global_level))
         
         x_shape = x.shape
-        x = x.view(*x_shape[:3],-1)
+        x = x.reshape(*x_shape[:3],-1)
         # Gather neighborhood data
         x = gather_nh_data(x, indices_nh, sample_dict['sample'], sample_dict['sample_level'], int(self.global_level))
 

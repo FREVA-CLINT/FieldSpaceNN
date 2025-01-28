@@ -168,7 +168,10 @@ class MGNO_VAE(nn.Module):
         x = self.vae_block.encode(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)[0]
 
         if hasattr(self, "quantization"):
-            x, mask = x.unsqueeze(dim=1), mask.unsqueeze(dim=1)
+            b,n,nv,nd1,nd2 = x.shape
+            x = x.view(b,1,n,nv,-1)
+            if mask is not None:
+                mask = mask.unsqueeze(dim=1)
             x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
             x = x.squeeze(dim=1)
             posterior = self.quantization.get_distribution(x)

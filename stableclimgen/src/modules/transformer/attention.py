@@ -60,7 +60,7 @@ class AdaptiveLayerNorm(nn.Module):
         return x
     
 class ChannelVariableAttention(nn.Module):
-    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True, emb_dim=None):
+    def __init__(self, model_dim_in, n_chunks_channel, n_head_channels, att_dim=None, model_dim_out=None, with_res=True, emb_dim=None, v_proj=True):
         super().__init__()
         """
         Channel-wise variable attention module for applying multi-head attention across variable dimensions.
@@ -96,7 +96,7 @@ class ChannelVariableAttention(nn.Module):
         n_heads = model_dim_att//n_head_channels if model_dim_att > n_head_channels else 1
 
         self.MHA = MultiHeadAttentionBlock(
-            model_dim_att, model_dim_chunked_out, n_heads, input_dim=model_dim_chunked, qkv_proj=True
+            model_dim_att, model_dim_chunked_out, n_heads, input_dim=model_dim_chunked, qkv_proj=True, v_proj=v_proj
             )   
 
         if with_res:
@@ -104,7 +104,7 @@ class ChannelVariableAttention(nn.Module):
             self.res_layer = ResLayer(model_dim_out)
     
 
-    def forward(self, x, mask=None, emb=None):
+    def forward(self, x, v=None, mask=None, emb=None):
         b,n,nv,f=x.shape
         x = x.view(b,n,nv,f)
 
@@ -124,8 +124,13 @@ class ChannelVariableAttention(nn.Module):
         mask_chunk=mask
         if mask_chunk is not None:
             mask_chunk = mask_chunk.view(b*n,nv).repeat_interleave(self.n_chunks_channels,dim=1)
+
+        if v is None:
+            v =x
+        else:
+            v = v.view(x.shape)
             
-        x = self.MHA(q=x, k=x, v=x, mask=mask_chunk)
+        x = self.MHA(q=x, k=x, v=v, mask=mask_chunk)
         x = x.view(b*n,nv,-1)
         x = x.view(b,n,nv,-1)
 
