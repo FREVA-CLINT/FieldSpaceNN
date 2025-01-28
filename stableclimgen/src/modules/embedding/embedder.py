@@ -45,7 +45,7 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -53,7 +53,7 @@ class CoordinateEmbedder(BaseEmbedder):
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim),
+            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
             torch.nn.GELU(),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
@@ -61,12 +61,15 @@ class CoordinateEmbedder(BaseEmbedder):
 
 class VariableEmbedder(BaseEmbedder):
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         self.keep_dims = ["b", "v", "c"]
 
         self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
+
+        if init_value is not None:
+            self.embedding_fn.weight.data.fill_(init_value)
 
 
 class DiffusionStepEmbedder(BaseEmbedder):
@@ -112,18 +115,18 @@ class EmbedderManager:
             self.shared_embedders = {}
             self._initialized = True
 
-    def get_embedder(self, name, in_channels=None, embed_dim=None, shared=True):
+    def get_embedder(self, name, in_channels=None, embed_dim=None, shared=True, **kwargs):
         current_module = sys.modules[__name__]
 
         # Use getattr to get the class from the current module
         embedder_class = getattr(current_module, name)
         if shared:
             if name not in self.shared_embedders.keys():
-                self.shared_embedders[name] = embedder_class(name, in_channels, embed_dim)
+                self.shared_embedders[name] = embedder_class(name, in_channels, embed_dim, **kwargs)
             return self.shared_embedders[name]
         else:
             # Create a new instance each time
-            return embedder_class(name, in_channels, embed_dim)
+            return embedder_class(name, in_channels, embed_dim, **kwargs)
 
 
 class EmbedderSequential(nn.Module):
