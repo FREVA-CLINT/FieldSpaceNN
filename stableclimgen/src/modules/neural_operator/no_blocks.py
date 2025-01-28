@@ -281,7 +281,7 @@ class UNet_NOBlock(nn.Module):
 
         return x, mask, x_skip, mask_skip
     
-    def decode(self, x, mask, x_skip=None, masks_skip=None, coords_out=None, indices_sample=None, emb=None):
+    def decode(self, x, mask=None, x_skip=None, masks_skip=None, coords_out=None, indices_sample=None, emb=None):
         
         for layer_idx in range(len(self.NO_Blocks)-1,-1,-1):
 
