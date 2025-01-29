@@ -18,6 +18,7 @@ class NOBlock(nn.Module):
                  x_dims,
                  no_layer: NoLayer,
                  att_block_types:list,
+                 x_dims_decode=None,
                  n_head_channels = 16,
                  att_dim=None,
                  p_dropout=0.,
@@ -33,6 +34,8 @@ class NOBlock(nn.Module):
 
        # self.n_params = no_layer.n_params_no
         self.x_dims = x_dims
+        x_dims_decode = self.x_dims_decode = x_dims_decode if x_dims_decode is not None else x_dims
+
         self.no_layer = no_layer
         self.att_block_types_encode = nn.ModuleList()
         self.att_block_types_decode = nn.ModuleList()
@@ -40,6 +43,8 @@ class NOBlock(nn.Module):
         self.prepare_coordinates = False
 
         for k, att_block_type in enumerate(att_block_types):
+
+            x_dims_layer = x_dims_decode if len(is_decode)>0 and is_decode[k] else x_dims
 
             if len(embed_names[k])>0 and not 'trans' in att_block_type:
                 emb_dict = nn.ModuleDict()
@@ -63,7 +68,7 @@ class NOBlock(nn.Module):
                 cross_var = "var" in att_block_type
                 v_proj = "hole" in att_block_type
 
-                layer = ParamAttention(x_dims, 
+                layer = ParamAttention(x_dims_layer, 
                                        n_head_channels,
                                        att_dim=att_dim,
                                        cross_var=cross_var,
@@ -77,7 +82,7 @@ class NOBlock(nn.Module):
                 spatial_attention_config['embedder_names'] = [embed_names[k], []]
                 spatial_attention_config['embed_confs'] = embed_confs
                 spatial_attention_config['embed_mode'] = embed_mode
-                layer = SpatialAttention(x_dims, 
+                layer = SpatialAttention(x_dims_layer, 
                                          no_layer.grid_layer_no,
                                          n_head_channels, 
                                          spatial_attention_config,
@@ -207,12 +212,16 @@ class UNet_NOBlock(nn.Module):
                 x_dims = copy.deepcopy(no_layer.n_params_no)
                 x_dims.insert(-1, no_x_dims_layers[n-1][-2]* no_static_dims[n-1])
             
+            x_dims_decode = copy.deepcopy(x_dims)
+            x_dims_decode[-1] = no_layer.n_params_inv_in[-1]
+            
             no_x_dims_layers.append(x_dims)
 
             self.NO_Blocks.append(NOBlock(
                 no_layer=no_layer,
                 x_dims=x_dims,
                 att_block_types=att_block_types,
+                x_dims_decode=x_dims_decode,
                 is_decode=is_decode,
                 n_head_channels=n_head_channels,
                 att_dim=layer_setting["att_dim"],
@@ -288,10 +297,11 @@ class UNet_NOBlock(nn.Module):
             if layer_idx<len(self.NO_Blocks)-1 and x_skip is not None and self.skip:
                 x = self.NO_Blocks[layer_idx].unsqueeze_no_dims(x)
                 x_skip_ = self.NO_Blocks[layer_idx].unsqueeze_no_dims(x_skip[layer_idx+1])
+
                 if not isinstance(self.Skip_Blocks[layer_idx], nn.Identity):
                     x = self.Skip_Blocks[layer_idx]([x, x_skip_], masks=[mask, masks_skip[layer_idx+1]], emb=emb)[0]
                 else:
-                    x= torch.concat((x, x_skip_), dim=-1)
+                    x = torch.concat((x, x_skip_), dim=-1)
             
             x, mask = self.NO_Blocks[layer_idx].decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
@@ -838,12 +848,12 @@ class ReshapeAtt:
         b,n,nv = x.shape[:3]
 
         if not self.cross_var:
-            x = x.view(b,n*nv,1,*self.shape)
+            x = x.reshape(b,n*nv,1,*self.shape)
 
         b,n2,nv2 = x.shape[:3]
 
         if self.param_att == 0:
-            x = x.view(b,n2,nv2*self.shape[0],-1)
+            x = x.reshape(b,n2,nv2*self.shape[0],-1)
 
         elif self.param_att==1:
             x = x.transpose(3,4).contiguous()
@@ -854,7 +864,7 @@ class ReshapeAtt:
             x = x.view(b,n2,nv2*self.shape[2],-1)
         
         else:
-            x = x.view(b,n2,nv2,-1)
+            x = x.reshape(b,n2,nv2,-1)
 
         if mask is not None:
             mask = mask.view(b,n2,nv2,1).repeat_interleave(x.shape[2]//nv2, dim=-1)
