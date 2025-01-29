@@ -66,7 +66,7 @@ class NOBlock(nn.Module):
                 param_idx_att = [c for c in att_block_type if c.isnumeric()]
                 param_idx_att = None if len(param_idx_att)==0 else int(param_idx_att[0])
                 cross_var = "var" in att_block_type
-                v_proj = "hole" in att_block_type
+                v_proj = "hole" not in att_block_type
 
                 layer = ParamAttention(x_dims_layer, 
                                        n_head_channels,
