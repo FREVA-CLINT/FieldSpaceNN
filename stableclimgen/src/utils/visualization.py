@@ -14,11 +14,11 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, save_path
     coords_output = coords_output.rad2deg().cpu().numpy()
 
     input = input.cpu().numpy()
-    output = output.cpu().numpy()
+    output = output.cpu().to(dtype=torch.float32).numpy()
     gt = gt.cpu().numpy()
     
     if mask is not None:
-        mask = mask.cpu().numpy()
+        mask = mask.cpu().bool().numpy()
         input = input[mask==False]
         coords_input = coords_input[mask==False]
 
