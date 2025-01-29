@@ -133,6 +133,11 @@ class polNormal_NoLayer(NoLayer):
                             n_sigma if not avg_sigma else 1,
                             n_amplitudes_out]
         
+        self.n_params_inv_in = [n_phi if not avg_phi else 1,
+                            n_dist if not avg_dist else 1,
+                            n_sigma if not avg_sigma else 1,
+                            n_amplitdues_inv_in]
+        
         self.n_params_out = [n_phi if not avg_phi else 1,
                             n_dist if not avg_dist else 1,
                             n_sigma if not avg_sigma else 1,
@@ -240,8 +245,40 @@ class polNormal_NoLayer(NoLayer):
     
         weights = torch.exp(-0.5 * ((dx**2 + dy**2) / sigma** 2))/(2*torch.pi*sigma**2).sqrt()
 
-
         return weights
+
+
+    def get_spatial_weights_dphi(self, coordinates_rel):
+        
+        f1 = torch.cos(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
+        f2 = torch.sin(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
+
+        f1 = coordinates_rel[1].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * f1
+        f2 = coordinates_rel[0].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * f2
+        
+        f1 = f1.unsqueeze(dim=-1)
+        f2 = f2.unsqueeze(dim=-1)
+
+        sigma = self.sigma.clamp(min=self.min_sigma).view(1,-1)
+    
+        weights_dphi = (f2 -f1) / sigma** 2
+
+        return weights_dphi
+
+
+    def get_spatial_weights_dd(self, coordinates_rel):
+        
+        f1 = coordinates_rel[0].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * torch.cos(self.phis).view(1,1,-1,1)
+        f2 = coordinates_rel[1].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * torch.sin(self.phis).view(1,1,-1,1)
+        
+        f1 = f1.unsqueeze(dim=-1)
+        f2 = f2.unsqueeze(dim=-1)
+
+        sigma = self.sigma.clamp(min=self.min_sigma).view(1,-1)
+    
+        weights_dphi = (f2 +f1 - self.dists.view(1,1,1,-1)) / sigma** 2
+
+        return weights_dphi
 
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
