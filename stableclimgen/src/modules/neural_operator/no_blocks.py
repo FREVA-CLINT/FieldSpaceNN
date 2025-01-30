@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import copy
+import math
 
 from .neural_operator import NoLayer, polNormal_NoLayer
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
@@ -339,8 +340,12 @@ class VarLin_Layer(nn.Module):
     
         super().__init__()
         
-        self.weights = nn.Parameter(torch.empty((n_var_amplitudes, model_dim_in, model_dim_out)), requires_grad=True)
-        torch.nn.init.xavier_uniform_(self.weights)
+     #   self.weights = nn.Parameter(torch.empty((n_var_amplitudes, model_dim_in, model_dim_out)), requires_grad=True)
+
+        self.lin_layer = nn.Linear(model_dim_in, model_dim_out)
+        #torch.nn.init.xavier_uniform_(self.weights)
+       # stdv = 1. / math.sqrt(model_dim_in)
+       # self.weights.data.uniform_(-stdv, stdv)
 
 
     def get_params(self, emb, weight_or_bias):
@@ -355,7 +360,9 @@ class VarLin_Layer(nn.Module):
     
     def forward(self, x, emb=None):
         
-        x = torch.matmul(x, self.get_params(emb, self.weights))
+       # x = torch.matmul(x, self.get_params(emb, self.weights))
+
+        x = self.lin_layer(x)
        
         return x 
 
