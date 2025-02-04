@@ -6,7 +6,7 @@ import torch.nn as nn
 import copy
 import math
 
-from .neural_operator import NoLayer, polNormal_NoLayer
+from .neural_operator import NoLayer, polNormal_NoLayer,ReshapeAtt
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
 
 from ..icon_grids.grid_attention import GridAttention
@@ -176,9 +176,19 @@ class UNet_NOBlock(nn.Module):
 
         encoding_dims = []
         decoding_dims = []
+        no_dims = []
         for n, layer_setting in enumerate(layer_settings):
             encoding_dims.append(layer_setting['amplitude_dim_encode'])
             decoding_dims.append(layer_setting['amplitude_dim_decode'])
+
+            no_dim = [layer_setting["n_params"][k] if not layer_setting["avg_params"][k] else 1 
+             for k in range(len(layer_setting["n_params"]))]
+            
+            if n==0:
+                no_dims.append(int(torch.tensor(no_dim).prod()))
+            else:
+                no_dims.append(int(torch.tensor(no_dim).prod())*no_dims[n-1])
+
         no_x_dims_layers = []
         no_static_dims = []
         for n, layer_setting in enumerate(layer_settings):
@@ -189,6 +199,8 @@ class UNet_NOBlock(nn.Module):
                 inv_dim_in = decoding_dims[-(n+1)] + encoding_dims[n]
             else:
                 inv_dim_in = decoding_dims[-(n+1)]
+
+            inv_dim_in = inv_dim_in #+ no_dims[-(n+1)]
 
             no_layer = get_no_layer(layer_setting, 
                                     model_dim_in if n==0 else encoding_dims[n-1], 
@@ -724,7 +736,10 @@ class ParamAttention(nn.Module):
         
         residual = x_res + self.gamma*x
 
-        x = torch.where(mask.unsqueeze(-1), x, residual)
+        if mask is not None:
+            x = torch.where(mask.unsqueeze(-1), x, residual)
+        else:
+            x = residual
 
         x_res = x
 
@@ -822,9 +837,12 @@ class MGParamAttention(nn.Module):
 
         x = self.dropout(x)
         
-        x = x_res + self.gamma*x
+        residual = x_res + self.gamma*x
 
-        #x = torch.where(mask.unsqueeze(-1), x, residual)
+        if mask is not None:
+            x = torch.where(mask.unsqueeze(-1), x, residual)
+        else:
+            x = residual
 
         x_res = x
 
@@ -844,58 +862,6 @@ class MGParamAttention(nn.Module):
             
 
         return x, mask_update
-    
-class ReshapeAtt:
-    def __init__(self, shape, param_att, cross_var=True):
-        self.shape = shape
-        self.param_att = param_att
-        self.cross_var = cross_var
-
-    def shape_to_att(self, x, mask=None):
-        b,n,nv = x.shape[:3]
-
-        if not self.cross_var:
-            x = x.reshape(b,n*nv,1,*self.shape)
-
-        b,n2,nv2 = x.shape[:3]
-
-        if self.param_att == 0:
-            x = x.reshape(b,n2,nv2*self.shape[0],-1)
-
-        elif self.param_att==1:
-            x = x.transpose(3,4).contiguous()
-            x = x.view(b,n2,nv2*self.shape[1],-1)
-
-        elif self.param_att==2:
-            x = x.transpose(3,5).contiguous()
-            x = x.view(b,n2,nv2*self.shape[2],-1)
-        
-        else:
-            x = x.reshape(b,n2,nv2,-1)
-
-        if mask is not None:
-            mask = mask.view(b,n2,nv2,1).repeat_interleave(x.shape[2]//nv2, dim=-1)
-            mask = mask.view(b,n2,-1)
-
-        return x, mask
-    
-    def shape_to_x(self, x, nv_dim):
-        b,n = x.shape[:2]
-
-        if self.param_att == 0 or self.param_att is None:
-            x = x.view(b,n,-1,*self.shape)
-
-        elif self.param_att == 1:
-            shape = (self.shape[1], self.shape[0], self.shape[2], self.shape[3], self.shape[4])
-            x = x.view(b,n,-1,*shape).transpose(3,4)
-
-        elif self.param_att == 2:
-            shape = (self.shape[2], self.shape[1], self.shape[0], self.shape[3], self.shape[4])
-            x = x.view(b,n,-1,*shape).transpose(3,5)
-        
-        x = x.view(b,-1,nv_dim,*self.shape)
-
-        return x
 
 def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
     no_layer = polNormal_NoLayer(
@@ -920,6 +886,7 @@ def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
             rotate_coord_system=layer_setting["rotate_coordinate_system"],
             pretrained_weights=layer_setting.get("pretrained_weights",None),
             n_var_amplitudes=layer_setting["n_var_amplitudes"],
-            with_res=layer_setting.get("with_res", False)
+            non_linear_encode=layer_setting.get("non_linear_encode", False),
+           non_linear_decode=layer_setting.get("non_linear_decode", False)
         )
     return no_layer

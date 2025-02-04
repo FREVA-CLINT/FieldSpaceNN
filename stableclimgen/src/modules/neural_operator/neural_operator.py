@@ -4,7 +4,7 @@ import torch.nn as nn
 import math
 
 from ..icon_grids.grid_layer import RelativeCoordinateManager
-
+from ..transformer.attention import ResLayer, AdaptiveLayerNorm
 
 class NoLayer(nn.Module):
 
@@ -88,6 +88,41 @@ class NoLayer(nn.Module):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
+class no_res_layer(nn.Module):
+    def __init__(self, model_dim,  x_dims_stat=None, res_block=False, layer_norm=False):
+        super().__init__()
+
+        if layer_norm: 
+            self.ada_ln = AdaptiveLayerNorm([model_dim], model_dim)
+        else:
+            self.ada_ln = nn.Identity()
+
+        if res_block:
+            self.layer = ResLayer(model_dim, 
+                                with_res=False, 
+                                p_dropout=0)
+        else:
+            self.layer= nn.Linear(model_dim, model_dim)
+
+        self.x_dims_stat = x_dims_stat
+        self.model_dim = model_dim
+
+    def forward(self, x):
+        
+        x_res = x
+
+        b,n,_,nv,n_phi,n_dist,np,nc = x.shape
+        x = x.permute(0,1,2,3,-2,-4,-3,-1)
+        x = x.reshape(*x.shape[:5],*self.x_dims_stat,-1)
+        x = self.ada_ln(x)
+        x = self.layer(x)
+        x = x.view(*x.shape[:5],n_phi,n_dist,-1)
+        x = x.permute(0,1,2,3,-3,-2,-4,-1)
+
+        x = x_res + x
+
+        return x
+        
     
 class polNormal_NoLayer(NoLayer):
 
@@ -113,7 +148,8 @@ class polNormal_NoLayer(NoLayer):
                  rotate_coord_system=True,
                  pretrained_weights=None,
                  n_var_amplitudes=1,
-                 with_res=False,
+                 non_linear_encode=False,
+                 non_linear_decode=False,
                 ) -> None: 
     
         super().__init__(grid_layer_in, 
@@ -127,7 +163,8 @@ class polNormal_NoLayer(NoLayer):
         self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi*n_dist*n_sigma
 
-        self.n_params_in = [n_phi, n_dist, n_sigma, n_amplitudes_out, n_amplitudes_in]
+        self.n_params_in = [n_phi, n_dist, n_sigma, n_amplitudes_in]
+        self.n_params_out_na = [n_phi, n_dist, n_sigma, n_amplitudes_out]
 
         self.n_params_no = [n_phi if not avg_phi else 1,
                             n_dist if not avg_dist else 1,
@@ -159,8 +196,8 @@ class polNormal_NoLayer(NoLayer):
         if avg_dist:
             self.sum_dims_params.append(-3)
         
-        if avg_sigma:
-            self.sum_dims_params.append(-2)
+      #  if avg_sigma:
+      #      self.sum_dims_params.append(-2)
 
         self.n_params_inv_out = n_amplitudes_inv_out
 
@@ -168,38 +205,54 @@ class polNormal_NoLayer(NoLayer):
         grid_dist_out = self.nh_dist
 
         self.min_sigma = 1e-10
+        self.min_var = 1e-10
 
-    
+        self.sd_activation = nn.Identity()#nn.Sigmoid()
         if pretrained_weights is None:
             phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
-            dists = torch.linspace(0, grid_layer_no.nh_dist, n_dist+2)[1:-1]
-            sigma = torch.cumsum(dists.diff(), dim=0)[:n_sigma]
+
+            max_dist_fac = (grid_layer_no.global_level - grid_layer_in.global_level)
+     
+            dists = max_dist_fac*torch.arange(1,2*n_dist, 2)/(n_dist*2)
+
+            sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
+
+            self.dist_unit = grid_layer_in.nh_dist
+
             sigma_inv = sigma
-           # sigma = (torch.randn(n_amplitudes_out)*grid_layer_in.nh_dist).abs()
-           # sigma_inv = (torch.randn(n_amplitudes_inv_out)*grid_layer_no.nh_dist).abs()
-
-          #  sigma = torch.logspace(math.log10(grid_layer_in.nh_dist/10), math.log10(grid_layer_no.nh_dist),n_amplitudes_out)
-          #  sigma_inv = torch.logspace(math.log10(grid_layer_in.nh_dist/10), math.log10(grid_layer_no.nh_dist),n_amplitudes_inv_out)
-
-            #sigma = torch.linspace(grid_layer_no.nh_dist/2, grid_layer_no.nh_dist, n_sigma)
 
         else:
             phis = pretrained_weights['phis']
             dists = pretrained_weights['dists']
             sigma = pretrained_weights['sigma']
 
+        self.sigma_start = sigma
+
         self.phis =  nn.Parameter(phis, requires_grad=False)
-        self.dists = nn.Parameter(dists, requires_grad=dist_learnable)
+        self.dists = nn.Parameter(dists, requires_grad=True)
         self.sigma = nn.Parameter(sigma, requires_grad=True)
         self.sigma_inv = nn.Parameter(sigma_inv, requires_grad=True)
         
-        self.lin_layer= nn.Linear(n_amplitudes_in, n_amplitudes_out)
+        x_dims_stat = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if not avg_param]
+        x_dims = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if avg_param]
+        x_dims_inv = x_dims + [n_amplitudes_inv_out]
+        x_dims = x_dims + [n_amplitudes_out]
 
-        inv_dim = torch.tensor(norm_dims).prod()
-        self.inv_lin_layer = nn.Linear(n_amplitdues_inv_in, inv_dim*n_amplitudes_inv_out)
+        model_dim = int(torch.tensor(x_dims).prod())
+        model_dim_inv = int(torch.tensor(x_dims_inv).prod())
 
-        self.with_res = with_res
+        self.lin_layer =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
+        if len(x_dims)>1:
+            self.proc_layer = no_res_layer(model_dim, layer_norm=False, res_block=non_linear_encode, x_dims_stat=x_dims_stat)
+        else:
+            self.proc_layer = nn.Identity()
 
+        self.lin_layer_inv = nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
+        if len(x_dims)>1:
+            self.proc_layer_inv = no_res_layer(model_dim_inv, layer_norm=False, res_block=non_linear_decode, x_dims_stat=x_dims_stat)
+        else:
+            self.proc_layer_inv = nn.Identity()
+        
     def get_amplitudes_no(self, emb):
         amps = self.amplitudes_no
 
@@ -219,10 +272,15 @@ class polNormal_NoLayer(NoLayer):
 
         return amps.unsqueeze(dim=-2)
     
-    def get_spatial_weights(self, coordinates_rel):
-        
-        mus_lon = torch.cos(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
-        mus_lat = torch.sin(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
+    def get_spatial_weights(self, coordinates_rel, sigma):
+
+        #dists = F.softplus(self.dists)
+        #dists = math.sqrt(2*math.log(2))*(self.sigma)*self.dists
+
+        dists = self.dist_unit * self.dists#self.sd_activation(self.dists)
+
+        mus_lon = torch.cos(self.phis).view(1,1,-1,1) * dists.view(1,1,1,-1)
+        mus_lat = torch.sin(self.phis).view(1,1,-1,1) * dists.view(1,1,1,-1)
 
         dx = coordinates_rel[0].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) - mus_lon
         dy = coordinates_rel[1].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) - mus_lat
@@ -230,9 +288,11 @@ class polNormal_NoLayer(NoLayer):
         dx = dx.unsqueeze(dim=-1)
         dy = dy.unsqueeze(dim=-1)
 
-        sigma = self.sigma.clamp(min=self.min_sigma).view(1,-1)
+        #sigma = F.softplus(self.sigma)
+        sigma = self.dist_unit * self.sd_activation(sigma)
+        sigma = sigma.clamp(min=self.min_sigma).view(1,-1)
     
-        weights = torch.exp(-0.5 * ((dx**2 + dy**2) / sigma** 2))#/(2*torch.pi*sigma**2).sqrt()
+        weights = torch.exp(-0.5 * ((dx**2 + dy**2) / sigma** 2))
 
         return weights
 
@@ -337,34 +397,20 @@ class polNormal_NoLayer(NoLayer):
         nv, np ,nc = x.shape[-3:]
         b = x.shape[0]
 
-        weights = self.get_spatial_weights(coordinates_rel)
+        weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
-        if self.with_res:
-            res_weights = self.get_spatial_weights_res(coordinates_rel)
-            x_res = self.mult_weights_t(x, res_weights, mask=mask, norm_seq=True)[0]
-
-        x = self.lin_layer(x)
 
         x, mask = self.mult_weights_t(x, weights, mask=mask, norm_seq=True)
-        
-        #if self.with_res:
-        #    x = x-x_res
 
-        #amplitudes = self.get_amplitudes_no(emb)
-        #amplitudes = (1+self.gamma_res*amplitudes)
-        #x = (x.unsqueeze(dim=-1) * (amplitudes.view(1,1,1,*amplitudes.shape))).mean(dim=-2)
-        
+        x = self.lin_layer(x)
+        x = self.proc_layer(x)
 
         if len(self.sum_dims_params)>0:
             x = x.sum(dim=self.sum_dims_params, keepdim=True)/self.norm_factor # sum over NO params
 
-        if self.with_res:
-            x = x_res + x#self.gamma_res*x
-
         if mask is not None:
             x = x.masked_fill_(mask.view(*x.shape[:4],1,1,1,1), 0.0)
 
-       # x = x.view(b, n, nv, *self.n_params_no[:-1], np, self.n_params_no[-1])
         x = x.view(b, n, nv, *self.n_params_no[:-2], 1, np, self.n_params_no[-1])
 
         if mask is not None:
@@ -378,32 +424,14 @@ class polNormal_NoLayer(NoLayer):
         b, n, seq_ref, nv, n_phi, n_dist, n_sigma, np, nc = x.shape
         c_shape = (-1, n, seq_ref, seq_in, nv)
 
-        weights = self.get_spatial_weights(coordinates_rel)
-
-        
-        x = self.inv_lin_layer(x)
-
-        x = x.transpose(-1,-2).reshape(b,n,seq_in,nv,*self.n_params_in[:3],self.n_params_out[-1],np).transpose(-2,-1)
-
+        weights = self.get_spatial_weights(coordinates_rel, self.sigma_inv)
 
         x, mask = self.mult_weights_invt(x, weights, mask=mask, norm_seq=True)
 
-        #amplitudes = self.get_amplitudes_out(emb)
+        x = self.lin_layer_inv(x)
 
-       # if self.with_res:
-       # weights = weights.view(weights.shape[0], n, seq_ref, seq_in, 1, len(self.phis), len(self.dists), len(self.sigma), 1 ,1)
-        
-        #weights = weights/(weights.sum(dim=[-3,-4,-5], keepdim=True)+1e-20)
+        x = (self.proc_layer_inv(x)).sum([-4,-3]) #+ x
 
-   #     amplitudes = self.get_amplitudes(emb, self.amplitudes_out)
-   #     weights = weights * (amplitudes)#/x.shape[2]
-
-        #x = (x * amplitudes)
-   #     x = torch.matmul(x, weights)
-        x = x.sum(dim=[-3, -4])
-        
-     #   if self.with_res:
-      #      x = x + x_res
         x= x.view(b,-1, nv, np, self.n_params_inv_out)
 
         if mask is not None:
@@ -412,3 +440,56 @@ class polNormal_NoLayer(NoLayer):
 
 
         return x, mask
+    
+
+class ReshapeAtt:
+    def __init__(self, shape, param_att, cross_var=True):
+        self.shape = shape
+        self.param_att = param_att
+        self.cross_var = cross_var
+
+    def shape_to_att(self, x, mask=None):
+        b,n,nv = x.shape[:3]
+
+        if not self.cross_var:
+            x = x.reshape(b,n*nv,1,*self.shape)
+
+        b,n2,nv2 = x.shape[:3]
+
+        if self.param_att == 0:
+            x = x.reshape(b,n2,nv2*self.shape[0],-1)
+
+        elif self.param_att==1:
+            x = x.transpose(3,4).contiguous()
+            x = x.view(b,n2,nv2*self.shape[1],-1)
+
+        elif self.param_att==2:
+            x = x.transpose(3,5).contiguous()
+            x = x.view(b,n2,nv2*self.shape[2],-1)
+        
+        else:
+            x = x.reshape(b,n2,nv2,-1)
+
+        if mask is not None:
+            mask = mask.view(b,n2,nv2,1).repeat_interleave(x.shape[2]//nv2, dim=-1)
+            mask = mask.view(b,n2,-1)
+
+        return x, mask
+    
+    def shape_to_x(self, x, nv_dim):
+        b,n = x.shape[:2]
+
+        if self.param_att == 0 or self.param_att is None:
+            x = x.view(b,n,-1,*self.shape)
+
+        elif self.param_att == 1:
+            shape = (self.shape[1], self.shape[0], self.shape[2], self.shape[3], self.shape[4])
+            x = x.view(b,n,-1,*shape).transpose(3,4)
+
+        elif self.param_att == 2:
+            shape = (self.shape[2], self.shape[1], self.shape[0], self.shape[3], self.shape[4])
+            x = x.view(b,n,-1,*shape).transpose(3,5)
+        
+        x = x.view(b,-1,nv_dim,*self.shape)
+
+        return x

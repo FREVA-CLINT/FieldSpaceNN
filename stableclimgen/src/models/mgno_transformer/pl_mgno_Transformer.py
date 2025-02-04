@@ -138,18 +138,21 @@ class LightningMGNOTransformer(pl.LightningModule):
                     param_dict[f'no_lvl_{no_block.no_layer.grid_layer_no.global_level.item()}/sigma_{sigma_idx}/block_{block_idx}'] = sigma.item()
                 for dist_idx, dist in enumerate(no_block.no_layer.dists):
                     param_dict[f'no_lvl_{no_block.no_layer.grid_layer_no.global_level.item()}/dist_{dist_idx}/block_{block_idx}'] = dist.item()
-        
+            
         return param_dict
     
     def configure_optimizers(self):
         no_params = []
         emb_params = []
+        att_params = []
         params = []
         for n, p in self.named_parameters():
             if 'sigma' in n or 'dist' in n:
                 no_params.append(p)
             elif "Embedder" in n or "embedding" in n:
                 emb_params.append(p)
+            elif "att_block" in n:
+                att_params.append(p)
             else:
                 params.append(p)
                     
@@ -159,6 +162,8 @@ class LightningMGNOTransformer(pl.LightningModule):
                 p = no_params
             elif lr_group['param_group']=='emb_params':
                 p = emb_params
+            elif lr_group['param_group']=='attention':
+                p = att_params
             else:
                 p = params
             param_groups.append({"params":p, "lr": lr_group["lr"], "name": lr_group['param_group']})
