@@ -722,7 +722,7 @@ class ParamAttention(nn.Module):
     def forward(self, x, mask=None, emb=None):
         nv = x.shape[2]
 
-        x_res, mask = self.reshaper.shape_to_att(x, mask=mask)
+        x_res, mask_att = self.reshaper.shape_to_att(x, mask=mask)
 
         x = self.ada_ln(x, emb=emb)
 
@@ -730,7 +730,7 @@ class ParamAttention(nn.Module):
         
         v = x if self.v_proj else x_res
 
-        x, _ = self.attention_layer(x, v=v, mask=mask)
+        x, _ = self.attention_layer(x, v=v, mask=mask_att)
 
         x = self.dropout(x)
         
@@ -753,9 +753,9 @@ class ParamAttention(nn.Module):
 
         x = self.reshaper.shape_to_x(x, nv)
 
-      #  if mask_update is not None:
-      #      mask_update = mask_update.view(*x.shape[:3],-1)
-      #      mask_update = mask_update.sum(dim=-1).bool()
+        #if mask is not None:
+        #    mask = mask_update.view(*x.shape[:3],-1)
+        #    mask_update = mask_update.sum(dim=-1).bool()
             
 
         return x, mask
