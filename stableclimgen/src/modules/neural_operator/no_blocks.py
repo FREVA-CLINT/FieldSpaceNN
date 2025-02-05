@@ -730,16 +730,16 @@ class ParamAttention(nn.Module):
         
         v = x if self.v_proj else x_res
 
-        x, mask_update = self.attention_layer(x, v=v, mask=mask)
+        x, _ = self.attention_layer(x, v=v, mask=mask)
 
         x = self.dropout(x)
         
         residual = x_res + self.gamma*x
 
-        if mask is not None:
-            x = torch.where(mask.unsqueeze(-1), x, residual)
-        else:
-            x = residual
+       # if mask is not None:
+       #     x = torch.where(mask.unsqueeze(-1), x, residual)
+       # else:
+        x = residual
 
         x_res = x
 
@@ -753,12 +753,12 @@ class ParamAttention(nn.Module):
 
         x = self.reshaper.shape_to_x(x, nv)
 
-        if mask_update is not None:
-            mask_update = mask_update.view(*x.shape[:3],-1)
-            mask_update = mask_update.sum(dim=-1).bool()
+      #  if mask_update is not None:
+      #      mask_update = mask_update.view(*x.shape[:3],-1)
+      #      mask_update = mask_update.sum(dim=-1).bool()
             
 
-        return x, mask_update
+        return x, mask
 
 class MGParamAttention(nn.Module):
   
@@ -833,16 +833,11 @@ class MGParamAttention(nn.Module):
         if masks[0] is not None:
             mask = torch.stack(masks, dim=-1).sum(dim=-1).bool()
 
-        x, mask_update = self.attention_layer(x, mask=mask)
+        x, _ = self.attention_layer(x, mask=mask)
 
         x = self.dropout(x)
         
-        residual = x_res + self.gamma*x
-
-        if mask is not None:
-            x = torch.where(mask.unsqueeze(-1), x, residual)
-        else:
-            x = residual
+        x = x_res + self.gamma*x
 
         x_res = x
 
@@ -856,12 +851,12 @@ class MGParamAttention(nn.Module):
 
         x = self.reshaper_out.shape_to_x(x, x.shape[-2])
 
-        if mask_update is not None:
-            mask_update = mask_update.view(*x.shape[:3],-1)
-            mask_update = mask_update.sum(dim=-1).bool()
+       # if mask_update is not None:
+       #     mask_update = mask_update.view(*x.shape[:3],-1)
+       #     mask_update = mask_update.sum(dim=-1).bool()
             
 
-        return x, mask_update
+        return x, mask
 
 def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
     no_layer = polNormal_NoLayer(

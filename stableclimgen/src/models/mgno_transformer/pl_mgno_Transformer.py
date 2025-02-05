@@ -8,6 +8,7 @@ import torch
 from torch.optim import AdamW
 
 from ...utils.visualization import scatter_plot
+from ...modules.icon_grids.grid_layer import GridLayer
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
@@ -15,6 +16,7 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
         self.max_num_iters = max_iters
         self.iter_start = iter_start
         self.warmups = [lr_group["lr_warmup"] for lr_group in lr_groups]
+        self.zero_iters = [lr_group.get("zero_iters",0) for lr_group in lr_groups]
         super().__init__(optimizer)
 
     def get_lr(self):
@@ -26,7 +28,9 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
         lr_factors = [0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters)) for _ in range(len(self.warmups))]
         
         for k, lr_factor in enumerate(lr_factors):
-            if epoch <= self.warmups[k]:
+            if epoch < self.zero_iters[k]:
+                lr_factors[k] = 0
+            elif epoch <= self.warmups[k]:
                 lr_factors[k] = lr_factor*epoch * 1.0 / self.warmups[k]
         return lr_factors
 
@@ -40,18 +44,27 @@ class MSE_loss(nn.Module):
     def forward(self, output, target):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
-
-class NH_TV_loss(nn.Module):
-    def __init__(self, model):
+   
+class AbsGrad_loss(nn.Module):
+    def __init__(self, grid_layer):
         super().__init__()
+        self.grid_layer: GridLayer = grid_layer
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target):
-        loss = self.loss_fcn(output, target.view(output.shape))
+    def forward(self, output, target, indices_sample=None):
+        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
+        output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
+        
+        target_nh, _ = self.grid_layer.get_nh(target.view(output.shape), indices_in, indices_sample)
+
+        nh_diff_output = (((output_nh[:,:,[0]] - output_nh[:,:,1:]).abs()).mean(dim=-2))
+        nh_diff_target = (((target_nh[:,:,[0]] - target_nh[:,:,1:]).abs()).mean(dim=-2))
+
+        loss = self.loss_fcn(nh_diff_output, nh_diff_target)
         return loss
 
 class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr_groups):
+    def __init__(self, model, lr_groups, absgrad_loss_weight=0.):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
@@ -59,6 +72,8 @@ class LightningMGNOTransformer(pl.LightningModule):
         self.lr_groups=lr_groups
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
+        self.absgrad_loss_weight = absgrad_loss_weight
+        self.absgrad_loss = AbsGrad_loss(model.grid_layer_0)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
@@ -67,7 +82,15 @@ class LightningMGNOTransformer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        
         loss = self.loss(output, target)
+        self.log_dict({"train/mse_loss": loss.item()}, prog_bar=True)
+
+        if self.absgrad_loss_weight>0:
+            nh_tv_loss = self.absgrad_loss(output, target, indices_sample=indices)
+            loss = loss + self.absgrad_loss_weight*nh_tv_loss
+            self.log_dict({"train/nh_tv_loss": nh_tv_loss.item()}, prog_bar=True)
+
         self.log_dict({"train/loss": loss.item()}, prog_bar=True)
         self.log_dict(self.get_no_params_dict(), logger=True)
         
@@ -78,7 +101,15 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
-        self.log_dict({"validate/loss": loss.item()}, sync_dist=True)
+        self.log_dict({"validate/mse_loss": loss.item()}, prog_bar=True)
+
+        if self.absgrad_loss_weight>0:
+            nh_tv_loss = self.absgrad_loss(output, target, indices_sample=indices)
+            loss = loss + self.absgrad_loss_weight*nh_tv_loss
+            self.log_dict({"validate/nh_tv_loss": nh_tv_loss.item()}, prog_bar=True)
+
+        self.log_dict({"validate/loss": loss.item()}, prog_bar=True)
+        self.log_dict(self.get_no_params_dict(), logger=True)
 
         if batch_idx == 0:
             self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
@@ -145,14 +176,14 @@ class LightningMGNOTransformer(pl.LightningModule):
         no_params = []
         emb_params = []
         att_params = []
+        att_params_names = []
         params = []
         for n, p in self.named_parameters():
             if 'sigma' in n or 'dist' in n:
                 no_params.append(p)
-            elif "Embedder" in n or "embedding" in n:
-                emb_params.append(p)
             elif "att_block" in n:
                 att_params.append(p)
+                att_params_names.append(n)
             else:
                 params.append(p)
                     
@@ -160,8 +191,6 @@ class LightningMGNOTransformer(pl.LightningModule):
         for lr_group in self.lr_groups:
             if lr_group['param_group']=='no_params':
                 p = no_params
-            elif lr_group['param_group']=='emb_params':
-                p = emb_params
             elif lr_group['param_group']=='attention':
                 p = att_params
             else:

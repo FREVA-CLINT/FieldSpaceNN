@@ -46,6 +46,8 @@ class MGNO_Transformer(nn.Module):
         for global_level in global_levels:
             grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system='polar')
 
+        self.grid_layer_0 = grid_layers["0"]
+
         n_no_layers_total = len((torch.concat(global_levels_tot)))
         n = 0
         global_level_in = 0

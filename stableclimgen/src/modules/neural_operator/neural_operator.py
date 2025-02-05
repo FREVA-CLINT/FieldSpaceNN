@@ -216,17 +216,14 @@ class polNormal_NoLayer(NoLayer):
             dists = max_dist_fac*torch.arange(1,2*n_dist, 2)/(n_dist*2)
 
             sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
+            sigma_inv = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
             self.dist_unit = grid_layer_in.nh_dist
-
-            sigma_inv = sigma
 
         else:
             phis = pretrained_weights['phis']
             dists = pretrained_weights['dists']
             sigma = pretrained_weights['sigma']
-
-        self.sigma_start = sigma
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.dists = nn.Parameter(dists, requires_grad=True)
@@ -398,7 +395,6 @@ class polNormal_NoLayer(NoLayer):
         b = x.shape[0]
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma)
-
 
         x, mask = self.mult_weights_t(x, weights, mask=mask, norm_seq=True)
 
