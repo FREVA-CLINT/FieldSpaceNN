@@ -45,11 +45,12 @@ class MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
    
-class AbsGrad_loss(nn.Module):
+class Grad_loss(nn.Module):
     def __init__(self, grid_layer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
-        self.loss_fcn = torch.nn.MSELoss() 
+        #self.loss_fcn = torch.nn.MSELoss() 
+        self.loss_fcn = torch.nn.KLDivLoss(log_target=True, reduction='batchmean') 
 
     def forward(self, output, target, indices_sample=None):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
@@ -57,14 +58,33 @@ class AbsGrad_loss(nn.Module):
         
         target_nh, _ = self.grid_layer.get_nh(target.view(output.shape), indices_in, indices_sample)
 
-        nh_diff_output = (((output_nh[:,:,[0]] - output_nh[:,:,1:]).abs()).mean(dim=-2))
-        nh_diff_target = (((target_nh[:,:,[0]] - target_nh[:,:,1:]).abs()).mean(dim=-2))
+        nh_diff_output = 1+(output_nh[:,:,[0]] - output_nh[:,:,1:])/output_nh[:,:,[0]]
+        nh_diff_target = 1+(target_nh[:,:,[0]] - target_nh[:,:,1:])/target_nh[:,:,[0]]
+
+        nh_diff_output = nh_diff_output.view(output_nh.shape[0],-1).clamp(min=0, max=1)
+        nh_diff_target = nh_diff_target.view(output_nh.shape[0],-1).clamp(min=0, max=1)
+
+        nh_diff_output = nn.functional.log_softmax(nh_diff_output, dim=-1)
+        nh_diff_target = nn.functional.log_softmax(nh_diff_target, dim=-1)
 
         loss = self.loss_fcn(nh_diff_output, nh_diff_target)
         return loss
 
+class NH_loss(nn.Module):
+    def __init__(self, grid_layer):
+        super().__init__()
+        self.grid_layer: GridLayer = grid_layer
+
+    def forward(self, output, indices_sample=None):
+        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
+        output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
+        
+        loss = ((output_nh[:,:,[0]] - output_nh[:,:,1:])**2).mean().sqrt()
+        return loss
+
+
 class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr_groups, absgrad_loss_weight=0.):
+    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0.):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
@@ -72,8 +92,10 @@ class LightningMGNOTransformer(pl.LightningModule):
         self.lr_groups=lr_groups
         self.save_hyperparameters(ignore=['model'])
         self.loss = MSE_loss()
-        self.absgrad_loss_weight = absgrad_loss_weight
-        self.absgrad_loss = AbsGrad_loss(model.grid_layer_0)
+        self.grad_loss_weight = grad_loss_weight
+        self.nh_loss_weight = nh_loss_weight
+        self.grad_loss = Grad_loss(model.grid_layer_0)
+        self.nh_loss = NH_loss(model.grid_layer_0)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
@@ -84,12 +106,17 @@ class LightningMGNOTransformer(pl.LightningModule):
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         
         loss = self.loss(output, target)
-        self.log_dict({"train/mse_loss": loss.item()}, prog_bar=True)
+        self.log_dict({"train/mse_loss": loss.item()})
 
-        if self.absgrad_loss_weight>0:
-            nh_tv_loss = self.absgrad_loss(output, target, indices_sample=indices)
-            loss = loss + self.absgrad_loss_weight*nh_tv_loss
-            self.log_dict({"train/nh_tv_loss": nh_tv_loss.item()}, prog_bar=True)
+        if self.grad_loss_weight>0:
+            grad_loss = self.grad_loss(output, target, indices_sample=indices)
+            loss = loss + self.grad_loss_weight*grad_loss
+            self.log_dict({"train/grad_loss": grad_loss.item()})
+
+        if self.nh_loss_weight>0:
+            nh_tv_loss = self.nh_loss(output, indices_sample=indices)
+            loss = loss + self.nh_loss_weight*nh_tv_loss
+            self.log_dict({"train/nh_tv_loss": nh_tv_loss.item()})
 
         self.log_dict({"train/loss": loss.item()}, prog_bar=True)
         self.log_dict(self.get_no_params_dict(), logger=True)
@@ -101,12 +128,17 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         loss = self.loss(output, target)
-        self.log_dict({"validate/mse_loss": loss.item()}, prog_bar=True)
+        self.log_dict({"validate/mse_loss": loss.item()})
 
-        if self.absgrad_loss_weight>0:
-            nh_tv_loss = self.absgrad_loss(output, target, indices_sample=indices)
-            loss = loss + self.absgrad_loss_weight*nh_tv_loss
-            self.log_dict({"validate/nh_tv_loss": nh_tv_loss.item()}, prog_bar=True)
+        if self.grad_loss_weight>0:
+            grad_loss = self.grad_loss(output, target, indices_sample=indices)
+            loss = loss + self.grad_loss_weight*grad_loss
+            self.log_dict({"validate/grad_loss": grad_loss.item()})
+
+        if self.nh_loss_weight>0:
+            nh_tv_loss = self.nh_loss(output, indices_sample=indices)
+            loss = loss + self.nh_loss_weight*nh_tv_loss
+            self.log_dict({"validate/nh_tv_loss": nh_tv_loss.item()})
 
         self.log_dict({"validate/loss": loss.item()}, prog_bar=True)
         self.log_dict(self.get_no_params_dict(), logger=True)
