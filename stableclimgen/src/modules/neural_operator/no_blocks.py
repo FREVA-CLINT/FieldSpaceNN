@@ -101,11 +101,11 @@ class NOBlock(nn.Module):
                 self.att_block_types_encode.append(layer)
 
     def squeeze_no_dims(self, x):
-        x = x.view(*x.shape[:3],-1, x.shape[-1])
+        x = x.reshape(*x.shape[:3],-1, x.shape[-1])
         return x
 
     def unsqueeze_no_dims(self, x):
-        x = x.view(*x.shape[:3], *self.x_dims[:-2], -1, x.shape[-1])
+        x = x.reshape(*x.shape[:3], *self.x_dims[:-2], -1, x.shape[-1])
         return x
 
     def check_add_coordinate_embeddings(self, emb, indices_sample):
