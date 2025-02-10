@@ -1,14 +1,17 @@
 _target_: stableclimgen.src.models.mgno_transformer.pl_mgno_Transformer.LightningMGNOTransformer
+grad_loss_weight: 0
+nh_loss_weight: 0
 lr_groups:
   - param_group: 'params'
     lr: 1e-3
-    lr_warmup: 500
+    lr_warmup: 1
   - param_group: 'no_params'
-    lr: 1e-6
-    lr_warmup: 5000
-  - param_group: 'emb_params'
-    lr: 1e-3
-    lr_warmup: 500
+    lr: 1e-4
+    lr_warmup: 200
+  - param_group: 'attention'
+    lr: 1e-4
+    lr_warmup: 200
+    zero_iters: 500
 model:
   _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.MGNO_Transformer
   mgrids: ${mgrids}
@@ -20,57 +23,60 @@ model:
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
       block_type: "UNet"
-      global_levels: [1,2,3]
+      global_levels: [1,2,3,4]
       global_res: false
-      att_dim: 64 
-      skip_mode: 'var_att'
+      skip_mode: ''
       embed_mode: "sum"
       embed_confs: ${embedding}
+      att_dim: 64
+      nh_transformation: false
+      with_res: false
       layer_settings: 
         - n_params: [4,2,1]
           no_type: "polNormal"
-          amplitude_dim_encode: 8
+          amplitude_dim_encode: 4
           amplitude_dim_decode: 4
-          nh_transformation: false
-          nh_inverse_transformation: false
-          avg_params: [false, true, false]
+          nh_inverse_transformation: true
+          avg_params: [false, false, true]
           global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["var_hole"]
+          n_var_amplitudes: 1
+          block_types_encode: []
           block_types_decode: []
-          embed_names_encode: [["VariableEmbedder"]]
+          embed_names_encode: [[]]
+          embed_names_decode: [[],[]]
+        - n_params: [4,2,1]
+          no_type: "polNormal"
+          amplitude_dim_encode: 4
+          amplitude_dim_decode: 4
+          nh_inverse_transformation: true
+          avg_params: [false, false, true]
+          global_params_learnable: [true, true, true]
+          n_var_amplitudes: 1
+          block_types_encode: []
+          block_types_decode: []
+          embed_names_encode: [["var0","var0"]]
+          embed_names_decode: [["VariableEmbedder"],["VariableEmbedder"]]
+        - n_params: [4,2,1]
+          no_type: "polNormal"
+          amplitude_dim_encode: 4
+          amplitude_dim_decode: 4
+          nh_inverse_transformation: true
+          avg_params: [false, false, true]
+          global_params_learnable: [true, true, true]
+          n_var_amplitudes: 1
+          block_types_encode: []
+          block_types_decode: []
+          embed_names_encode: [[]]
           embed_names_decode: [[]]
         - n_params: [4,2,1]
           no_type: "polNormal"
           amplitude_dim_encode: 4
           amplitude_dim_decode: 4
-          nh_transformation: true
           nh_inverse_transformation: true
-          avg_params: [true, true, false]
+          avg_params: [false, false, true]
           global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["var_hole"]
+          n_var_amplitudes: 1
+          block_types_encode: []
           block_types_decode: []
-          embed_names_encode: [["VariableEmbedder"]]
+          embed_names_encode: [[]]
           embed_names_decode: [[]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 2 
-            blocks: ["s", "mlp"]
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_transformation: true
-          nh_inverse_transformation: true
-          avg_params: [false, true, false]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["var0","param0"]
-          block_types_decode: []
-          embed_names_encode: [["VariableEmbedder"],["VariableEmbedder"]]
-          embed_names_decode: [[]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 2 
-            blocks: ["s", "mlp"]

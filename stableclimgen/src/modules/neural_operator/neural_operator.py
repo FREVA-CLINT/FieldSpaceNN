@@ -207,7 +207,7 @@ class polNormal_NoLayer(NoLayer):
         self.min_sigma = 1e-10
         self.min_var = 1e-10
 
-        self.sd_activation = nn.Identity()#nn.Sigmoid()
+        self.sd_activation = nn.Sigmoid()
         if pretrained_weights is None:
             phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
 
@@ -224,6 +224,10 @@ class polNormal_NoLayer(NoLayer):
             phis = pretrained_weights['phis']
             dists = pretrained_weights['dists']
             sigma = pretrained_weights['sigma']
+
+        dists = -torch.log(1/dists-1)
+        sigma = -torch.log(1/sigma-1)
+        sigma_inv = -torch.log(1/sigma_inv-1)
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.dists = nn.Parameter(dists, requires_grad=True)
@@ -274,7 +278,7 @@ class polNormal_NoLayer(NoLayer):
         #dists = F.softplus(self.dists)
         #dists = math.sqrt(2*math.log(2))*(self.sigma)*self.dists
 
-        dists = self.dist_unit * self.dists#self.sd_activation(self.dists)
+        dists = self.dist_unit * self.sd_activation(self.dists)
 
         mus_lon = torch.cos(self.phis).view(1,1,-1,1) * dists.view(1,1,1,-1)
         mus_lat = torch.sin(self.phis).view(1,1,-1,1) * dists.view(1,1,1,-1)

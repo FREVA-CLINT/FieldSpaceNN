@@ -62,6 +62,8 @@ class MGNO_VAE(nn.Module):
 
         n_no_layers_total = len((torch.concat(global_levels_tot)))
 
+        self.grid_layer_0 = grid_layers["0"]
+        
         n = 0
         global_level_in = 0
         # Construct blocks based on configurations

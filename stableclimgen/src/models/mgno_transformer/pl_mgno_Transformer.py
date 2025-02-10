@@ -49,7 +49,6 @@ class Grad_loss(nn.Module):
     def __init__(self, grid_layer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
-        #self.loss_fcn = torch.nn.MSELoss() 
         self.loss_fcn = torch.nn.KLDivLoss(log_target=True, reduction='batchmean') 
 
     def forward(self, output, target, indices_sample=None):
@@ -79,7 +78,7 @@ class NH_loss(nn.Module):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
         
-        loss = ((output_nh[:,:,[0]] - output_nh[:,:,1:])**2).mean().sqrt()
+        loss = ((output_nh[:,:,[0]] - output_nh[:,:,1:])).abs().mean().sqrt()
         return loss
 
 

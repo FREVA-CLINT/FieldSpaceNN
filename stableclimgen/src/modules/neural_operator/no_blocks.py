@@ -283,11 +283,14 @@ class UNet_NOBlock(nn.Module):
         
         if global_res:
             self.out_layer = SkipAdd_Layer([decoding_dims[0], model_dim_in], model_dim_out, n_var_amplitudes=layer_settings[-1]['n_var_amplitudes'])
+            self.out_layer_decoder = nn.Identity()
         elif decoding_dims[0]!=model_dim_out:
-            self.out_layer = VarLin_Layer(decoding_dims[0], model_dim_out, layer_settings[-1]['n_var_amplitudes'])
+            self.out_layer = nn.Identity()
+            self.out_layer_decoder = VarLin_Layer(decoding_dims[0], model_dim_out, layer_settings[-1]['n_var_amplitudes'])
         else:
             self.out_layer = nn.Identity()
-
+            self.out_layer_decoder = nn.Identity()
+            
         self.model_dim_out = model_dim_out
 
     def encode(self, x, coords_in=None, indices_sample=None, mask=None, emb=None):
@@ -318,6 +321,8 @@ class UNet_NOBlock(nn.Module):
             
             x, mask = self.NO_Blocks[layer_idx].decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
+        if not isinstance(self.out_layer_decoder, nn.Identity):
+            x = self.out_layer_decoder(x, emb=emb)
         return x, mask
 
 
@@ -335,9 +340,6 @@ class UNet_NOBlock(nn.Module):
 
         if self.global_res:
             x = self.out_layer([x, x_res.view(*x.shape[:-1],x_res.shape[-1])], masks=[mask_out, mask.view(*x.shape[:-1])], emb=emb)[0]
-
-        elif not isinstance(self.out_layer, nn.Identity):
-            x = self.out_layer(x, emb=emb)
 
         return x, mask_out
 

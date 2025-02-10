@@ -1,30 +1,35 @@
 _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
+kl_weight: 0.0
 lr_groups:
   - param_group: 'params'
-    lr: 1e-4
-    lr_warmup: 2000
-  - param_group: 'no_params'
-    lr: 1e-6
-    lr_warmup: 5000
-  - param_group: 'emb_params'
     lr: 1e-3
     lr_warmup: 1
+  - param_group: 'no_params'
+    lr: 1e-4
+    lr_warmup: 200
+  - param_group: 'attention'
+    lr: 1e-4
+    lr_warmup: 200
+    zero_iters: 500 
 model:
   _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
   mgrids: ${mgrids}
   model_dim_in: 1
   model_dim_out: 1
-  n_vars_total: 1
+  n_vars_total: 3
   n_head_channels: 16
   rotate_coord_system: true
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
       block_type: "UNet"
-      global_levels: [2,2]
-      att_dim: 64
-      embed_confs: ${embedding}
-      embed_mode: "sum"
+      global_levels: [1,2,3,4]
+      global_res: false
       skip_mode: ''
+      embed_mode: "sum"
+      embed_confs: ${embedding}
+      att_dim: 64
+      nh_transformation: false
+      with_res: false
       is_encoder_only: false
       is_decoder_only: false
       layer_settings: 
@@ -32,42 +37,48 @@ model:
           no_type: "polNormal"
           amplitude_dim_encode: 4
           amplitude_dim_decode: 4
-          nh_transformation: false
-          nh_inverse_transformation: false
-          avg_params: [true, true, false]
+          nh_inverse_transformation: true
+          avg_params: [true, true, true]
           global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["var"]
+          n_var_amplitudes: 1
+          block_types_encode: []
           block_types_decode: []
-          embed_names_encode: [["VariableEmbedder"]]
-          embed_names_decode: [[]]
+          embed_names_encode: [[]]
+          embed_names_decode: [[],[]]
         - n_params: [4,2,1]
           no_type: "polNormal"
           amplitude_dim_encode: 4
           amplitude_dim_decode: 4
-          nh_transformation: true
           nh_inverse_transformation: true
-          avg_params: [false, true, false]
+          avg_params: [false, false, true]
           global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["trans"]
+          n_var_amplitudes: 1
+          block_types_encode: []
           block_types_decode: []
-          embed_names_encode: [["VariableEmbedder", "CoordinateEmbedder"]]
-          embed_names_decode: [[]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 2 
-            blocks: ["s", "mlp"]
-  quant_config:
-    _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
-    block_type: "grid_trans"
-    latent_ch: [ 8 ]
-    n_head_channels: [256, 64, 8, 1]
-    sub_confs:
-      blocks: [ "s", "mlp" ]
-      nh: 0
-      seq_lvl: -1
-      embedder_names: [ ["VariableEmbedder","CoordinateEmbedder"], ["VariableEmbedder","CoordinateEmbedder"] ]
-      embed_confs: ${embedding}
-      embed_mode: "sum"
-      distribution: "dirac"
+          embed_names_encode: [[]]
+          embed_names_decode: [[],[]]
+        - n_params: [4,2,1]
+          no_type: "polNormal"
+          amplitude_dim_encode: 4
+          amplitude_dim_decode: 4
+          nh_inverse_transformation: true
+          avg_params: [false, false, true]
+          global_params_learnable: [true, true, true]
+          n_var_amplitudes: 1
+          block_types_encode: []
+          block_types_decode: []
+          embed_names_encode: [[]]
+          embed_names_decode: [[],[]]
+        - n_params: [4,2,1]
+          no_type: "polNormal"
+          amplitude_dim_encode: 4
+          amplitude_dim_decode: 4
+          nh_inverse_transformation: true
+          avg_params: [false, false, true]
+          global_params_learnable: [true, true, true]
+          n_var_amplitudes: 1
+          block_types_encode: []
+          block_types_decode: []
+          embed_names_encode: [[]]
+          embed_names_decode: [[],[]]
+  quant_config: null
