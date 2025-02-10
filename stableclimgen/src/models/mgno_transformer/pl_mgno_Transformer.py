@@ -83,7 +83,7 @@ class NH_loss(nn.Module):
 
 
 class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0.):
+    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0., noise_std=0):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
@@ -93,12 +93,20 @@ class LightningMGNOTransformer(pl.LightningModule):
         self.loss = MSE_loss()
         self.grad_loss_weight = grad_loss_weight
         self.nh_loss_weight = nh_loss_weight
+        self.noise_std = noise_std
         self.grad_loss = Grad_loss(model.grid_layer_0)
         self.nh_loss = NH_loss(model.grid_layer_0)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
         return x
+
+    def on_after_backward(self):
+        if self.noise_std > 0:
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    noise = torch.randn_like(param.grad) * self.noise_std
+                    param.grad += noise 
 
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch

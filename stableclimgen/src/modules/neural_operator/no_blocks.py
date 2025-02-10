@@ -184,6 +184,7 @@ class UNet_NOBlock(nn.Module):
         no_dims = []
 
         x_dims_no = []
+        no_dim_total_prev = 1
         for n, layer_setting in enumerate(layer_settings):
             encoding_dims.append(layer_setting['amplitude_dim_encode'])
             decoding_dims.append(layer_setting['amplitude_dim_decode'])
@@ -195,7 +196,7 @@ class UNet_NOBlock(nn.Module):
                 x_dims_no.append(no_dim + [1]) 
             else:
                 x_dims_no.append(no_dim + [no_dim_total_prev]) 
-            no_dim_total_prev = int(torch.tensor(no_dim).prod())
+            no_dim_total_prev *= int(torch.tensor(no_dim).prod())
 
         encoding_dims_in = []
         encoding_dims_out = []
