@@ -930,6 +930,7 @@ def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
             pretrained_weights=layer_setting.get("pretrained_weights",None),
             n_var_amplitudes=layer_setting["n_var_amplitudes"],
             non_linear_encode=layer_setting.get("non_linear_encode", False),
-           non_linear_decode=layer_setting.get("non_linear_decode", False)
+           non_linear_decode=layer_setting.get("non_linear_decode", False),
+           cross_no=layer_setting.get("cross_no", False)
         )
     return no_layer

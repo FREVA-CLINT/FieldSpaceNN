@@ -150,6 +150,7 @@ class polNormal_NoLayer(NoLayer):
                  n_var_amplitudes=1,
                  non_linear_encode=False,
                  non_linear_decode=False,
+                 cross_no=False
                 ) -> None: 
     
         super().__init__(grid_layer_in, 
@@ -234,7 +235,7 @@ class polNormal_NoLayer(NoLayer):
         self.sigma = nn.Parameter(sigma, requires_grad=True)
         self.sigma_inv = nn.Parameter(sigma_inv, requires_grad=True)
         
-        x_dims_stat = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if not avg_param]
+        x_dims_stat = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if not avg_param and not cross_no]
         x_dims = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if avg_param]
         x_dims_inv = x_dims + [n_amplitudes_inv_out]
         x_dims = x_dims + [n_amplitudes_out]
