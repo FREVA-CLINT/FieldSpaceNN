@@ -52,7 +52,8 @@ class NOBlock(nn.Module):
                 for embed_name in embed_names[k]:
                     emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name])
                     emb_dict[emb.name] = emb     
-                embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
+                if 'param' in att_block_type or 'var' in att_block_type:
+                    embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
                 embedder_mlp = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
 
                 if 'CoordinateEmbedder' in emb_dict.keys():
@@ -78,6 +79,10 @@ class NOBlock(nn.Module):
                                        embedder=embedder_seq,
                                        embedder_mlp=embedder_mlp,
                                        v_proj=v_proj)
+            elif 'mlp' in att_block_type:
+                layer = ParamMLP(x_dims_layer, 
+                                p_dropout=p_dropout,
+                                embedder=embedder_mlp)
             
             elif 'trans' in att_block_type:
                 spatial_attention_config['embedder_names'] = [embed_names[k], []]
@@ -677,6 +682,47 @@ class SpatialAttention(nn.Module):
         x = x.squeeze(dim=1)
         x = self.reshaper.shape_to_x(x, nv_dim=nv)
         return x
+
+class ParamMLP(nn.Module):
+  
+    def __init__(self,
+                 model_dims,
+                 p_dropout = 0,
+                 embedder: BaseEmbedder=None
+                ) -> None: 
+      
+        super().__init__()
+
+        model_dim_total = int(torch.tensor(model_dims).prod())
+
+        self.reshaper = ReshapeAtt(model_dims, None, cross_var=True)
+
+        self.ada_ln = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder)
+
+        self.gamma = nn.Parameter(torch.ones(model_dim_total)*1e-6, requires_grad=True)
+
+        self.res_layer = ResLayer(model_dim_total, with_res=False, p_dropout=p_dropout)
+
+        self.cross_var = True
+
+        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
+
+
+    def forward(self, x, mask=None, emb=None):
+        nv = x.shape[2]
+
+        x_res, _ = self.reshaper.shape_to_att(x)
+
+        x = self.ada_ln(x, emb=emb)
+        x, _ = self.reshaper.shape_to_att(x)
+
+        x = self.res_layer(x)
+
+        x = x_res + self.gamma*x
+
+        x = self.reshaper.shape_to_x(x, nv)
+        
+        return x, mask
 
 
 class ParamAttention(nn.Module):
