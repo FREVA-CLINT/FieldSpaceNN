@@ -96,7 +96,7 @@ class NOBlock(nn.Module):
                 self.att_block_types_encode.append(layer)
 
     def squeeze_no_dims(self, x):
-        x = x.view(*x.shape[:3],-1,self.x_dims[-1])
+        x = x.view(*x.shape[:3],-1, x.shape[-1])
         return x
 
     def unsqueeze_no_dims(self, x):
@@ -177,36 +177,51 @@ class UNet_NOBlock(nn.Module):
         encoding_dims = []
         decoding_dims = []
         no_dims = []
+
+        x_dims_no = []
         for n, layer_setting in enumerate(layer_settings):
             encoding_dims.append(layer_setting['amplitude_dim_encode'])
             decoding_dims.append(layer_setting['amplitude_dim_decode'])
 
             no_dim = [layer_setting["n_params"][k] if not layer_setting["avg_params"][k] else 1 
-             for k in range(len(layer_setting["n_params"]))]
-            
+                for k in range(len(layer_setting["n_params"]))]
+    
             if n==0:
-                no_dims.append(int(torch.tensor(no_dim).prod()))
+                x_dims_no.append(no_dim + [1]) 
             else:
-                no_dims.append(int(torch.tensor(no_dim).prod())*no_dims[n-1])
+                x_dims_no.append(no_dim + [no_dim_total_prev]) 
+            no_dim_total_prev = int(torch.tensor(no_dim).prod())
 
-        no_x_dims_layers = []
-        no_static_dims = []
+        encoding_dims_in = []
+        encoding_dims_out = []
+        decoding_dims_in = []
+        decoding_dims_out = []
+
         for n, layer_setting in enumerate(layer_settings):
-
+            
+            encoding_dim_in = model_dim_in if n==0 else encoding_dims[n-1]
+            encoding_dim_out = encoding_dims[n]
+      
             if n==len(layer_settings) -1:
-                inv_dim_in = encoding_dims[-1]
+                decoding_dim_in = encoding_dims[n]
             elif skip_mode=='concat':
-                inv_dim_in = decoding_dims[-(n+1)] + encoding_dims[n]
+                decoding_dim_in = decoding_dims[n+1] + encoding_dims[n]
             else:
-                inv_dim_in = decoding_dims[-(n+1)]
+                decoding_dim_in = decoding_dims[n+1]
+            
+            decoding_dim_out = decoding_dims[n]
 
-            inv_dim_in = inv_dim_in #+ no_dims[-(n+1)]
+            encoding_dims_in.append(encoding_dim_in)
+            decoding_dims_in.append(decoding_dim_in)
+            encoding_dims_out.append(encoding_dim_out)
+            decoding_dims_out.append(decoding_dim_out)
+
 
             no_layer = get_no_layer(layer_setting, 
-                                    model_dim_in if n==0 else encoding_dims[n-1], 
-                                    encoding_dims[n], 
-                                    inv_dim_in, 
-                                    decoding_dims[-n])
+                                    encoding_dim_in, 
+                                    encoding_dim_out, 
+                                    decoding_dim_in, 
+                                    decoding_dim_out)
             
             is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
             is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
@@ -214,27 +229,12 @@ class UNet_NOBlock(nn.Module):
 
             embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
             att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
-
-            #model_dim = int(torch.tensor(no_layer.n_params_no).prod())
-            no_static_dims.append(int(torch.tensor(no_layer.n_params_no[:-1]).prod()))
-            
-            if n==0:
-                x_dims = copy.deepcopy(no_layer.n_params_no)
-                x_dims.insert(-1, 1)
-            else:
-                x_dims = copy.deepcopy(no_layer.n_params_no)
-                x_dims.insert(-1, no_x_dims_layers[n-1][-2]* no_static_dims[n-1])
-            
-            x_dims_decode = copy.deepcopy(x_dims)
-            x_dims_decode[-1] = no_layer.n_params_inv_in[-1]
-            
-            no_x_dims_layers.append(x_dims)
-
+                        
             self.NO_Blocks.append(NOBlock(
                 no_layer=no_layer,
-                x_dims=x_dims,
+                x_dims=x_dims_no[n] + [encoding_dims_out[n]],
+                x_dims_decode= x_dims_no[n] + [decoding_dims_in[n]],
                 att_block_types=att_block_types,
-                x_dims_decode=x_dims_decode,
                 is_decode=is_decode,
                 n_head_channels=n_head_channels,
                 att_dim=layer_setting["att_dim"],
@@ -248,9 +248,8 @@ class UNet_NOBlock(nn.Module):
         self.skip = False if len(skip_mode)==0 else True
         for n, layer_setting in enumerate(layer_settings):
             if n != len(layer_settings)-1:
-                x_skip_dims = no_x_dims_layers[n]
-                x_dims = copy.deepcopy(x_skip_dims)
-                x_dims[-1] = self.NO_Blocks[-(n+1)].no_layer.n_params_out[-1]
+                x_skip_dims = x_dims_no[n] + [encoding_dims_out[n]]
+                x_dims = x_dims_no[n] + [decoding_dims_out[n+1]]
 
                 if skip_mode=='amp_sum':
                     self.Skip_Blocks.append(
