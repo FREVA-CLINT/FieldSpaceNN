@@ -41,7 +41,11 @@ class MSE_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target):
+    def forward(self, output, target, mask=None):
+        if mask is not None:
+            mask = mask.view(output.shape)
+            target = target.view(output.shape)[mask]
+            output = output[mask]
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
    
@@ -83,7 +87,7 @@ class NH_loss(nn.Module):
 
 
 class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0., noise_std=0):
+    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0., noise_std=0, masked_loss=False):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
@@ -96,6 +100,7 @@ class LightningMGNOTransformer(pl.LightningModule):
         self.noise_std = noise_std
         self.grad_loss = Grad_loss(model.grid_layer_0)
         self.nh_loss = NH_loss(model.grid_layer_0)
+        self.masked_loss = masked_loss
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
@@ -112,7 +117,10 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         
-        loss = self.loss(output, target)
+        if self.masked_loss:
+            loss = self.loss(output, target, mask=mask)
+        else:
+            loss = self.loss(output, target)
         self.log_dict({"train/mse_loss": loss.item()})
 
         if self.grad_loss_weight>0:
@@ -134,7 +142,12 @@ class LightningMGNOTransformer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
-        loss = self.loss(output, target)
+
+        if self.masked_loss:
+            loss = self.loss(output, target, mask=mask)
+        else:
+            loss = self.loss(output, target)
+
         self.log_dict({"validate/mse_loss": loss.item()})
 
         if self.grad_loss_weight>0:
