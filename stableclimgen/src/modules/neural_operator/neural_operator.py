@@ -150,7 +150,8 @@ class polNormal_NoLayer(NoLayer):
                  n_var_amplitudes=1,
                  non_linear_encode=False,
                  non_linear_decode=False,
-                 cross_no=False
+                 cross_no=False,
+                 mult_sigma = True
                 ) -> None: 
     
         super().__init__(grid_layer_in, 
@@ -216,8 +217,14 @@ class polNormal_NoLayer(NoLayer):
      
             dists = max_dist_fac*torch.arange(1,2*n_dist, 2)/(n_dist*2)
 
-            sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
-            sigma_inv = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
+            if mult_sigma:
+                sigma = max_dist_fac*torch.arange(1,2*n_amplitudes_out, 2)/(n_amplitudes_out*2)
+                sigma_inv = max_dist_fac*torch.arange(1,2*n_amplitudes_inv_out, 2)/(n_amplitudes_inv_out*2)
+               # n_amplitudes_in = n_amplitudes_out
+               # n_amplitdues_inv_in = n_amplitudes_inv_out
+            else:
+                sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
+                sigma_inv = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
             self.dist_unit = grid_layer_in.nh_dist
 
@@ -231,9 +238,9 @@ class polNormal_NoLayer(NoLayer):
         sigma_inv = -torch.log(1/sigma_inv-1)
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
-        self.dists = nn.Parameter(dists, requires_grad=True)
-        self.sigma = nn.Parameter(sigma, requires_grad=True)
-        self.sigma_inv = nn.Parameter(sigma_inv, requires_grad=True)
+        self.dists = nn.Parameter(dists, requires_grad=dist_learnable)
+        self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
+        self.sigma_inv = nn.Parameter(sigma_inv, requires_grad=sigma_learnable)
         
         x_dims_stat = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if not avg_param and not cross_no]
         x_dims = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if avg_param]
@@ -243,13 +250,25 @@ class polNormal_NoLayer(NoLayer):
         model_dim = int(torch.tensor(x_dims).prod())
         model_dim_inv = int(torch.tensor(x_dims_inv).prod())
 
-        self.lin_layer =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
+        if mult_sigma:
+            self.lin_layer_pre =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
+            self.lin_layer_post = nn.Identity()
+        else:
+            self.lin_layer_post =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
+            self.lin_layer_pre = nn.Identity()
+
         if len(x_dims)>1:
             self.proc_layer = no_res_layer(model_dim, layer_norm=False, res_block=non_linear_encode, x_dims_stat=x_dims_stat)
         else:
             self.proc_layer = nn.Identity()
 
-        self.lin_layer_inv = nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
+        if mult_sigma:
+            self.lin_layer_inv_pre =  nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
+            self.lin_layer_inv_post = nn.Identity()
+        else:
+            self.lin_layer_inv_post =  nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
+            self.lin_layer_inv_pre = nn.Identity()
+
         if len(x_dims)>1:
             self.proc_layer_inv = no_res_layer(model_dim_inv, layer_norm=False, res_block=non_linear_decode, x_dims_stat=x_dims_stat)
         else:
@@ -401,9 +420,12 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
+        x = self.lin_layer_pre(x)
+
         x, mask = self.mult_weights_t(x, weights, mask=mask, norm_seq=True)
 
-        x = self.lin_layer(x)
+        x = self.lin_layer_post(x)
+
         x = self.proc_layer(x)
 
         if len(self.sum_dims_params)>0:
@@ -427,9 +449,11 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma_inv)
 
-        x, mask = self.mult_weights_invt(x, weights, mask=mask, norm_seq=True)
+        x = self.lin_layer_inv_pre(x)
 
-        x = self.lin_layer_inv(x)
+        x, mask = self.mult_weights_invt(x, weights, mask=mask, norm_seq=True)
+        
+        x = self.lin_layer_inv_post(x)
 
         x = (self.proc_layer_inv(x)).sum([-4,-3]) #+ x
 
