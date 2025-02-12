@@ -58,7 +58,7 @@ class NOBlock(nn.Module):
 
                 if 'CoordinateEmbedder' in emb_dict.keys():
                     self.prepare_coordinates = True
-                    self.grid_layer = no_layer.grid_layers[str(no_layer.global_level_no)]
+                    self.grid_layer = no_layer.grid_layer_no
                     self.global_level = no_layer.global_level_no
             else:
                 embedder_seq = None

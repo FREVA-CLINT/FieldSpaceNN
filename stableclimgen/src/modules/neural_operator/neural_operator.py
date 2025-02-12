@@ -119,7 +119,7 @@ class no_res_layer(nn.Module):
         x = x.view(*x.shape[:5],n_phi,n_dist,-1)
         x = x.permute(0,1,2,3,-3,-2,-4,-1)
 
-        x = x_res + x
+       # x = x_res + x
 
         return x
         
