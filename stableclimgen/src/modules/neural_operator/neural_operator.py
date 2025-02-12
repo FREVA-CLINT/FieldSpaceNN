@@ -215,18 +215,18 @@ class polNormal_NoLayer(NoLayer):
 
             max_dist_fac = (grid_layer_no.global_level - grid_layer_in.global_level)
      
-            dists = max_dist_fac*torch.arange(1,2*n_dist, 2)/(n_dist*2)
+            dists = torch.arange(1,2*n_dist, 2)/(n_dist*2)
 
             if mult_sigma:
-                sigma = max_dist_fac*torch.arange(1,2*n_amplitudes_out, 2)/(n_amplitudes_out*2)
-                sigma_inv = max_dist_fac*torch.arange(1,2*n_amplitudes_inv_out, 2)/(n_amplitudes_inv_out*2)
+                sigma = torch.arange(1,2*n_amplitudes_out, 2)/(n_amplitudes_out*2)
+                sigma_inv = torch.arange(1,2*n_amplitudes_inv_out, 2)/(n_amplitudes_inv_out*2)
                # n_amplitudes_in = n_amplitudes_out
                # n_amplitdues_inv_in = n_amplitudes_inv_out
             else:
                 sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
                 sigma_inv = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
-            self.dist_unit = grid_layer_in.nh_dist
+            self.dist_unit = max_dist_fac*grid_layer_in.nh_dist
 
         else:
             phis = pretrained_weights['phis']
@@ -396,7 +396,7 @@ class polNormal_NoLayer(NoLayer):
         weights = weights.view(weights.shape[0], n, seq_out, seq_in*nh_in, nvw, n_phi, n_dist, 1, n_sigma)
 
         if mask is not None:
-            norm = (mask.view(-1, n, seq_in*nh_in, 1, nv, 1, 1, 1, 1) == False)
+            norm = (mask.view(-1, n, seq_out*nh_in, 1, nv, 1, 1, 1, 1) == False)
             weights = weights*norm
 
             mask = mask.view(-1,n,seq_out,nv)
