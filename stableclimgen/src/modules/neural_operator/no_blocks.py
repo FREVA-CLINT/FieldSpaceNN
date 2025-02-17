@@ -23,12 +23,16 @@ class NOBlock(nn.Module):
                  level_data_in,
                  no_layer: NoLayer,
                  p_dropout=0.,
-                 embedder: EmbedderSequential=None
+                 embedder: EmbedderSequential=None,
+                 cross_no = False,
                 ) -> None: 
       
         super().__init__()
 
-        self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+        if cross_no:
+            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        else:
+            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
         self.level_diff = (self.no_conv.global_level_out - level_data_in)
 
@@ -169,7 +173,35 @@ class NOConv(nn.Module):
 
         return x, mask
 
+class CrossNOConv(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: NoLayer,
+                 p_dropout=0.,
+                ) -> None: 
+      
+        super().__init__()
 
+        self.no_layer = no_layer
+
+        self.no_dims = self.no_layer.n_params_no 
+        self.global_level_in = self.no_layer.global_level_encode
+        self.global_level_out = self.no_layer.global_level_decode
+
+        self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out*int(torch.tensor(self.no_dims).prod()), bias=False)
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+        x_shape = x.shape
+        x = x.view(*x.shape[:3],-1)
+        x = self.linear_layer(x)
+        x = x.view(*x_shape[:-1],-1)
+    
+        x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        return x, mask
 
 class Serial_NOBlock(nn.Module):
   
@@ -220,7 +252,8 @@ class Serial_NOBlock(nn.Module):
                                 model_dim_out=model_dim_out,
                                 level_data_in=global_level_in,
                                 no_layer=no_layer,
-                                embedder=embedder
+                                embedder=embedder,
+                                cross_no = 'cross_no' in layer_setting["type"]
                                 )
 
             if "var_att" in layer_setting["type"]:
