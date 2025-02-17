@@ -86,8 +86,8 @@ class Grad_loss(nn.Module):
         self.grid_layer: GridLayer = grid_layer
         self.loss_fcn = torch.nn.KLDivLoss(log_target=True, reduction='batchmean') 
 
-    def forward(self, output, target, indices_sample=None):
-        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
+    def forward(self, output, target, indices_sample=None, mask=None):
+        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
         
         target_nh, _ = self.grid_layer.get_nh(target.view(output.shape), indices_in, indices_sample)
@@ -110,12 +110,27 @@ class NH_loss(nn.Module):
         self.grid_layer: GridLayer = grid_layer
 
     def forward(self, output, target=None, indices_sample=None, mask=None):
-        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
+        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
-        
+
         loss = ((output_nh[:,:,[0]] - output_nh[:,:,1:])).abs().mean().sqrt()
         return loss
 
+class NH_loss_rel(nn.Module):
+    def __init__(self, grid_layer):
+        super().__init__()
+        self.grid_layer: GridLayer = grid_layer
+
+    def forward(self, output, target=None, indices_sample=None, mask=None):
+        indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
+        output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
+        
+        nh_rel = ((output_nh[:,:,[0]] - output_nh[:,:,1:])/output_nh[:,:,[0]]).abs()
+        nh_rel = nh_rel[nh_rel>=torch.quantile(nh_rel, 0.98)]
+
+        nh_rel = nh_rel.clamp(max=1)
+        loss = (nh_rel).mean()
+        return loss
 
 class LightningMGNOBaseModel(pl.LightningModule):
     def __init__(self, model, lr_groups, lambda_loss_dict: dict, noise_std=0.0):
