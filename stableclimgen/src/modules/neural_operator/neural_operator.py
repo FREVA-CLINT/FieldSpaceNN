@@ -352,8 +352,8 @@ def get_no_layer(type,
                  rotate_coordinate_system,
                  layer_settings,
                  ):
-    n_params = check_get_missing_key(layer_settings, "n_params")
-    global_params_learnable = check_get_missing_key(layer_settings, "global_params_learnable")
+    n_params = check_get_missing_key(layer_settings, "n_params", ref=type)
+    global_params_learnable = check_get_missing_key(layer_settings, "global_params_learnable", ref=type)
 
     if type == 'polNormal':
 

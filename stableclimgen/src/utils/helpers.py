@@ -6,12 +6,17 @@ def check_value(value, n_repeat):
         value = [value]*n_repeat
     return value
 
-def check_get_missing_key(dict_: dict, key: str):
+def check_get_missing_key(dict_: dict, key: str, ref=None):
     if key not in dict_.keys():
-        raise Exception(f"key {key} is required for layer {dict_['type']}")
+        if ref is None and 'type' in dict_.keys():
+            raise Exception(f"key {key} is required for config {dict_['type']}")
+        elif ref is not None:
+            raise Exception(f"key {key} is required for config {ref}")
+        else:
+            raise Exception(f"key {key} is required")
     else:
         return dict_[key]
-
+    
 def get_parameter_group_from_state_dict(state_dict, key, return_reduced_keys=False):
     parameter_group = {}
     for state_key, state_value in state_dict.items():

@@ -175,10 +175,10 @@ class Serial_NOBlock(nn.Module):
   
     def __init__(self,
                  input_dim: int,
-                 output_dim: int,
                  model_dims_out: List[int],
                  grid_layers: List[GridLayer],
                  layer_settings: List[dict],
+                 output_dim: int = None,
                  rotate_coordinate_system: bool = True
                 ) -> None: 
       
@@ -256,7 +256,7 @@ class Serial_NOBlock(nn.Module):
             self.layers.append(layer)
             
 
-        self.output_layer = nn.Linear(model_dims_out[-1], output_dim, bias=False)
+        self.output_layer = nn.Linear(model_dims_out[-1], output_dim, bias=False) if output_dim is not None else nn.Identity()
 
 
     def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
@@ -270,6 +270,8 @@ class Serial_NOBlock(nn.Module):
             else:
                 x = layer(x, mask=mask, emb=emb)
 
+        x = self.output_layer(x)
+        
         return x, mask
 
 def get_embedder_from_dict(dict_: dict):
