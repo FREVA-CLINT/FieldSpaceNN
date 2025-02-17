@@ -8,8 +8,8 @@ import torch
 from torch.optim import AdamW
 
 from ...utils.visualization import scatter_plot
-from ..mgno_transformer.pl_mgno_Transformer import CosineWarmupScheduler
-from ..mgno_transformer.pl_mgno_Transformer import LightningMGNOTransformer
+from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler
+from ..mgno_transformer.pl_mgno_base_model import LightningMGNOTransformer
 
 
 class MSE_loss(nn.Module):

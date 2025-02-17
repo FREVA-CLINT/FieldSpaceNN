@@ -103,6 +103,7 @@ class MGNO_VAE(nn.Module):
             
             self.encoder_blocks.append(block)
         
+        output_level_encoder = block.output_level
         output_dim_encoder = model_dims_out[-1]
 
         for block_idx, block_conf in enumerate(decoder_block_configs):
@@ -114,6 +115,7 @@ class MGNO_VAE(nn.Module):
                 model_dims_out,
                 grid_layers,
                 layer_settings,
+                input_level=output_level_encoder,
                 output_dim=output_dim,
                 rotate_coordinate_system=rotate_coord_system)
                 

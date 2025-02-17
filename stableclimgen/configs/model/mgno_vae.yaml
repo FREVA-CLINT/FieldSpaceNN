@@ -21,12 +21,12 @@ model:
   rotate_coord_system: true
   p_dropout: 0
   encoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
       block_type: 'Serial'
-      model_dims_out: [16,16,16,16,16]
+      model_dims_out: [16,16,16,16]
       layer_settings:
         - type: "NO_mlp"
-          global_level_no: 2
+          global_level_no: 1
           global_level_decode: 1
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
@@ -54,7 +54,7 @@ model:
             blocks: ["s", "mlp"]
         - type: "NO_mlp"
           global_level_no: 2
-          global_level_decode: 0
+          global_level_decode: 2
           no_layer_type: 'polNormal'
           no_layer_settings:
             n_params: [4,2,1]
@@ -62,12 +62,12 @@ model:
             nh_in_decode: false
             global_params_learnable: [false, false]
   decoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
       block_type: 'Serial'
-      model_dims_out: [16,16,16,16,16]
+      model_dims_out: [16,16,16,16]
       layer_settings:
         - type: "NO_mlp"
-          global_level_no: 2
+          global_level_no: 1
           global_level_decode: 1
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
@@ -94,12 +94,12 @@ model:
             seq_lvl: 3
             blocks: ["s", "mlp"]
         - type: "NO_mlp"
-          global_level_no: 2
+          global_level_no: 0
           global_level_decode: 0
           no_layer_type: 'polNormal'
           no_layer_settings:
             n_params: [4,2,1]
             nh_in_encode: true
-            nh_in_decode: false
+            nh_in_decode: true
             global_params_learnable: [false, false]
   quant_config: null

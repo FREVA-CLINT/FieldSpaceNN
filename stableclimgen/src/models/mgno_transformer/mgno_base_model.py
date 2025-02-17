@@ -9,7 +9,7 @@ from ...modules.neural_operator.no_blocks import Serial_NOBlock
 from .mgno_block_confs import NOBlockConfig
 
 
-class MGNO_Transformer(nn.Module):
+class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
                  block_configs: List[NOBlockConfig],
