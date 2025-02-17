@@ -133,11 +133,12 @@ class NH_loss_rel(nn.Module):
         return loss
 
 class LightningMGNOBaseModel(pl.LightningModule):
-    def __init__(self, model, lr_groups, lambda_loss_dict: dict, noise_std=0.0):
+    def __init__(self, model, lr_groups, lambda_loss_dict: dict, weight_decay=0, noise_std=0.0):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
 
+        self.weight_decay = weight_decay
         self.lr_groups=lr_groups
         self.save_hyperparameters(ignore=['model'])
   
@@ -248,7 +249,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         for n, p in self.named_parameters():
             if 'sigma' in n or 'dist' in n:
                 no_params.append(p)
-            elif "att_block" in n:
+            elif "attention" in n:
                 att_params.append(p)
                 att_params_names.append(n)
             else:
@@ -265,7 +266,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             param_groups.append({"params":p, "lr": lr_group["lr"], "name": lr_group['param_group']})
 
 
-        optimizer = AdamW(param_groups)
+        optimizer = AdamW(param_groups, weight_decay=self.weight_decay)
         scheduler = CosineWarmupScheduler(
                         optimizer=optimizer,
                         lr_groups=self.lr_groups,

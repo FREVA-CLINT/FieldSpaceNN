@@ -27,3 +27,34 @@ class NOBlockConfig:
                 for index in range(value):
                     if key not in self.layer_settings[index]:
                         self.layer_settings[index][key] = value
+
+
+class MGEncoderConfig:
+    def __init__(self, 
+                 global_levels_output: list,
+                 global_levels_no: list,
+                 model_dims_out: list,
+                 layer_settings: list,
+                 stacked_encoding: bool = False):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)
+
+
+class MGProcessingConfig:
+    def __init__(self, 
+                 layer_settings: List[List]):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)
+
+
+class MGDecoderConfig:
+    def __init__(self, 
+                 layer_settings: List[List]):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)
