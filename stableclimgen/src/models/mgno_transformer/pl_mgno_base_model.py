@@ -36,19 +36,50 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
 
 class MSE_loss(nn.Module):
-    def __init__(self):
+    def __init__(self, grid_layer=None):
         super().__init__()
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None):
+    def forward(self, output, target, mask=None, indices_sample=None):
+        loss = self.loss_fcn(output, target.view(output.shape))
+        return loss
+    
+class MSE_Hole_loss(nn.Module):
+    def __init__(self, grid_layer=None):
+        super().__init__()
+
+        self.loss_fcn = torch.nn.MSELoss() 
+
+    def forward(self, output, target, mask=None, indices_sample=None):
         if mask is not None:
             mask = mask.view(output.shape)
             target = target.view(output.shape)[mask]
             output = output[mask]
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
-   
+
+class MultiLoss(nn.Module):
+    def __init__(self, lambda_dict, grid_layer=None):
+        super().__init__()
+
+        self.loss_fcns = []
+        for target, lambda_ in lambda_dict.items():
+            if lambda_ > 0:
+                self.loss_fcns.append({'lambda': float(lambda_), 
+                                        'fcn': globals()[target](grid_layer=grid_layer)})
+    
+    def forward(self, output, target, mask=None, indices_sample=None, prefix=''):
+        loss_dict = {}
+        total_loss = 0
+        for loss_fcn in self.loss_fcns:
+            loss = loss_fcn['fcn'](output, target, mask=mask, indices_sample=indices_sample)
+            loss_dict[prefix + loss_fcn['fcn']._get_name()] = loss.item()
+            total_loss = total_loss + loss_fcn['lambda'] * loss
+        
+        return total_loss, loss_dict
+
+
 class Grad_loss(nn.Module):
     def __init__(self, grid_layer):
         super().__init__()
@@ -78,7 +109,7 @@ class NH_loss(nn.Module):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
 
-    def forward(self, output, indices_sample=None):
+    def forward(self, output, target=None, indices_sample=None, mask=None):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
         
@@ -86,21 +117,17 @@ class NH_loss(nn.Module):
         return loss
 
 
-class LightningMGNOTransformer(pl.LightningModule):
-    def __init__(self, model, lr_groups, grad_loss_weight=0., nh_loss_weight=0., noise_std=0, masked_loss=False):
+class LightningMGNOBaseModel(pl.LightningModule):
+    def __init__(self, model, lr_groups, lambda_loss_dict: dict, noise_std=0.0):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
 
         self.lr_groups=lr_groups
         self.save_hyperparameters(ignore=['model'])
-        self.loss = MSE_loss()
-        self.grad_loss_weight = grad_loss_weight
-        self.nh_loss_weight = nh_loss_weight
+  
         self.noise_std = noise_std
-        self.grad_loss = Grad_loss(model.grid_layer_0)
-        self.nh_loss = NH_loss(model.grid_layer_0)
-        self.masked_loss = masked_loss
+        self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_0)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
@@ -112,29 +139,15 @@ class LightningMGNOTransformer(pl.LightningModule):
                 if param.grad is not None:
                     noise = torch.randn_like(param.grad) * self.noise_std
                     param.grad += noise 
-
+    
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
         
-        if self.masked_loss:
-            loss = self.loss(output, target, mask=mask)
-        else:
-            loss = self.loss(output, target)
-        self.log_dict({"train/mse_loss": loss.item()})
+        loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
 
-        if self.grad_loss_weight>0:
-            grad_loss = self.grad_loss(output, target, indices_sample=indices)
-            loss = loss + self.grad_loss_weight*grad_loss
-            self.log_dict({"train/grad_loss": grad_loss.item()})
-
-        if self.nh_loss_weight>0:
-            nh_tv_loss = self.nh_loss(output, indices_sample=indices)
-            loss = loss + self.nh_loss_weight*nh_tv_loss
-            self.log_dict({"train/nh_tv_loss": nh_tv_loss.item()})
-
-        self.log_dict({"train/loss": loss.item()}, prog_bar=True)
- #       self.log_dict(self.get_no_params_dict(), logger=True)
+        self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
+        self.log_dict(loss_dict, logger=True)
         
         return loss
 
@@ -143,24 +156,11 @@ class LightningMGNOTransformer(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
 
-        if self.masked_loss:
-            loss = self.loss(output, target, mask=mask)
-        else:
-            loss = self.loss(output, target)
+  
+        loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='validate/')
 
-        self.log_dict({"validate/mse_loss": loss.item()})
-
-        if self.grad_loss_weight>0:
-            grad_loss = self.grad_loss(output, target, indices_sample=indices)
-            loss = loss + self.grad_loss_weight*grad_loss
-            self.log_dict({"validate/grad_loss": grad_loss.item()})
-
-        if self.nh_loss_weight>0:
-            nh_tv_loss = self.nh_loss(output, indices_sample=indices)
-            loss = loss + self.nh_loss_weight*nh_tv_loss
-            self.log_dict({"validate/nh_tv_loss": nh_tv_loss.item()})
-
-        self.log_dict({"validate/loss": loss.item()}, prog_bar=True)
+        self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
+        self.log_dict(loss_dict, logger=True)
   #      self.log_dict(self.get_no_params_dict(), logger=True)
 
         if batch_idx == 0:

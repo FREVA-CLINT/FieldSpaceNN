@@ -64,7 +64,6 @@ class MGNO_base_model(nn.Module):
                     model_dims_out,
                     grid_layers,
                     layer_settings,
-                    output_dim=output_dim,
                     rotate_coordinate_system=rotate_coord_system)
                 
             self.Blocks.append(block)     

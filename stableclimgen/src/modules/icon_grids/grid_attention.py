@@ -24,19 +24,9 @@ class GridAttention(nn.Module):
         spatial_attention_configs = copy.deepcopy(spatial_attention_configs)
         nh = spatial_attention_configs.pop('nh')
 
-        seq_lvl = spatial_attention_configs.pop('seq_lvl')
+        self.seq_lvl = spatial_attention_configs.pop('seq_lvl')
 
-        if seq_lvl != -1 or nh:
-            self.rel_coord_mngr = RelativeCoordinateManager(
-                grid_layer,
-                grid_layer,
-                nh_in=nh,
-                seq_lvl=seq_lvl,
-                precompute=True,
-                coord_system="cartesian",
-                rotate_coord_system=rotate_coord_system)
-
-        spatial_attention_configs['seq_lengths'] = 4 ** seq_lvl if seq_lvl != -1 else None
+        spatial_attention_configs['seq_lengths'] = 4 ** self.seq_lvl  if self.seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,
                                                 ch_out,
                                                 n_head_channels=n_head_channels,
@@ -48,12 +38,11 @@ class GridAttention(nn.Module):
 
     def get_coordinates(self, indices_layers, emb):
 
-        if hasattr(self, 'rel_coord_mngr'):
-            coords = self.rel_coord_mngr(indices_out=indices_layers[self.global_level] if indices_layers else None)
-            coords = torch.stack(coords, dim=-1)
-        else:
-            coords = self.grid_layer.get_coordinates_from_grid_indices(
-                indices_layers[self.global_level] if indices_layers else None)
+        coords = self.grid_layer.get_coordinates_from_grid_indices(
+            indices_layers[self.global_level] if indices_layers else None)
+        
+        if self.seq_lvl != -1:
+            coords  = coords.view(coords.shape[0], -1, 4**self.seq_lvl, coords.shape[-1])
 
         if emb is None:
             emb = {}
