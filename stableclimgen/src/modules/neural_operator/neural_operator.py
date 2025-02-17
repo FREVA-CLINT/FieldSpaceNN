@@ -3,83 +3,101 @@ import torch.nn.functional as F
 import torch.nn as nn
 import math
 
-from ..icon_grids.grid_layer import RelativeCoordinateManager
+from ..icon_grids.grid_layer import RelativeCoordinateManager, GridLayer
 from ..transformer.attention import ResLayer, AdaptiveLayerNorm
 
+from ...utils.helpers import check_get_missing_key
 class NoLayer(nn.Module):
 
     def __init__(self, 
-                 grid_layer_in, 
-                 grid_layer_no,
-                 grid_layer_out=None,
-                 nh_projection=False,
-                 nh_backprojection=True,
-                 precompute_coordinates=True,
+                 grid_layer_encode: GridLayer, 
+                 grid_layer_no: GridLayer,
+                 grid_layer_decode: GridLayer,
+                 nh_in_encode=False,
+                 nh_in_decode=True,
+                 precompute_encode=True,
+                 precompute_decode=True,
                  rotate_coord_system=True,
                  coord_system='polar') -> None: 
         
         super().__init__()
-        self.grid_layer_in = grid_layer_in
+        self.grid_layer_encode = grid_layer_encode
+        self.grid_layer_decode = grid_layer_decode
         self.grid_layer_no = grid_layer_no
 
-        self.global_level_in = int(grid_layer_in.global_level)
+        self.global_level_encode = int(grid_layer_encode.global_level)
+        self.global_level_decode = int(grid_layer_decode.global_level)
         self.global_level_no = int(grid_layer_no.global_level)
-        self.nh_projection = nh_projection
-        self.nh_backprojection = nh_backprojection
+        self.nh_in_encode = nh_in_encode
+        self.nh_in_decode = nh_in_decode
         self.rotate_coord_system = rotate_coord_system
         self.coord_system = coord_system
 
-        self.rel_coord_mngr = RelativeCoordinateManager(
-            grid_layer_in,
+        self.rel_coord_mngr_encode = RelativeCoordinateManager(
+            grid_layer_encode,
             grid_layer_no,
-            nh_in= nh_projection,
-            nh_ref=nh_backprojection,
-            precompute = precompute_coordinates,
+            nh_in= nh_in_encode,
+            precompute = precompute_encode,
             coord_system=coord_system,
-            rotate_coord_system=rotate_coord_system)
+            rotate_coord_system=rotate_coord_system,
+            ref='out')
+        
+        self.rel_coord_mngr_decode = RelativeCoordinateManager(
+            grid_layer_no,
+            grid_layer_decode,
+            nh_in= nh_in_decode,
+            precompute = precompute_decode,
+            coord_system=coord_system,
+            rotate_coord_system=rotate_coord_system,
+            ref='in')
 
         self.nh_dist = grid_layer_no.nh_dist
 
-    def transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None, mask=None, emb=None):
+    def transform(self, x, coords_encode=None, coords_no=None, indices_sample=None, mask=None, emb=None):
         
-        indices_in  = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
-        indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
+        indices_encode  = indices_sample["indices_layers"][self.global_level_encode] if indices_sample is not None else None
+        indices_no = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
 
-        coordinates_rel = self.rel_coord_mngr(indices_in=indices_in,
-                                              indices_ref=indices_ref,
-                                              coordinates_in=coordinates,
-                                              coordinates_ref=coordinates_ref,
-                                              sample_dict=indices_sample,
-                                              back=False)
+        coordinates_rel = self.rel_coord_mngr_encode(indices_in=indices_encode,
+                                              indices_out=indices_no,
+                                              coordinates_in=coords_encode,
+                                              coordinates_out=coords_no,
+                                              sample_dict=indices_sample)
 
-        if self.nh_projection:
-            x, mask = self.grid_layer_in.get_nh(x, indices_in, indices_sample, mask=mask)
-            
+        if self.nh_in_encode:
+            x, mask = self.grid_layer_encode.get_nh(x, indices_encode, indices_sample, mask=mask)
+        else:
+            x = x.unsqueeze(dim=2)
             
         return self.transform_(x, coordinates_rel, mask=mask, emb=emb)
         
 
-    def inverse_transform(self, x, coordinates=None, coordinates_ref=None, indices_sample=None,  mask=None, emb=None):
+    def inverse_transform(self, x, coords_no=None, coords_decode=None, indices_sample=None,  mask=None, emb=None):
         
-        indices_out = indices_sample["indices_layers"][self.global_level_in] if indices_sample is not None else None
-        indices_ref = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
+        indices_no = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
+        indices_decode = indices_sample["indices_layers"][self.global_level_decode] if indices_sample is not None else None
 
-        coordinates_rel = self.rel_coord_mngr(indices_in=indices_out,
-                                              indices_ref=indices_ref,
-                                              coordinates_in=coordinates,
-                                              coordinates_ref=coordinates_ref,
-                                              sample_dict=indices_sample,
-                                              back=True)
+        #switch in and out, since out is the reference
+        coordinates_rel = self.rel_coord_mngr_decode(indices_in=indices_no,
+                                              indices_out=indices_decode,
+                                              coordinates_in=coords_no,
+                                              coordinates_out=coords_decode,
+                                              sample_dict=indices_sample)
 
-        if self.nh_backprojection:
-            x, mask = self.grid_layer_no.get_nh(x, indices_ref, indices_sample, mask=mask)
-        else: 
+        self.global_level_decode
+        if self.nh_in_decode:
+            x, mask = self.grid_layer_no.get_nh(x, indices_no, indices_sample, mask=mask)
+        else:
             x = x.unsqueeze(dim=2)
+            if mask is not None:
+                mask = mask.unsqueeze(dim=2)
         
-        
+        nh = x.shape[2]
+
+        #seq_dim_in = 4**(self.global_level_no - self.global_level_decode)*nh
+
+
         return self.inverse_transform_(x, coordinates_rel, mask=mask, emb=emb)
-
-
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
         raise NotImplementedError("This method should be implemented by subclasses.")
@@ -88,215 +106,68 @@ class NoLayer(nn.Module):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
-class no_res_layer(nn.Module):
-    def __init__(self, model_dim,  x_dims_stat=None, res_block=False, layer_norm=False):
-        super().__init__()
-
-        if layer_norm: 
-            self.ada_ln = AdaptiveLayerNorm([model_dim], model_dim)
-        else:
-            self.ada_ln = nn.Identity()
-
-        if res_block:
-            self.layer = ResLayer(model_dim, 
-                                with_res=False, 
-                                p_dropout=0)
-        else:
-            self.layer= nn.Linear(model_dim, model_dim)
-
-        self.x_dims_stat = x_dims_stat
-        self.model_dim = model_dim
-
-    def forward(self, x):
-        
-        x_res = x
-
-        b,n,_,nv,n_phi,n_dist,np,nc = x.shape
-        x = x.permute(0,1,2,3,-2,-4,-3,-1)
-        x = x.reshape(*x.shape[:5],*self.x_dims_stat,-1)
-        x = self.ada_ln(x)
-        x = self.layer(x)
-        x = x.view(*x.shape[:5],n_phi,n_dist,-1)
-        x = x.permute(0,1,2,3,-3,-2,-4,-1)
-
-       # x = x_res + x
-
-        return x
-        
     
 class polNormal_NoLayer(NoLayer):
 
     def __init__(self,
-                 grid_layer_in,
+                 grid_layer_encode,
                  grid_layer_no,
-                 n_amplitudes_in: int,
-                 n_amplitudes_out: int,
-                 n_amplitdues_inv_in: int,
-                 n_amplitudes_inv_out: int,
+                 grid_layer_decode,
                  n_phi=4,
                  n_dist=4,
                  n_sigma=1,
-                 avg_phi=False,
-                 avg_dist=False,
-                 avg_sigma=False,
                  dist_learnable=False,
                  sigma_learnable=True,
-                 amplitudes_learnable=False,
-                 nh_projection=False, 
-                 nh_backprojection=True,
-                 precompute_coordinates=True,
-                 rotate_coord_system=True,
-                 pretrained_weights=None,
-                 n_var_amplitudes=1,
-                 non_linear_encode=False,
-                 non_linear_decode=False,
-                 cross_no=False,
-                 mult_sigma = True
+                 nh_in_encode=False, 
+                 nh_in_decode=True,
+                 precompute_encode=True,
+                 precompute_decode=True,
+                 rotate_coord_system=True
                 ) -> None: 
     
-        super().__init__(grid_layer_in, 
+        super().__init__(grid_layer_encode, 
                  grid_layer_no,
-                 nh_projection=nh_projection, 
-                 nh_backprojection=nh_backprojection,
-                 precompute_coordinates=precompute_coordinates,
+                 grid_layer_decode,
+                 nh_in_encode=nh_in_encode, 
+                 nh_in_decode=nh_in_decode,
+                 precompute_encode=precompute_encode,
+                 precompute_decode=precompute_decode,
                  coord_system='cartesian',
                  rotate_coord_system=rotate_coord_system)
         
         self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi*n_dist*n_sigma
 
-        self.n_params_in = [n_phi, n_dist, n_sigma, n_amplitudes_in]
-        self.n_params_out_na = [n_phi, n_dist, n_sigma, n_amplitudes_out]
-
-        self.n_params_no = [n_phi if not avg_phi else 1,
-                            n_dist if not avg_dist else 1,
-                            n_sigma if not avg_sigma else 1,
-                            n_amplitudes_out]
-        
-        self.n_params_inv_in = [n_phi if not avg_phi else 1,
-                            n_dist if not avg_dist else 1,
-                            n_sigma if not avg_sigma else 1,
-                            n_amplitdues_inv_in]
-        
-        self.n_params_out = [n_phi if not avg_phi else 1,
-                            n_dist if not avg_dist else 1,
-                            n_sigma if not avg_sigma else 1,
-                            n_amplitudes_inv_out]
-        
-        norm_dims = [n_phi if avg_phi else 1,
-                     n_dist if  avg_dist else 1,
-                     n_sigma if avg_sigma else 1]
-        
-        self.norm_dims = norm_dims
-        
-        self.norm_factor = nn.Parameter(torch.tensor(norm_dims).prod(), requires_grad=False)
-
-        self.sum_dims_params = []
-        if avg_phi:
-            self.sum_dims_params.append(-4)
-
-        if avg_dist:
-            self.sum_dims_params.append(-3)
-        
-      #  if avg_sigma:
-      #      self.sum_dims_params.append(-2)
-
-        self.n_params_inv_out = n_amplitudes_inv_out
-
-        self.avg_phi, self.avg_dist, self.avg_sigma = avg_phi, avg_dist, avg_sigma
-        grid_dist_out = self.nh_dist
-
+        self.n_params_no = [n_phi, n_dist, n_sigma]
+                
         self.min_sigma = 1e-10
         self.min_var = 1e-10
 
         self.sd_activation = nn.Sigmoid()
-        if pretrained_weights is None:
-            phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
+  
+        phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
 
-            max_dist_fac = (grid_layer_no.global_level - grid_layer_in.global_level)
-     
-            dists = torch.arange(1,2*n_dist, 2)/(n_dist*2)
+        max_dist_fac = (grid_layer_no.global_level - grid_layer_encode.global_level)
+    
+        dists = torch.arange(1,2*n_dist, 2)/(n_dist*2)
 
-            if mult_sigma:
-                sigma = torch.arange(1,2*n_amplitudes_out, 2)/(n_amplitudes_out*2)
-                sigma_inv = torch.arange(1,2*n_amplitudes_inv_out, 2)/(n_amplitudes_inv_out*2)
-               # n_amplitudes_in = n_amplitudes_out
-               # n_amplitdues_inv_in = n_amplitudes_inv_out
-            else:
-                sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
-                sigma_inv = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
-
-            self.dist_unit = max_dist_fac*grid_layer_in.nh_dist
-
+        if n_sigma>1:
+            sigma = torch.arange(1,2*n_sigma, 2)/(n_sigma*2)
         else:
-            phis = pretrained_weights['phis']
-            dists = pretrained_weights['dists']
-            sigma = pretrained_weights['sigma']
+            sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
+
+        self.dist_unit = max_dist_fac*grid_layer_encode.nh_dist
 
         dists = -torch.log(1/dists-1)
         sigma = -torch.log(1/sigma-1)
-        sigma_inv = -torch.log(1/sigma_inv-1)
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.dists = nn.Parameter(dists, requires_grad=dist_learnable)
         self.sigma = nn.Parameter(sigma, requires_grad=sigma_learnable)
-        self.sigma_inv = nn.Parameter(sigma_inv, requires_grad=sigma_learnable)
         
-        x_dims_stat = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if not avg_param and not cross_no]
-        x_dims = [n_param for n_param,avg_param in zip([n_phi, n_dist],[avg_phi,avg_dist]) if avg_param]
-        x_dims_inv = x_dims + [n_amplitudes_inv_out]
-        x_dims = x_dims + [n_amplitudes_out]
-
-        model_dim = int(torch.tensor(x_dims).prod())
-        model_dim_inv = int(torch.tensor(x_dims_inv).prod())
-
-        if mult_sigma:
-            self.lin_layer_pre =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
-            self.lin_layer_post = nn.Identity()
-        else:
-            self.lin_layer_post =  nn.Linear(n_amplitudes_in, n_amplitudes_out, bias=False)
-            self.lin_layer_pre = nn.Identity()
-
-        if len(x_dims)>1:
-            self.proc_layer = no_res_layer(model_dim, layer_norm=False, res_block=non_linear_encode, x_dims_stat=x_dims_stat)
-        else:
-            self.proc_layer = nn.Identity()
-
-        if mult_sigma:
-            self.lin_layer_inv_pre =  nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
-            self.lin_layer_inv_post = nn.Identity()
-        else:
-            self.lin_layer_inv_post =  nn.Linear(n_amplitdues_inv_in, n_amplitudes_inv_out, bias=False)
-            self.lin_layer_inv_pre = nn.Identity()
-
-        if len(x_dims)>1:
-            self.proc_layer_inv = no_res_layer(model_dim_inv, layer_norm=False, res_block=non_linear_decode, x_dims_stat=x_dims_stat)
-        else:
-            self.proc_layer_inv = nn.Identity()
-        
-    def get_amplitudes_no(self, emb):
-        amps = self.amplitudes_no
-
-        if amps.shape[0] > 1:            
-            amps =  amps[emb['VariableEmbedder']]
-            amps = amps.view(amps.shape[0],1,1,1,1,*amps.shape[1:])
-        
-        return amps.unsqueeze(dim=-3)
-
-    def get_amplitudes_out(self, emb):
-        amps = self.amplitudes_out
-
-        if amps.shape[0] > 1:            
-            amps =  amps[emb['VariableEmbedder']]
-        
-        amps = amps.view(amps.shape[0],1,1,1,*amps.shape[1:])
-
-        return amps.unsqueeze(dim=-2)
-    
+     
     def get_spatial_weights(self, coordinates_rel, sigma):
 
-        #dists = F.softplus(self.dists)
-        #dists = math.sqrt(2*math.log(2))*(self.sigma)*self.dists
 
         dists = self.dist_unit * self.sd_activation(self.dists)
 
@@ -309,7 +180,6 @@ class polNormal_NoLayer(NoLayer):
         dx = dx.unsqueeze(dim=-1)
         dy = dy.unsqueeze(dim=-1)
 
-        #sigma = F.softplus(self.sigma)
         sigma = self.dist_unit * self.sd_activation(sigma)
         sigma = sigma.clamp(min=self.min_sigma).view(1,-1)
     
@@ -318,151 +188,104 @@ class polNormal_NoLayer(NoLayer):
         return weights
 
 
-    def get_spatial_weights_dphi(self, coordinates_rel):
-        
-        f1 = torch.cos(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
-        f2 = torch.sin(self.phis).view(1,1,-1,1) * self.dists.view(1,1,1,-1)
+    def mult_weights_t(self, x, weights, mask=None):
+        _, n_out, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+        b, n_in, nh_in, nv, nc = x.shape
 
-        f1 = coordinates_rel[1].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * f1
-        f2 = coordinates_rel[0].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * f2
-        
-        f1 = f1.unsqueeze(dim=-1)
-        f2 = f2.unsqueeze(dim=-1)
+        if n_out > n_in:
+            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:])
+            _, _, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+            c_shape = (-1, n_in, 1, seq_in_nh)
+        else:
+            c_shape = (-1, n_out, seq_in, seq_in_nh)
 
-        sigma = self.sigma.clamp(min=self.min_sigma).view(1,-1)
-    
-        weights_dphi = (f2 -f1) / sigma** 2
-
-        return weights_dphi
-
-
-    def get_spatial_weights_dd(self, coordinates_rel):
-        
-        f1 = coordinates_rel[0].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * torch.cos(self.phis).view(1,1,-1,1)
-        f2 = coordinates_rel[1].unsqueeze(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-3) * torch.sin(self.phis).view(1,1,-1,1)
-        
-        f1 = f1.unsqueeze(dim=-1)
-        f2 = f2.unsqueeze(dim=-1)
-
-        sigma = self.sigma.clamp(min=self.min_sigma).view(1,-1)
-    
-        weights_dphi = (f2 +f1 - self.dists.view(1,1,1,-1)) / sigma** 2
-
-        return weights_dphi
-
-    def get_spatial_weights_res(self, coordinates_rel):
-        
-        d = (coordinates_rel[0]**2 + coordinates_rel[1]**2)
-        
-        sigma = self.sigma_res.clamp(min=self.min_sigma).view(1,-1)
-    
-        weights = torch.exp(-0.5 * ((d) / sigma** 2))
-
-        weights = weights.view(*weights.shape,1,1,1,1)
-        #weights = weights.view(*weights.shape,1,1,1,1)
-
-        return weights
-
-
-    def mult_weights_t(self, x, weights, mask=None, norm_seq=False):
-        _, n, seq_out, seq_in, nh_in, nvw, n_phi, n_dist, n_sigma = weights.shape
-        nv, np ,nc = x.shape[-3:]
-        c_shape = (-1, n, seq_out, seq_in*nh_in, nv)
-
-        #weights = weights.view(weights.shape[0], n, seq_out, seq_in*nh_in, nvw, n_phi, n_dist, n_sigma, 1, 1)
-        weights = weights.view(weights.shape[0], n, seq_out, seq_in*nh_in, nvw, n_phi, n_dist, 1, n_sigma)
         if mask is not None:
-            norm = (mask.view(*c_shape,1,1,1,1) == False)
+            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
             weights = weights*norm
 
-            mask = mask.view(*c_shape)
-            mask = mask.sum(dim=-2)==mask.shape[-2]
-            mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_out, dim=-2)
+            mask = mask.view(*c_shape,nv)
+            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
+            
+            if n_out>n_in:
+                mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
         
-        if norm_seq:
+        if n_out>n_in:
             weights = weights/(weights.sum(dim=[3], keepdim=True)+1e-20)
+            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-5),nc)
+            x = x * weights.unsqueeze(dim=-1)
+            x = x.sum(dim=[3])
+        else:
+            weights = weights/(weights.sum(dim=[2,3], keepdim=True)+1e-20)
+            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-5),nc)
+            x = x * weights.unsqueeze(dim=-1)
+            x = x.sum(dim=[2,3]).unsqueeze(dim=3)
 
-        x = x.view(*c_shape, 1, 1, np, nc)
-        x = x * weights
+        return x, mask
 
-        return x.sum(dim=3), mask
 
-    def mult_weights_invt(self, x, weights, mask=None, norm_seq=False):
-        _, n, seq_out, seq_in, nh_in, nvw, n_phi, n_dist, n_sigma = weights.shape
-        nv, np ,nc = x.shape[3],x.shape[-2],x.shape[-1]
-        c_shape = (-1, n, seq_out, seq_in*nh_in, nv)
+    def mult_weights_invt(self, x, weights, mask=None):
+        _, n_out, seq_out, seq_in, nvw, n_phi, n_dist, n_sigma = weights.shape
+        nv = x.shape[3]
+        n_in = x.shape[1]
 
-        #weights = weights.view(weights.shape[0], n, seq_out, seq_in*nh_in, nvw, n_phi, n_dist, n_sigma, 1, 1)
-        weights = weights.view(weights.shape[0], n, seq_out, seq_in*nh_in, nvw, n_phi, n_dist, 1, n_sigma)
+        if n_out > n_in:
+            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:])
+            _, _, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+            c_shape = (-1, n_in, 1, seq_in_nh)
+        else:
+            c_shape = (-1, n_out, seq_out, seq_in)
 
         if mask is not None:
-            norm = (mask.view(-1, n, seq_out*nh_in, 1, nv, 1, 1, 1, 1) == False)
+            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
             weights = weights*norm
 
-            mask = mask.view(-1,n,seq_out,nv)
-            mask = mask.sum(dim=-2)==mask.shape[-2]
-            mask = mask.unsqueeze(dim=-2).repeat_interleave(seq_in, dim=-2)
+            mask = mask.view(*c_shape,nv)
 
-        if norm_seq:
-            #weights = weights/(weights.sum(dim=[2,-3,-4,-5], keepdim=True)+1e-20)
-            weights = weights/(weights.sum(dim=[2,-2,-3,-4], keepdim=True)+1e-20)
+            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
+           
+            mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
+ 
 
-        x = x.unsqueeze(dim=3).squeeze(dim=-3)
-        #x = x.view(x.shape[0], n, seq_in*nh_in, 1, nv, *self.n_params_no[:-2], np, nc)
-        x = x * weights
+        weights = weights/(weights.sum(dim=[3,-1,-2,-3], keepdim=True)+1e-20)
 
-        return x.sum(dim=2), mask
+        x = x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)
+
+        return x.sum(dim=[3,-2,-3,-4]), mask
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
-        _, n, seq_ref, seq_in, nh_in = coordinates_rel[0].shape
-        nv, np ,nc = x.shape[-3:]
+        _, n_out, seq_out, seq_in = coordinates_rel[0].shape
+        nv, nc = x.shape[-2:]
         b = x.shape[0]
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
-        x = self.lin_layer_pre(x)
-
-        x, mask = self.mult_weights_t(x, weights, mask=mask, norm_seq=True)
-
-        x = self.lin_layer_post(x)
-
-        x = self.proc_layer(x)
-
-        if len(self.sum_dims_params)>0:
-            x = x.sum(dim=self.sum_dims_params, keepdim=True)/self.norm_factor # sum over NO params
+        x, mask = self.mult_weights_t(x, weights, mask=mask)
 
         if mask is not None:
-            x = x.masked_fill_(mask.view(*x.shape[:4],1,1,1,1), 0.0)
+            x = x.masked_fill_(mask.view(*x.shape[:4],*(1,)*(x.dim()-4)), 0.0)
 
-        x = x.view(b, n, nv, *self.n_params_no[:-2], 1, np, self.n_params_no[-1])
+        x = x.view(b, n_out, nv, *self.n_params_no, nc)
 
         if mask is not None:
-            mask = mask.view(b,n,-1)
+            mask = mask.view(b,n_out,-1)
 
         return x, mask
     
     def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
-
-        b, n, seq_ref, seq_in, _ = coordinates_rel[0].shape
-        b, n, seq_ref, nv, n_phi, n_dist, n_sigma, np, nc = x.shape
-        c_shape = (-1, n, seq_ref, seq_in, nv)
-
-        weights = self.get_spatial_weights(coordinates_rel, self.sigma_inv)
-
-        x = self.lin_layer_inv_pre(x)
-
-        x, mask = self.mult_weights_invt(x, weights, mask=mask, norm_seq=True)
         
-        x = self.lin_layer_inv_post(x)
+        _, n_out, seq_out, seq_in = coordinates_rel[0].shape
+        b, n, seq_in, nv, n_phi, n_dist, n_sigma, nc = x.shape
+        c_shape = (-1, n, seq_in, nv)
 
-        x = (self.proc_layer_inv(x)).sum([-4,-3]) #+ x
+        weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
-        x= x.view(b,-1, nv, np, self.n_params_inv_out)
+        x, mask = self.mult_weights_invt(x, weights, mask=mask)
+
+        x = x.view(b,-1,nv,nc)
 
         if mask is not None:
-            mask = mask.view(b,-1,nv)
-            x = x.masked_fill_(mask.unsqueeze(dim=-1).unsqueeze(dim=-1), 0.0)
-
+            mask = mask.view(x.shape[:-1])
+            x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
 
         return x, mask
     
@@ -518,3 +341,38 @@ class ReshapeAtt:
         x = x.view(b,-1,nv_dim,*self.shape)
 
         return x
+    
+
+def get_no_layer(type,
+                 grid_layer_encode, 
+                 grid_layer_no, 
+                 grid_layer_decode, 
+                 precompute_encode, 
+                 precompute_decode, 
+                 rotate_coordinate_system,
+                 layer_settings,
+                 ):
+    n_params = check_get_missing_key(layer_settings, "n_params")
+    global_params_learnable = check_get_missing_key(layer_settings, "global_params_learnable")
+
+    if type == 'polNormal':
+
+        assert len(n_params)==3, "len(n_params) should be equal to 3 for polNormal_NoLayer"
+        assert len(global_params_learnable)==2, "len(global_params_learnable) should be equal to 2 for polNormal_NoLayer"
+
+        no_layer = polNormal_NoLayer(
+                grid_layer_encode,
+                grid_layer_no,
+                grid_layer_decode,
+                n_phi=n_params[0],
+                n_dist=n_params[1],
+                n_sigma=n_params[2],
+                dist_learnable=global_params_learnable[0],
+                sigma_learnable=global_params_learnable[1],
+                nh_in_encode=layer_settings.get("nh_in_encode",True), 
+                nh_in_decode=layer_settings.get("nh_in_decode",True),
+                precompute_encode=precompute_encode,
+                precompute_decode=precompute_decode,
+                rotate_coord_system=rotate_coordinate_system
+            )
+    return no_layer

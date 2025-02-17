@@ -134,7 +134,7 @@ class LightningMGNOTransformer(pl.LightningModule):
             self.log_dict({"train/nh_tv_loss": nh_tv_loss.item()})
 
         self.log_dict({"train/loss": loss.item()}, prog_bar=True)
-        self.log_dict(self.get_no_params_dict(), logger=True)
+ #       self.log_dict(self.get_no_params_dict(), logger=True)
         
         return loss
 
@@ -161,7 +161,7 @@ class LightningMGNOTransformer(pl.LightningModule):
             self.log_dict({"validate/nh_tv_loss": nh_tv_loss.item()})
 
         self.log_dict({"validate/loss": loss.item()}, prog_bar=True)
-        self.log_dict(self.get_no_params_dict(), logger=True)
+  #      self.log_dict(self.get_no_params_dict(), logger=True)
 
         if batch_idx == 0:
             self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)

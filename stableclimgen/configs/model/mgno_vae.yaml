@@ -2,83 +2,61 @@ _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
 kl_weight: 0.0
 lr_groups:
   - param_group: 'params'
-    lr: 1e-3
+    lr: 1e-4
     lr_warmup: 1
   - param_group: 'no_params'
     lr: 1e-4
-    lr_warmup: 200
+    lr_warmup: 500
   - param_group: 'attention'
     lr: 1e-4
-    lr_warmup: 200
-    zero_iters: 500 
+    lr_warmup: 10000
 model:
   _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
   mgrids: ${mgrids}
-  model_dim_in: 1
-  model_dim_out: 1
+  input_dim: 1
+  lifting_dim: 8
+  output_dim: 1
   n_vars_total: 3
-  n_head_channels: 16
+  n_head_channels: 32
   rotate_coord_system: true
+  p_dropout: 0
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
-      block_type: "UNet"
-      global_levels: [1,2,3,4]
-      global_res: false
-      skip_mode: ''
-      embed_mode: "sum"
-      embed_confs: ${embedding}
-      att_dim: 64
-      nh_transformation: false
-      with_res: false
-      is_encoder_only: false
-      is_decoder_only: false
-      layer_settings: 
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_inverse_transformation: true
-          avg_params: [true, true, true]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: 1
-          block_types_encode: []
-          block_types_decode: []
-          embed_names_encode: [[]]
-          embed_names_decode: [[],[]]
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_inverse_transformation: true
-          avg_params: [false, false, true]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: 1
-          block_types_encode: []
-          block_types_decode: []
-          embed_names_encode: [[]]
-          embed_names_decode: [[],[]]
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_inverse_transformation: true
-          avg_params: [false, false, true]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: 1
-          block_types_encode: []
-          block_types_decode: []
-          embed_names_encode: [[]]
-          embed_names_decode: [[],[]]
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_inverse_transformation: true
-          avg_params: [false, false, true]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: 1
-          block_types_encode: []
-          block_types_decode: []
-          embed_names_encode: [[]]
-          embed_names_decode: [[],[]]
-  quant_config: null
+      block_type: 'Serial'
+      model_dims_out: [16,16,16,16,16]
+      layer_settings:
+        - type: "NO_mlp"
+          global_level_no: 2
+          global_level_decode: 1
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: ["VariableEmbedder"]
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
+        - type: "spatial_att"
+          n_head_channels: 16
+          embed_confs: ${embedding}
+          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "spatial_att"
+          n_head_channels: 16
+          embed_confs: ${embedding}
+          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "NO_mlp"
+          global_level_no: 2
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false

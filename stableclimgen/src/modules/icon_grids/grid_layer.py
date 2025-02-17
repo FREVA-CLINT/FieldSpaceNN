@@ -283,50 +283,36 @@ class GridLayer(nn.Module):
 class RelativeCoordinateManager(nn.Module):
     def __init__(self,  
                 grid_layer_in:GridLayer, 
-                grid_layer_ref: GridLayer,
+                grid_layer_out: GridLayer,
                 nh_in:bool= False,
-                nh_ref:bool= True,
                 seq_lvl:int = -1,
                 precompute:bool=False,
                 coord_system:str='polar',
-                rotate_coord_system=True) -> None:
+                rotate_coord_system=True,
+                ref='out') -> None:
                 
         super().__init__()
 
         self.grid_layer_in = grid_layer_in
-        self.grid_layer_ref = grid_layer_ref
+        self.grid_layer_out = grid_layer_out
         self.nh_in = nh_in
-        self.nh_ref = nh_ref
         self.seq_lvl = seq_lvl
         self.rotate_coord_system = rotate_coord_system
 
         self.coord_system = coord_system
         self.precomputed = precompute
+        self.ref = ref
 
         if precompute:
+            coordinates_rel = self.compute_rel_coordinates(
+                indices_in=torch.arange(grid_layer_in.coordinates.shape[0]).view(1,-1),
+                indices_out=torch.arange(grid_layer_out.coordinates.shape[0]).view(1,-1), nh_in=nh_in)
             
-            if nh_in==False and nh_ref==False:
-                coordinates_rel = self.compute_rel_coordinates(
-                    indices_in=torch.arange(grid_layer_in.coordinates.shape[0]).view(1,-1),
-                    indices_ref=torch.arange(grid_layer_ref.coordinates.shape[0]).view(1,-1))
-                
-                self.register_buffer("coordinates_rel", torch.stack(coordinates_rel, dim=-1).squeeze(dim=1), persistent=False)
+            self.register_buffer("coordinates_rel", torch.stack(coordinates_rel, dim=-1).squeeze(dim=1), persistent=False)
             
-            else:
-                coordinates_rel = self.compute_rel_coordinates(
-                    indices_in=torch.arange(grid_layer_in.coordinates.shape[0]).view(1,-1),
-                    indices_ref=torch.arange(grid_layer_ref.coordinates.shape[0]).view(1,-1), nh_in=nh_in)
-                
-                self.register_buffer("coordinates_rel", torch.stack(coordinates_rel, dim=-1).squeeze(dim=1), persistent=False)
-
-                coordinates_rel_back = self.compute_rel_coordinates(
-                    indices_in=torch.arange(grid_layer_in.coordinates.shape[0]).view(1,-1),
-                    indices_ref=torch.arange(grid_layer_ref.coordinates.shape[0]).view(1,-1), nh_ref=nh_ref)
-                
-                self.register_buffer("coordinates_rel_back", torch.stack(coordinates_rel_back, dim=-1).squeeze(dim=1), persistent=False)
 
 
-    def compute_rel_coordinates(self, indices_in=None, indices_ref=None, coordinates_in=None, coordinates_ref=None, sample_dict=None, nh_in=False, nh_ref=False):
+    def compute_rel_coordinates(self, indices_in=None, indices_out=None, coordinates_in=None, coordinates_out=None, sample_dict=None, nh_in=False):
 
         if coordinates_in is None:
             coordinates_in = self.grid_layer_in.get_coordinates_from_grid_indices(indices_in, nh=nh_in)
@@ -334,59 +320,71 @@ class RelativeCoordinateManager(nn.Module):
         elif coordinates_in is not None and nh_in:
             coordinates_in,_ = self.grid_layer_in.get_nh(coordinates_in, indices_in, sample_dict=sample_dict)
 
-        if coordinates_ref is None:
-            coordinates_ref = self.grid_layer_ref.get_coordinates_from_grid_indices(indices_ref, nh=nh_ref)
+        if coordinates_out is None:
+            coordinates_out = self.grid_layer_out.get_coordinates_from_grid_indices(indices_out)
+
+        seq_dim_out_total = coordinates_out.shape[1]
+        if coordinates_out.shape[1] > coordinates_in.shape[1]:
+            coordinates_out = coordinates_out.view(coordinates_out.shape[0],coordinates_in.shape[1],-1,2)
 
         if self.seq_lvl != -1:
-            coordinates_ref = sequenize(coordinates_ref, max_seq_level=self.seq_lvl)[:,:,[0]]
+            coordinates_out = sequenize(coordinates_out, max_seq_level=self.seq_lvl)[:,:,[0]]
             coordinates_in = sequenize(coordinates_in, max_seq_level=self.seq_lvl)
 
         b, seq_dim_in, n_nh_in = coordinates_in.shape[:3]
-        _, seq_dim_ref, n_nh_ref = coordinates_ref.shape[:3]
+        _, seq_dim_out, _ = coordinates_out.shape[:3]
 
       
-        coordinates_in = coordinates_in.view(b, seq_dim_ref, -1, 2)
-        coordinates_ref = coordinates_ref.view(b, seq_dim_ref, -1, 2)
+        coordinates_in = coordinates_in.view(b, seq_dim_out, -1, 2)
+        coordinates_out = coordinates_out.view(b, seq_dim_out, -1, 2)
 
-        coordinates_in = coordinates_in.unsqueeze(dim=-3)
-        coordinates_ref = coordinates_ref.unsqueeze(dim=-2)
+        if self.ref =='out':
+            coordinates_in = coordinates_in.unsqueeze(dim=-3)
+            coordinates_out = coordinates_out.unsqueeze(dim=-2)
 
-        coordinates_rel = get_distance_angle(
-                                coordinates_ref[...,0], coordinates_ref[...,1], 
-                                coordinates_in[...,0], coordinates_in[...,1], 
-                                base=self.coord_system, periodic_fov=None,
-                                rotate_coords=self.rotate_coord_system
+            coordinates_rel = get_distance_angle(
+                                    coordinates_out[...,0], coordinates_out[...,1], 
+                                    coordinates_in[...,0], coordinates_in[...,1], 
+                                    base=self.coord_system, periodic_fov=None,
+                                    rotate_coords=self.rotate_coord_system
                                 )
+        else:
+            coordinates_out = coordinates_out.unsqueeze(dim=-2)
+            coordinates_in = coordinates_in.unsqueeze(dim=-3)
+
+            coordinates_rel = get_distance_angle(
+                                    coordinates_in[...,0], coordinates_in[...,1], 
+                                    coordinates_out[...,0], coordinates_out[...,1], 
+                                    base=self.coord_system, periodic_fov=None,
+                                    rotate_coords=self.rotate_coord_system
+                                )
+
         if self.seq_lvl == -1:
-            coordinates_rel = (coordinates_rel[0].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in),
-                            coordinates_rel[1].view(b, seq_dim_ref, n_nh_ref, -1, n_nh_in))
+            coordinates_rel = (coordinates_rel[0].view(b, seq_dim_out_total,  -1, n_nh_in),
+                            coordinates_rel[1].view(b, seq_dim_out_total,  -1, n_nh_in))
         else:
             coordinates_rel = (coordinates_rel[0].view(b, -1, 1),
                             coordinates_rel[1].view(b, -1, 1))
         
         return coordinates_rel
 
-    def forward(self, indices_in=None, indices_ref=None, coordinates_in=None, coordinates_ref=None, sample_dict=None, back=False):
+    def forward(self, indices_in=None, indices_out=None, coordinates_in=None, coordinates_out=None, sample_dict=None):
         
         if not self.precomputed:
             coordinates_rel = self.compute_rel_coordinates(indices_in=indices_in,
-                                         indices_ref=indices_ref,
+                                         indices_out=indices_out,
                                          coordinates_in=coordinates_in,
-                                         coordinates_ref=coordinates_ref,
+                                         coordinates_out=coordinates_out,
                                          sample_dict=sample_dict,
-                                         nh_in =False if back else self.nh_in,
-                                         nh_ref=self.nh_ref if back else False)
+                                         nh_in = self.nh_in)
         else:
           
-            if back and self.nh_in!=self.nh_ref:
-                coordinates_rel = self.coordinates_rel_back
-            else:
-                coordinates_rel = self.coordinates_rel
+            coordinates_rel = self.coordinates_rel
 
             c_shape = coordinates_rel.shape
 
-            if indices_ref is not None:
-                coordinates_rel = coordinates_rel[:,indices_ref].view(indices_ref.shape[0],-1,*c_shape[2:])
+            if indices_out is not None:
+                coordinates_rel = coordinates_rel[:,indices_out].view(indices_out.shape[0],-1,*c_shape[2:])
             else:
                 coordinates_rel = coordinates_rel.view(1,-1,*c_shape[2:])
 

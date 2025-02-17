@@ -6,6 +6,12 @@ def check_value(value, n_repeat):
         value = [value]*n_repeat
     return value
 
+def check_get_missing_key(dict_: dict, key: str):
+    if key not in dict_.keys():
+        raise Exception(f"key {key} is required for layer {dict_['type']}")
+    else:
+        return dict_[key]
+
 def get_parameter_group_from_state_dict(state_dict, key, return_reduced_keys=False):
     parameter_group = {}
     for state_key, state_value in state_dict.items():

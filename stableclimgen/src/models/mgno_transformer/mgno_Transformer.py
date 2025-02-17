@@ -5,7 +5,7 @@ from typing import List
 
 from ...utils.helpers import get_parameter_group_from_state_dict
 from ...modules.icon_grids.grid_layer import GridLayer
-from ...modules.neural_operator.no_blocks import Serial_NOBlock,Parallel_NOBlock,UNet_NOBlock
+from ...modules.neural_operator.no_blocks import Serial_NOBlock
 from .mgno_block_confs import NOBlockConfig
 
 
@@ -13,94 +13,65 @@ class MGNO_Transformer(nn.Module):
     def __init__(self, 
                  mgrids,
                  block_configs: List[NOBlockConfig],
-                 model_dim_in: int=1,
-                 model_dim_out: int=1,
+                 input_dim: int=1,
+                 lifting_dim: int=1,
+                 output_dim: int=1,
                  n_head_channels:int=16,
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True,
-                 pretrained_no_model_path: str=None,
                  p_dropout=0.,
                  ) -> None: 
         
                 
         super().__init__()
         
-        self.model_dim_in = model_dim_in
-        self.model_dim_out = model_dim_out
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         self.n_vars_total = n_vars_total
 
-        global_levels_tot = [torch.tensor(block_conf.global_levels) for block_conf in block_configs] 
-        global_levels = torch.concat(global_levels_tot+ [torch.tensor(0).view(-1)]).unique()
+        global_levels_out = [[layer_setting.get("global_level_decode", 0) 
+                              for layer_setting in block_conf.layer_settings]
+                              for block_conf in block_configs]
+        
+        global_levels_no = [[layer_setting.get("global_level_no", 0) 
+                              for layer_setting in block_conf.layer_settings]
+                              for block_conf in block_configs]
+        
+        global_levels = torch.concat((torch.tensor(global_levels_out).view(-1) 
+                                     ,torch.tensor(global_levels_no).view(-1) 
+                                     ,torch.tensor(0).view(-1))).unique()
         
         self.register_buffer('global_levels', global_levels, persistent=False)
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
-        if pretrained_no_model_path is not None:
-            pretrained_model_weights = torch.load(pretrained_no_model_path)['state_dict']
-        else:
-            pretrained_model_weights = None
-
         # Create grid layers for each unique global level
         grid_layers = nn.ModuleDict()
         for global_level in global_levels:
             grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system='polar')
 
         self.grid_layer_0 = grid_layers["0"]
-
-        n_no_layers_total = len((torch.concat(global_levels_tot)))
-        n = 0
-        global_level_in = 0
-        no_weights = None
         # Construct blocks based on configurations
         self.Blocks = nn.ModuleList()
 
         for block_idx, block_conf in enumerate(block_configs):
-            
-            model_d_in = model_dim_in if block_idx==0 else block.model_dim_out
-            n_no_layers = len(block_conf.global_levels) 
-            global_levels = block_conf.global_levels
-
-            for k in range(n_no_layers):
-                
-                if pretrained_model_weights is not None:
-                    no_weights = get_parameter_group_from_state_dict(pretrained_model_weights, 
-                                                        f'model.Blocks.{block_idx}.NO_Blocks.{k}.no_layer',
-                                                        return_reduced_keys=True)
-                    
-                global_level_in = 0 if block_conf.block_type != 'Stacked' and block_conf.block_type != 'UNet' or k==0 else global_level_no
-                global_level_no = global_levels[k]
-
-                layer_settings = block_conf.layer_settings[k]
-                layer_settings['global_level_in'] = global_level_in
-                layer_settings['global_level_out'] = global_level_no
-                layer_settings['grid_layer_in'] = grid_layers[str(global_level_in)]
-                layer_settings['grid_layer_no'] = grid_layers[str(global_level_no)]
-                layer_settings['precompute_coordinates'] = True if n!=0 and n<n_no_layers_total else False
-                layer_settings['rotate_coordinate_system'] = rotate_coord_system
-                layer_settings['pretrained_weights'] = no_weights
-
-                n+=1
+            layer_settings = block_conf.layer_settings
+            model_dims_out = block_conf.model_dims_out
 
             if block_conf.block_type == 'Serial':
-                block = Serial_NOBlock
-
-            elif block_conf.block_type == 'Parallel':
-                block = Parallel_NOBlock
-
-            elif block_conf.block_type == 'UNet':
-                block = UNet_NOBlock
-
-            block = block(model_d_in,
-                        None if block_idx < len(block_configs)-1 else model_dim_out,
-                        block_conf.layer_settings,
-                        n_head_channels=n_head_channels,
-                        p_dropout=p_dropout,
-                        skip_mode=block_conf.skip_mode,
-                        global_res=block_conf.global_res)
-
+                block = Serial_NOBlock(
+                    lifting_dim,
+                    output_dim,
+                    model_dims_out,
+                    grid_layers,
+                    layer_settings,
+                    rotate_coordinate_system=rotate_coord_system)
+                
             self.Blocks.append(block)     
         
+        self.out_layer = nn.Linear(block_conf.model_dims_out[-1], output_dim, bias=False)
+
+        self.lifting_layer = nn.Linear(input_dim, lifting_dim, bias=False) if lifting_dim>1 else nn.Identity()
 
         
 
@@ -118,11 +89,11 @@ class MGNO_Transformer(nn.Module):
         """
 
         b,n,nh,nv,nc = x.shape[:5]
-        x = x.view(b,n,nh,-1,1,self.model_dim_in)
-        b,n,nh,nv,nc = x.shape[:5]
+        x = x.view(b,n,-1,self.input_dim)
+        b,n,nv,nc = x.shape[:4]
 
         if mask is not None:
-            mask = mask[:,:,:,:x.shape[3]]
+            mask = mask.view(*x.shape[:-1])
 
         if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
@@ -144,6 +115,7 @@ class MGNO_Transformer(nn.Module):
         if coords_output is None or coords_output.numel()==0:
             coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
 
+        x = self.lifting_layer(x)
 
         for k, block in enumerate(self.Blocks):
             
@@ -154,9 +126,10 @@ class MGNO_Transformer(nn.Module):
             x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
             if mask is not None:
-                mask = mask.view(x.shape[:4])
+                mask = mask.view(x.shape[:3])
 
         
+        x = self.out_layer(x)
         x = x.view(b,n,-1)
 
         return x

@@ -31,7 +31,6 @@ class GridAttention(nn.Module):
                 grid_layer,
                 grid_layer,
                 nh_in=nh,
-                nh_ref=nh,
                 seq_lvl=seq_lvl,
                 precompute=True,
                 coord_system="cartesian",
@@ -50,7 +49,7 @@ class GridAttention(nn.Module):
     def get_coordinates(self, indices_layers, emb):
 
         if hasattr(self, 'rel_coord_mngr'):
-            coords = self.rel_coord_mngr(indices_ref=indices_layers[self.global_level] if indices_layers else None)
+            coords = self.rel_coord_mngr(indices_out=indices_layers[self.global_level] if indices_layers else None)
             coords = torch.stack(coords, dim=-1)
         else:
             coords = self.grid_layer.get_coordinates_from_grid_indices(
