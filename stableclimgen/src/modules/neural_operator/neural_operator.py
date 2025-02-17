@@ -143,11 +143,12 @@ class polNormal_NoLayer(NoLayer):
         self.min_sigma = 1e-10
         self.min_var = 1e-10
 
-        self.sd_activation = nn.Sigmoid()
+        self.sd_activation = nn.Identity()
   
         phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
 
-        max_dist_fac = (grid_layer_no.global_level - grid_layer_encode.global_level)
+        max_dist_fac_encode = (grid_layer_no.global_level - grid_layer_encode.global_level).abs().clamp(min=1)
+        #max_dist_fac_decode = (grid_layer_encode.global_level - grid_layer_decode.global_level).abs().clamp(min=1)
     
         dists = torch.arange(1,2*n_dist, 2)/(n_dist*2)
 
@@ -156,10 +157,11 @@ class polNormal_NoLayer(NoLayer):
         else:
             sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
-        self.dist_unit = max_dist_fac*grid_layer_encode.nh_dist
+        self.dist_unit = max_dist_fac_encode*grid_layer_encode.nh_dist
+        #self.dist_unit_decode = max_dist_fac_decode*grid_layer_encode.nh_dist
 
-        dists = -torch.log(1/dists-1)
-        sigma = -torch.log(1/sigma-1)
+        #dists = -torch.log(1/dists-1)
+        #sigma = -torch.log(1/sigma-1)
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.dists = nn.Parameter(dists, requires_grad=dist_learnable)
