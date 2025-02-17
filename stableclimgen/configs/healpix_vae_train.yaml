@@ -10,6 +10,6 @@ defaults:
 
 ckpt_path: null
 
-run_name: healpix_vae
-config_name: default
+project_name: healpix_vae
+run_name: default
 run_dir: ../..

@@ -123,14 +123,10 @@ class MGNO_VAE(nn.Module):
 
 
         if quant_config:
-            enc_params = [block.x_dims for block in self.vae_block.NO_Blocks]
-            quant_no_block = self.vae_block.NO_Blocks[-1]
-            quant_in_ch = int(torch.tensor(quant_no_block.x_dims).prod())
-            self.quantization = Quantization(quant_in_ch, quant_config.latent_ch, quant_config.block_type, 1,
+            self.quantization = Quantization(output_dim_encoder, quant_config.latent_ch, quant_config.block_type, 1,
                                             **quant_config.sub_confs,
-                                            grid_layer=quant_no_block.no_layer.grid_layer_no,
+                                            grid_layer=grid_layers[str(output_level_encoder)],
                                             rotate_coord_system=rotate_coord_system,
-                                            n_params=enc_params,
                                             n_head_channels=quant_config.n_head_channels)
             if self.quantization.distribution == "gaussian":
                 self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
@@ -180,11 +176,9 @@ class MGNO_VAE(nn.Module):
             x, mask = block(x, coords_in=coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         if hasattr(self, "quantization"):
-            b,n,nv,nd1,nd2 = x.shape
-            x = x.view(b,1,n,nv,-1)
             if mask is not None:
                 mask = mask.unsqueeze(dim=1)
-            x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+            x = self.quantization.quantize(x.unsqueeze(1), indices_sample=indices_sample, emb=emb)
             x = x.squeeze(dim=1)
             posterior = self.quantization.get_distribution(x)
             return posterior
@@ -223,7 +217,6 @@ class MGNO_VAE(nn.Module):
             z = posterior.sample(noise)
         else:
             z = posterior
-
         dec = self.decode(z, coords_output, indices_sample=indices_sample, emb=emb)
 
         return dec, posterior
