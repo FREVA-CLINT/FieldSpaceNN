@@ -10,7 +10,7 @@ from .mgno_block_confs import NOBlockConfig
 from .mgno_base_model import MGNO_base_model
 
 
-class MGNO_Transformer(MGNO_base_model):
+class MGNO_Transformer_serial(MGNO_base_model):
     def __init__(self, 
                  mgrids,
                  block_configs: List[NOBlockConfig],

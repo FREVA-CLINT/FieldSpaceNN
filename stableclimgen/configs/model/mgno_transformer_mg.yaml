@@ -1,0 +1,50 @@
+_target_: stableclimgen.src.models.mgno_transformer.pl_mgno_base_model.LightningMGNOBaseModel
+lambda_loss_dict:
+  MSE_loss: 1
+  NH_loss: 1
+noise_std: 0
+lr_groups:
+  - param_group: 'params'
+    lr: 1e-4
+    lr_warmup: 1
+  - param_group: 'no_params'
+    lr: 1e-4
+    lr_warmup: 500
+  - param_group: 'attention'
+    lr: 1e-4
+    lr_warmup: 10000
+model:
+  _target_: stableclimgen.src.models.mgno_transformer.mgno_transformer_mg.MGNO_Transformer_MG
+  mgrids: ${mgrids}
+  input_dim: 1
+  lifting_dim: 8
+  output_dim: 1
+  n_vars_total: 3
+  n_head_channels: 32
+  rotate_coord_system: true
+  p_dropout: 0
+  encoder_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderConfig
+      global_levels_output: [2,4]
+      global_levels_no: [2,4]
+      model_dims_out: [8,8]
+      stacked_encoding: True
+      layer_settings:
+        - type: "NO_mlp"
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: ["VariableEmbedder"]
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
+        - type: "NO_mlp"
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: ["VariableEmbedder"]
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
