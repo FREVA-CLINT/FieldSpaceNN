@@ -1,18 +1,19 @@
 _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
 kl_weight: 0.0
+weight_decay: 0.01
 lambda_loss_dict:
   MSE_loss: 1
-  NH_loss: 0.1
+  NH_loss: 0
 lr_groups:
   - param_group: 'params'
     lr: 1e-4
-    lr_warmup: 1
+    lr_warmup: 200
   - param_group: 'no_params'
     lr: 1e-4
     lr_warmup: 500
   - param_group: 'attention'
     lr: 1e-4
-    lr_warmup: 10000
+    lr_warmup: 200
 model:
   _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
   mgrids: ${mgrids}
@@ -32,8 +33,6 @@ model:
           global_level_no: 1
           global_level_decode: 1
           no_layer_type: 'polNormal'
-          embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
           no_layer_settings:
             n_params: [4,2,1]
             nh_in_encode: true
@@ -42,7 +41,7 @@ model:
         - type: "spatial_att"
           n_head_channels: 4
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
           spatial_attention_configs:
             nh: false
             seq_lvl: 3
@@ -50,7 +49,7 @@ model:
         - type: "spatial_att"
           n_head_channels: 4
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
           spatial_attention_configs:
             nh: false
             seq_lvl: 3
@@ -73,8 +72,6 @@ model:
           global_level_no: 1
           global_level_decode: 1
           no_layer_type: 'polNormal'
-          embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
           no_layer_settings:
             n_params: [4,2,1]
             nh_in_encode: true
@@ -83,7 +80,7 @@ model:
         - type: "spatial_att"
           n_head_channels: 4
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
           spatial_attention_configs:
             nh: false
             seq_lvl: 3
@@ -91,7 +88,7 @@ model:
         - type: "spatial_att"
           n_head_channels: 4
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder","CoordinateEmbedder"]
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
           spatial_attention_configs:
             nh: false
             seq_lvl: 3

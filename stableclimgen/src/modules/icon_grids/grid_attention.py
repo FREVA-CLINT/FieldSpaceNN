@@ -41,8 +41,6 @@ class GridAttention(nn.Module):
         coords = self.grid_layer.get_coordinates_from_grid_indices(
             indices_layers[self.global_level] if indices_layers else None)
         
-        if self.seq_lvl != -1:
-            coords  = coords.view(coords.shape[0], -1, 4**self.seq_lvl, coords.shape[-1])
 
         if emb is None:
             emb = {}
