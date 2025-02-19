@@ -38,6 +38,7 @@ class MGEncoderDecoderConfig:
                  reduction:str = 'linear',
                  mg_reduction_embed_confs: dict=None,
                  mg_reduction_embed_names: list=None,
+                 mg_reduction_embed_names_mlp: list=None,
                  mg_reduction_embed_mode: str = 'sum',
                  rule: str = 'fc'):
 

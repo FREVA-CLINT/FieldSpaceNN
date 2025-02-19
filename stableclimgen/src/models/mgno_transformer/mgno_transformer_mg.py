@@ -57,6 +57,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             mg_reduction=block_conf.reduction,
                                             mg_reduction_embed_confs=block_conf.mg_reduction_embed_confs,
                                             mg_reduction_embed_names=block_conf.mg_reduction_embed_names,
+                                            mg_reduction_embed_names_mlp=block_conf.mg_reduction_embed_names_mlp,
                                             mg_reduction_embed_mode=block_conf.mg_reduction_embed_mode,
                                             rotate_coordinate_system=rotate_coord_system)  
                 

@@ -13,4 +13,4 @@ VariableEmbedder:
 GridEmbedder:
   in_channels: 5
   embed_dim: 64
-  shared: false
+  shared: true

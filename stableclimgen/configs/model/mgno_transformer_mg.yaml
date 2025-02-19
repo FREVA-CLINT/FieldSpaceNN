@@ -2,7 +2,7 @@ _target_: stableclimgen.src.models.mgno_transformer.pl_mgno_base_model.Lightning
 lambda_loss_dict:
   MSE_loss: 1
   NH_loss: 0
-noise_std: 0.01
+noise_std: 0
 lr_groups:
   - param_group: 'params'
     lr: 2e-4

@@ -540,7 +540,7 @@ class MGAttentionReductionLayer(nn.Module):
 
         x_skip = self.lin_skip_mlp(x)
 
-        x = self.attention_ada_ln_mlp(x)
+        x = self.attention_ada_ln_mlp(x,emb=emb)
 
         x = self.attention_mlp(x)
 
@@ -775,46 +775,6 @@ class SpatialAttention(nn.Module):
         x = x.squeeze(dim=1)
         return x
 
-class ParamMLP(nn.Module):
-  
-    def __init__(self,
-                 model_dims,
-                 p_dropout = 0,
-                 embedder: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
-
-        model_dim_total = int(torch.tensor(model_dims).prod())
-
-        self.reshaper = ReshapeAtt(model_dims, None, cross_var=True)
-
-        self.ada_ln = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder)
-
-        self.gamma = nn.Parameter(torch.ones(model_dim_total)*1e-6, requires_grad=True)
-
-        self.res_layer = ResLayer(model_dim_total, with_res=False, p_dropout=p_dropout)
-
-        self.cross_var = True
-
-        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
-
-
-    def forward(self, x, mask=None, emb=None):
-        nv = x.shape[2]
-
-        x_res, _ = self.reshaper.shape_to_att(x)
-
-        x = self.ada_ln(x, emb=emb)
-        x, _ = self.reshaper.shape_to_att(x)
-
-        x = self.res_layer(x)
-
-        x = x_res + self.gamma*x
-
-        x = self.reshaper.shape_to_x(x, nv)
-        
-        return x, mask
 
 
 class VariableAttention(nn.Module):
