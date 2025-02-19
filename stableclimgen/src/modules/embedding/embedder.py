@@ -71,6 +71,18 @@ class VariableEmbedder(BaseEmbedder):
         if init_value is not None:
             self.embedding_fn.weight.data.fill_(init_value)
 
+class GridEmbedder(BaseEmbedder):
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
+        super().__init__(name, in_channels, embed_dim)
+
+        self.keep_dims = ["c"]
+
+        self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
+
+        if init_value is not None:
+            self.embedding_fn.weight.data.fill_(init_value)
+
 
 class DiffusionStepEmbedder(BaseEmbedder):
     """

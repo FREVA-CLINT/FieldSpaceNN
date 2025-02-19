@@ -1,18 +1,18 @@
 _target_: stableclimgen.src.models.mgno_transformer.pl_mgno_base_model.LightningMGNOBaseModel
 lambda_loss_dict:
   MSE_loss: 1
-  NH_loss: 1
-noise_std: 0
+  NH_loss: 0
+noise_std: 0.01
 lr_groups:
   - param_group: 'params'
-    lr: 1e-4
-    lr_warmup: 1
+    lr: 2e-4
+    lr_warmup: 500
   - param_group: 'no_params'
     lr: 1e-4
     lr_warmup: 500
   - param_group: 'attention'
-    lr: 1e-4
-    lr_warmup: 10000
+    lr: 2e-4
+    lr_warmup: 500
 model:
   _target_: stableclimgen.src.models.mgno_transformer.mgno_transformer_mg.MGNO_Transformer_MG
   mgrids: ${mgrids}
@@ -23,28 +23,96 @@ model:
   n_head_channels: 32
   rotate_coord_system: true
   p_dropout: 0
-  encoder_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderConfig
-      global_levels_output: [2,4]
-      global_levels_no: [2,4]
-      model_dims_out: [8,8]
-      stacked_encoding: True
+  block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      global_levels_output: [0,2,3]
+      global_levels_no: [0,2,4]
+      model_dims_out: [8,8,8]
+      rule: ">"
       layer_settings:
-        - type: "NO_mlp"
+        "0":
+          type: "linear"
+        "2":
+          type: "NO_mlp_cross_no"
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
           embed_names: ["VariableEmbedder"]
           no_layer_settings:
             n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: false
+            nh_in_encode: false
+            nh_in_decode: true
             global_params_learnable: [false, false]
-        - type: "NO_mlp"
+        "3":
+          type: "NO_mlp_cross_no"
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
           embed_names: ["VariableEmbedder"]
           no_layer_settings:
             n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: false
+            nh_in_encode: false
+            nh_in_decode: true
             global_params_learnable: [false, false]
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      reduction: 'MGAttention'
+      mg_reduction_embed_names: ['GridEmbedder']
+      mg_reduction_embed_confs: ${embedding}
+      global_levels_output: [0,1,2]
+      global_levels_no: [0,1,2]
+      model_dims_out: [8,8,16]
+      rule: "<"
+      layer_settings:
+        type: "NO_mlp_cross_no"
+        no_layer_type: 'polNormal'
+        embed_confs: ${embedding}
+        embed_names: ["VariableEmbedder"]
+        no_layer_settings:
+          n_params: [4,2,1]
+          nh_in_encode: true
+          nh_in_decode: true
+          global_params_learnable: [false, false]
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGProcessingConfig
+      model_dims_out: [[8,16,16],[8,4,4],[8,4,8]]
+      layer_settings_levels:
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      reduction: 'MGAttention'
+      mg_reduction_embed_names: ['GridEmbedder']
+      mg_reduction_embed_confs: ${embedding}
+      global_levels_output: [0]
+      global_levels_no: [0]
+      model_dims_out: [8]
+      rule: "<"
+      layer_settings:
+        type: "NO_mlp_cross_no"
+        no_layer_type: 'polNormal'
+        embed_confs: ${embedding}
+        embed_names: ["VariableEmbedder"]
+        no_layer_settings:
+          n_params: [4,2,1]
+          nh_in_encode: true
+          nh_in_decode: true
+          global_params_learnable: [false, false]
+

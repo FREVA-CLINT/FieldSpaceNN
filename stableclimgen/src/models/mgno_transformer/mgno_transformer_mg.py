@@ -3,16 +3,15 @@ import torch.nn as nn
 
 from typing import List
 
-from ...modules.icon_grids.grid_layer import GridLayer
-from ...modules.neural_operator.no_blocks import MGNO_Encoder_Block
-from .mgno_block_confs import MGEncoderConfig, MGProcessingConfig, MGDecoderConfig
+from ...modules.neural_operator.no_blocks import MGNO_EncoderDecoder_Block, MGNO_Processing_Block
+from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig
 from .mgno_base_model import MGNO_base_model
 
 
 class MGNO_Transformer_MG(MGNO_base_model):
     def __init__(self, 
                  mgrids,
-                 encoder_configs: List[MGEncoderConfig],
+                 block_configs: List,
                  input_dim: int=1,
                  lifting_dim: int=1,
                  output_dim: int=1,
@@ -24,11 +23,14 @@ class MGNO_Transformer_MG(MGNO_base_model):
         
         self.input_dim = input_dim
         
-        global_levels_out = [conf.global_levels_output for conf in encoder_configs]
-        global_levels_no = [conf.global_levels_no for conf in encoder_configs]
+        global_levels = []
+        for block_conf in block_configs:
+            if hasattr(block_conf,'global_levels_output'):
+                global_levels += block_conf.global_levels_output
+            if hasattr(block_conf,'global_levels_no'):
+                global_levels += block_conf.global_levels_no
         
-        global_levels = torch.concat((torch.tensor(global_levels_out).view(-1) 
-                                     ,torch.tensor(global_levels_no).view(-1) 
+        global_levels = torch.concat((torch.tensor(global_levels).view(-1)
                                      ,torch.tensor(0).view(-1))).unique()
         
         super().__init__(mgrids, 
@@ -37,22 +39,43 @@ class MGNO_Transformer_MG(MGNO_base_model):
        
         self.Blocks = nn.ModuleList()
 
-        for block_idx, block_conf in enumerate(encoder_configs):
+        input_levels = [0]
+        input_dims = [lifting_dim]
 
-            block = MGNO_Encoder_Block(block_conf.global_levels_output,
-                                        block_conf.global_levels_no,
-                                        lifting_dim,
-                                        block_conf.model_dims_out,
-                                        self.grid_layers,
-                                        block_conf.layer_settings,
-                                        input_level=0,
-                                        stacked_encoding=block_conf.stacked_encoding,
-                                        rotate_coordinate_system=rotate_coord_system)  
+        for block_idx, block_conf in enumerate(block_configs):
+            
+            if isinstance(block_conf, MGEncoderDecoderConfig):
+                block = MGNO_EncoderDecoder_Block(
+                                            input_levels,
+                                            input_dims,
+                                            block_conf.global_levels_output,
+                                            block_conf.global_levels_no,
+                                            block_conf.model_dims_out,
+                                            self.grid_layers,
+                                            block_conf.layer_settings,
+                                            rule=block_conf.rule,
+                                            mg_reduction=block_conf.reduction,
+                                            mg_reduction_embed_confs=block_conf.mg_reduction_embed_confs,
+                                            mg_reduction_embed_names=block_conf.mg_reduction_embed_names,
+                                            mg_reduction_embed_mode=block_conf.mg_reduction_embed_mode,
+                                            rotate_coordinate_system=rotate_coord_system)  
                 
+            elif isinstance(block_conf, MGProcessingConfig):
+                block = MGNO_Processing_Block(
+                            input_levels,
+                            block_conf.layer_settings_levels,
+                            input_dims,
+                            block_conf.model_dims_out,
+                            self.grid_layers,
+                            rotate_coordinate_system=rotate_coord_system)
+                        
                 
             self.Blocks.append(block)     
-        
-        self.out_layer = nn.Linear(block_conf.model_dims_out[-1], output_dim, bias=False)
+
+            input_dims = block.model_dims_out
+            input_levels = block.output_levels
+
+        self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
         self.lifting_layer = nn.Linear(input_dim, lifting_dim, bias=False) if lifting_dim>1 else nn.Identity()
 
@@ -77,18 +100,18 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         x = self.lifting_layer(x)
 
+        x_levels = [x]
+        mask_levels = [mask]
         for k, block in enumerate(self.Blocks):
             
             coords_in = coords_input if k==0 else None
             coords_out = coords_output if k==len(self.Blocks)-1  else None
             
             # Process input through the block
-            x, mask = block(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+            x_levels, mask_levels = block(x_levels, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
 
-            if mask is not None:
-                mask = mask.view(x.shape[:3])
         
-        x = self.out_layer(x)
+        x = self.out_layer(x_levels[0])
         x = x.view(b,n,-1)
 
         return x

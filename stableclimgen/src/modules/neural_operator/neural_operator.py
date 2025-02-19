@@ -150,14 +150,14 @@ class polNormal_NoLayer(NoLayer):
         max_dist_fac_encode = (grid_layer_no.global_level - grid_layer_encode.global_level).abs().clamp(min=1)
         #max_dist_fac_decode = (grid_layer_encode.global_level - grid_layer_decode.global_level).abs().clamp(min=1)
     
-        dists = torch.arange(1,2*n_dist, 2)/(n_dist*2)
+        dists = torch.linspace(1/(n_dist*2), 1-1/(n_dist*2), n_dist)
 
         if n_sigma>1:
             sigma = torch.arange(1,2*n_sigma, 2)/(n_sigma*2)
         else:
             sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
-        self.dist_unit = max_dist_fac_encode*grid_layer_encode.nh_dist
+        self.dist_unit = grid_layer_no.nh_dist
         #self.dist_unit_decode = max_dist_fac_decode*grid_layer_encode.nh_dist
 
         #dists = -torch.log(1/dists-1)

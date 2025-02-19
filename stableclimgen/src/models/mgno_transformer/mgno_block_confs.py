@@ -29,13 +29,17 @@ class NOBlockConfig:
                         self.layer_settings[index][key] = value
 
 
-class MGEncoderConfig:
+class MGEncoderDecoderConfig:
     def __init__(self, 
                  global_levels_output: list,
                  global_levels_no: list,
                  model_dims_out: list,
                  layer_settings: list,
-                 stacked_encoding: bool = False):
+                 reduction:str = 'linear',
+                 mg_reduction_embed_confs: dict=None,
+                 mg_reduction_embed_names: list=None,
+                 mg_reduction_embed_mode: str = 'sum',
+                 rule: str = 'fc'):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
@@ -44,16 +48,11 @@ class MGEncoderConfig:
 
 class MGProcessingConfig:
     def __init__(self, 
-                 layer_settings: List[List]):
+                 layer_settings_levels: List[List],
+                 model_dims_out: List[List]):
 
-        inputs = copy.deepcopy(locals())
-        for input, value in inputs.items():
-                setattr(self, input, value)
-
-
-class MGDecoderConfig:
-    def __init__(self, 
-                 layer_settings: List[List]):
+        if isinstance(layer_settings_levels[0], omegaconf.DictConfig):
+            layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out))]
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
