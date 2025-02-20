@@ -8,7 +8,9 @@ import einops
 import math
 from ...modules.icon_grids.grid_layer import GridLayer
 
-from .neural_operator import NoLayer, get_no_layer
+from .neural_operator import NoLayer
+from.no_helpers import get_no_layer
+
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
 
 from ..icon_grids.grid_attention import GridAttention
@@ -470,7 +472,6 @@ class MGAttentionReductionLayer(nn.Module):
         self.register_buffer('grid_levels', torch.tensor(global_level_in))
 
         model_dim_total = int(torch.tensor(model_dims_in).sum())
-        self.layer = nn.Linear(model_dim_total, model_dim_out, bias=True)
 
         self.attention_ada_lns = nn.ModuleList()
 
@@ -503,14 +504,14 @@ class MGAttentionReductionLayer(nn.Module):
         
         x_skip = self.lin_skip_att(torch.concat(x_levels, dim=-1))
 
-       # v = []
+        v = []
         for level_idx, x in enumerate(x_levels):
             emb['GridEmbedder'] = self.grid_levels[level_idx]
             x = self.lin_projections[level_idx](x)
-      #      v.append(x)
+            v.append(x)
             x_levels[level_idx] = self.attention_ada_lns[level_idx](x, emb=emb)
 
-       # v = torch.stack(v, dim=-2)
+        v = torch.stack(v, dim=-2)
         x = torch.stack(x_levels, dim=-2)
         if mask_levels is not None:
             mask = torch.stack(mask_levels, dim=-1)
@@ -520,14 +521,14 @@ class MGAttentionReductionLayer(nn.Module):
         b, n, nv, g, c = x.shape
         if self.cross_var:
             x = einops.rearrange(x, "b n v g c -> b n (v g) c")
-       #     v = einops.rearrange(v, "b n v g c -> b n (v g) c")
+            v = einops.rearrange(v, "b n v g c -> b n (v g) c")
             mask = einops.rearrange(mask, "b n v g -> b n (v g)") if mask is not None else mask
         else:
             x = einops.rearrange(x, "b n v g c -> b (n v) g c")
-          #  v = einops.rearrange(v, "b n v g c -> b (n v) g c")
+            v = einops.rearrange(v, "b n v g c -> b (n v) g c")
             mask = einops.rearrange(mask, "b n v g -> b (n v) g") if mask is not None else mask
 
-        x, _ = self.attention_layer(x, mask=mask)
+        x, _ = self.attention_layer(x, v=v, mask=mask)
         
         if self.cross_var:
             x = einops.rearrange(x, "b n (v g) c -> b n v g c", v=nv, g=g)

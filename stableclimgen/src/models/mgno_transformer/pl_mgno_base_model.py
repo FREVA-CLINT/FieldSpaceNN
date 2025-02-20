@@ -274,3 +274,12 @@ class LightningMGNOBaseModel(pl.LightningModule):
                         iter_start=0)
         
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+    
+    def on_before_optimizer_step(self, optimizer):
+        #for debug only
+        pass
+        # Check for parameters with no gradients before optimizer.step()
+       # print("Checking for parameters with None gradients before optimizer step:")
+        #for name, param in self.named_parameters():
+         #   if param.grad is None:
+          #      print(f"Parameter with no gradient: {name}")
