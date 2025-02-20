@@ -599,8 +599,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                    # self.layers.append(nn.Identity())
                     continue
 
-                elif rule == ">" and level_diff<0:
-                  #  self.layers.append(nn.Identity())
+                elif ">" in rule and level_diff<0:
+                    continue
+
+                if rule == ">max" and input_level!=max(input_levels) and level_diff!=0:
                     continue
                 
                 input_indices.append(input_idx)
