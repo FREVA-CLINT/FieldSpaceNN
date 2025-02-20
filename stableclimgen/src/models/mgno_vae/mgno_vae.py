@@ -128,8 +128,6 @@ class MGNO_VAE(nn.Module):
                                             grid_layer=grid_layers[str(output_level_encoder)],
                                             rotate_coord_system=rotate_coord_system,
                                             n_head_channels=quant_config.n_head_channels)
-            if self.quantization.distribution == "gaussian":
-                self.noise_gamma = torch.nn.Parameter(torch.ones(quant_config.latent_ch[-1]) * 1E-6)
 
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
@@ -210,11 +208,7 @@ class MGNO_VAE(nn.Module):
         posterior = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         if hasattr(self, "quantization"):
-            if self.quantization.distribution == "gaussian":
-                noise = torch.randn_like(posterior.mean) * self.noise_gamma
-            else:
-                noise = None
-            z = posterior.sample(noise)
+            z = posterior.sample()
         else:
             z = posterior
         dec = self.decode(z, coords_output, indices_sample=indices_sample, emb=emb)
