@@ -14,26 +14,47 @@ class NOBlockConfig:
 
     def __init__(self, 
                  block_type: str,
-                 global_levels: int|list, 
-                 layer_settings: List[Dict],
-                 global_res: bool=False, 
-                 skip_mode: str='',
-                 is_encoder_only: bool=False,
-                 is_decoder_only: bool=False,
+                 model_dims_out: list,
+                 layer_settings: list,
                  **kwargs):
 
-        n_no_layers = len(global_levels)
-
         inputs = copy.deepcopy(locals())
-        self.block_type = block_type
-        self.global_res = global_res
-        self.skip_mode = skip_mode
-
         for input, value in inputs.items():
-       #     if input != 'self' and input != 'block_type' and input != "global_res" and input != "skip_mode" and input not in kwargs.keys():
                 setattr(self, input, value)
         
         for key, value in kwargs.items():
-            for layer_settings in self.layer_settings:
-                if key not in layer_settings.keys():
-                    layer_settings[key]=value
+            if len(value) == len(self.layer_settings):
+                for index in range(value):
+                    if key not in self.layer_settings[index]:
+                        self.layer_settings[index][key] = value
+
+
+class MGEncoderDecoderConfig:
+    def __init__(self, 
+                 global_levels_output: list,
+                 global_levels_no: list,
+                 model_dims_out: list,
+                 layer_settings: list,
+                 reduction:str = 'linear',
+                 mg_reduction_embed_confs: dict=None,
+                 mg_reduction_embed_names: list=None,
+                 mg_reduction_embed_names_mlp: list=None,
+                 mg_reduction_embed_mode: str = 'sum',
+                 rule: str = 'fc'):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)
+
+
+class MGProcessingConfig:
+    def __init__(self, 
+                 layer_settings_levels: List[List],
+                 model_dims_out: List[List]):
+
+        if isinstance(layer_settings_levels[0], omegaconf.DictConfig):
+            layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out))]
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)

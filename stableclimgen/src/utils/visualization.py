@@ -9,14 +9,13 @@ import torch
 
 
 def scatter_plot(input, output, gt, coords_input, coords_output, mask, save_path=None):
-
     coords_input = coords_input.rad2deg().cpu().numpy()
     coords_output = coords_output.rad2deg().cpu().numpy()
 
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
     gt = gt.cpu().numpy()
-    
+
     if mask is not None:
         mask = mask.cpu().bool().numpy()
         input = input[mask==False]
@@ -48,6 +47,61 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, save_path
 
     if save_path is not None:
         plt.savefig(save_path)
+
+
+def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask, save_path=None):
+    input = input.cpu().numpy()
+    output = output.cpu().to(dtype=torch.float32).numpy()
+    gt = gt.cpu().numpy()
+
+    if coords_input.shape[0] == 1:
+        coords_input = coords_input.repeat(gt.shape[0], 1, 1, 1)
+        coords_output = coords_output.repeat(gt.shape[0], 1, 1, 1)
+
+    coords_input = coords_input.rad2deg().cpu().numpy()
+    coords_output = coords_output.rad2deg().cpu().numpy()
+
+    if mask is not None:
+        mask = mask.cpu().bool().numpy()
+        input = input[mask == False]
+        coords_input = coords_input[mask == False]
+
+    input = input.reshape(gt.shape[0], -1)
+    coords_input = coords_input.reshape(gt.shape[0], -1, 2)
+    coords_output = coords_output.reshape(gt.shape[0], -1, 2)
+
+    # Define image size and calculate differences between ground truth and output
+    img_size = 3
+    differences = gt - output
+
+    # Set up the figure layout
+    fig, axes = plt.subplots(
+        nrows=gt.shape[0], ncols=4,
+        figsize=(2 * img_size * 4, img_size * gt.shape[0]),
+        subplot_kw={"projection": ccrs.Mollweide()}
+    )
+    axes = np.atleast_2d(axes)
+
+    # Plot each sample and timestep
+    for i in range(gt.shape[0]):
+        # Loop over samples
+        for index, data, coords in [
+            (0, input[i], coords_input[i]),
+            (1, gt[i], coords_output[i]),
+            (2, output[i], coords_output[i]),
+            (3, differences[i], coords_output[i])
+        ]:
+            # Turn off axes for cleaner plots
+            axes[i, index].set_axis_off()
+            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
+
+            # Add color bar to each difference plot
+            cb = fig.colorbar(cax, ax=axes[i, index])
+
+    # Adjust layout and save the figure for the current channel
+    plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
+    if save_path is not None:
+        plt.savefig(save_path, bbox_inches='tight')
 
 def plot_images(
     gt_data: torch.Tensor,

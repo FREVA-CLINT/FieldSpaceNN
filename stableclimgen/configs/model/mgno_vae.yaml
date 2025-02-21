@@ -1,73 +1,122 @@
 _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
+weight_decay: 0.01
+lambda_loss_dict:
+  MSE_loss: 1
+  NH_loss: 0
 lr_groups:
   - param_group: 'params'
     lr: 1e-4
-    lr_warmup: 2000
+    lr_warmup: 200
   - param_group: 'no_params'
-    lr: 1e-6
-    lr_warmup: 5000
-  - param_group: 'emb_params'
-    lr: 1e-3
-    lr_warmup: 1
+    lr: 1e-4
+    lr_warmup: 500
+  - param_group: 'attention'
+    lr: 1e-4
+    lr_warmup: 200
 model:
   _target_: stableclimgen.src.models.mgno_vae.mgno_vae.MGNO_VAE
   mgrids: ${mgrids}
-  model_dim_in: 1
-  model_dim_out: 1
-  n_vars_total: 1
-  n_head_channels: 16
+  input_dim: 1
+  lifting_dim: 8
+  output_dim: 1
+  n_vars_total: 3
+  n_head_channels: 32
   rotate_coord_system: true
-  block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_Transformer.NOBlockConfig
-      block_type: "UNet"
-      global_levels: [2,2]
-      att_dim: 64
-      embed_confs: ${embedding}
-      embed_mode: "sum"
-      skip_mode: ''
-      is_encoder_only: false
-      is_decoder_only: false
-      layer_settings: 
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_transformation: false
-          nh_inverse_transformation: false
-          avg_params: [true, true, false]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["var"]
-          block_types_decode: []
-          embed_names_encode: [["VariableEmbedder"]]
-          embed_names_decode: [[]]
-        - n_params: [4,2,1]
-          no_type: "polNormal"
-          amplitude_dim_encode: 4
-          amplitude_dim_decode: 4
-          nh_transformation: true
-          nh_inverse_transformation: true
-          avg_params: [false, true, false]
-          global_params_learnable: [true, true, true]
-          n_var_amplitudes: ${embedding.VariableEmbedder.in_channels}
-          block_types_encode: ["trans"]
-          block_types_decode: []
-          embed_names_encode: [["VariableEmbedder", "CoordinateEmbedder"]]
-          embed_names_decode: [[]]
+  p_dropout: 0
+  encoder_block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
+      block_type: 'Serial'
+      model_dims_out: [8,16,32,64]
+      layer_settings:
+        - type: "NO_mlp"
+          global_level_no: 1
+          global_level_decode: 1
+          no_layer_type: 'polNormal'
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
           spatial_attention_configs:
             nh: false
-            seq_lvl: 2 
+            seq_lvl: 3
             blocks: ["s", "mlp"]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "NO_mlp"
+          global_level_no: 2
+          global_level_decode: 2
+          no_layer_type: 'polNormal'
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
+  decoder_block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
+      block_type: 'Serial'
+      model_dims_out: [64,32,16,8]
+      layer_settings:
+        - type: "NO_mlp"
+          global_level_no: 1
+          global_level_decode: 1
+          no_layer_type: 'polNormal'
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: false
+            global_params_learnable: [false, false]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "spatial_att"
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks: ["s", "mlp"]
+        - type: "NO_mlp"
+          global_level_no: 0
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          no_layer_settings:
+            n_params: [4,2,1]
+            nh_in_encode: true
+            nh_in_decode: true
+            global_params_learnable: [false, false]
   quant_config:
     _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
-    block_type: "grid_trans"
-    latent_ch: [ 8 ]
-    n_head_channels: [256, 64, 8, 1]
+    block_type: grid_trans
+    latent_ch: [32, 8, 4]
+    n_head_channels: [8, 4, 2]
     sub_confs:
-      blocks: [ "s", "mlp" ]
-      nh: 0
+      blocks: ["s", "s", "mlp"]
+      nh: false
       seq_lvl: -1
-      embedder_names: [ ["VariableEmbedder","CoordinateEmbedder"], ["VariableEmbedder","CoordinateEmbedder"] ]
+      embedder_names:
+      - - VariableEmbedder
+        - CoordinateEmbedder
+      - - VariableEmbedder
+        - CoordinateEmbedder
+      - - VariableEmbedder
+        - CoordinateEmbedder
       embed_confs: ${embedding}
-      embed_mode: "sum"
-      distribution: "dirac"
+      embed_mode: sum
+      distribution: gaussian

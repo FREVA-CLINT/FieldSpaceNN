@@ -56,22 +56,21 @@ class LightningDiffusionGenerator(pl.LightningModule):
         """
         torch.optim.swa_utils.update_bn(self.trainer.train_dataloader, self.ema_model)
 
-    def forward(self, gt_data: torch.Tensor, diffusion_steps: torch.Tensor, mask_data: torch.Tensor = None,
-                cond_data: torch.Tensor = None, coords: torch.Tensor = None, sample_vars: torch.Tensor = None) -> Tuple[Dict[str, Tensor], Tensor]:
+    def forward(self, gt_data: torch.Tensor, diffusion_steps: torch.Tensor, mask: torch.Tensor = None, emb: Dict = None,
+                cond_data: torch.Tensor = None) -> Tuple[Dict[str, Tensor], Tensor]:
         """
         Forward pass through the model for training loss computation.
 
-        :param sample_vars:
         :param gt_data: Ground truth data.
         :param diffusion_steps: Steps of the diffusion process.
-        :param mask_data: Mask data. Defaults to None.
+        :param mask: Mask data. Defaults to None.
         :param cond_data: Conditioning data. Defaults to None.
-        :param coords: Coordinates data. Defaults to None.
+        :param emb: embedding dictionary
 
         :return: Dictionary containing loss values for the training step and generated tensor.
         """
-        return self.gaussian_diffusion.training_losses(self.model, gt_data, diffusion_steps, mask_data, cond_data,
-                                                       coords, sample_vars)
+        kwargs = {"cond": cond_data}
+        return self.gaussian_diffusion.training_losses(self.model, gt_data, diffusion_steps, mask, emb, **kwargs)
 
     def training_step(self, batch: Tuple, batch_idx: int) -> torch.Tensor:
         """
@@ -84,7 +83,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
         """
         cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(gt_data.shape[0], gt_data.device)
-        l_dict, _ = self(gt_data, diffusion_steps, mask_data, cond_data, gt_coords, sample_vars)
+        emb = {"CoordinateEmbedder": gt_coords, "VariableEmbedder": sample_vars}
+        l_dict, _ = self(gt_data, diffusion_steps, mask_data, emb, cond_data)
         loss = (l_dict["loss"] * weights).mean()
 
         loss_dict = {f'train/{k}': v.mean() for k, v in l_dict.items()}
@@ -107,7 +107,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
             diff_steps = self.gaussian_diffusion.diffusion_steps
             t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
             cond = torch.stack(10 * [cond_data[i]])
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), cond, torch.stack(10 * [gt_coords[i]]), torch.stack(10 * [sample_vars[i]]))
+            emb = {"CoordinateEmbedder": torch.stack(10 * [gt_coords[i]]), "VariableEmbedder": torch.stack(10 * [sample_vars[i]])}
+            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), emb, cond)
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):

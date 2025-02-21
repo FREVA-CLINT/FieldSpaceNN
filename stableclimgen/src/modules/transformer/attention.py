@@ -4,7 +4,7 @@ import torch.nn as nn
 from .transformer_modules import MultiHeadAttentionBlock
 
 class ResLayer(nn.Module):
-    def __init__(self, model_dim, with_res=True, p_dropout=0):
+    def __init__(self, model_dim, with_res=True, p_dropout=0, model_dim_out=None):
         """
         A residual layer that applies a learnable scalar weighting (gamma) to an MLP-based transformation of the input.
 
@@ -17,12 +17,14 @@ class ResLayer(nn.Module):
 
         self.with_res = with_res
 
+        model_dim_out = model_dim if model_dim_out is None else model_dim_out
+
         self.mlp_layer = nn.Sequential(
             nn.LayerNorm(model_dim, elementwise_affine=True),
             nn.Linear(model_dim, model_dim , bias=False),
             nn.SiLU(),
             nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-            nn.Linear(model_dim, model_dim, bias=False)
+            nn.Linear(model_dim, model_dim_out, bias=False)
         )
 
     def forward(self, x):
@@ -52,7 +54,7 @@ class AdaptiveLayerNorm(nn.Module):
             emb_ = self.embedder(emb).squeeze(dim=1)
             scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
             n = scale.shape[1]
-            scale, shift = scale.view(x_shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(x_shape[0],scale.shape[1],-1,*x_shape[3:])
+            scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
             x = self.layer_norm(x) * (scale + 1) + shift    
         else:
             x = self.layer_norm(x)

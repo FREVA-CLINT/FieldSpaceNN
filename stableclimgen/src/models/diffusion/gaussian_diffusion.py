@@ -184,13 +184,13 @@ class GaussianDiffusion:
         return mean, variance, log_variance
 
     def q_sample(
-        self, x_start: torch.Tensor, t: torch.Tensor, noise: Optional[torch.Tensor] = None
+        self, x_start: torch.Tensor, diff_steps: torch.Tensor, noise: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Sample q(x_t | x_0) by applying diffusion steps.
 
         :param x_start: Initial data batch, tensor of shape [N x C x ...].
-        :param t: Timestep tensor of shape [N].
+        :param diff_steps: Diffusion step tensor of shape [N].
         :param noise: Optional Gaussian noise tensor of shape matching x_start.
         :return: Noisy version of x_start after diffusion steps.
         """
@@ -198,28 +198,28 @@ class GaussianDiffusion:
             noise = torch.randn_like(x_start)
         assert noise.shape == x_start.shape
         return (
-            extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_start.shape) * noise
+                extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_start.shape) * x_start
+                + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diff_steps, x_start.shape) * noise
         )
 
     def q_posterior_mean_variance(
-        self, x_start: torch.Tensor, x_t: torch.Tensor, t: torch.Tensor
+        self, x_start: torch.Tensor, x_t: torch.Tensor, diff_steps: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Compute mean and variance of the posterior q(x_{t-1} | x_t, x_0).
 
         :param x_start: Starting (noiseless) data tensor.
         :param x_t: Tensor at diffusion step t.
-        :param t: Diffusion step tensor.
+        :param diff_steps: Diffusion step tensor.
         :return: Tuple of (posterior_mean, posterior_variance, posterior_log_variance_clipped).
         """
         posterior_mean = (
-                extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start
-                + extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
+                extract_into_tensor(self.posterior_mean_coef1, diff_steps, x_t.shape) * x_start
+                + extract_into_tensor(self.posterior_mean_coef2, diff_steps, x_t.shape) * x_t
         )
-        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape)
+        posterior_variance = extract_into_tensor(self.posterior_variance, diff_steps, x_t.shape)
         posterior_log_variance_clipped = extract_into_tensor(
-            self.posterior_log_variance_clipped, t, x_t.shape
+            self.posterior_log_variance_clipped, diff_steps, x_t.shape
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
@@ -227,40 +227,32 @@ class GaussianDiffusion:
         self,
         model: Callable,
         x: torch.Tensor,
-        mask_data: torch.Tensor,
-        cond_data: torch.Tensor,
-        coords: torch.Tensor,
-        sample_vars: torch.Tensor,
-        t: torch.Tensor,
+        diff_steps: torch.Tensor,
+        mask: torch.Tensor = None,
+        emb: Dict = None,
         denoised_fn: Optional[Callable] = None,
-        model_kwargs: Optional[Dict[str, Union[torch.Tensor, np.ndarray]]] = None
+        **model_kwargs
     ) -> Dict[str, torch.Tensor]:
         """
         Apply the model to get p(x_{t-1} | x_t) and predict x_0.
 
-        :param sample_vars:
         :param model: The model function to generate predictions.
         :param x: Input tensor at diffusion step t.
-        :param mask_data: Mask tensor applied to x_t.
-        :param cond_data: Condition data used for prediction.
-        :param coords: Coordinates tensor.
-        :param t: Diffusion step tensor.
+        :param mask: Mask tensor applied to x_t.
+        :param emb: embedding dictionary
+        :param diff_steps: Diffusion step tensor.
         :param denoised_fn: Optional function applied to x_start.
-        :param model_kwargs: Extra keyword arguments for the model.
+        :param model_kwargs: Extra arguments for the model.
         :return: Dictionary with keys "mean", "variance", "log_variance", and "pred_xstart".
         """
-        if model_kwargs is None:
-            model_kwargs = {}
 
         # Ensure correct input shapes
         b, c = x.shape[0], x.shape[-1]
-        assert t.shape == (b,)
-        emb = {
-            "DiffusionStepEmbedder": self._scale_steps(t),
-            "CoordinateEmbedder": coords,
-            "VariableEmbedder": sample_vars
-        }
-        model_output = model(x, emb, mask_data, cond_data)
+        assert diff_steps.shape == (b,)
+        if emb is None:
+            emb = {}
+        emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+        model_output = model(x, emb=emb, mask=mask, **model_kwargs)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             # Splits the output into predicted mean and log variance
@@ -271,9 +263,9 @@ class GaussianDiffusion:
                 model_variance = torch.exp(model_log_variance)
             else:
                 min_log = extract_into_tensor(
-                    self.posterior_log_variance_clipped, t, x.shape
+                    self.posterior_log_variance_clipped, diff_steps, x.shape
                 )
-                max_log = extract_into_tensor(np.log(self.betas), t, x.shape)
+                max_log = extract_into_tensor(np.log(self.betas), diff_steps, x.shape)
                 frac = (model_var_values + 1) / 2
                 model_log_variance = frac * max_log + (1 - frac) * min_log
                 model_variance = torch.exp(model_log_variance)
@@ -289,8 +281,8 @@ class GaussianDiffusion:
                     self.posterior_log_variance_clipped,
                 ),
             }[self.model_var_type]
-            model_variance = extract_into_tensor(model_variance, t, x.shape)
-            model_log_variance = extract_into_tensor(model_log_variance, t, x.shape)
+            model_variance = extract_into_tensor(model_variance, diff_steps, x.shape)
+            model_log_variance = extract_into_tensor(model_log_variance, diff_steps, x.shape)
 
         def process_xstart(in_tensor):
             if denoised_fn is not None:
@@ -300,7 +292,7 @@ class GaussianDiffusion:
         # Predict initial x depending on mean type
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
             pred_xstart = process_xstart(
-                self._predict_xstart_from_xprev(x_t=x, t=t, xprev=model_output)
+                self._predict_xstart_from_xprev(x_t=x, t=diff_steps, xprev=model_output)
             )
             model_mean = model_output
         elif self.model_mean_type in [ModelMeanType.START_X, ModelMeanType.EPSILON]:
@@ -308,10 +300,10 @@ class GaussianDiffusion:
                 pred_xstart = process_xstart(model_output)
             else:
                 pred_xstart = process_xstart(
-                    self._predict_xstart_from_eps(x_t=x, t=t, eps=model_output)
+                    self._predict_xstart_from_eps(x_t=x, t=diff_steps, eps=model_output)
                 )
             model_mean, _, _ = self.q_posterior_mean_variance(
-                x_start=pred_xstart, x_t=x, t=t
+                x_start=pred_xstart, x_t=x, diff_steps=diff_steps
             )
         else:
             raise NotImplementedError(self.model_mean_type)
@@ -389,12 +381,10 @@ class GaussianDiffusion:
             model: Callable,
             x_start: torch.Tensor,
             x_t: torch.Tensor,
-            mask_data: torch.Tensor,
-            cond_data: torch.Tensor,
-            coords: torch.Tensor,
-            sample_vars: torch.Tensor,
-            t: torch.Tensor,
-            model_kwargs: Optional[Dict[str, Union[torch.Tensor, np.ndarray]]] = None
+            mask: torch.Tensor,
+            emb: Dict,
+            diff_steps: torch.Tensor,
+            **model_kwargs
     ) -> Dict[str, torch.Tensor]:
         """
         Compute variational bound terms for training using KL divergence.
@@ -406,33 +396,26 @@ class GaussianDiffusion:
         :param model: The model function used to predict mean and variance.
         :param x_start: Ground truth tensor for x_0, shape [N x ...].
         :param x_t: Noisy tensor at diffusion step t, shape [N x ...].
-        :param mask_data: Mask tensor applied to x_t.
-        :param cond_data: Conditioning data for the model.
-        :param coords: Coordinates tensor.
-        :param t: Diffusion step tensor.
+        :param mask: Mask tensor applied to x_t.
+        :param diff_steps: Diffusion step tensor.
         :param model_kwargs: Additional arguments for the model.
         :return: A dictionary with the following keys:
                  - "output": Tensor of shape [N] representing VLB term.
                  - "pred_xstart": Prediction for x_0 as calculated by the model.
         """
-        if model_kwargs is None:
-            model_kwargs = {}
-
         # Compute the true mean and log variance of the posterior q(x_{t-1} | x_t, x_0)
         true_mean, _, true_log_variance_clipped = self.q_posterior_mean_variance(
-            x_start=x_start, x_t=x_t, t=t
+            x_start=x_start, x_t=x_t, diff_steps=diff_steps
         )
 
         # Apply the model to predict mean and variance for p(x_{t-1} | x_t)
         out = self.p_mean_variance(
             model=model,
             x=x_t,
-            mask_data=mask_data,
-            cond_data=cond_data,
-            coords=coords,
-            sample_vars=sample_vars,
-            t=t,
-            model_kwargs=model_kwargs
+            diff_steps=diff_steps,
+            mask=mask,
+            emb=emb,
+            **model_kwargs
         )
 
         # Calculate KL divergence between true posterior q and model's distribution p
@@ -449,7 +432,7 @@ class GaussianDiffusion:
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)  # Convert to bits per dimension
 
         # At the first timestep, use NLL instead of KL, otherwise use KL
-        output = torch.where(t == 0, decoder_nll, kl)
+        output = torch.where(diff_steps == 0, decoder_nll, kl)
 
         return {
             "output": output,  # Final VB term
@@ -460,23 +443,21 @@ class GaussianDiffusion:
             self,
             model: Callable,
             gt_data: torch.Tensor,
-            t: torch.Tensor,
-            mask_data: torch.Tensor,
-            cond_data: torch.Tensor,
-            coords: torch.Tensor,
-            sample_vars: torch.Tensor,
-            noise: Optional[torch.Tensor] = None
+            diff_steps: torch.Tensor,
+            mask: torch.Tensor = None,
+            emb: Dict = None,
+            noise: Optional[torch.Tensor] = None,
+            **model_kwargs
     ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor]:
         """
         Compute training losses for a single timestep.
 
-        :param sample_vars:
         :param model: The model function to evaluate loss on.
         :param gt_data: Ground truth tensor of shape [N x ...].
-        :param t: Diffusion step tensor of shape [N].
-        :param mask_data: Mask data applied to x_t.
-        :param cond_data: Conditioning data.
-        :param coords: Coordinates tensor.
+        :param diff_steps: Diffusion step tensor of shape [N].
+        :param mask: Mask data applied to x_t.
+        :param emb: embedding dictionary
+        :param model_kwargs: Extra arguments for the model.
         :param noise: Optional Gaussian noise tensor of the same shape as gt_data.
         :return: A tuple where the first element is a dictionary with keys:
                  - "loss": Training loss tensor of shape [N].
@@ -488,8 +469,9 @@ class GaussianDiffusion:
             noise = torch.randn_like(gt_data)
 
         # Diffuse ground truth data for the given diffusion steps
-        x_t = self.q_sample(gt_data, t, noise=noise)
-        x_t = (1 - mask_data) * x_t + mask_data * gt_data
+        x_t = self.q_sample(gt_data, diff_steps, noise=noise)
+        if torch.is_tensor(mask):
+            x_t = torch.where(~mask, gt_data, x_t)
 
         terms = {}
 
@@ -499,23 +481,20 @@ class GaussianDiffusion:
                 model=model,
                 x_start=gt_data,
                 x_t=x_t,
-                mask_data=mask_data,
-                cond_data=cond_data,
-                coords=coords,
-                sample_vars=sample_vars,
-                t=t
+                diff_steps=diff_steps,
+                mask=mask,
+                emb=emb,
+                **model_kwargs
             )["output"]
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.diffusion_steps  # Rescale the KL term
 
         # Compute MSE or Rescaled MSE losses for applicable loss types
         elif self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
-            emb = {
-                "DiffusionStepEmbedder": self._scale_steps(t),
-                "CoordinateEmbedder": coords,
-                "VariableEmbedder": sample_vars
-            }
-            model_output = model(x_t, emb, mask_data, cond_data)
+            if emb is None:
+                emb = {}
+            emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+            model_output = model(x_t, emb=emb, mask=mask, **model_kwargs)
 
             if self.model_var_type in {ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE}:
                 b, c = x_t.shape[0], x_t.shape[-1]
@@ -527,11 +506,10 @@ class GaussianDiffusion:
                     model=lambda *args, r=frozen_out: r,
                     x_start=gt_data,
                     x_t=x_t,
-                    mask_data=mask_data,
-                    cond_data=cond_data,
-                    coords=coords,
-                    sample_vars=sample_vars,
-                    t=t,
+                    diff_steps=diff_steps,
+                    mask=mask,
+                    emb=emb,
+                    **model_kwargs
                 )["output"]
                 if self.loss_type == LossType.RESCALED_MSE:
                     # Rescale VB term to keep MSE term unaffected
@@ -540,15 +518,21 @@ class GaussianDiffusion:
             # Define target based on model mean type
             target = {
                 ModelMeanType.PREVIOUS_X: self.q_posterior_mean_variance(
-                    x_start=gt_data, x_t=x_t, t=t
+                    x_start=gt_data, x_t=x_t, diff_steps=diff_steps
                 )[0],
                 ModelMeanType.START_X: gt_data,
                 ModelMeanType.EPSILON: noise,
             }[self.model_mean_type]
-            assert model_output.shape == target.shape == gt_data.shape
+
+            target = target.view(model_output.shape)
+            mask = mask.view(model_output.shape)
+            x_t = x_t.view(model_output.shape)
 
             # Calculate mean squared error loss and add to terms
-            terms["mse"] = mean_flat((target * (1 - mask_data) - model_output * (1 - mask_data)) ** 2)
+            if torch.is_tensor(mask):
+                terms["mse"] = mean_flat((torch.where(mask, target - model_output, 0)) ** 2)
+            else:
+                terms["mse"] = mean_flat((target  - model_output) ** 2)
             terms["loss"] = terms["mse"] + terms.get("vb", 0)
 
         else:
@@ -557,9 +541,9 @@ class GaussianDiffusion:
         # Compute intermediate results if model is predicting epsilon
         if self.model_mean_type == ModelMeanType.EPSILON:
             results = (
-                    (x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t,
+                    (x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diff_steps,
                                                x_t.shape) * model_output) /
-                    extract_into_tensor(self.sqrt_alphas_cumprod, t, x_t.shape)
+                    extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_t.shape)
             )
         else:
             results = model_output

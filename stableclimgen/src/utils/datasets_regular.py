@@ -243,7 +243,7 @@ class MaskClimateDataset(ClimateDataset):
         :return: A tuple containing input data, input coordinates, ground truth data, ground truth coordinates, and mask.
         """
         in_data, in_coords, gt_data, gt_coords, sample_vars = super().__getitem__(index)
-        mask = torch.zeros_like(gt_data)
+        mask = torch.ones_like(gt_data, dtype=torch.bool)
 
         # Define indices to set in mask based on mask mode
         if "prob" in self.mask_mode:
@@ -261,5 +261,5 @@ class MaskClimateDataset(ClimateDataset):
             indices_to_set = torch.arange(predict_steps)
 
         # Apply mask based on selected indices
-        mask[:, indices_to_set] = 1
+        mask[:, indices_to_set] = False
         return in_data, in_coords, gt_data, gt_coords, mask, sample_vars

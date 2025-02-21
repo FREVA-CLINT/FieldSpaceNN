@@ -4,642 +4,763 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 import copy
+import einops
+import math
+from ...modules.icon_grids.grid_layer import GridLayer
 
-from .neural_operator import NoLayer, polNormal_NoLayer
+from .neural_operator import NoLayer, get_no_layer
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
 
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, BaseEmbedder
 
+from ...utils.helpers import check_get_missing_key
 
 class NOBlock(nn.Module):
   
     def __init__(self,
-                 x_dims,
+                 model_dim_in,
+                 model_dim_out,
                  no_layer: NoLayer,
-                 att_block_types:list,
-                 x_dims_decode=None,
-                 n_head_channels = 16,
-                 att_dim=None,
                  p_dropout=0.,
-                 is_decode:list=[],
-                 embed_names: List[List[str]] = None,
-                 embed_confs: Dict = None,
-                 embed_mode: str = "sum",
-                 spatial_attention_config={}
+                 embedder: EmbedderSequential=None,
+                 cross_no = False,
                 ) -> None: 
       
         super().__init__()
 
-
-       # self.n_params = no_layer.n_params_no
-        self.x_dims = x_dims
-        x_dims_decode = self.x_dims_decode = x_dims_decode if x_dims_decode is not None else x_dims
-
-        self.no_layer = no_layer
-        self.att_block_types_encode = nn.ModuleList()
-        self.att_block_types_decode = nn.ModuleList()
-
-        self.prepare_coordinates = False
-
-        for k, att_block_type in enumerate(att_block_types):
-
-            x_dims_layer = x_dims_decode if len(is_decode)>0 and is_decode[k] else x_dims
-
-            if len(embed_names[k])>0 and not 'trans' in att_block_type:
-                emb_dict = nn.ModuleDict()
-                for embed_name in embed_names[k]:
-                    emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name])
-                    emb_dict[emb.name] = emb     
-                embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
-                embedder_mlp = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
-
-                if 'CoordinateEmbedder' in emb_dict.keys():
-                    self.prepare_coordinates = True
-                    self.grid_layer = no_layer.grid_layers[str(no_layer.global_level_no)]
-                    self.global_level = no_layer.global_level_no
-            else:
-                embedder_seq = None
-                embedder_mlp = None
-
-            if 'param' in att_block_type or "var" in att_block_type:
-                param_idx_att = [c for c in att_block_type if c.isnumeric()]
-                param_idx_att = None if len(param_idx_att)==0 else int(param_idx_att[0])
-                cross_var = "var" in att_block_type
-                v_proj = "hole" not in att_block_type
-
-                layer = ParamAttention(x_dims_layer, 
-                                       n_head_channels,
-                                       att_dim=att_dim,
-                                       cross_var=cross_var,
-                                       p_dropout=p_dropout,
-                                       param_idx_att=param_idx_att,
-                                       embedder=embedder_seq,
-                                       embedder_mlp=embedder_mlp,
-                                       v_proj=v_proj)
-            
-            elif 'trans' in att_block_type:
-                spatial_attention_config['embedder_names'] = [embed_names[k], []]
-                spatial_attention_config['embed_confs'] = embed_confs
-                spatial_attention_config['embed_mode'] = embed_mode
-                layer = SpatialAttention(x_dims_layer, 
-                                         no_layer.grid_layer_no,
-                                         n_head_channels, 
-                                         spatial_attention_config,
-                                         p_dropout=p_dropout,
-                                         rotate_coord_system=no_layer.rotate_coord_system)
-
-            if len(is_decode)>0 and is_decode[k]:
-                self.att_block_types_decode.append(layer)
-            else:
-                self.att_block_types_encode.append(layer)
-
-    def squeeze_no_dims(self, x):
-        x = x.view(*x.shape[:3],-1,self.x_dims[-1])
-        return x
-
-    def unsqueeze_no_dims(self, x):
-        x = x.view(*x.shape[:3], *self.x_dims[:-2], -1, x.shape[-1])
-        return x
-
-    def check_add_coordinate_embeddings(self, emb, indices_sample):
-  
-        coords = self.grid_layer.get_coordinates_from_grid_indices(
-            indices_sample['indices_layers'][self.global_level] if indices_sample is not None else None)
-        emb['CoordinateEmbedder'] = coords
-        return emb
-
-
-    def encode(self, x, coords_in=None, indices_sample=None, mask=None, emb=None, squeeze_no_dims=True):
-
-        x, mask = self.no_layer.transform(x, coordinates=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
-
-        for layer in self.att_block_types_encode:
-            if isinstance(layer, SpatialAttention):
-                x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            else:
-                emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
-                x, mask = layer(x, mask=mask, emb=emb)
+        if cross_no:
+            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        else:
+            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
-        if squeeze_no_dims:
-            x = self.squeeze_no_dims(x)
+        self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
-        return x, mask
+        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
+        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
 
+        self.layer_norm1 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
+        self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
 
-    def decode(self, x, coords_out=None, indices_sample=None, mask=None, emb=None):
+        self.mlp_layer = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
+            nn.Linear(model_dim_out, model_dim_out, bias=False)
+        )
+
+        self.activation = nn.SiLU()
         
-        if x.dim()==5:
-            x = self.unsqueeze_no_dims(x)
 
-        for layer in self.att_block_types_decode:
-            if isinstance(layer, SpatialAttention):
-                x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
-            else:
-                emb = self.check_add_coordinate_embeddings(emb, indices_sample) if self.prepare_coordinates else emb
-                x, mask = layer(x, mask=mask, emb=emb)
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        
+        x_res = x
+        
+        x_res = get_residual(x, self.level_diff, mask=mask)
 
+        x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x, mask = self.no_layer.inverse_transform(x, coordinates=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+        x = self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
 
-        return x, mask
+        x = self.mlp_layer(x) 
+        
+        x = self.layer_norm2(x, emb=emb)
+
+        x = x + self.lin_skip_outer(x_res)
+
+        x = self.activation(x)
     
-
-    def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
-
-        x, mask = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
-
-        x, mask = self.decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
-
         return x, mask
 
 
-class UNet_NOBlock(nn.Module):
+def get_residual(x, level_diff, mask=None):
+    if level_diff > 0:
+        x = x.view(x.shape[0], -1, 4**level_diff, x.shape[-2], x.shape[-1])
+
+        if mask is not None:
+            weights = mask.view(x.shape[0], -1, 4**level_diff, x.shape[-2],1)==False
+            weights = weights.sum(dim=-3, keepdim=True)
+            x = (x/(weights+1e-10)).sum(dim=-3)
+            x = x * (weights.sum(dim=-3)!=0)
+
+        else:
+            x = x.mean(dim=-3)
+
+    elif level_diff < 0:
+        x = x.unsqueeze(dim=2).repeat_interleave(4**(-1*level_diff), dim=2)
+        x = x.view(x.shape[0],-1,x.shape[-2],x.shape[-1])
+        
+    return x
+
+
+class PreActivation_NOBlock(nn.Module):
   
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 layer_settings: list,     
-                 n_head_channels = 16,
+                 level_data_in,
+                 no_layer: NoLayer,
                  p_dropout=0.,
-                 global_res=False,
-                 skip_mode='amp_sum'
                 ) -> None: 
       
         super().__init__()
 
-
-        self.Skip_Blocks = nn.ModuleList()
-        self.NO_Blocks = nn.ModuleList()
-        self.global_res=global_res
-
-        encoding_dims = []
-        decoding_dims = []
-        for n, layer_setting in enumerate(layer_settings):
-            encoding_dims.append(layer_setting['amplitude_dim_encode'])
-            decoding_dims.append(layer_setting['amplitude_dim_decode'])
-        no_x_dims_layers = []
-        no_static_dims = []
-        for n, layer_setting in enumerate(layer_settings):
-
-            if n==len(layer_settings) -1:
-                inv_dim_in = encoding_dims[-1]
-            elif skip_mode=='concat':
-                inv_dim_in = decoding_dims[-(n+1)] + encoding_dims[n]
-            else:
-                inv_dim_in = decoding_dims[-(n+1)]
-
-            no_layer = get_no_layer(layer_setting, 
-                                    model_dim_in if n==0 else encoding_dims[n-1], 
-                                    encoding_dims[n], 
-                                    inv_dim_in, 
-                                    decoding_dims[-n])
-            
-            is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
-            is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
-            is_decode = is_decode_encode + is_decode_decode
-
-            embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
-            att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
-
-            #model_dim = int(torch.tensor(no_layer.n_params_no).prod())
-            no_static_dims.append(int(torch.tensor(no_layer.n_params_no[:-1]).prod()))
-            
-            if n==0:
-                x_dims = copy.deepcopy(no_layer.n_params_no)
-                x_dims.insert(-1, 1)
-            else:
-                x_dims = copy.deepcopy(no_layer.n_params_no)
-                x_dims.insert(-1, no_x_dims_layers[n-1][-2]* no_static_dims[n-1])
-            
-            x_dims_decode = copy.deepcopy(x_dims)
-            x_dims_decode[-1] = no_layer.n_params_inv_in[-1]
-            
-            no_x_dims_layers.append(x_dims)
-
-            self.NO_Blocks.append(NOBlock(
-                no_layer=no_layer,
-                x_dims=x_dims,
-                att_block_types=att_block_types,
-                x_dims_decode=x_dims_decode,
-                is_decode=is_decode,
-                n_head_channels=n_head_channels,
-                att_dim=layer_setting["att_dim"],
-                embed_names=embed_names,
-                embed_confs=layer_setting['embed_confs'],
-                embed_mode=layer_setting['embed_mode'],
-                spatial_attention_config=layer_setting.get("spatial_attention_configs",{}),
-                p_dropout=p_dropout
-            ))
-
-        self.skip = False if len(skip_mode)==0 else True
-        for n, layer_setting in enumerate(layer_settings):
-            if n != len(layer_settings)-1:
-                x_skip_dims = no_x_dims_layers[n]
-                x_dims = copy.deepcopy(x_skip_dims)
-                x_dims[-1] = self.NO_Blocks[-(n+1)].no_layer.n_params_out[-1]
-
-                if skip_mode=='amp_sum':
-                    self.Skip_Blocks.append(
-                        SkipAdd_Layer([x_dims[-1], x_skip_dims[-1]], x_dims[-1], n_var_amplitudes=layer_setting["n_var_amplitudes"])
-                        )
-                elif skip_mode == 'var_att':
-                    emb_dict = nn.ModuleDict()
-                    emb: BaseEmbedder = EmbedderManager().get_embedder("VariableEmbedder", **layer_setting['embed_confs']["VariableEmbedder"])
-                    emb_dict[emb.name] = emb     
-                    embedder_seq = EmbedderSequential(emb_dict, mode=layer_setting['embed_mode'], spatial_dim_count = 1)
-                    embedder_mlp = EmbedderSequential(emb_dict, mode=layer_setting['embed_mode'], spatial_dim_count = 1)
-
-                    self.Skip_Blocks.append(
-                        MGParamAttention([x_dims, x_skip_dims], 
-                                         x_dims,
-                                         n_head_channels=n_head_channels,
-                                         cross_var=True,
-                                         p_dropout=p_dropout,
-                                         param_idx_att=None,
-                                         embedder=embedder_seq,
-                                         embedder_mlp=embedder_mlp
-                                         )
-                        )
-
-                else:
-                    self.Skip_Blocks.append(nn.Identity())
+        self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
-        if model_dim_out is None:
-            model_dim_out = decoding_dims[0]
+        self.level_diff = (self.no_conv.global_level_out - level_data_in)
+
+        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=False)
+        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=False)
+
+        self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_out)
+
+        self.mlp_layer = nn.Sequential(
+            nn.SiLU(),
+            AdaptiveLayerNorm([model_dim_out], model_dim_out),
+            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
+            nn.Linear(model_dim_out, model_dim_out, bias=False),
+        )
+
+        self.activation = nn.SiLU()
         
-        if global_res:
-            self.out_layer = SkipAdd_Layer([decoding_dims[0], model_dim_in], model_dim_out, n_var_amplitudes=layer_settings[-1]['n_var_amplitudes'])
-        elif decoding_dims[0]!=model_dim_out:
-            self.out_layer = VarLin_Layer(decoding_dims[0], model_dim_out, layer_settings[-1]['n_var_amplitudes'])
-        else:
-            self.out_layer = nn.Identity()
 
-        self.model_dim_out = model_dim_out
-
-    def encode(self, x, coords_in=None, indices_sample=None, mask=None, emb=None):
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         
-        x_skip = []
-        mask_skip = []
-        for layer in self.NO_Blocks:
+        x_res = x
+        
+        x_res = get_residual(x, self.level_diff, mask=mask)
+        
+        x = self.layer_norm1(x)
 
-            x_skip.append(x)
-            mask_skip.append(mask)
+        x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-            x, mask = layer.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
+        x = x_conv + self.lin_skip_inner(x_res)
 
-        return x, mask, x_skip, mask_skip
+        x = self.mlp_layer(x) + self.lin_skip_outer(x_res)
+
+        x = self.activation(x)
     
-    def decode(self, x, mask=None, x_skip=None, masks_skip=None, coords_out=None, indices_sample=None, emb=None):
-        
-        for layer_idx in range(len(self.NO_Blocks)-1,-1,-1):
+        return x, mask
 
-            if layer_idx<len(self.NO_Blocks)-1 and x_skip is not None and self.skip:
-                x = self.NO_Blocks[layer_idx].unsqueeze_no_dims(x)
-                x_skip_ = self.NO_Blocks[layer_idx].unsqueeze_no_dims(x_skip[layer_idx+1])
+class NOConv(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: NoLayer,
+                 p_dropout=0.,
+                ) -> None: 
+      
+        super().__init__()
 
-                if not isinstance(self.Skip_Blocks[layer_idx], nn.Identity):
-                    x = self.Skip_Blocks[layer_idx]([x, x_skip_], masks=[mask, masks_skip[layer_idx+1]], emb=emb)[0]
-                else:
-                    x = torch.concat((x, x_skip_), dim=-1)
-            
-            x, mask = self.NO_Blocks[layer_idx].decode(x, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+        self.no_layer = no_layer
+
+        self.no_dims = self.no_layer.n_params_no 
+        self.global_level_in = self.no_layer.global_level_encode
+        self.global_level_out = self.no_layer.global_level_decode
+
+        self.weights = nn.Parameter(torch.randn(*self.no_dims, model_dim_in, model_dim_out), requires_grad=True)
+      #  self.weights = nn.Parameter(torch.ones(*self.no_dims, model_dim_in, model_dim_out), requires_grad=False)
+        self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        x = torch.einsum("nbvpqrx, pqrxy -> nbvpqry", x, (1+self.gamma*self.weights))
+    
+        x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        x = x.contiguous()
 
         return x, mask
 
-
-    
-    def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
-        
-        if self.global_res:
-            x_res = x #if isinstance(self.out_layer_res, nn.Identity) else self.out_layer_res(x, emb=emb)
-
-        x, mask_enc, x_skip, mask_skip = self.encode(x, coords_in=coords_in, indices_sample=indices_sample, mask=mask, emb=emb)
-
-        x, mask_out = self.decode(x, mask_enc, x_skip, mask_skip, coords_out=coords_out, indices_sample=indices_sample, emb=emb)
-
-        mask_out = mask_out.view(*x.shape[:-1])
-
-        if self.global_res:
-            x = self.out_layer([x, x_res.view(*x.shape[:-1],x_res.shape[-1])], masks=[mask_out, mask.view(*x.shape[:-1])], emb=emb)[0]
-
-        elif not isinstance(self.out_layer, nn.Identity):
-            x = self.out_layer(x, emb=emb)
-
-        return x, mask_out
-
-
-class VarLin_Layer(nn.Module):
-
+class CrossNOConv(nn.Module):
+  
     def __init__(self,
-                 model_dim_in: list,
-                 model_dim_out: int,
-                 n_var_amplitudes=1
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: NoLayer,
+                 p_dropout=0.,
                 ) -> None: 
-    
+      
         super().__init__()
-        
-        self.weights = nn.Parameter(torch.empty((n_var_amplitudes, model_dim_in, model_dim_out)), requires_grad=True)
-        torch.nn.init.xavier_uniform_(self.weights)
 
+        self.no_layer = no_layer
 
-    def get_params(self, emb, weight_or_bias):
+        self.no_dims = self.no_layer.n_params_no 
+        self.global_level_in = self.no_layer.global_level_encode
+        self.global_level_out = self.no_layer.global_level_decode
 
-        if self.weights.shape[0]>1:
-            amps =  weight_or_bias[emb['VariableEmbedder']]
-        else:
-            amps = weight_or_bias
-        amps = amps.view(amps.shape[0],1,*amps.shape[1:])
+        self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out*int(torch.tensor(self.no_dims).prod()), bias=False)
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+        x_shape = x.shape
+        x = x.view(*x.shape[:3],-1)
+        x = self.linear_layer(x)
+        x = x.view(*x_shape[:-1],-1)
     
-        return amps
-    
-    def forward(self, x, emb=None):
-        
-        x = torch.matmul(x, self.get_params(emb, self.weights))
-       
-        return x 
+        x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-
-class SkipAdd_Layer(nn.Module):
-
-    def __init__(self,
-                 n_amplitudes_ins: list,
-                 n_amplitudes_out: int,
-                 n_var_amplitudes=1
-                ) -> None: 
-    
-        super().__init__()
-        
-        self.weights = nn.ParameterList()
-        for n_amplitudes_in in n_amplitudes_ins:
-            weights = nn.Parameter(torch.empty(n_var_amplitudes, n_amplitudes_in, n_amplitudes_out), requires_grad=True)
-            torch.nn.init.xavier_uniform_(weights)
-
-            self.weights.append(weights)
-
-
-    def get_weights(self, emb, idx):
-        amps = self.weights[idx]
-
-        if amps.shape[0]>1:
-            amps =  amps[emb['VariableEmbedder']]
-        else:
-            amps = amps.unsqueeze(dim=0)
-    
-        amps = amps.view(amps.shape[0],1,*amps.shape[1:])
-    
-        return amps
-    
-    def forward(self, xs, masks=None, emb=None):
-        
-        x_out = []
-        masks_out = []
-        for k, x in enumerate(xs):
-            x = x.unsqueeze(dim=-2)
-            w_x = self.get_weights(emb, k)
-            w_x = w_x.view(*w_x.shape[:3],*(1,)*(x.dim()-w_x.dim()),*w_x.shape[3:])
-            x_out.append(torch.matmul(x, w_x))
-
-            if masks[k] is not None:
-                masks_out.append(masks[k].view(*masks[k].shape,*(1,)*(x.dim()-masks[k].dim())))
-        
-        x = torch.concat(x_out, dim=-2).sum(dim=-2, keepdim=True)
-
-        if len(masks_out)>0:
-            norm = (torch.concat(masks_out, dim=-1)==False).sum(dim=-1, keepdim=True)
-            x = x/(norm + 1e-10)
-            x = x.masked_fill_(norm==0, 0.0)
-        else:
-            x = x/len(xs)
-
-        return x.squeeze(dim=-2), norm==0
-
+        return x, mask
 
 class Serial_NOBlock(nn.Module):
   
     def __init__(self,
-                 model_dim_in,
-                 model_dim_out,
-                 layer_settings: list,     
-                 n_head_channels = 16,
-                 multi_grid_attention: bool=False,
-                 p_dropout=0.,
-                 global_res=False,
-                 skip_mode='amp_sum'
+                 input_dim: int,
+                 model_dims_out: List[int],
+                 grid_layers: List[GridLayer],
+                 layer_settings: List[dict],
+                 input_level: int = 0,
+                 output_dim: int = None,
+                 rotate_coordinate_system: bool = True
                 ) -> None: 
       
         super().__init__()
 
-        self.multi_grid_attention = multi_grid_attention
-        self.skip = False if len(skip_mode)==0 else True
+        self.layers = nn.ModuleList()
 
-        self.Skip_Blocks = nn.ModuleList()
-        self.NO_Blocks = nn.ModuleList()
-        self.global_res=global_res
-
-        encoding_dims = []
-        decoding_dims = []
-        for n, layer_setting in enumerate(layer_settings):
-            encoding_dims.append(layer_setting['amplitude_dim_encode'])
-            decoding_dims.append(layer_setting['amplitude_dim_decode'])
-
-   
-        for n, layer_setting in enumerate(layer_settings):
+        current_level = input_level
+        for layer_idx, layer_setting in enumerate(layer_settings):
             
-            model_d_in = model_dim_in if n==0 else decoding_dims[n-1]
+            model_dim_in = input_dim if layer_idx==0 else model_dims_out[layer_idx-1]
+            model_dim_out = model_dims_out[layer_idx]
+
+            if 'NO' in layer_setting["type"]:
+                global_level_decode = check_get_missing_key(layer_setting, "global_level_decode")
+                global_level_no = check_get_missing_key(layer_setting, "global_level_no")
+                no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
+                no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
+
+                global_level_in = current_level
+                global_level_out = global_level_decode
+                current_level = global_level_out
+
+                no_layer = get_no_layer(no_layer_type,
+                                        grid_layers[str(global_level_in)],
+                                        grid_layers[str(global_level_no)],
+                                        grid_layers[str(global_level_out)],
+                                        precompute_encode=True,
+                                        precompute_decode=True if layer_idx < len(model_dims_out)-1 else False,
+                                        rotate_coordinate_system=rotate_coordinate_system,
+                                        layer_settings=no_layer_settings)
+                
+                if "mlp" in layer_setting["type"]:
+                    embedder = get_embedder_from_dict(layer_setting)
+                    layer = NOBlock(
+                                model_dim_in=model_dim_in,
+                                model_dim_out=model_dim_out,
+                                no_layer=no_layer,
+                                embedder=embedder,
+                                cross_no = 'cross_no' in layer_setting["type"]
+                                )
+
+            if "var_att" in layer_setting["type"]:
+                embedder_att = get_embedder_from_dict(layer_setting)
+                embedder_mlp = get_embedder_from_dict(layer_setting)
+
+                layer = VariableAttention(
+                    model_dim_in,
+                    model_dim_out,
+                    layer_setting["n_head_channels"],
+                    att_dim=layer_setting.get("att_dim",None),
+                    p_dropout=layer_setting.get("p_dropout",0),
+                    embedder = embedder_att,
+                    embedder_mlp= embedder_mlp
+                )
             
-            no_layer = get_no_layer(layer_setting, model_d_in, encoding_dims[n], encoding_dims[n], decoding_dims[n])
+            elif "spatial_att" in layer_setting["type"]:
+                
+                spatial_attention_configs = check_get_missing_key(layer_setting, "spatial_attention_configs")
+                spatial_attention_configs["embedder_names"] = layer_setting.get("embedder_names",[[],[]])
+                spatial_attention_configs["embed_confs"] = layer_setting.get("embed_confs",None)
+                spatial_attention_configs["embed_mode"] = layer_setting.get("embed_mode","sum")
+
+                layer = SpatialAttention(
+                    model_dim_in,
+                    model_dim_out,
+                    grid_layers[str(current_level)],
+                    layer_setting["n_head_channels"],
+                    p_dropout=layer_setting.get("p_dropout",0),
+                    spatial_attention_configs=spatial_attention_configs,
+                    rotate_coord_system=rotate_coordinate_system
+                )
+                
+            self.layers.append(layer)
             
-            is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
-            is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
-            is_decode = is_decode_encode + is_decode_decode
+        self.output_level = current_level
+        self.output_layer = nn.Linear(model_dims_out[-1], output_dim, bias=False) if output_dim is not None else nn.Identity()
 
-            embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
-            att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
-
-            #model_dim = int(torch.tensor(no_layer.n_params_no).prod())
-            x_dims = copy.deepcopy(no_layer.n_params_no)
-            x_dims.insert(-1,1)
-            self.NO_Blocks.append(NOBlock(
-                no_layer=no_layer,
-                x_dims=x_dims,
-                att_block_types=att_block_types,
-                is_decode=is_decode,
-                n_head_channels=n_head_channels,
-                att_dim=layer_setting["att_dim"],
-                embed_names=embed_names,
-                embed_confs=layer_setting['embed_confs'] ,
-                embed_mode=layer_setting['embed_mode'] ,
-                spatial_attention_config=layer_setting.get("spatial_attention_configs",{}),
-                p_dropout=p_dropout
-            ))
-
-            model_dim_out_layer = decoding_dims[n] if n < len(layer_settings)-1 and model_dim_out is not None else model_dim_out
-
-            if skip_mode=='amp_sum':
-                self.Skip_Blocks.append(SkipAdd_Layer([decoding_dims[n], model_d_in], model_dim_out_layer, n_var_amplitudes=layer_setting["n_var_amplitudes"]))
-            elif decoding_dims[n]!=model_dim_out_layer:
-                self.Skip_Blocks.append(VarLin_Layer(decoding_dims[n], model_dim_out_layer, layer_settings[-1]['n_var_amplitudes']))
-            else:
-                self.Skip_Blocks.append(nn.Identity())
-
-        self.model_dim_out = model_dim_out
 
     def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
         
-
-        for layer_idx, layer in enumerate(self.NO_Blocks):
-            x_res, mask_res = x, mask
-            x, mask = layer(x, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+        for layer_idx, layer in enumerate(self.layers):
             
-            mask = mask.view(*x.shape[:-1])
-            mask_res = mask_res.view(*x.shape[:-1])
-            x_res = x_res.view(*x.shape[:-1],x_res.shape[-1])
+            if isinstance(layer, NOBlock):
+                x, mask = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+            elif isinstance(layer, SpatialAttention):
+                x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+            else:
+                x = layer(x, mask=mask, emb=emb)
 
-            if self.skip:
-                x, mask = self.Skip_Blocks[layer_idx]([x, x_res], masks=[mask, mask_res], emb=emb)
+        x = self.output_layer(x)
 
-            elif not isinstance(self.Skip_Blocks[layer_idx], nn.Identity):
-                x = self.Skip_Blocks[layer_idx](x, emb=emb)
-                 
         return x, mask
-
-class Parallel_NOBlock(nn.Module):
+    
+class MGNO_Processing_Block(nn.Module):
   
     def __init__(self,
-                 model_dim_in,
-                 model_dim_out,
-                 layer_settings: list,     
-                 n_head_channels = 16,
-                 multi_grid_attention: bool=False,
-                 p_dropout=0.,
-                 global_res=False,
-                 skip_mode='amp_sum'
+                 input_levels: List[int],
+                 layer_settings_levels: List[List],
+                 input_dims: List[int],
+                 model_dims_out: List[List],
+                 grid_layers: List[GridLayer],
+                 rotate_coordinate_system: bool = True
                 ) -> None: 
       
         super().__init__()
 
-        self.multi_grid_attention = multi_grid_attention
-        self.skip = False if len(skip_mode)==0 else True
+        self.output_levels = input_levels
+        self.layers = nn.ModuleList()
 
-        self.NO_Blocks = nn.ModuleList()
-        self.global_res=global_res
-
-        encoding_dims = []
-        decoding_dims = []
-        for n, layer_setting in enumerate(layer_settings):
-            encoding_dims.append(layer_setting['amplitude_dim_encode'])
-            decoding_dims.append(layer_setting['amplitude_dim_decode'])
-
-       # x_dims_list = []
-        for n, layer_setting in enumerate(layer_settings):           
+        self.model_dims_out = []
+        for level_idx, layer_settings_level in enumerate(layer_settings_levels):
             
-            no_layer = get_no_layer(layer_setting, 
-                                    model_dim_in, 
-                                    encoding_dims[n], 
-                                    encoding_dims[n], 
-                                    decoding_dims[n])
-            
-            is_decode_encode = [False for _ in range(len(layer_setting['block_types_encode']))]
-            is_decode_decode = [True for _ in range(len(layer_setting['block_types_decode']))]
-            is_decode = is_decode_encode + is_decode_decode
+            input_dim = input_dims[level_idx]
+            current_level = input_levels[level_idx]
 
-            embed_names = layer_setting['embed_names_encode'] + layer_setting['embed_names_decode']
-            att_block_types = layer_setting['block_types_encode'] + layer_setting['block_types_decode']
+            level_layers_ = nn.ModuleList()
 
-            x_dims = copy.deepcopy(no_layer.n_params_no)
-            x_dims.insert(-1,1)
-          #  x_dims_list.append([x_dims[-1]])
-            self.NO_Blocks.append(NOBlock(
-                no_layer=no_layer,
-                x_dims=x_dims,
-                att_block_types=att_block_types,
-                is_decode=is_decode,
-                n_head_channels=n_head_channels,
-                att_dim=layer_setting["att_dim"],
-                embed_names=embed_names,
-                embed_confs=layer_setting['embed_confs'] ,
-                embed_mode=layer_setting['embed_mode'] ,
-                spatial_attention_config=layer_setting.get("spatial_attention_configs",{}),
-                p_dropout=p_dropout
-            ))
+            for layer_idx, layer_setting in enumerate(layer_settings_level):
+                model_dim_out = model_dims_out[level_idx][layer_idx]
 
-        model_dim_out = decoding_dims[n] if model_dim_out is None else model_dim_out
+                if 'NO' in layer_setting["type"]:
+                    no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
+                    no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
 
-        if global_res:
-            input_dims = decoding_dims + [model_dim_in]
-        else:
-            input_dims = decoding_dims
+                    layer_setting['nh_in_encode'] = True
+                    layer_setting['nh_in_decode'] = True
 
-        if skip_mode=='amp_sum':
-            self.Skip_Layer = SkipAdd_Layer(input_dims, model_dim_out, n_var_amplitudes=layer_setting["n_var_amplitudes"])
+                    no_layer = get_no_layer(no_layer_type,
+                                            grid_layers[str(current_level)],
+                                            grid_layers[str(current_level)],
+                                            grid_layers[str(current_level)],
+                                            precompute_encode=True,
+                                            precompute_decode=True,
+                                            rotate_coordinate_system=rotate_coordinate_system,
+                                            layer_settings=no_layer_settings)
+                    
+                    if "mlp" in layer_setting["type"]:
+                        embedder = get_embedder_from_dict(layer_setting)
+                        layer = NOBlock(
+                                    model_dim_in=input_dim,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    )
 
-        elif skip_mode=='var_att':
-            emb_dict = nn.ModuleDict()
-            emb: BaseEmbedder = EmbedderManager().get_embedder("VariableEmbedder", **layer_setting['embed_confs']["VariableEmbedder"])
-            emb_dict[emb.name] = emb     
-            embedder_seq = EmbedderSequential(emb_dict, mode=layer_setting['embed_mode'], spatial_dim_count = 1)
-            embedder_mlp = EmbedderSequential(emb_dict, mode=layer_setting['embed_mode'], spatial_dim_count = 1)
+                if "var_att" in layer_setting["type"]:
+                    embedder_att = get_embedder_from_dict(layer_setting)
+                    embedder_mlp = get_embedder_from_dict(layer_setting)
 
-            self.Skip_Layer = MGParamAttention([[input_dim] for input_dim in input_dims], 
-                                                [1, model_dim_out],
-                                                n_head_channels=n_head_channels,
-                                                cross_var=True,
-                                                p_dropout=p_dropout,
-                                                param_idx_att=None,
-                                                embedder=embedder_seq,
-                                                embedder_mlp=embedder_mlp
-                                                )
+                    layer = VariableAttention(
+                        input_dim,
+                        model_dim_out,
+                        layer_setting["n_head_channels"],
+                        att_dim=layer_setting.get("att_dim",None),
+                        p_dropout=layer_setting.get("p_dropout",0),
+                        embedder = embedder_att,
+                        embedder_mlp= embedder_mlp
+                    )
                 
+                elif "spatial_att" in layer_setting["type"]:
+                    
+                    spatial_attention_configs = check_get_missing_key(layer_setting, "spatial_attention_configs")
+                    spatial_attention_configs["embedder_names"] = layer_setting.get("embedder_names",[[],[]])
+                    spatial_attention_configs["embed_confs"] = layer_setting.get("embed_confs",None)
+                    spatial_attention_configs["embed_mode"] = layer_setting.get("embed_mode","sum")
+
+                    layer = SpatialAttention(
+                        input_dim,
+                        model_dim_out,
+                        grid_layers[str(current_level)],
+                        layer_setting["n_head_channels"],
+                        p_dropout=layer_setting.get("p_dropout",0),
+                        spatial_attention_configs=spatial_attention_configs,
+                        rotate_coord_system=rotate_coordinate_system
+                    )
+                
+                input_dim = model_dim_out
+
+                level_layers_.append(layer)
+
+            self.layers.append(level_layers_)
+            self.model_dims_out.append(model_dim_out)
+
+
+    def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
+        
+        for level_idx, layer_levels in enumerate(self.layers):
+            x = x_levels[level_idx]
+            mask = mask_levels[level_idx]
+
+            for layer_idx, layer in enumerate(layer_levels):
+
+                if isinstance(layer, NOBlock):
+                    x, mask = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+                elif isinstance(layer, SpatialAttention):
+                    x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+                else:
+                    x = layer(x, mask=mask, emb=emb)
+
+            x_levels[level_idx] = x
+            mask_levels[level_idx] = mask
+
+        return x_levels, mask_levels
+
+class LinearReductionLayer(nn.Module):
+  
+    def __init__(self, 
+                 model_dims_in: List,
+                 model_dim_out: int) -> None: 
+        super().__init__()
+
+        self.layer = nn.Linear(int(torch.tensor(model_dims_in).sum()), model_dim_out, bias=True)
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+        
+        x_out = self.layer(torch.concat(x_levels, dim=-1))
+
+        return x_out, mask_out
+
+class IdentityReductionLayer(nn.Module):
+  
+    def __init__(self) -> None: 
+        super().__init__()
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = mask_levels[0]
+        else:
+            mask_out = None
+
+        return x_levels[0], mask_out
     
-        self.model_dim_out = model_dim_out
-
-    def forward(self, x, coords_in=None, coords_out=None, indices_sample=None, mask=None, emb=None):
+class MGAttentionReductionLayer(nn.Module):
+  
+    def __init__(self, 
+                 global_level_in,
+                 model_dims_in: List,
+                 model_dim_out: int,
+                 embedder_grid: EmbedderSequential=None,
+                 embedder_mlp: EmbedderSequential=None,
+                 cross_var=False,
+                 p_dropout=0) -> None: 
         
-        #x_res, mask_res = x, mask
-        xs = []
-        masks = []
-        x_in, mask_in = x, mask
+        super().__init__()
+        
+        self.register_buffer('grid_levels', torch.tensor(global_level_in))
 
-        for layer_idx, layer in enumerate(self.NO_Blocks):
-            x, mask = layer(x_in, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask=mask_in, emb=emb)
+        model_dim_total = int(torch.tensor(model_dims_in).sum())
+        self.layer = nn.Linear(model_dim_total, model_dim_out, bias=True)
+
+        self.attention_ada_lns = nn.ModuleList()
+
+        model_dim_att_out = math.ceil(model_dim_total/len(model_dims_in))*len(model_dims_in)
+
+        self.lin_projections = nn.ModuleList()
+        for model_dim_in in model_dims_in:
+            self.lin_projections.append(nn.Linear(model_dim_in, model_dim_att_out, bias=False))
+            self.attention_ada_lns.append(AdaptiveLayerNorm([model_dim_att_out], model_dim_att_out, embedder=embedder_grid))
+
+
+        self.attention_layer = ChannelVariableAttention(model_dim_att_out, 
+                                                        1, 
+                                                        model_dim_att_out//len(model_dims_in), 
+                                                        model_dim_out=model_dim_att_out//len(model_dims_in),
+                                                        with_res=False)
+
+        self.lin_skip_att = nn.Linear(model_dim_total, model_dim_att_out)
+        self.lin_skip_mlp = nn.Linear(model_dim_att_out, model_dim_out)
+
+        self.attention_gamma = nn.Parameter(torch.ones(model_dim_att_out)*1e-6, requires_grad=True)
+        self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+
+        self.attention_ada_ln_mlp = AdaptiveLayerNorm([model_dim_att_out], model_dim_att_out, embedder=embedder_mlp)
+        self.attention_mlp = ResLayer(model_dim_att_out, model_dim_out=model_dim_out, with_res=False, p_dropout=p_dropout)
+        self.cross_var = cross_var
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+        
+        
+        x_skip = self.lin_skip_att(torch.concat(x_levels, dim=-1))
+
+       # v = []
+        for level_idx, x in enumerate(x_levels):
+            emb['GridEmbedder'] = self.grid_levels[level_idx]
+            x = self.lin_projections[level_idx](x)
+      #      v.append(x)
+            x_levels[level_idx] = self.attention_ada_lns[level_idx](x, emb=emb)
+
+       # v = torch.stack(v, dim=-2)
+        x = torch.stack(x_levels, dim=-2)
+        if mask_levels is not None:
+            mask = torch.stack(mask_levels, dim=-1)
+        else:
+            mask = None
+
+        b, n, nv, g, c = x.shape
+        if self.cross_var:
+            x = einops.rearrange(x, "b n v g c -> b n (v g) c")
+       #     v = einops.rearrange(v, "b n v g c -> b n (v g) c")
+            mask = einops.rearrange(mask, "b n v g -> b n (v g)") if mask is not None else mask
+        else:
+            x = einops.rearrange(x, "b n v g c -> b (n v) g c")
+          #  v = einops.rearrange(v, "b n v g c -> b (n v) g c")
+            mask = einops.rearrange(mask, "b n v g -> b (n v) g") if mask is not None else mask
+
+        x, _ = self.attention_layer(x, mask=mask)
+        
+        if self.cross_var:
+            x = einops.rearrange(x, "b n (v g) c -> b n v g c", v=nv, g=g)
+        else:
+            x = einops.rearrange(x, "b (n v) g c -> b n v g c", n=n, v=nv)
+
+        x = einops.rearrange(x, "b n v g c -> b n v (g c)")
+
+        x = x_skip + self.attention_gamma*x
+
+        x_skip = self.lin_skip_mlp(x)
+
+        x = self.attention_ada_ln_mlp(x,emb=emb)
+
+        x = self.attention_mlp(x)
+
+        x = x_skip + self.attention_gamma_mlp*x
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+
+        return x, mask_out
+
+class MGNO_EncoderDecoder_Block(nn.Module):
+  
+    def __init__(self,
+                 input_levels: List[int],
+                 input_dims: List[int],
+                 global_levels_decode: List[int],
+                 global_levels_no: List[int],
+                 model_dims_out: List[int],
+                 grid_layers: List[GridLayer],
+                 layer_settings: dict,
+                 rotate_coordinate_system: bool = True,
+                 rule = 'fc', # ">" "<"
+                 mg_reduction = 'linear',
+                 mg_reduction_embed_confs: Dict = None,
+                 mg_reduction_embed_names: List = None,
+                 mg_reduction_embed_names_mlp: List = None,
+                 mg_reduction_embed_mode: str = 'sum',
+                 p_dropout=0
+                ) -> None: 
+      
+        super().__init__()
+
+        self.output_levels = global_levels_decode
+        self.model_dims_out = model_dims_out
+
+        self.layers = nn.ModuleList()
+        self.reduction_layers = nn.ModuleList()
+        self.module_indices = []
+        self.output_indices = []
+        self.layer_indices = []
+
+        layer_index = 0
+        for output_idx, output_level in enumerate(global_levels_decode):
+
+            input_indices = []
+            layer_indices = []
+            mg_input_dims = []
+            mg_input_levels = []
+            for input_idx, input_level in enumerate(input_levels):
+
+                level_diff = output_level - input_level
+
+                if rule == "<" and level_diff>0:
+                   # self.layers.append(nn.Identity())
+                    continue
+
+                elif ">" in rule and level_diff<0:
+                    continue
+
+                if rule == ">max" and input_level!=max(input_levels) and level_diff!=0:
+                    continue
+                
+                input_indices.append(input_idx)
+
+                if list(layer_settings.keys())[0].isnumeric():
+                    layer_setting = layer_settings[str(level_diff)]
+                else:
+                    layer_setting = layer_settings
+                
+                model_dim_in = input_dims[input_idx]
+                model_dim_out = model_dims_out[output_idx]
+                mg_input_dims.append(model_dim_out)
+                mg_input_levels.append(input_level)
+
+                global_level_no = global_levels_no[output_idx]
+
+                layer_type = check_get_missing_key(layer_setting, "type")
+
+                if 'NO' in layer_type:
+
+                    no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
+                    no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
+
+                    no_layer = get_no_layer(no_layer_type,
+                                            grid_layers[str(input_level)],
+                                            grid_layers[str(global_level_no)],
+                                            grid_layers[str(output_level)],
+                                            precompute_encode=True,
+                                            precompute_decode=True,
+                                            rotate_coordinate_system=rotate_coordinate_system,
+                                            layer_settings=no_layer_settings)
+                
+                    if "mlp" in layer_type:
+                        embedder = get_embedder_from_dict(layer_setting)
+                        layer = NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    cross_no='cross_no' in layer_type,
+                                    embedder=embedder,
+                                    p_dropout=p_dropout
+                                    )
+                elif 'linear' in layer_type:
+                    layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
+                    
+                self.layers.append(layer)
+                layer_indices.append(layer_index)
+                layer_index += 1
+
+            if len(mg_input_dims)>1:
+                if mg_reduction == 'linear':
+                    reduction_layer = LinearReductionLayer(mg_input_dims, model_dim_out)
+
+                elif mg_reduction == 'MGAttention':
+                    if mg_reduction_embed_names is not None:
+                        embedder = get_embedder(embed_names=mg_reduction_embed_names,
+                                                embed_confs=mg_reduction_embed_confs,
+                                                embed_mode=mg_reduction_embed_mode)
+                        
+                    else:
+                        embedder = None
+                    if mg_reduction_embed_names_mlp is not None:
+                        embedder_mlp = get_embedder(embed_names=mg_reduction_embed_names_mlp,
+                                                embed_confs=mg_reduction_embed_confs,
+                                                embed_mode=mg_reduction_embed_mode)
+                    else:
+                        embedder_mlp = None
+                        
+                    reduction_layer = MGAttentionReductionLayer(mg_input_levels,
+                                                                mg_input_dims, 
+                                                                model_dim_out,
+                                                                embedder_grid=embedder,
+                                                                embedder_mlp=embedder_mlp,
+                                                                p_dropout=p_dropout)
+            else:
+                reduction_layer = IdentityReductionLayer()
             
-            mask = mask.view(*x.shape[:-1])
-            xs.append(x)
-            masks.append(mask)
+            self.reduction_layers.append(reduction_layer)
 
-        if self.global_res:
-            mask_in = mask_in.view(*x.shape[:-1])
-            x_in = x_in.view(*x.shape[:-1],x_in.shape[-1])
-            xs.append(x_in)
-            masks.append(mask_in)
+            self.layer_indices.append(layer_indices)
+            self.output_indices.append(input_indices)
+            
 
+    def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
+
+        x_levels_out = []
+        mask_levels_out = []
+
+        for output_index, input_indices in enumerate(self.output_indices):
+
+            outputs_ = []
+            masks_ = []
+
+            for layer_index, input_index in enumerate(input_indices):
+                x = x_levels[input_index]
+                mask = mask_levels[input_index]
+                
+                layer = self.layers[self.layer_indices[output_index][layer_index]]
+                
+                if isinstance(layer, nn.Identity) or isinstance(layer, nn.Linear):
+                    x_out = layer(x)
+                    mask_out = mask
+                else:
+                    x_out, mask_out = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+
+                if mask_out is not None:
+                    mask_out = mask_out.view(x_out.shape[:3])
+
+                outputs_.append(x_out)
+                masks_.append(mask_out)
+
+            x_out, mask_out = self.reduction_layers[output_index](outputs_, mask_levels=masks_, emb=emb)
+
+            x_levels_out.append(x_out)
+            mask_levels_out.append(mask_out)
+
+        return x_levels_out, mask_levels_out
+
+
+def get_embedder_from_dict(dict_: dict):
+    if "embed_names" in dict_.keys() and "embed_confs" in dict_.keys():
+        embed_mode = dict_.get("mode","sum")
+        return get_embedder(dict_["embed_names"],
+                            dict_["embed_confs"],
+                            embed_mode)
+    else:
+        return None
+
+def get_embedder(embed_names:list, 
+                 embed_confs:list, 
+                 embed_mode: list):
+    
+    emb_dict = nn.ModuleDict()
+    for embed_name in embed_names:
+        emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name])
+        emb_dict[emb.name] = emb     
         
-        x, mask = self.Skip_Layer(xs, masks=masks, emb=emb)
+    embedder = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
 
-                 
-        return x, mask
-
-
+    return embedder
 class SpatialAttention(nn.Module):
   
     def __init__(self,
-                 x_dims, 
+                 model_dim_in,
+                 model_dim_out, 
                  grid_layer,
                  n_head_channels,
-                 spatial_attention_configs = None,
                  p_dropout=0.,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 spatial_attention_configs = None
                 ) -> None: 
       
         super().__init__()
 
-        self.reshaper = ReshapeAtt(x_dims, None, cross_var=True)
-
         self.grid_attention_layer = GridAttention(
             grid_layer,
-            int(torch.tensor(x_dims).prod()),
-            int(torch.tensor(x_dims).prod()),
+            model_dim_in,
+            model_dim_out,
             n_head_channels=n_head_channels,
             spatial_attention_configs=spatial_attention_configs,
             rotate_coord_system=rotate_coord_system
@@ -647,7 +768,6 @@ class SpatialAttention(nn.Module):
        
     def forward(self, x, indices_sample=None, mask=None, emb=None):
         nv = x.shape[2]
-        x, mask = self.reshaper.shape_to_att(x, mask=mask)
 
         # insert time dimension
         x = x.unsqueeze(dim=1)
@@ -655,264 +775,66 @@ class SpatialAttention(nn.Module):
 
         x = self.grid_attention_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
         x = x.squeeze(dim=1)
-        x = self.reshaper.shape_to_x(x, nv_dim=nv)
         return x
 
 
-class ParamAttention(nn.Module):
+
+class VariableAttention(nn.Module):
   
     def __init__(self,
-                 model_dims, 
+                 model_dim_in, 
+                 model_dim_out,
                  n_head_channels,
-                 cross_var=False, 
                  att_dim=None,
                  p_dropout = 0,
-                 param_idx_att = None,
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None,
-                 v_proj=True
+                 embedder: EmbedderSequential=None,
+                 embedder_mlp: EmbedderSequential=None
                 ) -> None: 
       
         super().__init__()
 
-        model_dim_total = torch.tensor(model_dims).prod()
-        model_dim_param = model_dim_total/float(model_dims[param_idx_att]) if param_idx_att is not None else model_dim_total
-        model_dim_param = int(model_dim_param)
+        if model_dim_in != model_dim_out:
+            self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out)
+        else:
+            self.lin_skip_outer = nn.Identity()
 
-        self.reshaper = ReshapeAtt(model_dims, param_idx_att, cross_var=cross_var)
+        self.attention_ada_ln = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+        self.attention_ada_ln_mlp = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder_mlp)
 
-        self.ada_ln = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder)
-        self.ada_ln_mlp = AdaptiveLayerNorm(model_dims, model_dim_total, embedder=embedder_mlp)
+        att_dim = att_dim if att_dim is not None else model_dim_in
+        self.attention_layer = ChannelVariableAttention(model_dim_in, 
+                                                        1, 
+                                                        n_head_channels, 
+                                                        att_dim=att_dim, 
+                                                        with_res=False)
 
-        att_dim = att_dim if att_dim is not None else model_dim_param
+        self.attention_gamma = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
+        self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_in)*1e-6, requires_grad=True)
 
-        self.attention_layer = ChannelVariableAttention(model_dim_param, 1, n_head_channels, att_dim=att_dim, with_res=False, v_proj=v_proj)
+        self.attention_res_layer = ResLayer(model_dim_out, with_res=False, p_dropout=p_dropout)
 
-        self.gamma = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_param)*1e-6, requires_grad=True)
-
-        self.res_layer = ResLayer(model_dim_param, with_res=False, p_dropout=p_dropout)
-
-        self.param_idx_att = param_idx_att
-        self.cross_var = cross_var
-        self.v_proj = v_proj
-
-        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
+        self.attention_dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
 
 
     def forward(self, x, mask=None, emb=None):
         nv = x.shape[2]
 
-        x_res, mask = self.reshaper.shape_to_att(x, mask=mask)
+        x_res = self.lin_skip_outer(x)
 
-        x = self.ada_ln(x, emb=emb)
+        x = self.attention_ada_ln(x, emb=emb)
 
-        x, _ = self.reshaper.shape_to_att(x)
+        x, _ = self.attention_layer(x, mask=mask)
+
+        x = self.attention_dropout(x)
         
-        v = x if self.v_proj else x_res
-
-        x, mask_update = self.attention_layer(x, v=v, mask=mask)
-
-        x = self.dropout(x)
-        
-        residual = x_res + self.gamma*x
-
-        x = torch.where(mask.unsqueeze(-1), x, residual)
+        x = x_res + self.attention_gamma*x
 
         x_res = x
 
-        x = self.reshaper.shape_to_x(x, nv)  
-        x = self.ada_ln_mlp(x, emb=emb)
-        x, _ = self.reshaper.shape_to_att(x)
+        x = self.attention_ada_ln_mlp(x, emb=emb)
 
-        x = self.res_layer(x)
+        x = self.attention_res_layer(x)
 
-        x = x_res + self.gamma_mlp*x
-
-        x = self.reshaper.shape_to_x(x, nv)
-
-        if mask_update is not None:
-            mask_update = mask_update.view(*x.shape[:3],-1)
-            mask_update = mask_update.sum(dim=-1).bool()
-            
-
-        return x, mask_update
-
-class MGParamAttention(nn.Module):
-  
-    def __init__(self,
-                 x_dims: list, 
-                 x_dim_out,
-                 n_head_channels,
-                 cross_var=False, 
-                 att_dim=None,
-                 p_dropout = 0,
-                 param_idx_att = None,
-                 embedder: BaseEmbedder=None,
-                 embedder_mlp: BaseEmbedder=None
-                ) -> None: 
-      
-        super().__init__()
-
-        self.reshaper = []
-        self.ada_lns = nn.ModuleList()
-
-        model_dim_total_out = int(torch.tensor(x_dim_out).prod())
-        self.x_dim_out = x_dim_out
-
-        model_dim = 0
-        res_dim = 0
-        for x_dim in x_dims:
-
-            model_dim_total = torch.tensor(x_dim).prod()
-            model_dim_param = model_dim_total
-            model_dim += int(model_dim_param)
-            res_dim += x_dim[-1]
-
-            self.reshaper.append(ReshapeAtt(x_dim, param_idx_att, cross_var=cross_var))
-
-            self.ada_lns.append(AdaptiveLayerNorm(x_dim, model_dim_total, embedder=embedder))
-
-        self.reshaper_out = ReshapeAtt(x_dim_out, param_idx_att, cross_var=cross_var)
-        self.ada_ln_mlp = AdaptiveLayerNorm(x_dim_out, model_dim_total_out, embedder=embedder_mlp)
-
-        #self.lin_res_layer = nn.Linear(model_dim, model_dim_total_out, bias=False)
-        self.lin_res_layer = VarLin_Layer(res_dim, x_dim_out[-1])
-
-        self.attention_layer = ChannelVariableAttention(model_dim, 1, n_head_channels, att_dim=model_dim, model_dim_out=model_dim_total_out, with_res=False)
-
-        self.gamma = nn.Parameter(torch.ones(model_dim_total_out)*1e-6, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(model_dim_total_out)*1e-6, requires_grad=True)
-
-        self.res_layer = ResLayer(model_dim_total_out, with_res=False, p_dropout=p_dropout)
-
-        self.param_idx_att = param_idx_att
-        self.cross_var = cross_var
-
-        self.dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
-
-
-    def forward(self, xs, masks=None, emb=None):
-        
-        x_res_ = []
-        x_ = []
-        for k, x in enumerate(xs):
-            x_res_.append(x)
-
-            x = self.ada_lns[k](x, emb=emb)
-            x = self.reshaper[k].shape_to_att(x)[0]
-            x_.append(x)
-        
-        x_res = self.lin_res_layer(torch.concat(x_res_, dim=-1), emb=emb)
-        x_res, _ = self.reshaper[k].shape_to_att(x_res)
-
-        x = torch.concat(x_, dim=-1)
-
-        if masks[0] is not None:
-            mask = torch.stack(masks, dim=-1).sum(dim=-1).bool()
-
-        x, mask_update = self.attention_layer(x, mask=mask)
-
-        x = self.dropout(x)
-        
-        x = x_res + self.gamma*x
-
-        #x = torch.where(mask.unsqueeze(-1), x, residual)
-
-        x_res = x
-
-        x = self.reshaper_out.shape_to_x(x, x.shape[-2])  
-        x = self.ada_ln_mlp(x, emb=emb)
-        x, _ = self.reshaper_out.shape_to_att(x)
-
-        x = self.res_layer(x)
-
-        x = x_res + self.gamma_mlp*x
-
-        x = self.reshaper_out.shape_to_x(x, x.shape[-2])
-
-        if mask_update is not None:
-            mask_update = mask_update.view(*x.shape[:3],-1)
-            mask_update = mask_update.sum(dim=-1).bool()
-            
-
-        return x, mask_update
-    
-class ReshapeAtt:
-    def __init__(self, shape, param_att, cross_var=True):
-        self.shape = shape
-        self.param_att = param_att
-        self.cross_var = cross_var
-
-    def shape_to_att(self, x, mask=None):
-        b,n,nv = x.shape[:3]
-
-        if not self.cross_var:
-            x = x.reshape(b,n*nv,1,*self.shape)
-
-        b,n2,nv2 = x.shape[:3]
-
-        if self.param_att == 0:
-            x = x.reshape(b,n2,nv2*self.shape[0],-1)
-
-        elif self.param_att==1:
-            x = x.transpose(3,4).contiguous()
-            x = x.view(b,n2,nv2*self.shape[1],-1)
-
-        elif self.param_att==2:
-            x = x.transpose(3,5).contiguous()
-            x = x.view(b,n2,nv2*self.shape[2],-1)
-        
-        else:
-            x = x.reshape(b,n2,nv2,-1)
-
-        if mask is not None:
-            mask = mask.view(b,n2,nv2,1).repeat_interleave(x.shape[2]//nv2, dim=-1)
-            mask = mask.view(b,n2,-1)
-
-        return x, mask
-    
-    def shape_to_x(self, x, nv_dim):
-        b,n = x.shape[:2]
-
-        if self.param_att == 0 or self.param_att is None:
-            x = x.view(b,n,-1,*self.shape)
-
-        elif self.param_att == 1:
-            shape = (self.shape[1], self.shape[0], self.shape[2], self.shape[3], self.shape[4])
-            x = x.view(b,n,-1,*shape).transpose(3,4)
-
-        elif self.param_att == 2:
-            shape = (self.shape[2], self.shape[1], self.shape[0], self.shape[3], self.shape[4])
-            x = x.view(b,n,-1,*shape).transpose(3,5)
-        
-        x = x.view(b,-1,nv_dim,*self.shape)
+        x = x_res + self.attention_gamma_mlp*x
 
         return x
-
-def get_no_layer(layer_setting, dim_in, dim_out, inv_dim_in, inv_dim_out):
-    no_layer = polNormal_NoLayer(
-            layer_setting['grid_layer_in'],
-            layer_setting['grid_layer_no'],
-            n_amplitudes_in=dim_in,
-            n_amplitudes_out=dim_out,
-            n_amplitdues_inv_in = inv_dim_in,
-            n_amplitudes_inv_out = inv_dim_out,
-            n_phi=layer_setting["n_params"][0],
-            n_dist=layer_setting["n_params"][1],
-            n_sigma=layer_setting["n_params"][2],
-            avg_phi=layer_setting["avg_params"][0],
-            avg_dist=layer_setting["avg_params"][1],
-            avg_sigma=layer_setting["avg_params"][2],
-            dist_learnable=layer_setting["global_params_learnable"][0],
-            sigma_learnable=layer_setting["global_params_learnable"][1],
-            amplitudes_learnable=layer_setting["global_params_learnable"][2],
-            nh_projection=layer_setting["nh_transformation"], 
-            nh_backprojection=layer_setting["nh_inverse_transformation"],
-            precompute_coordinates=layer_setting["precompute_coordinates"],
-            rotate_coord_system=layer_setting["rotate_coordinate_system"],
-            pretrained_weights=layer_setting.get("pretrained_weights",None),
-            n_var_amplitudes=layer_setting["n_var_amplitudes"],
-            with_res=layer_setting.get("with_res", False)
-        )
-    return no_layer

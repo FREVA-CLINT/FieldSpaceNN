@@ -81,7 +81,6 @@ class Quantization(nn.Module):
         elif block_type == "grid_trans":
             grid_layer = kwargs.pop("grid_layer")
             rotate_coord_system = kwargs.pop("rotate_coord_system")
-            n_params = kwargs.pop("n_params")
 
             spatial_attention_configs = kwargs
             spatial_attention_configs["embedder_names"] = embedder_names
@@ -89,8 +88,10 @@ class Quantization(nn.Module):
             spatial_attention_configs["embed_mode"] = embed_mode
             spatial_attention_configs["blocks"] = blocks
 
-            self.quant = GridQuantizationEnc(n_params, grid_layer, in_ch, latent_ch[-1], n_head_channels.copy(), spatial_attention_configs.copy(), rotate_coord_system, (distribution == "gaussian"))
-            self.post_quant = GridQuantizationDec(n_params[:len(self.quant.layers)][::-1], grid_layer, in_ch, latent_ch[-1], n_head_channels[::-1].copy(), spatial_attention_configs.copy(), rotate_coord_system)
+            enc_latent_channels = latent_ch[:-1] + [latent_ch[-1] * (2 if distribution == "gaussian" else 1)]
+
+            self.quant = GridAttention(grid_layer, in_ch, enc_latent_channels, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
+            self.post_quant = GridAttention(grid_layer, latent_ch[-1], latent_ch[::-1][1:] + [in_ch], n_head_channels[::-1], spatial_attention_configs.copy(), rotate_coord_system)
 
     def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
                  cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
@@ -130,118 +131,3 @@ class Quantization(nn.Module):
             return DiagonalGaussianDistribution(x)
         elif self.distribution == "dirac":
             return DiracDistribution(x)
-
-
-class GridQuantizationEnc(nn.Module):
-    def __init__(
-            self,
-            n_params,
-            grid_layer,
-            model_channels: int,
-            latent_ch: int,
-            n_head_channels: List[int],
-            spatial_attention_configs,
-            rotate_coord_system,
-            log_var
-    ):
-        super().__init__()
-        self.layers = torch.nn.ModuleList()
-        self.log_var = log_var
-        for n_param in n_params:
-            in_ch = n_param[0] * n_param[1]
-            model_channels = model_channels // in_ch
-            layer = GridQuantLayer(in_ch*model_channels, grid_layer, model_channels, in_ch, 1, n_head_channels.pop(0), spatial_attention_configs, rotate_coord_system)
-            if model_channels >= latent_ch:
-                self.layers.append(layer)
-        if log_var:
-            self.log_var_layer = GridAttention(grid_layer, latent_ch, latent_ch, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
-
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
-        for layer in self.layers:
-            x = layer(x, emb, mask, cond, *args, **kwargs)
-
-        if self.log_var:
-            log_var = self.log_var_layer(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
-            x = torch.cat([x, log_var], dim=-1)
-        return x
-
-
-class GridQuantizationDec(nn.Module):
-    def __init__(
-            self,
-            n_params,
-            grid_layer,
-            model_channels: int,
-            latent_ch: int,
-            n_head_channels: List[int],
-            spatial_attention_configs,
-            rotate_coord_system
-    ):
-        super().__init__()
-        self.layers = torch.nn.ModuleList()
-        for n_param in n_params:
-            out_ch = n_param[0] * n_param[1]
-            latent_ch = latent_ch * out_ch
-            layer = GridQuantLayer(latent_ch // out_ch, grid_layer, latent_ch, 1, out_ch, n_head_channels.pop(0), spatial_attention_configs, rotate_coord_system)
-            if model_channels >= latent_ch:
-                self.layers.append(layer)
-
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
-        for layer in self.layers:
-            x = layer(x, emb, mask, cond, *args, **kwargs)
-        return x
-
-
-class GridQuantLayer(nn.Module):
-    def __init__(
-            self,
-            n_param,
-            grid_layer,
-            model_channels: int,
-            in_ch: int,
-            out_ch: int,
-            n_head_channels: int,
-            spatial_attention_configs,
-            rotate_coord_system
-    ):
-        super().__init__()
-        self.in_ch = in_ch
-        self.out_ch = out_ch
-
-        emb_dict = nn.ModuleDict()
-        emb: BaseEmbedder = EmbedderManager().get_embedder("VariableEmbedder", **spatial_attention_configs["embed_confs"]["VariableEmbedder"])
-        emb_dict[emb.name] = emb
-        self.embedder = EmbedderSequential(emb_dict, mode=spatial_attention_configs["embed_mode"], spatial_dim_count = 1)
-        self.embedding_layer = torch.nn.Linear(self.embedder.get_out_channels, 2 * n_param)
-        self.layer_norm = torch.nn.LayerNorm(n_param)
-
-        self.linear_layer = nn.Linear(in_ch, out_ch)
-        self.transformer = GridAttention(grid_layer, model_channels, model_channels, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
-        self.gamma = torch.nn.Parameter(torch.ones(out_ch) * 1E-6)
-
-    def forward(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                 cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
-        b, t, g, v, c = x.shape
-
-        if self.in_ch > self.out_ch:
-            x_res = x.view(b, t, g, v, -1, self.in_ch).mean(-1, keepdim=True)
-        else:
-            x_res = x.view(b, t, g, v, -1, self.in_ch).repeat(1, 1, 1, 1, 1, self.out_ch // self.in_ch)
-
-        if self.embedder:
-            # Apply the embedding transformation (scale and shift)
-            scale, shift = self.embedding_layer(self.embedder(emb)).chunk(2, dim=-1)
-            x = self.layer_norm(x) * (scale + 1) + shift
-        else:
-            x = self.layer_norm(x)
-
-        x = x.view(b, t, g, v, -1, self.in_ch)
-
-        x = self.linear_layer(x)
-        x = x_res + self.gamma * x
-        x = x.view(b, t, g, v, -1)
-
-        return self.transformer(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
-
