@@ -19,6 +19,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True,
                  p_dropout=0.,
+                 mask_as_embedding = False
                  ) -> None: 
         
         self.input_dim = input_dim
@@ -34,7 +35,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                      ,torch.tensor(0).view(-1))).unique()
         
         super().__init__(mgrids, 
-                         global_levels)
+                         global_levels,
+                         mask_as_embedding=mask_as_embedding)
         
        
         self.Blocks = nn.ModuleList()

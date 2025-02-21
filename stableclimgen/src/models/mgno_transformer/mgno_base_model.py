@@ -9,7 +9,8 @@ from ...modules.icon_grids.grid_layer import GridLayer
 class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
-                 global_levels: List[int]
+                 global_levels: List[int],
+                 mask_as_embedding: False
                  ) -> None: 
         
                 
@@ -19,6 +20,7 @@ class MGNO_base_model(nn.Module):
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
+        self.mask_as_embedding = mask_as_embedding
         # Create grid layers for each unique global level
         self.grid_layers = nn.ModuleDict()
         for global_level in global_levels:

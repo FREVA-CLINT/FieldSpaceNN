@@ -46,9 +46,9 @@ class NOBlock(nn.Module):
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
             nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-            nn.Linear(model_dim_out, model_dim_out, bias=False)
+            nn.Linear(model_dim_out, model_dim_out)
         )
 
         self.activation = nn.SiLU()
@@ -100,28 +100,32 @@ class PreActivation_NOBlock(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 level_data_in,
                  no_layer: NoLayer,
+                 embedder: EmbedderSequential=None,
                  p_dropout=0.,
+                 cross_no = False
                 ) -> None: 
       
         super().__init__()
 
-        self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+        if cross_no:
+            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        else:
+            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
-        self.level_diff = (self.no_conv.global_level_out - level_data_in)
+        self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
-        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=False)
-        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=False)
+        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
+        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
 
-        self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_out)
+        self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+        self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder)
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
-            AdaptiveLayerNorm([model_dim_out], model_dim_out),
-            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
             nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-            nn.Linear(model_dim_out, model_dim_out, bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
         )
 
         self.activation = nn.SiLU()
@@ -133,11 +137,13 @@ class PreActivation_NOBlock(nn.Module):
         
         x_res = get_residual(x, self.level_diff, mask=mask)
         
-        x = self.layer_norm1(x)
+        x = self.layer_norm1(x, emb=emb)
 
         x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = x_conv + self.lin_skip_inner(x_res)
+
+        x = self.layer_norm2(x, emb=emb)
 
         x = self.mlp_layer(x) + self.lin_skip_outer(x_res)
 
@@ -216,7 +222,8 @@ class Serial_NOBlock(nn.Module):
                  layer_settings: List[dict],
                  input_level: int = 0,
                  output_dim: int = None,
-                 rotate_coordinate_system: bool = True
+                 rotate_coordinate_system: bool = True,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
@@ -250,13 +257,24 @@ class Serial_NOBlock(nn.Module):
                 
                 if "mlp" in layer_setting["type"]:
                     embedder = get_embedder_from_dict(layer_setting)
-                    layer = NOBlock(
-                                model_dim_in=model_dim_in,
-                                model_dim_out=model_dim_out,
-                                no_layer=no_layer,
-                                embedder=embedder,
-                                cross_no = 'cross_no' in layer_setting["type"]
-                                )
+
+                    if 'pre' in layer_setting["type"]:
+                        layer = PreActivation_NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    )
+                    else:
+                        layer = NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    )
+                
 
             if "var_att" in layer_setting["type"]:
                 embedder_att = get_embedder_from_dict(layer_setting)
@@ -318,7 +336,8 @@ class MGNO_Processing_Block(nn.Module):
                  input_dims: List[int],
                  model_dims_out: List[List],
                  grid_layers: List[GridLayer],
-                 rotate_coordinate_system: bool = True
+                 rotate_coordinate_system: bool = True,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
@@ -355,13 +374,22 @@ class MGNO_Processing_Block(nn.Module):
                     
                     if "mlp" in layer_setting["type"]:
                         embedder = get_embedder_from_dict(layer_setting)
-                        layer = NOBlock(
-                                    model_dim_in=input_dim,
-                                    model_dim_out=model_dim_out,
-                                    no_layer=no_layer,
-                                    embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"]
-                                    )
+                        if 'pre' in layer_setting["type"]:
+                            layer = PreActivation_NOBlock(
+                                        model_dim_in=input_dim,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
+                        else:
+                            layer = NOBlock(
+                                        model_dim_in=input_dim,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
 
                 if "var_att" in layer_setting["type"]:
                     embedder_att = get_embedder_from_dict(layer_setting)
@@ -800,11 +828,13 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  mg_reduction_embed_mode: str = 'sum',
                  mg_att_dim = 128,
                  mg_n_head_channels = 16,
-                 p_dropout=0
+                 p_dropout=0,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
 
@@ -867,14 +897,22 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 
                     if "mlp" in layer_type:
                         embedder = get_embedder_from_dict(layer_setting)
-                        layer = NOBlock(
-                                    model_dim_in=model_dim_in,
-                                    model_dim_out=model_dim_out,
-                                    no_layer=no_layer,
-                                    cross_no='cross_no' in layer_type,
-                                    embedder=embedder,
-                                    p_dropout=p_dropout
-                                    )
+                        if 'pre' in layer_setting["type"]:
+                            layer = PreActivation_NOBlock(
+                                        model_dim_in=model_dim_in,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
+                        else:
+                            layer = NOBlock(
+                                        model_dim_in=model_dim_in,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
                 elif 'linear' in layer_type:
                     layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
                     
