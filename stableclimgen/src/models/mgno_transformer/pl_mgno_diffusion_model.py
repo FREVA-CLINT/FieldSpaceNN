@@ -35,7 +35,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
 
-        l_dict, _ = self(source, diffusion_steps, coords_input, coords_output, indices, mask, emb)
+        l_dict, _ = self(source, diffusion_steps, coords_input, coords_output, indices, mask.unsqueeze(-1), emb)
 
         loss = (l_dict["loss"] * weights).mean()
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)

@@ -26,52 +26,140 @@ model:
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
       block_type: 'Serial'
-      model_dims_out: [16,16,16,16]
+      model_dims_out: [ 16,16,16,16,16,16,16,16,16,16,16,16 ]
       layer_settings:
+        - type: "NO_mlp"
+          global_level_no: 5
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
         - type: "NO_mlp"
           global_level_no: 4
           global_level_decode: 0
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
           no_layer_settings:
-            n_params: [4,2,1]
+            n_params: [ 4,2,1 ]
             nh_in_encode: false
             nh_in_decode: true
-            global_params_learnable: [false, false]
+            global_params_learnable: [ false, false ]
         - type: "NO_mlp"
           global_level_no: 3
           global_level_decode: 0
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
           no_layer_settings:
-            n_params: [4,2,1]
+            n_params: [ 4,2,1 ]
             nh_in_encode: false
             nh_in_decode: true
-            global_params_learnable: [false, false]
+            global_params_learnable: [ false, false ]
         - type: "NO_mlp"
           global_level_no: 2
           global_level_decode: 0
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
           no_layer_settings:
-            n_params: [4,2,1]
+            n_params: [ 4,2,1 ]
             nh_in_encode: false
             nh_in_decode: true
-            global_params_learnable: [false, false]
+            global_params_learnable: [ false, false ]
         - type: "NO_mlp"
           global_level_no: 1
           global_level_decode: 0
           no_layer_type: 'polNormal'
           embed_confs: ${embedding}
-          embed_names: ["VariableEmbedder"]
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
           no_layer_settings:
-            n_params: [4,2,1]
+            n_params: [ 4,2,1 ]
             nh_in_encode: false
             nh_in_decode: true
-            global_params_learnable: [false, false]
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 1
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: true
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 5
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 4
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 3
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 2
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 1
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: false
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
+        - type: "NO_mlp"
+          global_level_no: 1
+          global_level_decode: 0
+          no_layer_type: 'polNormal'
+          embed_confs: ${embedding}
+          embed_names: [ "VariableEmbedder", "DiffusionStepEmbedder" ]
+          no_layer_settings:
+            n_params: [ 4,2,1 ]
+            nh_in_encode: true
+            nh_in_decode: true
+            global_params_learnable: [ false, false ]
 
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.respace.SpacedDiffusion

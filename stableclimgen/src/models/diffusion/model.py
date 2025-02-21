@@ -159,8 +159,7 @@ class DiffusionGenerator(nn.Module):
             x: torch.Tensor,
             emb: Optional[Dict] = None,
             mask: Optional[torch.Tensor] = None,
-            cond: Optional[torch.Tensor] = None,
-            coords: Optional[torch.Tensor] = None
+            cond: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass through the Diffusion Generator model.
@@ -179,7 +178,7 @@ class DiffusionGenerator(nn.Module):
 
         # Concatenate mask and conditioning if specified
         if self.concat_mask:
-            x = torch.cat([x, mask], dim=-1)
+            x = torch.cat([x, mask.float()], dim=-1)
         if self.concat_cond:
             x = torch.cat([x, cond], dim=-1)
 

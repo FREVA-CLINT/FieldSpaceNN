@@ -69,7 +69,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
 
         :return: Dictionary containing loss values for the training step and generated tensor.
         """
-        return self.gaussian_diffusion.training_losses(self.model, gt_data, diffusion_steps, mask, emb, None, cond_data)
+        kwargs = {"cond": cond_data}
+        return self.gaussian_diffusion.training_losses(self.model, gt_data, diffusion_steps, mask, emb, **kwargs)
 
     def training_step(self, batch: Tuple, batch_idx: int) -> torch.Tensor:
         """

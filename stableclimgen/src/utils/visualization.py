@@ -96,14 +96,12 @@ def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask,
             cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
 
             # Add color bar to each difference plot
-            cb = fig.colorbar(cax, ax=axes[i, 3])
-            cb.ax.yaxis.set_tick_params(color="white")
-            plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color="white")
+            cb = fig.colorbar(cax, ax=axes[i, index])
 
     # Adjust layout and save the figure for the current channel
     plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
     if save_path is not None:
-        plt.savefig(save_path)
+        plt.savefig(save_path, bbox_inches='tight')
 
 def plot_images(
     gt_data: torch.Tensor,
