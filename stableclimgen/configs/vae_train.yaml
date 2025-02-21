@@ -8,6 +8,6 @@ defaults:
 
 ckpt_path: null
 
-run_name: vae
-config_name: default
+project_name: vae
+run_name: default
 run_dir: ../..

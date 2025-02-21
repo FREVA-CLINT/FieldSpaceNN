@@ -332,7 +332,7 @@ class HealPixLoader(Dataset):
                               'sample_level': self.coarsen_sample_level}
 
         embed_data = {'VariableEmbedder': sample_vars}
-
+        print(drop_mask.shape)
         return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data
 
     def __len__(self):

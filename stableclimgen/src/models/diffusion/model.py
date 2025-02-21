@@ -160,6 +160,7 @@ class DiffusionGenerator(nn.Module):
             emb: Optional[Dict] = None,
             mask: Optional[torch.Tensor] = None,
             cond: Optional[torch.Tensor] = None,
+            coords: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass through the Diffusion Generator model.
@@ -168,6 +169,7 @@ class DiffusionGenerator(nn.Module):
         :param emb: Tensor representing different embeddings.
         :param mask: Mask tensor, used if `concat_mask` is True.
         :param cond: Conditioning tensor, used if `concat_cond` is True.
+        :param coords:
 
         :return: Output tensor after processing through the model.
         """

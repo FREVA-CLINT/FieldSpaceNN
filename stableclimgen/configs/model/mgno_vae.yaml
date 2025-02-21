@@ -1,5 +1,4 @@
 _target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
-kl_weight: 0.0
 weight_decay: 0.01
 lambda_loss_dict:
   MSE_loss: 1
@@ -120,4 +119,4 @@ model:
         - CoordinateEmbedder
       embed_confs: ${embedding}
       embed_mode: sum
-      distribution: dirac
+      distribution: gaussian

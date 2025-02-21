@@ -133,7 +133,7 @@ class _WrappedModel:
     A wrapper class for models in the spaced diffusion process. Rescales and remaps steps as needed.
     """
 
-    def __init__(self, model: DiffusionGenerator, diffusion_step_map: List[int], rescale_steps: bool, original_num_steps: int):
+    def __init__(self, model, diffusion_step_map: List[int], rescale_steps: bool, original_num_steps: int):
         """
         Initialize the wrapped model with the given parameters.
 
@@ -147,7 +147,7 @@ class _WrappedModel:
         self.rescale_steps = rescale_steps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x: torch.Tensor, emb: Dict, mask: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, emb: Dict, mask: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Call the wrapped model with rescaled diffusion steps.
 
@@ -166,5 +166,4 @@ class _WrappedModel:
         if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
         emb["DiffusionStepEmbedder"] = new_ts
-
-        return self.model(x, emb, mask, cond)
+        return self.model(x, emb=emb, mask=mask, **kwargs)

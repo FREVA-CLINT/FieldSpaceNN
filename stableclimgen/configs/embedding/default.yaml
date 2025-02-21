@@ -7,7 +7,7 @@ DiffusionStepEmbedder:
   embed_dim: 64
   shared: true
 VariableEmbedder:
-  in_channels: 3
+  in_channels: 16
   embed_dim: 64
   shared: false
 GridEmbedder:
