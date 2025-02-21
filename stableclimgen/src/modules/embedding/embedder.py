@@ -59,6 +59,27 @@ class CoordinateEmbedder(BaseEmbedder):
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
 
+class MaskEmbedder(BaseEmbedder):
+    """
+    A neural network module to embed longitude and latitude coordinates.
+
+    :param embed_dim: Dimensionality of the embedding output.
+    :param in_channels: Number of input coordinate features (default is 2).
+    """
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
+        super().__init__(name, in_channels, embed_dim)
+
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "t", "s", "v", "c"]
+
+        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
+        self.embedding_fn = torch.nn.Sequential(
+            torch.nn.Linear(self.in_channels, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
 class VariableEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:

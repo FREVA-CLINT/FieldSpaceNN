@@ -166,4 +166,4 @@ class _WrappedModel:
         if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
         emb["DiffusionStepEmbedder"] = new_ts
-        return self.model(x, emb=emb, mask=mask, **kwargs)
+        return self.model(x, emb=emb, mask=None, **kwargs) # TODO: add mask again to input

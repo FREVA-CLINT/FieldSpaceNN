@@ -44,6 +44,8 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
 
 
     def validation_step(self, batch, batch_idx):
+        if batch_idx != 0:
+            return
         source, target, coords_input, coords_output, indices, mask, emb = batch
 
         loss_dict = {}

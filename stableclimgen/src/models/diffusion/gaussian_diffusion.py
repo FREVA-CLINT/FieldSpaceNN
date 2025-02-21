@@ -471,7 +471,7 @@ class GaussianDiffusion:
         # Diffuse ground truth data for the given diffusion steps
         x_t = self.q_sample(gt_data, diff_steps, noise=noise)
         if torch.is_tensor(mask):
-            x_t = torch.where(mask, gt_data, x_t)
+            x_t = torch.where(~mask, gt_data, x_t)
 
         terms = {}
 
@@ -530,7 +530,7 @@ class GaussianDiffusion:
 
             # Calculate mean squared error loss and add to terms
             if torch.is_tensor(mask):
-                terms["mse"] = mean_flat((torch.where(mask, 0, target - model_output)) ** 2)
+                terms["mse"] = mean_flat((torch.where(mask, target - model_output, 0)) ** 2)
             else:
                 terms["mse"] = mean_flat((target  - model_output) ** 2)
             terms["loss"] = terms["mse"] + terms.get("vb", 0)
