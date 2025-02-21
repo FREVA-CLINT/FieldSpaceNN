@@ -441,6 +441,23 @@ class LinearReductionLayer(nn.Module):
         x_out = self.layer(torch.concat(x_levels, dim=-1))
 
         return x_out, mask_out
+    
+class SumReductionLayer(nn.Module):
+  
+    def __init__(self) -> None: 
+        super().__init__()
+
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+        
+        x_out = torch.stack(x_levels, dim=-1).sum(dim=-1)
+
+        return x_out, mask_out
 
 class IdentityReductionLayer(nn.Module):
   
@@ -462,6 +479,8 @@ class MGAttentionReductionLayer(nn.Module):
                  global_level_in,
                  model_dims_in: List,
                  model_dim_out: int,
+                 att_dim= 128,
+                 n_head_channels=16, 
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
@@ -484,8 +503,9 @@ class MGAttentionReductionLayer(nn.Module):
 
 
         self.attention_layer = ChannelVariableAttention(model_dim_att_out, 
-                                                        1, 
-                                                        model_dim_att_out//len(model_dims_in), 
+                                                        1,
+                                                        att_dim=att_dim,
+                                                        n_head_channels = n_head_channels, 
                                                         model_dim_out=model_dim_att_out//len(model_dims_in),
                                                         with_res=False)
 
@@ -571,6 +591,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  mg_reduction_embed_names: List = None,
                  mg_reduction_embed_names_mlp: List = None,
                  mg_reduction_embed_mode: str = 'sum',
+                 mg_att_dim = 128,
+                 mg_n_head_channels = 16,
                  p_dropout=0
                 ) -> None: 
       
@@ -656,6 +678,9 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             if len(mg_input_dims)>1:
                 if mg_reduction == 'linear':
                     reduction_layer = LinearReductionLayer(mg_input_dims, model_dim_out)
+                
+                elif mg_reduction == 'sum':
+                    reduction_layer = SumReductionLayer()
 
                 elif mg_reduction == 'MGAttention':
                     if mg_reduction_embed_names is not None:
@@ -675,6 +700,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                     reduction_layer = MGAttentionReductionLayer(mg_input_levels,
                                                                 mg_input_dims, 
                                                                 model_dim_out,
+                                                                att_dim=mg_att_dim,
+                                                                n_head_channels=mg_n_head_channels,
                                                                 embedder_grid=embedder,
                                                                 embedder_mlp=embedder_mlp,
                                                                 p_dropout=p_dropout)
