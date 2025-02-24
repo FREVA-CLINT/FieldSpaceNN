@@ -84,10 +84,13 @@ class NetCDFLoader_lazy(Dataset):
                  p_drop_vars=0,
                  n_drop_vars=-1,
                  n_sample_vars=-1,
-                 pert_coordinates=0):
+                 pert_coordinates=0,
+                 fixed_sample_ids=[],
+                 fixed_seed = False):
         
         super(NetCDFLoader_lazy, self).__init__()
         
+        self.fixed_sample_ids = fixed_sample_ids
         self.coarsen_sample_level = coarsen_sample_level
         self.norm_dict = norm_dict
         self.index_range_source=index_range_source
@@ -274,6 +277,9 @@ class NetCDFLoader_lazy(Dataset):
     
 
     def __getitem__(self, index):
+        if self.fixed_sample_ids is not None:
+            index = self.fixed_sample_ids[np.random.randint(0,len(self.fixed_sample_ids))]
+
         diff = (self.global_indices - 1) - index
         diff[diff<0]=1e10
         file_idx = np.abs(diff).argmin()
