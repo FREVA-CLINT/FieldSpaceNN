@@ -58,6 +58,7 @@ class MGNO_base_model(nn.Module):
         indices_sample, coords_input, coords_output = self.prepare_coords_indices(coords_input,
                                                                         coords_output=coords_output, 
                                                                         indices_sample=indices_sample)
+        
 
         return self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 

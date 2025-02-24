@@ -11,7 +11,9 @@ class VonMises_NoLayer(NoLayer):
                  grid_layer_decode,
                  n_phi=4,
                  kappa=0.5,
+                 sigma=0.2,
                  kappa_learnable=True,
+                 sigma_learnable=False,
                  nh_in_encode=False, 
                  nh_in_decode=True,
                  precompute_encode=True,
@@ -39,23 +41,31 @@ class VonMises_NoLayer(NoLayer):
         phis = torch.linspace(-torch.pi, torch.pi, n_phi+1)[:-1]
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
-        self.kappa = nn.Parameter(kappa, requires_grad=kappa_learnable)
+        self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=kappa_learnable)
+
+        self.dist_unit = grid_layer_no.nh_dist
+
+        self.sigma = nn.Parameter(torch.tensor(sigma), requires_grad=sigma_learnable)
         
      
-    def get_vm_dist_weights(self, coordinates_rel, sigma):
+    def get_vm_dist_weights(self, coordinates_rel):
 
         dists, angles = coordinates_rel
 
         angles_weights = torch.cos(angles.unsqueeze(dim=-1) - self.phis.view(1,1,-1))
 
         vm_weights = torch.exp(self.kappa * angles_weights)
-       # alpha = torch.exp(-0.5 * (dists**2/ self.sigma** 2))
 
-        return vm_weights#, alpha
+        sigma = self.sigma*self.dist_unit
+
+        alpha = torch.exp(-0.5 * (dists**2/ sigma** 2))
+
+        return vm_weights, alpha.unsqueeze(dim=-1)
 
 
-    def mult_weights_t(self, x, weights, mask=None):
-        _, n_out, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+    def mult_weights_t(self, x, weights, alpha, mask=None):
+
+        _, n_out, seq_in, seq_in_nh, n_p = weights.shape
         b, n_in, nh_in, nv, nc = x.shape
 
         if n_out > n_in:
@@ -86,8 +96,18 @@ class VonMises_NoLayer(NoLayer):
             x = x * weights.unsqueeze(dim=-1)
             x = x.sum(dim=[2,3]).unsqueeze(dim=3)
 
+            total_weight = (alpha).unsqueeze(dim=-1)
+            total_weight_alpha = total_weight/total_weight.sum(dim=-2,keepdim=True)
+            data_t_mean = (total_weight_alpha*data).sum(dim=-2)
+
+            total_weight= (1-alpha.unsqueeze(dim=-1))*weights + alpha.unsqueeze(dim=-1)
+            total_weight = total_weight/total_weight.sum(dim=-2,keepdim=True)
+            data_t = (total_weight.unsqueeze(dim=-1)*data.unsqueeze(dim=-2)).sum(dim=-3)
+
+            data_tot = torch.concat((data_t_mean.unsqueeze(dim=-2), data_t-data_t_mean.unsqueeze(dim=-2)),dim=1)
         return x, mask
 
+    
 
     def mult_weights_invt(self, x, weights, mask=None):
         _, n_out, seq_out, seq_in, nvw, n_phi, n_dist, n_sigma = weights.shape
@@ -123,20 +143,9 @@ class VonMises_NoLayer(NoLayer):
         nv, nc = x.shape[-2:]
         b = x.shape[0]
 
-        weights, alpha = self.get_vm_dist_weights(coordinates_rel, phis, kappa, sigma)
+        weights, alpha = self.get_vm_dist_weights(coordinates_rel)
 
-        total_weight = (alpha).unsqueeze(dim=-1)
-        total_weight_alpha = total_weight/total_weight.sum(dim=-2,keepdim=True)
-        data_t_mean = (total_weight_alpha*data).sum(dim=-2)
-
-        total_weight= (1-alpha.unsqueeze(dim=-1))*weights #+ alpha.unsqueeze(dim=-1)
-        total_weight = total_weight/total_weight.sum(dim=-2,keepdim=True)
-        data_t = (total_weight.unsqueeze(dim=-1)*data.unsqueeze(dim=-2)).sum(dim=-3)
-
-
-        weights = self.get_spatial_weights(coordinates_rel, self.sigma)
-
-        x, mask = self.mult_weights_t(x, weights, mask=mask)
+        x, mask = self.mult_weights_t(x, weights, alpha, mask=mask)
 
         if mask is not None:
             x = x.masked_fill_(mask.view(*x.shape[:4],*(1,)*(x.dim()-4)), 0.0)

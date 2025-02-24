@@ -27,6 +27,7 @@ class NOBlock(nn.Module):
                  p_dropout=0.,
                  embedder: EmbedderSequential=None,
                  cross_no = False,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -103,7 +104,8 @@ class PreActivation_NOBlock(nn.Module):
                  no_layer: NoLayer,
                  embedder: EmbedderSequential=None,
                  p_dropout=0.,
-                 cross_no = False
+                 cross_no = False,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -158,6 +160,7 @@ class NOConv(nn.Module):
                  model_dim_out,
                  no_layer: NoLayer,
                  p_dropout=0.,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -190,6 +193,7 @@ class CrossNOConv(nn.Module):
                  model_dim_out,
                  no_layer: NoLayer,
                  p_dropout=0.,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -228,6 +232,7 @@ class Serial_NOBlock(nn.Module):
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.layers = nn.ModuleList()
 
         current_level = input_level
@@ -317,6 +322,10 @@ class Serial_NOBlock(nn.Module):
         
         for layer_idx, layer in enumerate(self.layers):
             
+            if self.mask_as_embedding and mask is not None:
+                emb = add_mask_to_emb_dict(emb, mask)
+                mask = None
+
             if isinstance(layer, NOBlock):
                 x, mask = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
             elif isinstance(layer, SpatialAttention):
@@ -327,7 +336,11 @@ class Serial_NOBlock(nn.Module):
         x = self.output_layer(x)
 
         return x, mask
-    
+
+def add_mask_to_emb_dict(emb_dict: dict, mask: torch.tensor):
+    emb_dict['MasEmbedder'] = mask.int()
+    return emb_dict
+
 class MGNO_Processing_Block(nn.Module):
   
     def __init__(self,
@@ -342,6 +355,7 @@ class MGNO_Processing_Block(nn.Module):
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.output_levels = input_levels
         self.layers = nn.ModuleList()
 
@@ -436,6 +450,10 @@ class MGNO_Processing_Block(nn.Module):
             x = x_levels[level_idx]
             mask = mask_levels[level_idx]
 
+            if self.mask_as_embedding and mask is not None:
+                emb = add_mask_to_emb_dict(emb, mask)
+                mask = None
+
             for layer_idx, layer in enumerate(layer_levels):
 
                 if isinstance(layer, NOBlock):
@@ -512,12 +530,14 @@ class MGAttentionReductionLayer(nn.Module):
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
-                 p_dropout=0) -> None: 
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
         
         super().__init__()
         
         self.register_buffer('grid_embedding_indices', torch.tensor(global_level_in))
 
+        self.mask_as_embedding = mask_as_embedding
         model_dim_total = int(torch.tensor(model_dims_in).sum())
 
         self.attention_ada_lns = nn.ModuleList()
@@ -566,6 +586,9 @@ class MGAttentionReductionLayer(nn.Module):
         else:
             mask = None
 
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
+            
         b, n, nv, g, c = x.shape
         if self.cross_var:
             x = einops.rearrange(x, "b n v g c -> b n (v g) c")
@@ -613,10 +636,12 @@ class MGDiffMAttentionReductionLayer(nn.Module):
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
-                 p_dropout=0) -> None: 
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
         
         super().__init__()
         
+        self.mask_as_embedding = mask_as_embedding
         grid_emb_shape = embedder_grid.embedders['GridEmbedder'].embedding_fn.weight.shape[0]
         
         assert grid_emb_shape % 2 == 1
@@ -667,6 +692,9 @@ class MGDiffMAttentionReductionLayer(nn.Module):
         else:
             mask = None
 
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
+
         b, n, nv, g, c = x.shape
         if self.cross_var:
             x = einops.rearrange(x, "b n v g c -> b n (v g) c")
@@ -712,10 +740,12 @@ class MGDiffAttentionReductionLayer(nn.Module):
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
-                 p_dropout=0) -> None: 
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
         
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         grid_emb_shape = embedder_grid.embedders['GridEmbedder'].embedding_fn.weight.shape[0]
         
         assert grid_emb_shape % 2 == 1
@@ -772,6 +802,9 @@ class MGDiffAttentionReductionLayer(nn.Module):
             mask = torch.stack(mask_levels, dim=-1)
         else:
             mask = None
+
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
 
         b, n, nv, g, c = xq.shape
         if self.cross_var:
@@ -992,19 +1025,25 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 x = x_levels[input_index]
                 mask = mask_levels[input_index]
                 
+
                 layer = self.layers[self.layer_indices[output_index][layer_index]]
                 
                 if isinstance(layer, nn.Identity) or isinstance(layer, nn.Linear):
                     x_out = layer(x)
                     mask_out = mask
                 else:
-                    x_out, mask_out = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+                    if self.mask_as_embedding and mask is not None:
+                        emb = add_mask_to_emb_dict(emb, mask)
+                        x_out, _ = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=None, emb=emb)
+                        mask_out=mask
+                    else:
+                        x_out, mask_out = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
                 if mask_out is not None:
                     mask_out = mask_out.view(x_out.shape[:3])
 
-                outputs_.append(x_out)
                 masks_.append(mask_out)
+                outputs_.append(x_out)
 
             x_out, mask_out = self.reduction_layers[output_index](outputs_, mask_levels=masks_, emb=emb)
 

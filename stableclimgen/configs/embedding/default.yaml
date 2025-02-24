@@ -14,3 +14,6 @@ GridEmbedder:
   in_channels: 11
   embed_dim: 64
   shared: true
+MaskEmbedder:
+  in_channels: 2
+  embed_dim: 64
