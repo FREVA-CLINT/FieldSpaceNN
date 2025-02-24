@@ -91,6 +91,7 @@ class NetCDFLoader_lazy(Dataset):
         super(NetCDFLoader_lazy, self).__init__()
         
         self.fixed_sample_ids = fixed_sample_ids
+        self.fixed_seed = fixed_seed
         self.coarsen_sample_level = coarsen_sample_level
         self.norm_dict = norm_dict
         self.index_range_source=index_range_source
@@ -112,6 +113,10 @@ class NetCDFLoader_lazy(Dataset):
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
 
+        if fixed_seed:
+            torch.manual_seed(42)
+            np.random.seed(42)
+            
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
