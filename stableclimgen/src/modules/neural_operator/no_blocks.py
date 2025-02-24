@@ -687,7 +687,7 @@ class MGDiffMAttentionReductionLayer(nn.Module):
         emb['GridEmbedder'] = self.grid_embedding_indices
         x = self.attention_ada_ln(x, emb=emb)
 
-        if mask_levels is not None:
+        if mask_levels is not None and mask_levels[0] is not None:
             mask = torch.stack(mask_levels, dim=-1)
         else:
             mask = None
