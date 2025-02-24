@@ -63,7 +63,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             mg_reduction_embed_mode=block_conf.mg_reduction_embed_mode,
                                             mg_att_dim=block_conf.mg_att_dim,
                                             mg_n_head_channels=block_conf.mg_n_head_channels,
-                                            rotate_coordinate_system=rotate_coord_system)  
+                                            rotate_coordinate_system=rotate_coord_system,
+                                            level_diff_zero_linear=block_conf.level_diff_zero_linear)  
                 
             elif isinstance(block_conf, MGProcessingConfig):
                 block = MGNO_Processing_Block(

@@ -42,7 +42,8 @@ class MGEncoderDecoderConfig:
                  mg_reduction_embed_mode: str = 'sum',
                  mg_att_dim: int = 128,
                  mg_n_head_channels: int=16,
-                 rule: str = 'fc'):
+                 rule: str = 'fc',
+                 level_diff_zero_linear = False):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():

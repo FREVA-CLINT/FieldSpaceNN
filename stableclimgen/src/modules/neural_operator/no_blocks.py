@@ -669,7 +669,8 @@ class MGDiffMAttentionReductionLayer(nn.Module):
                                                         model_dim_out=model_dim_out,
                                                         with_res=False)
 
-        self.lin_skip_mlp = nn.Linear(model_dim_out*len(model_dims_in), model_dim_out)
+        #self.lin_skip_mlp = nn.Linear(model_dim_out*len(model_dims_in), model_dim_out)
+        self.lin_skip_outer = nn.Linear(model_dim_total, model_dim_out)
 
         self.attention_gamma = nn.Parameter(torch.ones(len(model_dims_in), model_dim_out)*1e-6, requires_grad=True)
         self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
@@ -679,6 +680,8 @@ class MGDiffMAttentionReductionLayer(nn.Module):
 
     def forward(self, x_levels, mask_levels=None, emb=None):
         
+        x_skip_outer = self.lin_skip_outer(torch.concat(x_levels, dim=-1))
+
         for level_idx, x in enumerate(x_levels):
             x_levels[level_idx] = self.lin_projections[level_idx](x)
         
@@ -712,7 +715,7 @@ class MGDiffMAttentionReductionLayer(nn.Module):
 
         x = x_skip + self.attention_gamma*x
 
-        x_skip = self.lin_skip_mlp(einops.rearrange(x, "b n v g c -> b n v (g c)"))
+        #x_skip = self.lin_skip_mlp(einops.rearrange(x, "b n v g c -> b n v (g c)"))
 
         x = self.attention_ada_ln_mlp(x, emb=emb)
 
@@ -720,7 +723,7 @@ class MGDiffMAttentionReductionLayer(nn.Module):
 
         x = self.attention_mlp(x)
 
-        x = x_skip + self.attention_gamma_mlp*x
+        x = x_skip_outer + self.attention_gamma_mlp*x
 
         if mask_levels is not None and mask_levels[0] is not None:
             mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
@@ -862,7 +865,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  mg_att_dim = 128,
                  mg_n_head_channels = 16,
                  p_dropout=0,
-                 mask_as_embedding = False
+                 mask_as_embedding = False,
+                 level_diff_zero_linear = False
                 ) -> None: 
       
         super().__init__()
@@ -914,7 +918,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
                 layer_type = check_get_missing_key(layer_setting, "type")
 
-                if 'NO' in layer_type:
+                if level_diff_zero_linear and level_diff==0:
+                    layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
+
+                elif 'NO' in layer_type:
 
                     no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
                     no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
