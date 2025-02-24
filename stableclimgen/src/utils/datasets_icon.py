@@ -85,7 +85,7 @@ class NetCDFLoader_lazy(Dataset):
                  n_drop_vars=-1,
                  n_sample_vars=-1,
                  pert_coordinates=0,
-                 fixed_sample_ids=[],
+                 fixed_sample_ids=None,
                  fixed_seed = False):
         
         super(NetCDFLoader_lazy, self).__init__()
