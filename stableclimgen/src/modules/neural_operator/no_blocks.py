@@ -8,8 +8,10 @@ import einops
 import math
 from ...modules.icon_grids.grid_layer import GridLayer
 
-from .neural_operator import NoLayer, get_no_layer
-from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
+from .neural_operator import NoLayer
+from.no_helpers import get_no_layer
+
+from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm, MultiHeadAttentionBlock
 
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, BaseEmbedder
@@ -25,6 +27,7 @@ class NOBlock(nn.Module):
                  p_dropout=0.,
                  embedder: EmbedderSequential=None,
                  cross_no = False,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -44,9 +47,9 @@ class NOBlock(nn.Module):
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
             nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-            nn.Linear(model_dim_out, model_dim_out, bias=False)
+            nn.Linear(model_dim_out, model_dim_out)
         )
 
         self.activation = nn.SiLU()
@@ -98,28 +101,33 @@ class PreActivation_NOBlock(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 level_data_in,
                  no_layer: NoLayer,
+                 embedder: EmbedderSequential=None,
                  p_dropout=0.,
+                 cross_no = False,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
 
-        self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+        if cross_no:
+            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        else:
+            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
-        self.level_diff = (self.no_conv.global_level_out - level_data_in)
+        self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
-        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=False)
-        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=False)
+        self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
+        self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
 
-        self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_out)
+        self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+        self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder)
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
-            AdaptiveLayerNorm([model_dim_out], model_dim_out),
-            nn.Linear(model_dim_out, model_dim_out , bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
             nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-            nn.Linear(model_dim_out, model_dim_out, bias=False),
+            nn.Linear(model_dim_out, model_dim_out),
         )
 
         self.activation = nn.SiLU()
@@ -131,11 +139,13 @@ class PreActivation_NOBlock(nn.Module):
         
         x_res = get_residual(x, self.level_diff, mask=mask)
         
-        x = self.layer_norm1(x)
+        x = self.layer_norm1(x, emb=emb)
 
         x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = x_conv + self.lin_skip_inner(x_res)
+
+        x = self.layer_norm2(x, emb=emb)
 
         x = self.mlp_layer(x) + self.lin_skip_outer(x_res)
 
@@ -150,6 +160,7 @@ class NOConv(nn.Module):
                  model_dim_out,
                  no_layer: NoLayer,
                  p_dropout=0.,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -182,6 +193,7 @@ class CrossNOConv(nn.Module):
                  model_dim_out,
                  no_layer: NoLayer,
                  p_dropout=0.,
+                 mask_as_embedding=False
                 ) -> None: 
       
         super().__init__()
@@ -214,11 +226,13 @@ class Serial_NOBlock(nn.Module):
                  layer_settings: List[dict],
                  input_level: int = 0,
                  output_dim: int = None,
-                 rotate_coordinate_system: bool = True
+                 rotate_coordinate_system: bool = True,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.layers = nn.ModuleList()
 
         current_level = input_level
@@ -248,13 +262,24 @@ class Serial_NOBlock(nn.Module):
                 
                 if "mlp" in layer_setting["type"]:
                     embedder = get_embedder_from_dict(layer_setting)
-                    layer = NOBlock(
-                                model_dim_in=model_dim_in,
-                                model_dim_out=model_dim_out,
-                                no_layer=no_layer,
-                                embedder=embedder,
-                                cross_no = 'cross_no' in layer_setting["type"]
-                                )
+
+                    if 'pre' in layer_setting["type"]:
+                        layer = PreActivation_NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    )
+                    else:
+                        layer = NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    )
+                
 
             if "var_att" in layer_setting["type"]:
                 embedder_att = get_embedder_from_dict(layer_setting)
@@ -297,6 +322,10 @@ class Serial_NOBlock(nn.Module):
         
         for layer_idx, layer in enumerate(self.layers):
             
+            if self.mask_as_embedding and mask is not None:
+                emb = add_mask_to_emb_dict(emb, mask)
+                mask = None
+
             if isinstance(layer, NOBlock):
                 x, mask = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
             elif isinstance(layer, SpatialAttention):
@@ -307,7 +336,11 @@ class Serial_NOBlock(nn.Module):
         x = self.output_layer(x)
 
         return x, mask
-    
+
+def add_mask_to_emb_dict(emb_dict: dict, mask: torch.tensor):
+    emb_dict['MasEmbedder'] = mask.int()
+    return emb_dict
+
 class MGNO_Processing_Block(nn.Module):
   
     def __init__(self,
@@ -316,11 +349,13 @@ class MGNO_Processing_Block(nn.Module):
                  input_dims: List[int],
                  model_dims_out: List[List],
                  grid_layers: List[GridLayer],
-                 rotate_coordinate_system: bool = True
+                 rotate_coordinate_system: bool = True,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.output_levels = input_levels
         self.layers = nn.ModuleList()
 
@@ -353,13 +388,22 @@ class MGNO_Processing_Block(nn.Module):
                     
                     if "mlp" in layer_setting["type"]:
                         embedder = get_embedder_from_dict(layer_setting)
-                        layer = NOBlock(
-                                    model_dim_in=input_dim,
-                                    model_dim_out=model_dim_out,
-                                    no_layer=no_layer,
-                                    embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"]
-                                    )
+                        if 'pre' in layer_setting["type"]:
+                            layer = PreActivation_NOBlock(
+                                        model_dim_in=input_dim,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
+                        else:
+                            layer = NOBlock(
+                                        model_dim_in=input_dim,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
 
                 if "var_att" in layer_setting["type"]:
                     embedder_att = get_embedder_from_dict(layer_setting)
@@ -406,6 +450,10 @@ class MGNO_Processing_Block(nn.Module):
             x = x_levels[level_idx]
             mask = mask_levels[level_idx]
 
+            if self.mask_as_embedding and mask is not None:
+                emb = add_mask_to_emb_dict(emb, mask)
+                mask = None
+
             for layer_idx, layer in enumerate(layer_levels):
 
                 if isinstance(layer, NOBlock):
@@ -439,6 +487,23 @@ class LinearReductionLayer(nn.Module):
         x_out = self.layer(torch.concat(x_levels, dim=-1))
 
         return x_out, mask_out
+    
+class SumReductionLayer(nn.Module):
+  
+    def __init__(self) -> None: 
+        super().__init__()
+
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+        
+        x_out = torch.stack(x_levels, dim=-1).sum(dim=-1)
+
+        return x_out, mask_out
 
 class IdentityReductionLayer(nn.Module):
   
@@ -460,17 +525,20 @@ class MGAttentionReductionLayer(nn.Module):
                  global_level_in,
                  model_dims_in: List,
                  model_dim_out: int,
+                 att_dim= 128,
+                 n_head_channels=16, 
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
-                 p_dropout=0) -> None: 
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
         
         super().__init__()
         
-        self.register_buffer('grid_levels', torch.tensor(global_level_in))
+        self.register_buffer('grid_embedding_indices', torch.tensor(global_level_in))
 
+        self.mask_as_embedding = mask_as_embedding
         model_dim_total = int(torch.tensor(model_dims_in).sum())
-        self.layer = nn.Linear(model_dim_total, model_dim_out, bias=True)
 
         self.attention_ada_lns = nn.ModuleList()
 
@@ -483,8 +551,9 @@ class MGAttentionReductionLayer(nn.Module):
 
 
         self.attention_layer = ChannelVariableAttention(model_dim_att_out, 
-                                                        1, 
-                                                        model_dim_att_out//len(model_dims_in), 
+                                                        1,
+                                                        att_dim=att_dim,
+                                                        n_head_channels = n_head_channels, 
                                                         model_dim_out=model_dim_att_out//len(model_dims_in),
                                                         with_res=False)
 
@@ -503,28 +572,135 @@ class MGAttentionReductionLayer(nn.Module):
         
         x_skip = self.lin_skip_att(torch.concat(x_levels, dim=-1))
 
-       # v = []
+        v = []
         for level_idx, x in enumerate(x_levels):
-            emb['GridEmbedder'] = self.grid_levels[level_idx]
+            emb['GridEmbedder'] = self.grid_embedding_indices[[level_idx]]
             x = self.lin_projections[level_idx](x)
-      #      v.append(x)
+            v.append(x)
             x_levels[level_idx] = self.attention_ada_lns[level_idx](x, emb=emb)
 
-       # v = torch.stack(v, dim=-2)
+        v = torch.stack(v, dim=-2)
         x = torch.stack(x_levels, dim=-2)
         if mask_levels is not None:
             mask = torch.stack(mask_levels, dim=-1)
         else:
             mask = None
 
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
+            
         b, n, nv, g, c = x.shape
         if self.cross_var:
             x = einops.rearrange(x, "b n v g c -> b n (v g) c")
-       #     v = einops.rearrange(v, "b n v g c -> b n (v g) c")
+            v = einops.rearrange(v, "b n v g c -> b n (v g) c")
             mask = einops.rearrange(mask, "b n v g -> b n (v g)") if mask is not None else mask
         else:
             x = einops.rearrange(x, "b n v g c -> b (n v) g c")
-          #  v = einops.rearrange(v, "b n v g c -> b (n v) g c")
+            v = einops.rearrange(v, "b n v g c -> b (n v) g c")
+            mask = einops.rearrange(mask, "b n v g -> b (n v) g") if mask is not None else mask
+
+        x, _ = self.attention_layer(x, v=v, mask=mask)
+        
+        if self.cross_var:
+            x = einops.rearrange(x, "b n (v g) c -> b n v g c", v=nv, g=g)
+        else:
+            x = einops.rearrange(x, "b (n v) g c -> b n v g c", n=n, v=nv)
+
+        x = einops.rearrange(x, "b n v g c -> b n v (g c)")
+
+        x = x_skip + self.attention_gamma*x
+
+        x_skip = self.lin_skip_mlp(x)
+
+        x = self.attention_ada_ln_mlp(x,emb=emb)
+
+        x = self.attention_mlp(x)
+
+        x = x_skip + self.attention_gamma_mlp*x
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+
+        return x, mask_out
+    
+class MGDiffMAttentionReductionLayer(nn.Module):
+  
+    def __init__(self, 
+                 global_level_diffs_in,
+                 model_dims_in: List,
+                 model_dim_out: int,
+                 att_dim= 128,
+                 n_head_channels=16, 
+                 embedder_grid: EmbedderSequential=None,
+                 embedder_mlp: EmbedderSequential=None,
+                 cross_var=False,
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
+        
+        super().__init__()
+        
+        self.mask_as_embedding = mask_as_embedding
+        grid_emb_shape = embedder_grid.embedders['GridEmbedder'].embedding_fn.weight.shape[0]
+        
+        assert grid_emb_shape % 2 == 1
+
+        index_offset = (grid_emb_shape - 1) // 2
+        grid_level_indices = global_level_diffs_in + index_offset
+
+        self.register_buffer('grid_embedding_indices', torch.tensor(grid_level_indices))
+
+        model_dim_total = int(torch.tensor(model_dims_in).sum())
+
+
+        self.lin_projections = nn.ModuleList()
+        for model_dim_in in model_dims_in:
+            lin_proj = nn.Linear(model_dim_in, model_dim_out, bias=False) if model_dim_in != model_dim_out else nn.Identity()
+            self.lin_projections.append(lin_proj)
+        
+        self.attention_ada_ln = AdaptiveLayerNorm([len(model_dims_in), model_dim_out], model_dim_out, embedder=embedder_grid)
+        self.attention_ada_ln_mlp = AdaptiveLayerNorm([len(model_dims_in), model_dim_out], model_dim_out, embedder=embedder_grid)
+
+        self.attention_layer = ChannelVariableAttention(model_dim_out, 
+                                                        1,
+                                                        att_dim=att_dim,
+                                                        n_head_channels = n_head_channels, 
+                                                        model_dim_out=model_dim_out,
+                                                        with_res=False)
+
+        self.lin_skip_mlp = nn.Linear(model_dim_out*len(model_dims_in), model_dim_out)
+
+        self.attention_gamma = nn.Parameter(torch.ones(len(model_dims_in), model_dim_out)*1e-6, requires_grad=True)
+        self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+
+        self.attention_mlp = ResLayer(model_dim_out*len(model_dims_in), model_dim_out=model_dim_out, with_res=False, p_dropout=p_dropout)
+        self.cross_var = cross_var
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+        
+        for level_idx, x in enumerate(x_levels):
+            x_levels[level_idx] = self.lin_projections[level_idx](x)
+        
+        x_skip = x = torch.stack(x_levels, dim=-2)
+
+        emb['GridEmbedder'] = self.grid_embedding_indices
+        x = self.attention_ada_ln(x, emb=emb)
+
+        if mask_levels is not None:
+            mask = torch.stack(mask_levels, dim=-1)
+        else:
+            mask = None
+
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
+
+        b, n, nv, g, c = x.shape
+        if self.cross_var:
+            x = einops.rearrange(x, "b n v g c -> b n (v g) c")
+            mask = einops.rearrange(mask, "b n v g -> b n (v g)") if mask is not None else mask
+        else:
+            x = einops.rearrange(x, "b n v g c -> b (n v) g c")
             mask = einops.rearrange(mask, "b n v g -> b (n v) g") if mask is not None else mask
 
         x, _ = self.attention_layer(x, mask=mask)
@@ -533,6 +709,119 @@ class MGAttentionReductionLayer(nn.Module):
             x = einops.rearrange(x, "b n (v g) c -> b n v g c", v=nv, g=g)
         else:
             x = einops.rearrange(x, "b (n v) g c -> b n v g c", n=n, v=nv)
+
+        x = x_skip + self.attention_gamma*x
+
+        x_skip = self.lin_skip_mlp(einops.rearrange(x, "b n v g c -> b n v (g c)"))
+
+        x = self.attention_ada_ln_mlp(x, emb=emb)
+
+        x = einops.rearrange(x, "b n v g c -> b n v (g c)")
+
+        x = self.attention_mlp(x)
+
+        x = x_skip + self.attention_gamma_mlp*x
+
+        if mask_levels is not None and mask_levels[0] is not None:
+            mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
+        else:
+            mask_out = None
+
+        return x, mask_out
+
+class MGDiffAttentionReductionLayer(nn.Module):
+  
+    def __init__(self, 
+                 global_level_diffs_in,
+                 model_dims_in: List,
+                 model_dim_out: int,
+                 att_dim= 128,
+                 n_head_channels=16, 
+                 embedder_grid: EmbedderSequential=None,
+                 embedder_mlp: EmbedderSequential=None,
+                 cross_var=False,
+                 p_dropout=0,
+                 mask_as_embedding=False) -> None: 
+        
+        super().__init__()
+
+        self.mask_as_embedding = mask_as_embedding
+        grid_emb_shape = embedder_grid.embedders['GridEmbedder'].embedding_fn.weight.shape[0]
+        
+        assert grid_emb_shape % 2 == 1
+
+        index_offset = (grid_emb_shape - 1) // 2
+        grid_level_indices = global_level_diffs_in + index_offset
+
+        self.register_buffer('grid_embedding_indices', torch.tensor(grid_level_indices))
+
+        model_dim_total = int(torch.tensor(model_dims_in).sum())
+
+        self.attention_ada_lns = nn.ModuleList()
+        #self.attention_ada_lns = nn.ModuleList()
+
+        model_dim_att = math.ceil(model_dim_total/len(model_dims_in))*len(model_dims_in)
+
+        self.lin_projections = nn.ModuleList()
+        for model_dim_in in model_dims_in:
+            self.lin_projections.append(nn.Linear(model_dim_in, model_dim_att, bias=False))
+        
+        self.attention_ada_ln_k = AdaptiveLayerNorm([len(model_dims_in), model_dim_att], model_dim_att, embedder=embedder_grid)
+        self.attention_ada_ln_q = AdaptiveLayerNorm([len(model_dims_in), model_dim_att], model_dim_att, embedder=embedder_grid)
+
+        self.attention_layer = MultiHeadAttentionBlock(
+            att_dim, model_dim_out, att_dim //n_head_channels, input_dim=model_dim_att, qkv_proj=True, v_proj=True
+            )   
+        
+
+        self.lin_skip_att = nn.Linear(model_dim_total, model_dim_out)
+        self.lin_skip_mlp = nn.Linear(model_dim_out, model_dim_out)
+
+        self.attention_gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+        self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+
+        self.attention_ada_ln_mlp = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder_mlp)
+        self.attention_mlp = ResLayer(model_dim_out, model_dim_out=model_dim_out, with_res=False, p_dropout=p_dropout)
+        self.cross_var = cross_var
+
+    def forward(self, x_levels, mask_levels=None, emb=None):
+        
+        
+        x_skip = self.lin_skip_att(torch.concat(x_levels, dim=-1))
+
+        for level_idx, x in enumerate(x_levels):
+            x_levels[level_idx] = self.lin_projections[level_idx](x)
+        
+        x = torch.stack(x_levels, dim=-2)
+
+        emb['GridEmbedder'] = self.grid_embedding_indices
+        xkv = self.attention_ada_ln_k(x, emb=emb)
+        xq = self.attention_ada_ln_q(x, emb=emb).mean(dim=-2, keepdim=True)
+
+        if mask_levels is not None:
+            mask = torch.stack(mask_levels, dim=-1)
+        else:
+            mask = None
+
+        if self.mask_as_embedding and mask is not None:
+            emb = add_mask_to_emb_dict(emb, mask)
+
+        b, n, nv, g, c = xq.shape
+        if self.cross_var:
+            xkv = einops.rearrange(xkv, "b n v g c -> (b n) (v g) c")
+            xq = einops.rearrange(xq, "b n v g c -> (b n) (v g) c")
+            mask = einops.rearrange(mask, "b n v g -> (b n) (v g)") if mask is not None else mask
+        else:
+            xkv = einops.rearrange(xkv, "b n v g c -> (b n v) g c")
+            xq = einops.rearrange(xq, "b n v g c -> (b n v) g c")
+            mask = einops.rearrange(mask, "b n v g -> (b n v) g") if mask is not None else mask
+
+        x = self.attention_layer(q=xq, k=xkv, v=xkv,  mask=mask)
+        
+        if self.cross_var:
+            x = einops.rearrange(x, "(b n) (v g) c -> b n v g c", b=b, n=n, v=nv, g=g)
+        else:
+            x = einops.rearrange(x, "(b n v) g c -> b n v g c", b=b, n=n, v=nv, g=g)
 
         x = einops.rearrange(x, "b n v g c -> b n v (g c)")
 
@@ -570,11 +859,15 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  mg_reduction_embed_names: List = None,
                  mg_reduction_embed_names_mlp: List = None,
                  mg_reduction_embed_mode: str = 'sum',
-                 p_dropout=0
+                 mg_att_dim = 128,
+                 mg_n_head_channels = 16,
+                 p_dropout=0,
+                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
 
+        self.mask_as_embedding = mask_as_embedding
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
 
@@ -637,14 +930,22 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 
                     if "mlp" in layer_type:
                         embedder = get_embedder_from_dict(layer_setting)
-                        layer = NOBlock(
-                                    model_dim_in=model_dim_in,
-                                    model_dim_out=model_dim_out,
-                                    no_layer=no_layer,
-                                    cross_no='cross_no' in layer_type,
-                                    embedder=embedder,
-                                    p_dropout=p_dropout
-                                    )
+                        if 'pre' in layer_setting["type"]:
+                            layer = PreActivation_NOBlock(
+                                        model_dim_in=model_dim_in,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
+                        else:
+                            layer = NOBlock(
+                                        model_dim_in=model_dim_in,
+                                        model_dim_out=model_dim_out,
+                                        no_layer=no_layer,
+                                        embedder=embedder,
+                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        )
                 elif 'linear' in layer_type:
                     layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
                     
@@ -655,8 +956,11 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             if len(mg_input_dims)>1:
                 if mg_reduction == 'linear':
                     reduction_layer = LinearReductionLayer(mg_input_dims, model_dim_out)
+                
+                elif mg_reduction == 'sum':
+                    reduction_layer = SumReductionLayer()
 
-                elif mg_reduction == 'MGAttention':
+                elif mg_reduction == 'MGAttention' or 'MGDiffAttention'or 'MGDiffMAttention':
                     if mg_reduction_embed_names is not None:
                         embedder = get_embedder(embed_names=mg_reduction_embed_names,
                                                 embed_confs=mg_reduction_embed_confs,
@@ -670,13 +974,34 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                                 embed_mode=mg_reduction_embed_mode)
                     else:
                         embedder_mlp = None
-                        
-                    reduction_layer = MGAttentionReductionLayer(mg_input_levels,
-                                                                mg_input_dims, 
-                                                                model_dim_out,
-                                                                embedder_grid=embedder,
-                                                                embedder_mlp=embedder_mlp,
-                                                                p_dropout=p_dropout)
+                    
+                    if mg_reduction == 'MGAttention':
+                        reduction_layer = MGAttentionReductionLayer(mg_input_levels,
+                                                                    mg_input_dims, 
+                                                                    model_dim_out,
+                                                                    att_dim=mg_att_dim,
+                                                                    n_head_channels=mg_n_head_channels,
+                                                                    embedder_grid=embedder,
+                                                                    embedder_mlp=embedder_mlp,
+                                                                    p_dropout=p_dropout)
+                    elif mg_reduction == 'MGDiffAttention':
+                        reduction_layer = MGDiffAttentionReductionLayer(torch.tensor(mg_input_levels)-output_level,
+                                                                    mg_input_dims, 
+                                                                    model_dim_out,
+                                                                    att_dim=mg_att_dim,
+                                                                    n_head_channels=mg_n_head_channels,
+                                                                    embedder_grid=embedder,
+                                                                    embedder_mlp=embedder_mlp,
+                                                                    p_dropout=p_dropout)
+                    elif mg_reduction == 'MGDiffMAttention':
+                        reduction_layer = MGDiffMAttentionReductionLayer(torch.tensor(mg_input_levels)-output_level,
+                                                                    mg_input_dims, 
+                                                                    model_dim_out,
+                                                                    att_dim=mg_att_dim,
+                                                                    n_head_channels=mg_n_head_channels,
+                                                                    embedder_grid=embedder,
+                                                                    embedder_mlp=embedder_mlp,
+                                                                    p_dropout=p_dropout)
             else:
                 reduction_layer = IdentityReductionLayer()
             
@@ -700,19 +1025,25 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 x = x_levels[input_index]
                 mask = mask_levels[input_index]
                 
+
                 layer = self.layers[self.layer_indices[output_index][layer_index]]
                 
                 if isinstance(layer, nn.Identity) or isinstance(layer, nn.Linear):
                     x_out = layer(x)
                     mask_out = mask
                 else:
-                    x_out, mask_out = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
+                    if self.mask_as_embedding and mask is not None:
+                        emb = add_mask_to_emb_dict(emb, mask)
+                        x_out, _ = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=None, emb=emb)
+                        mask_out=mask
+                    else:
+                        x_out, mask_out = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
 
                 if mask_out is not None:
                     mask_out = mask_out.view(x_out.shape[:3])
 
-                outputs_.append(x_out)
                 masks_.append(mask_out)
+                outputs_.append(x_out)
 
             x_out, mask_out = self.reduction_layers[output_index](outputs_, mask_levels=masks_, emb=emb)
 

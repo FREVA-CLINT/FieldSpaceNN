@@ -11,6 +11,9 @@ VariableEmbedder:
   embed_dim: 64
   shared: false
 GridEmbedder:
-  in_channels: 5
+  in_channels: 11
   embed_dim: 64
   shared: true
+MaskEmbedder:
+  in_channels: 2
+  embed_dim: 64

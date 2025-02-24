@@ -1,7 +1,7 @@
 defaults:
   - trainer: mgno_transformer
   - logger: wandb
-  - model: mgno_transformer
+  - model: mgno_transformer_mg_orig
   - mgrids: icon
   - dataloader: netcdf_mgno
   - embedding: default
@@ -12,4 +12,5 @@ ckpt_path: null
 
 run_name: mgno_transformer
 config_name: default
+project_name: test
 run_dir: /Users/maxwitte/work/climgen_out
