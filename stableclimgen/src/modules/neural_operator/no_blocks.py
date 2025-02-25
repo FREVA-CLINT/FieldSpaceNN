@@ -27,6 +27,7 @@ class NOBlock(nn.Module):
                  p_dropout=0.,
                  embedder: EmbedderSequential=None,
                  cross_no = False,
+                 with_gamma = False,
                  mask_as_embedding=False
                 ) -> None: 
       
@@ -44,6 +45,13 @@ class NOBlock(nn.Module):
 
         self.layer_norm1 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
         self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
+
+        if with_gamma:
+            self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+            self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+        else:
+            self.register_buffer('gamma1', torch.ones(model_dim_out))
+            self.register_buffer('gamma2', torch.ones(model_dim_out))
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
@@ -63,13 +71,13 @@ class NOBlock(nn.Module):
 
         x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
+        x = self.gamma1 * self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
 
         x = self.mlp_layer(x) 
         
         x = self.layer_norm2(x, emb=emb)
 
-        x = x + self.lin_skip_outer(x_res)
+        x = self.gamma2 * x + self.lin_skip_outer(x_res)
 
         x = self.activation(x)
     
@@ -105,7 +113,8 @@ class PreActivation_NOBlock(nn.Module):
                  embedder: EmbedderSequential=None,
                  p_dropout=0.,
                  cross_no = False,
-                 mask_as_embedding=False
+                 mask_as_embedding=False,
+                 with_gamma=False
                 ) -> None: 
       
         super().__init__()
@@ -122,6 +131,13 @@ class PreActivation_NOBlock(nn.Module):
 
         self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
         self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder)
+
+        if with_gamma:
+            self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+            self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+        else:
+            self.register_buffer('gamma1', torch.ones(model_dim_out))
+            self.register_buffer('gamma2', torch.ones(model_dim_out))
 
         self.mlp_layer = nn.Sequential(
             nn.SiLU(),
@@ -143,11 +159,11 @@ class PreActivation_NOBlock(nn.Module):
 
         x_conv, mask = self.no_conv(x, coords_encode=coords_encode, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = x_conv + self.lin_skip_inner(x_res)
+        x = self.gamma1 * x_conv + self.lin_skip_inner(x_res)
 
         x = self.layer_norm2(x, emb=emb)
 
-        x = self.mlp_layer(x) + self.lin_skip_outer(x_res)
+        x = self.gamma2 * self.mlp_layer(x) + self.lin_skip_outer(x_res)
 
         x = self.activation(x)
     
@@ -269,7 +285,8 @@ class Serial_NOBlock(nn.Module):
                                     model_dim_out=model_dim_out,
                                     no_layer=no_layer,
                                     embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    cross_no = 'cross_no' in layer_setting["type"],
+                                    with_gamma = 'gamma' in layer_setting["type"]
                                     )
                     else:
                         layer = NOBlock(
@@ -277,7 +294,8 @@ class Serial_NOBlock(nn.Module):
                                     model_dim_out=model_dim_out,
                                     no_layer=no_layer,
                                     embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"]
+                                    cross_no = 'cross_no' in layer_setting["type"],
+                                    with_gamma = 'gamma' in layer_setting["type"]
                                     )
                 
 
@@ -394,7 +412,8 @@ class MGNO_Processing_Block(nn.Module):
                                         model_dim_out=model_dim_out,
                                         no_layer=no_layer,
                                         embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        cross_no = 'cross_no' in layer_setting["type"],
+                                        with_gamma = 'gamma' in layer_setting["type"]
                                         )
                         else:
                             layer = NOBlock(
@@ -402,7 +421,8 @@ class MGNO_Processing_Block(nn.Module):
                                         model_dim_out=model_dim_out,
                                         no_layer=no_layer,
                                         embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        cross_no = 'cross_no' in layer_setting["type"],
+                                        with_gamma = 'gamma' in layer_setting["type"]
                                         )
 
                 if "var_att" in layer_setting["type"]:
@@ -943,7 +963,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                         model_dim_out=model_dim_out,
                                         no_layer=no_layer,
                                         embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        cross_no = 'cross_no' in layer_setting["type"],
+                                        with_gamma = 'gamma' in layer_setting["type"]
                                         )
                         else:
                             layer = NOBlock(
@@ -951,7 +972,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                         model_dim_out=model_dim_out,
                                         no_layer=no_layer,
                                         embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"]
+                                        cross_no = 'cross_no' in layer_setting["type"],
+                                        with_gamma = 'gamma' in layer_setting["type"]
                                         )
                 elif 'linear' in layer_type:
                     layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
