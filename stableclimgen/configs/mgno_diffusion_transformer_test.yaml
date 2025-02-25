@@ -1,0 +1,15 @@
+defaults:
+  - model: mgno_diffusion_transformer
+  - mgrids: healpix
+  - dataloader: zarr_healpix
+  - hydra: default
+  - embedding: default
+  - sampler: ddpm
+  - _self_
+
+ckpt_path: ../../snapshots/${project_name}/${run_name}/last.ckpt
+output_dir: ../../evaluations/${project_name}/${run_name}/
+
+project_name: mgno_diffusion_transformer
+run_name: default
+run_dir: ../..

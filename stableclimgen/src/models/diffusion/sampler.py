@@ -14,47 +14,44 @@ class Sampler:
     def sample_loop(
         self,
         model: torch.nn.Module,
-        gt_data: torch.Tensor,
-        mask_data: torch.Tensor,
-        cond_data: torch.Tensor,
-        coords: torch.Tensor,
+        input_data: torch.Tensor,
+        mask: torch.Tensor = None,
         noise: torch.Tensor = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
-        model_kwargs: dict = None,
-        eta: float = 0.0
+        eta: float = 0.0,
+        progress: bool = False,
+        **model_kwargs
     ) -> torch.Tensor:
         """
         Generate samples from the model.
 
         :param model: The model module used for sampling.
-        :param gt_data: Ground truth data tensor.
-        :param mask_data: Mask data tensor, applied to control data.
-        :param cond_data: Conditioning data tensor for sampling.
-        :param coords: Coordinate tensor for conditional sampling.
+        :param input_data: Input data tensor.
+        :param mask: Mask data tensor, applied to control data.
         :param noise: Initial noise tensor. If None, random noise is used.
         :param denoised_fn: Optional function applied to the predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
-        :param model_kwargs: Extra arguments for the model, used for conditioning.
         :param eta: Hyperparameter controlling noise level.
+        :param progress: Add progress bar.
+        :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: Final batch of non-differentiable samples.
         """
-        x_0 = noise if noise is not None else torch.randn_like(gt_data).to(gt_data.device)
+        x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
 
         final = None
         # Progressive sampling loop
         for sample in self.sample_loop_progressive(
             model,
-            gt_data,
+            input_data,
             x_0,
-            mask_data,
-            cond_data,
-            coords,
+            mask,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
-            model_kwargs=model_kwargs,
-            device=gt_data.device,
-            eta=eta
+            device=input_data.device,
+            eta=eta,
+            progress=progress,
+            **model_kwargs
         ):
             final = sample
 
@@ -63,35 +60,40 @@ class Sampler:
     def sample_loop_progressive(
         self,
         model: torch.nn.Module,
-        gt_data: torch.Tensor,
+        input_data: torch.Tensor,
         x_0: torch.Tensor,
-        mask_data: torch.Tensor,
-        cond_data: torch.Tensor,
-        coords: torch.Tensor,
+        mask: torch.Tensor = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
-        model_kwargs: dict = None,
         device: torch.device = None,
         eta: float = 0.0,
+        progress: bool = False,
+        **model_kwargs
     ) -> dict:
         """
         Perform a progressive sampling loop over diffusion steps.
 
         :param model: The model module used for sampling.
-        :param gt_data: Ground truth data tensor.
+        :param input_data: Input data tensor.
         :param x_0: Initial noise tensor.
-        :param mask_data: Mask data tensor for controlling data.
-        :param cond_data: Conditioning data tensor.
-        :param coords: Coordinate tensor.
+        :param mask: Mask data tensor for controlling data.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
-        :param model_kwargs: Extra arguments for the model, used for conditioning.
         :param device: Device to perform sampling on (e.g., 'cuda' or 'cpu').
         :param eta: Hyperparameter controlling noise level.
+        :param progress: Add progress bar.
+        :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: A generator yielding the sample dictionary for each diffusion step.
         """
-        x_0 = (1 - mask_data) * x_0 + mask_data * gt_data  # Apply initial mask to the noise
+        if torch.is_tensor(mask):
+            x_0 = torch.where(~mask, input_data, x_0)
+
         indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
+
+        if progress:
+            # Lazy import so that we don't depend on tqdm.
+            from tqdm.auto import tqdm
+            indices = tqdm(indices)
 
         # Iterate over diffusion steps in reverse
         for i in indices:
@@ -100,17 +102,15 @@ class Sampler:
                 out = self.sample(
                     model,
                     x_0,
-                    cond_data,
-                    mask_data,
-                    coords,
                     diffusion_steps,
+                    mask,
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
-                    model_kwargs=model_kwargs,
                     eta=eta,
+                    **model_kwargs
                 )
                 # Reapply mask to the sample output
-                out["sample"] = (1 - mask_data) * out["sample"] + mask_data * gt_data
+                out["sample"] = torch.where(~mask, input_data, out["sample"])
                 yield out
                 x_0 = out["sample"]
 
@@ -118,28 +118,24 @@ class Sampler:
         self,
         model: torch.nn.Module,
         x_t: torch.Tensor,
-        cond_data: torch.Tensor,
-        mask_data: torch.Tensor,
-        coords: torch.Tensor,
         diffusion_steps: torch.Tensor,
+        mask: torch.Tensor = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
-        model_kwargs: dict = None,
-        eta: float = 0.0
+        eta: float = 0.0,
+        **model_kwargs
     ) -> dict:
         """
         Placeholder method for sampling at each timestep. Intended to be implemented by subclasses.
 
         :param model: The model to sample from.
         :param x_t: The current tensor at x_t.
-        :param cond_data: Conditioning data tensor.
-        :param mask_data: Mask data tensor.
-        :param coords: Coordinate tensor.
         :param diffusion_steps: Current diffusion step tensor.
+        :param mask: Mask data tensor.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
-        :param model_kwargs: Extra arguments for the model.
         :param eta: Hyperparameter controlling noise level.
+        :param model_kwargs: Extra arguments for the model.
         :return: A dictionary containing sample results.
         """
         return {}
@@ -158,39 +154,33 @@ class DDPMSampler(Sampler):
         self,
         model: torch.nn.Module,
         x_t: torch.Tensor,
-        cond_data: torch.Tensor,
-        mask_data: torch.Tensor,
-        coords: torch.Tensor,
         diffusion_steps: torch.Tensor,
+        mask: torch.Tensor = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
-        model_kwargs: dict = None,
-        eta: float = 0.0
+        eta: float = 0.0,
+        **model_kwargs
     ) -> dict:
         """
         Sample x_{t-1} from the model at the given timestep.
 
         :param model: The model to sample from.
         :param x_t: The current tensor at x_t.
-        :param cond_data: Conditioning data tensor.
-        :param mask_data: Mask data tensor.
-        :param coords: Coordinate tensor.
         :param diffusion_steps: Current diffusion step tensor.
+        :param mask: Mask data tensor.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
-        :param model_kwargs: Extra arguments for the model.
         :param eta: Hyperparameter controlling noise level.
+        :param model_kwargs: Extra arguments for the model.
         :return: A dictionary containing sample and predicted x_start.
         """
         out = self.gaussian_diffusion.p_mean_variance(
             model,
             x_t,
-            cond_data,
-            mask_data,
-            coords,
             diffusion_steps,
+            mask,
             denoised_fn=denoised_fn,
-            model_kwargs=model_kwargs,
+            **model_kwargs
         )
         noise = torch.randn_like(x_t)
         nonzero_mask = (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
@@ -211,39 +201,33 @@ class DDIMSampler(Sampler):
         self,
         model: torch.nn.Module,
         x_t: torch.Tensor,
-        cond_data: torch.Tensor,
-        mask_data: torch.Tensor,
-        coords: torch.Tensor,
         diffusion_steps: torch.Tensor,
+        mask: torch.Tensor = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
-        model_kwargs: dict = None,
-        eta: float = 0.0
+        eta: float = 0.0,
+        **model_kwargs
     ) -> dict:
         """
         Sample x_{t-1} from the model using DDIM.
 
         :param model: The model to sample from.
         :param x_t: The current tensor at x_t.
-        :param cond_data: Conditioning data tensor.
-        :param mask_data: Mask data tensor.
-        :param coords: Coordinate tensor.
         :param diffusion_steps: Current diffusion step tensor.
+        :param mask: Mask data tensor.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
-        :param model_kwargs: Extra arguments for the model.
         :param eta: Hyperparameter controlling noise level.
+        :param model_kwargs: Extra arguments for the model.
         :return: A dictionary containing sample and predicted x_start.
         """
         out = self.gaussian_diffusion.p_mean_variance(
             model,
             x_t,
-            cond_data,
-            mask_data,
-            coords,
             diffusion_steps,
+            mask,
             denoised_fn=denoised_fn,
-            model_kwargs=model_kwargs,
+            **model_kwargs
         )
 
         eps = self.gaussian_diffusion.predict_eps_from_xstart(x_t, diffusion_steps, out["pred_xstart"])

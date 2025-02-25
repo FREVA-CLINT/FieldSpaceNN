@@ -253,6 +253,7 @@ class GaussianDiffusion:
             emb = {}
         emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
         model_output = model(x, emb=emb, mask=mask, **model_kwargs)
+        model_output = model_output.view(x.shape)
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             # Splits the output into predicted mean and log variance
