@@ -3,12 +3,9 @@ import torch.nn as nn
 
 from typing import List
 
-from ...utils.helpers import get_parameter_group_from_state_dict
-from ...modules.icon_grids.grid_layer import GridLayer
-from ...modules.neural_operator.no_blocks import Serial_NOBlock
 from .mgno_block_confs import NOBlockConfig
 from .mgno_base_model import MGNO_base_model
-
+from .mgno_serial_block import Serial_NOBlock
 
 class MGNO_Transformer_serial(MGNO_base_model):
     def __init__(self, 
@@ -39,8 +36,7 @@ class MGNO_Transformer_serial(MGNO_base_model):
                                      ,torch.tensor(0).view(-1))).unique()
         
         super().__init__(mgrids, 
-                         global_levels,
-                         mask_as_embedding=mask_as_embedding)
+                         global_levels)
         
        
         self.Blocks = nn.ModuleList()
@@ -55,7 +51,8 @@ class MGNO_Transformer_serial(MGNO_base_model):
                     model_dims_out,
                     self.grid_layers,
                     layer_settings,
-                    rotate_coordinate_system=rotate_coord_system)
+                    rotate_coordinate_system=rotate_coord_system,
+                    mask_as_embedding=mask_as_embedding)
                 
             self.Blocks.append(block)     
         

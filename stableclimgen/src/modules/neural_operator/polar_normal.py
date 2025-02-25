@@ -18,7 +18,8 @@ class polNormal_NoLayer(NoLayer):
                  nh_in_decode=True,
                  precompute_encode=True,
                  precompute_decode=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 normalize_to_mask=True
                 ) -> None: 
     
         super().__init__(grid_layer_encode, 
@@ -31,6 +32,7 @@ class polNormal_NoLayer(NoLayer):
                  coord_system='cartesian',
                  rotate_coord_system=rotate_coord_system)
         
+        self.normalize_to_mask = normalize_to_mask
         self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi*n_dist*n_sigma
 
@@ -91,8 +93,9 @@ class polNormal_NoLayer(NoLayer):
             c_shape = (-1, n_out, seq_in, seq_in_nh)
 
         if mask is not None:
-            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
-            weights = weights*norm
+            if self.normalize_to_mask:
+                norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
+                weights = weights*norm
 
             mask = mask.view(*c_shape,nv)
             mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
@@ -127,8 +130,9 @@ class polNormal_NoLayer(NoLayer):
             c_shape = (-1, n_out, seq_out, seq_in)
 
         if mask is not None:
-            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
-            weights = weights*norm
+            if self.normalize_to_mask:
+                norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
+                weights = weights*norm
 
             mask = mask.view(*c_shape,nv)
 
@@ -152,7 +156,7 @@ class polNormal_NoLayer(NoLayer):
 
         x, mask = self.mult_weights_t(x, weights, mask=mask)
 
-        if mask is not None:
+        if mask is not None and self.normalize_to_mask:
             x = x.masked_fill_(mask.view(*x.shape[:4],*(1,)*(x.dim()-4)), 0.0)
 
         x = x.view(b, n_out, nv, *self.n_params_no, nc)
@@ -174,8 +178,10 @@ class polNormal_NoLayer(NoLayer):
 
         x = x.view(b,-1,nv,nc)
 
+        if mask is not None and self.normalize_to_mask:
+            x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
+
         if mask is not None:
             mask = mask.view(x.shape[:-1])
-            x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
 
         return x, mask

@@ -3,7 +3,9 @@ import torch.nn as nn
 
 from typing import List
 
-from ...modules.neural_operator.no_blocks import MGNO_EncoderDecoder_Block, MGNO_Processing_Block
+from .mgno_encoderdecoder_block import MGNO_EncoderDecoder_Block
+from .mgno_processing_block import MGNO_Processing_Block
+
 from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig
 from .mgno_base_model import MGNO_base_model
 
@@ -35,8 +37,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                      ,torch.tensor(0).view(-1))).unique()
         
         super().__init__(mgrids, 
-                         global_levels,
-                         mask_as_embedding=mask_as_embedding)
+                         global_levels)
         
        
         self.Blocks = nn.ModuleList()
@@ -64,7 +65,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             mg_att_dim=block_conf.mg_att_dim,
                                             mg_n_head_channels=block_conf.mg_n_head_channels,
                                             rotate_coordinate_system=rotate_coord_system,
-                                            level_diff_zero_linear=block_conf.level_diff_zero_linear)  
+                                            level_diff_zero_linear=block_conf.level_diff_zero_linear,
+                                            mask_as_embedding=mask_as_embedding)  
                 
             elif isinstance(block_conf, MGProcessingConfig):
                 block = MGNO_Processing_Block(
@@ -73,7 +75,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                             input_dims,
                             block_conf.model_dims_out,
                             self.grid_layers,
-                            rotate_coordinate_system=rotate_coord_system)
+                            rotate_coordinate_system=rotate_coord_system,
+                            mask_as_embedding=mask_as_embedding)
                         
                 
             self.Blocks.append(block)     
