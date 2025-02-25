@@ -96,7 +96,7 @@ class NOBlock(nn.Module):
         if hasattr(self, 'grid_layer'):
             emb = add_coordinates_to_emb_dict(self.grid_layer, indices_sample["indices_layers"] if indices_sample else None, emb)
 
-        if self.mask_as_embedding and mask is not None:
+        if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
 
         x = self.gamma1 * self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
@@ -298,6 +298,8 @@ class SpatialAttention(nn.Module):
         # insert time dimension
         x = x.unsqueeze(dim=1)
         mask = mask.unsqueeze(dim=1) if mask is not None else mask
+        
+      #      emb['MaskEmbedder'] = emb['MaskEmbedder'].unsqueeze(dim=1)
 
         x = self.grid_attention_layer(x, 
                                       indices_sample=indices_sample, 

@@ -179,6 +179,7 @@ class polNormal_NoLayer(NoLayer):
         x = x.view(b,-1,nv,nc)
 
         if mask is not None and self.normalize_to_mask:
+            mask = mask.view(x.shape[:-1])
             x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
 
         if mask is not None:
