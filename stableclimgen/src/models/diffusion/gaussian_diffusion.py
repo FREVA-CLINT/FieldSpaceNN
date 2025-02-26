@@ -117,6 +117,7 @@ class GaussianDiffusion:
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
         rescale_timesteps: bool = False,
+        clip_denoised: bool = False,
         diffusion_steps: int = 1000,
         diffusion_step_scheduler: str = "linear",
         diffusion_step_sampler: Optional[Callable] = None
@@ -126,6 +127,7 @@ class GaussianDiffusion:
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_steps = rescale_timesteps
+        self.clip_denoised = clip_denoised
 
         # Initialize beta schedule if not provided
         if betas is None:
@@ -288,6 +290,8 @@ class GaussianDiffusion:
         def process_xstart(in_tensor):
             if denoised_fn is not None:
                 in_tensor = denoised_fn(in_tensor)
+            if self.clip_denoised:
+                return x.clamp(-1, 1)
             return in_tensor
 
         # Predict initial x depending on mean type
