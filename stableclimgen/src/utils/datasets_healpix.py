@@ -99,6 +99,16 @@ class HealPixLoader(Dataset):
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
 
+        if "timesteps" in data_dict.keys():
+            self.sample_timesteps = []
+            for t in data_dict["timesteps"]:
+                if type(t) == int or "-" not in t:
+                    self.sample_timesteps.append(int(t))
+                else:
+                    self.sample_timesteps += list(range(int(t.split("-")[0]), int(t.split("-")[1])))
+        else:
+            self.sample_timesteps = None
+
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
@@ -175,7 +185,7 @@ class HealPixLoader(Dataset):
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
-        self.len_dataset = ds_source["time"].shape[0]*self.global_cells.shape[0]
+        self.len_dataset = len(self.sample_timesteps) if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -239,11 +249,13 @@ class HealPixLoader(Dataset):
         
         ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
 
-        if self.random_time_idx:
+        if self.random_time_idx and not self.sample_timesteps:
             index = int(torch.randint(0, len(ds_source.time.values), (1,1)))
             if self.index_range_source is not None:
                 if (index < self.index_range_source[0]) or (index > self.index_range_source[1]):
                     index = int(torch.randint(self.index_range_source[0], self.index_range_source[1]+1, (1,1)))
+        elif self.sample_timesteps:
+            index = self.sample_timesteps[index]
 
 
         global_cells_input = self.global_cells_input

@@ -3,15 +3,13 @@ import os
 from typing import Any
 
 import hydra
-import numpy as np
 import torch
-import xarray as xr
 from hydra.utils import instantiate
-from omegaconf import DictConfig
+from lightning.pytorch import Trainer
+from omegaconf import DictConfig, OmegaConf
+from pytorch_lightning.utilities import rank_zero_only
 
-from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
-from stableclimgen.src.utils import normalizer as normalizers
-from stableclimgen.src.utils.grid_utils_icon import get_coords_as_tensor
+from stableclimgen.src.utils.pl_data_module import DataModule
 
 torch.manual_seed(42)
 
@@ -43,123 +41,24 @@ def test(cfg: DictConfig) -> None:
     :param cfg: Configuration object containing all settings for training, datasets,
                 model, and logging.
     """
+    if not os.path.exists(os.path.dirname(cfg.output_path)):
+        os.makedirs(os.path.dirname(cfg.output_path))
+
+    # Load data configuration and initialize datasets
     with open(cfg.dataloader.dataset.data_dict) as json_file:
-        data_dict = json.load(json_file)
+        data = json.load(json_file)
+    test_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["test"])
 
-    if not os.path.exists(cfg.output_dir):
-        os.makedirs(cfg.output_dir)
-
-    variables_train = data_dict["train"]['source']["variables"]
-    variables = data_dict["test"]["variables"]
-    files = data_dict["test"]["files"]
-    coarsen_level_batches = cfg.coarsen_level_batches if "coarsen_level_batches" in cfg.keys() else -1
-    p_dropout = cfg.p_dropout if "p_dropout" in cfg.keys() else 0
-    drop_vars = cfg.drop_vars if "drop_vars" in cfg.keys() else False
-
+    # Initialize model and trainer
     model: Any = instantiate(cfg.model)
-    ckpt = torch.load(cfg.ckpt_path)
-    model.load_state_dict(ckpt["state_dict"])
-    sampler = instantiate(cfg.sampler, gaussian_diffusion=model.gaussian_diffusion)
-    model.eval()
-    
-    with open(cfg.dataloader.dataset.norm_dict) as json_file:
-        norm_dict = json.load(json_file)
+    trainer: Trainer = instantiate(cfg.trainer)
 
-    var_normalizers = {}
-    for var in variables:
-        norm_class = norm_dict[var]['normalizer']['class']
-        assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+    data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
-        var_normalizers[var] = normalizers.__getattribute__(norm_class)(
-            norm_dict[var]['stats'],
-            norm_dict[var]['normalizer'])
+    # Start the training process
+    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)[0]
 
-    processing_nside = cfg.dataloader.dataset.processing_nside
-    in_nside = cfg.dataloader.dataset.in_nside
-    coords_processing = healpix_pixel_lonlat_torch(processing_nside)
-
-    if processing_nside == in_nside:
-        input_mapping = torch.arange(coords_processing.shape[0]).unsqueeze(dim=-1)
-        input_in_range = torch.ones_like(input_mapping, dtype=bool).unsqueeze(dim=-1)
-        input_coordinates = None
-        input_in_range = None
-    else:
-        if in_nside is not None:
-            input_coordinates = healpix_pixel_lonlat_torch(in_nside)
-        else:
-            assert (cfg.dataloader.dataset.in_grid is not None)
-            input_coordinates = get_coords_as_tensor(xr.open_zarr(cfg.dataloader.dataset.in_grid, decode_times=False),
-                                                     grid_type='cell')  # change for other grids
-        mapping = get_mapping_to_healpix_grid(coords_processing,
-                                              input_coordinates,
-                                              search_radius=cfg.dataloader.dataset.search_radius,
-                                              max_nh=cfg.dataloader.dataset.nh_input,
-                                              lowest_level=0,
-                                              periodic_fov=None)
-
-        input_mapping = mapping["indices"]
-        input_in_range = mapping["in_rng_mask"]
-
-    var_indices = [np.where(var==np.array(variables_train))[0][0] for var in variables]
-
-    input_coordinates = input_coordinates[input_mapping].unsqueeze(dim=0) if input_coordinates is not None else input_coordinates
-
-    for file_idx, file in enumerate(files):
-        ds = xr.open_zarr(file, decode_times=False)
-        for tp in data_dict["test"]['timepoints']:
-            data = get_data(ds, ts=data_dict["test"]['timepoints'], variables=variables)
-            data = data[input_mapping]
-            for k, var in enumerate(variables):
-                data[:,:,k] = var_normalizers[var].normalize(data[:,:,k])
-
-            embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=0)}
-
-            if coarsen_level_batches!=-1:
-                indices_sample = {'sample': torch.arange(data.shape[0]//4**coarsen_level_batches),
-                    'sample_level': torch.ones(data.shape[0]//4**coarsen_level_batches, dtype=int).view(-1)*coarsen_level_batches}
-                
-                data = data.view(len(indices_sample['sample']),-1,data.shape[1],data.shape[-1],1)
-                if input_coordinates is not None:
-                    input_coordinates = input_coordinates.view(len(indices_sample['sample']),-1,input_coordinates.shape[2],2)
-
-                embed_data['VariableEmbedder'] = embed_data['VariableEmbedder'].repeat_interleave(data.shape[0],dim=0)
-            else:
-                data = torch.tensor(data[np.newaxis,...,np.newaxis])
-                indices_sample=None
-
-            mask = torch.zeros(*data.shape, dtype=bool)
-
-            if input_in_range is not None:
-                if indices_sample is not None:
-                    input_in_range = input_in_range.view(len(indices_sample['sample']), -1, input_in_range.shape[-1])
-                else:
-                    input_in_range = input_in_range.view(1, -1)
-                mask[input_in_range == False] = True
-
-            b, n, nh, nv = data.shape[:4]
-            if p_dropout > 0 and not drop_vars:
-                drop_mask_p = (torch.rand((b, n, nh)) < p_dropout).bool()
-                mask[drop_mask_p] = True
-
-            elif drop_vars:
-                drop_mask_p = (torch.rand((b, n, nh, nv)) < p_dropout).bool()
-                mask[drop_mask_p] = True
-
-            with (torch.no_grad()):
-                model_kwargs = {
-                    'emb': embed_data,
-                    'coords_input': input_coordinates,
-                    'coords_output': None,
-                    'indices_sample': indices_sample
-                }
-                output = sampler.sample_loop(model.model, data, mask, progress=True, **model_kwargs)
-            output = output.view(-1,output.shape[-2])
-            for k, var in enumerate(variables):
-                output[:,k] = var_normalizers[var].denormalize(output[:,k])
-            
-            output = dict(zip(variables, output.split(1, dim=-1)))
-
-            torch.save(output, os.path.join(cfg.output_dir,os.path.basename(file).replace('.zarr',f'_{tp}.pt')))
+    torch.save(predictions, cfg.output_path)
 
 if __name__ == "__main__":
     test()

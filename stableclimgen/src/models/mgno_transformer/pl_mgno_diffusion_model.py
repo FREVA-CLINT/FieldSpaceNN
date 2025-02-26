@@ -1,5 +1,7 @@
 import os
 import math
+from typing import Any
+
 import torch.nn as nn
 
 import lightning.pytorch as pl
@@ -8,18 +10,23 @@ import torch
 from torch.optim import AdamW
 
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
+from ..diffusion.sampler import DDPMSampler, DDIMSampler
 from ...utils.visualization import scatter_plot, scatter_plot_diffusion
 from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
 
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
-    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, **base_model_args):
+    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
         # maybe create multi_grid structure here?
         self.model = model
 
         self.lr_groups = lr_groups
         self.gaussian_diffusion = gaussian_diffusion
+        if sampler == "ddpm":
+            self.sampler = DDPMSampler(self.gaussian_diffusion)
+        else:
+            self.sampler = DDIMSampler(self.gaussian_diffusion)
         self.save_hyperparameters(ignore=['model'])
 
 
@@ -79,6 +86,17 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
+
+    def predict_step(self, batch, batch_index):
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        model_kwargs = {
+            'emb': emb,
+            'coords_input': coords_input,
+            'coords_output': coords_output,
+            'indices_sample': indices
+        }
+        output = self.sampler.sample_loop(self.model, source, mask.unsqueeze(-1), progress=True, **model_kwargs)
+        return output
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
