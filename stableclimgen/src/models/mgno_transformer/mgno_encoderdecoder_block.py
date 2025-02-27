@@ -4,6 +4,8 @@ import torch
 
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...utils.helpers import check_get_missing_key
+from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict
+
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict,get_embedder
 from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock
 from ...modules.neural_operator import mg_layers as mg
@@ -34,6 +36,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
       
         super().__init__()
 
+        self.grid_layers = grid_layers
+
         self.mask_as_embedding = mask_as_embedding
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
@@ -43,6 +47,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
         self.module_indices = []
         self.output_indices = []
         self.layer_indices = []
+        self.output_levels = []
         self.add_coordinate_embedding_dict = {}
         layer_index = 0
         for output_idx, output_level in enumerate(global_levels_decode):
@@ -180,6 +185,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             else:
                 reduction_layer = mg.IdentityReductionLayer()
             
+            self.output_levels.append(output_level)
             self.reduction_layers.append(reduction_layer)
 
             self.layer_indices.append(layer_indices)
@@ -201,7 +207,6 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 x = x_levels[input_index]
                 mask = mask_levels[input_index]
                 
-
                 layer = self.layers[self.layer_indices[output_index][layer_index]]
                 
                 if isinstance(layer, nn.Identity) or isinstance(layer, nn.Linear):
@@ -216,6 +221,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 masks_.append(mask_out)
                 outputs_.append(x_out)
 
+            emb = add_coordinates_to_emb_dict(self.grid_layers[str(self.output_levels[output_index])], 
+                                              indices_sample["indices_layers"] if indices_sample else None, 
+                                              emb=emb)
+            
             x_out, mask_out = self.reduction_layers[output_index](outputs_, mask_levels=masks_, emb=emb)
 
             x_levels_out.append(x_out)
