@@ -45,7 +45,7 @@ class NoLayer(nn.Module):
             precompute = precompute_decode,
             coord_system=coord_system,
             rotate_coord_system=rotate_coord_system,
-            ref='in')
+            ref='out')
 
         self.nh_dist = grid_layer_no.nh_dist
 

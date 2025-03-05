@@ -11,6 +11,7 @@ from ..transformer.attention import ChannelVariableAttention, ResLayer, Adaptive
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential
 
+einsum_dims = 'pqrstuvw'
 
 def get_residual(x, level_diff, mask=None):
     if level_diff > 0:
@@ -223,7 +224,8 @@ class NOConv(nn.Module):
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = torch.einsum("nbvpqrx, pqrxy -> nbvpqry", x, (1+self.gamma*self.weights))
+        no_dims = einsum_dims[:len(self.no_dims)]
+        x = torch.einsum(f"nbv{no_dims}x, {no_dims}xy -> nbv{no_dims}y", x, (1+self.gamma*self.weights))
     
         x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 

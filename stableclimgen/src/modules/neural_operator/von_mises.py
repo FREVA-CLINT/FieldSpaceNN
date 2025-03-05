@@ -55,7 +55,7 @@ class VonMises_NoLayer(NoLayer):
         angles_weights = torch.cos(angles.unsqueeze(dim=-1) - self.phis.view(1,1,-1))
 
         vm_weights = torch.exp(self.kappa * angles_weights)
-
+        
         sigma = self.sigma*self.dist_unit
 
         alpha = torch.exp(-0.5 * (dists**2/ sigma** 2))
@@ -65,6 +65,8 @@ class VonMises_NoLayer(NoLayer):
 
     def mult_weights_t(self, x, weights, alpha, mask=None):
         
+        weights = weights/weights.sum(dim=[-1], keepdim=True)
+
         weights = weights * (1 - alpha)
 
         weights = torch.concat((alpha, weights), dim=-1)
@@ -110,6 +112,8 @@ class VonMises_NoLayer(NoLayer):
         _, n_out, seq_out, seq_in = weights.shape[:4]
         nv = x.shape[3]
         n_in = x.shape[1]
+
+        weights = weights/weights.sum(dim=[-1], keepdim=True)
 
         weights = weights * (1-alpha) 
         weights = torch.concat((alpha, weights), dim=-1)
