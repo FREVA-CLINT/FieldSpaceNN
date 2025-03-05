@@ -18,7 +18,8 @@ class VonMises_NoLayer(NoLayer):
                  nh_in_decode=True,
                  precompute_encode=True,
                  precompute_decode=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 diff=True
                 ) -> None: 
     
         super().__init__(grid_layer_encode, 
@@ -31,6 +32,7 @@ class VonMises_NoLayer(NoLayer):
                  coord_system='polar',
                  rotate_coord_system=rotate_coord_system)
         
+        self.diff_mode=diff
         self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi
 
@@ -102,7 +104,8 @@ class VonMises_NoLayer(NoLayer):
             x = x * weights.unsqueeze(dim=-1)
             x = x.sum(dim=[2,3]).unsqueeze(dim=3)
 
-        x = torch.concat((x[...,[0],:], x[...,[0],:] - x[...,1:,:]), dim=-2)
+        if self.diff_mode:
+            x = torch.concat((x[...,[0],:], x[...,[0],:] - x[...,1:,:]), dim=-2)
         
         return x, mask
 
@@ -137,7 +140,8 @@ class VonMises_NoLayer(NoLayer):
 
         weights = weights/(weights.sum(dim=[3,-2], keepdim=True)+1e-20)
 
-        x = torch.concat((x[...,[0],:], x[...,[0],:] + x[...,1:,:]), dim=-2)
+        if self.diff_mode:
+            x = torch.concat((x[...,[0],:], x[...,[0],:] + x[...,1:,:]), dim=-2)
 
         x = x.unsqueeze(dim=2)
 
