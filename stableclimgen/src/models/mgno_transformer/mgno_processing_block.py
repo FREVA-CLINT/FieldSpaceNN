@@ -36,6 +36,11 @@ class MGNO_Processing_Block(nn.Module):
             for layer_idx, layer_setting in enumerate(layer_settings_level):
                 model_dim_out = model_dims_out[level_idx][layer_idx]
 
+                min_lvl = layer_setting.get("min_lvl",0)
+                
+                if current_level < min_lvl:
+                    continue
+
                 if 'NO' in layer_setting["type"]:
                     no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
                     no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
@@ -74,7 +79,7 @@ class MGNO_Processing_Block(nn.Module):
                                         with_gamma = 'gamma' in layer_setting["type"]
                                         )
 
-                if "var_att" in layer_setting["type"]:
+                elif "var_att" in layer_setting["type"]:
                     embedder_att = get_embedder_from_dict(layer_setting)
                     embedder_mlp = get_embedder_from_dict(layer_setting)
 
