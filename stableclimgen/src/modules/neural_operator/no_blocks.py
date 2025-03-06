@@ -55,7 +55,7 @@ class NOBlock(nn.Module):
         level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
 
         if level_diff_no_out == 0 and OW_zero:
-            self.no_conv = OW_NO_Lin(model_dim_in, model_dim_out, no_layer)
+            self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
         else:
             if cross_no:
                 self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
@@ -129,17 +129,23 @@ class PreActivation_NOBlock(nn.Module):
                  p_dropout=0.,
                  cross_no = False,
                  with_gamma=False,
-                 mask_as_embedding=False
+                 mask_as_embedding=False,
+                 OW_zero = False
                 ) -> None: 
       
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
 
-        if cross_no:
-            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
+
+        if level_diff_no_out == 0 and OW_zero:
+            self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
         else:
-            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+            if cross_no:
+                self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+            else:
+                self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
         self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
@@ -271,13 +277,14 @@ class CrossNOConv(nn.Module):
 
         return x, mask
     
-class OW_NO_Lin(nn.Module):
+class OW_NO(nn.Module):
   
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
                  no_layer: NoLayer,
-                 p_dropout=0.
+                 p_dropout=0.,
+                 layer_type="lin"
                 ) -> None: 
       
         super().__init__()
@@ -288,7 +295,8 @@ class OW_NO_Lin(nn.Module):
         self.global_level_in = self.no_layer.global_level_encode
         self.global_level_out = self.no_layer.global_level_decode
 
-        self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out, bias=False)
+        if layer_type == "lin":
+            self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out, bias=False)
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
