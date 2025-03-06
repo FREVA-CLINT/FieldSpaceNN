@@ -67,6 +67,9 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 elif ">" in rule and level_diff<0:
                     continue
 
+                elif "=" in rule and level_diff!=0:
+                    continue
+
                 if rule == ">max" and input_level!=max(input_levels) and level_diff!=0:
                     continue
                 
@@ -124,7 +127,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                         embedder=embedder,
                                         cross_no = 'cross_no' in layer_setting["type"],
                                         with_gamma = 'gamma' in layer_setting["type"],
-                                        mask_as_embedding=mask_as_embedding
+                                        mask_as_embedding=mask_as_embedding,
+                                        OW_zero=layer_setting.get("OW_zero",False)
                                         )
                 elif 'linear' in layer_type:
                     layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
