@@ -78,7 +78,9 @@ class HealPixLoader(Dataset):
                  p_average_dropout=0,
                  max_average_lvl=0,
                  drop_vars=False,
-                 n_sample_vars=-1):
+                 n_sample_vars=-1,
+                 variables_source=None,
+                 variables_target=None):
         
         super(HealPixLoader, self).__init__()
         
@@ -96,8 +98,8 @@ class HealPixLoader(Dataset):
         self.drop_vars = drop_vars
         self.n_sample_vars = n_sample_vars
 
-        self.variables_source = data_dict["source"]["variables"]
-        self.variables_target = data_dict["target"]["variables"]
+        self.variables_source = variables_source or data_dict["source"]["variables"]
+        self.variables_target = variables_target or data_dict["target"]["variables"]
 
         if "timesteps" in data_dict.keys():
             self.sample_timesteps = []

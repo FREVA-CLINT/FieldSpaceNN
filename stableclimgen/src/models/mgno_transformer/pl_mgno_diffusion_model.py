@@ -1,22 +1,15 @@
 import os
-import math
-from typing import Any
 
-import torch.nn as nn
-
-import lightning.pytorch as pl
 import torch
-
-from torch.optim import AdamW
 
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
 from ..diffusion.sampler import DDPMSampler, DDIMSampler
-from ...utils.visualization import scatter_plot, scatter_plot_diffusion
-from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
+from ...utils.visualization import scatter_plot_diffusion
+
 
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
-    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", **base_model_args):
+    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", n_samples=1, max_batchsize=-1, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
         # maybe create multi_grid structure here?
         self.model = model
@@ -27,6 +20,8 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
             self.sampler = DDPMSampler(self.gaussian_diffusion)
         else:
             self.sampler = DDIMSampler(self.gaussian_diffusion)
+        self.n_samples = n_samples
+        self.max_batchsize = max_batchsize
         self.save_hyperparameters(ignore=['model'])
 
 
@@ -87,16 +82,58 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
 
-    def predict_step(self, batch, batch_index):
+    def predict_step(self, batch, batch_index, n_samples=1):
         source, target, coords_input, coords_output, indices, mask, emb = batch
+        batch_size = source.shape[0]
+        total_samples = batch_size * self.n_samples  # Total expanded batch size
+
+        # Repeat each sample n_samples times
+        source = source.repeat_interleave(self.n_samples, dim=0)
+        coords_input = coords_input.repeat_interleave(self.n_samples, dim=0)
+        coords_output = coords_output.repeat_interleave(self.n_samples, dim=0)
+        mask = mask.repeat_interleave(self.n_samples, dim=0).unsqueeze(-1)
+
+        indices = indices.repeat_interleave(self.n_samples, dim=0) if torch.is_tensor(indices) else {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in indices.items()}
+        emb = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in emb.items()}
+
         model_kwargs = {
             'emb': emb,
             'coords_input': coords_input,
             'coords_output': coords_output,
             'indices_sample': indices
         }
-        output = self.sampler.sample_loop(self.model, source, mask.unsqueeze(-1), progress=True, **model_kwargs)
-        return output
+
+        if self.max_batchsize != -1 and total_samples > self.max_batchsize:
+            outputs = []
+            for start in range(0, total_samples, self.max_batchsize):
+                end = min(start + self.max_batchsize, total_samples)
+
+                # Slice dictionaries properly
+                indices_chunk = indices[start:end] if torch.is_tensor(indices) else {k: v[start:end] for k, v in indices.items()}
+                emb_chunk = {k: v[start:end] for k, v in emb.items()}
+
+                output_chunk = self.sampler.sample_loop(
+                    self.model,
+                    source[start:end],
+                    mask[start:end],
+                    progress=True,
+                    emb=emb_chunk,
+                    coords_input=coords_input[start:end],
+                    coords_output=coords_output[start:end],
+                    indices_sample=indices_chunk,
+                )
+                outputs.append(output_chunk)
+
+            # Concatenate all output chunks
+            output = torch.cat(outputs, dim=0)
+        else:
+            output = self.sampler.sample_loop(
+                self.model, source, mask, progress=True, **model_kwargs
+            )
+
+        output = output.view(batch_size, self.n_samples, *output.shape[1:])
+        mask = mask.view(batch_size, self.n_samples, *mask.shape[1:])
+        return output, mask
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")

@@ -47,7 +47,10 @@ def test(cfg: DictConfig) -> None:
     # Load data configuration and initialize datasets
     with open(cfg.dataloader.dataset.data_dict) as json_file:
         data = json.load(json_file)
-    test_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["test"])
+    test_dataset = instantiate(cfg.dataloader.dataset,
+                               data_dict=data["test"],
+                               variables_source=data["train"]["source"]["variables"],
+                               variables_target = data["train"]["target"]["variables"])
 
     # Initialize model and trainer
     model: Any = instantiate(cfg.model)
@@ -56,9 +59,19 @@ def test(cfg: DictConfig) -> None:
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     # Start the training process
-    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)[0]
+    output, mask = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
+    output = torch.cat(output)
+    output = output.view(*output.shape[:3], -1)
+    mask = torch.cat(mask)
+    mask = output.view(*mask.shape[:3], -1)
 
-    torch.save(predictions, cfg.output_path)
+    for k, var in enumerate(test_dataset.variables_target):
+        output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
+
+    output = dict(zip(test_dataset.variables_target, output.split(1, dim=-2)))
+    torch.save(output, cfg.output_path)
+    mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-2)))
+    torch.save(mask, cfg.output_path)
 
 if __name__ == "__main__":
     test()
