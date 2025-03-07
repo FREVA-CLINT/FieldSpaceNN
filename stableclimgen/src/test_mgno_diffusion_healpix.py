@@ -59,11 +59,12 @@ def test(cfg: DictConfig) -> None:
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     # Start the training process
-    output, mask = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
-    output = torch.cat(output)
+    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
+    # Aggregate outputs from multiple devices
+    output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = output.view(*output.shape[:3], -1)
-    mask = torch.cat(mask)
-    mask = output.view(*mask.shape[:3], -1)
+    mask = torch.cat([batch["mask"] for batch in predictions], dim=0)
+    mask = mask.view(*mask.shape[:3], -1)
 
     for k, var in enumerate(test_dataset.variables_target):
         output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
@@ -71,7 +72,7 @@ def test(cfg: DictConfig) -> None:
     output = dict(zip(test_dataset.variables_target, output.split(1, dim=-2)))
     torch.save(output, cfg.output_path)
     mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-2)))
-    torch.save(mask, cfg.output_path.replace(".", "_mask."))
+    torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
 if __name__ == "__main__":
     test()

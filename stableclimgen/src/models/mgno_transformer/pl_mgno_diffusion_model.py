@@ -133,7 +133,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
 
         output = output.view(batch_size, self.n_samples, *output.shape[1:])
         mask = mask.view(batch_size, self.n_samples, *mask.shape[1:])
-        return output, mask
+        return {"output": output, "mask": mask}
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
