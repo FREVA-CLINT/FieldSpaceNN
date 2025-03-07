@@ -42,7 +42,7 @@ def get_no_layer(type,
                 normalize_to_mask=normalize_to_mask
             )
     
-    elif type == 'VonMises':
+    elif 'VonMises' in type:
 
         assert len(n_params)==1, "len(n_params) should be equal to 1 for von mises NO layer"
         assert len(global_params_learnable)==2, "len(global_params_learnable) should be equal to 2 for von mises NO layer"
@@ -63,7 +63,8 @@ def get_no_layer(type,
                 nh_in_decode=layer_settings.get("nh_in_decode",True),
                 precompute_encode=precompute_encode,
                 precompute_decode=precompute_decode,
-                rotate_coord_system=rotate_coordinate_system
+                rotate_coord_system=rotate_coordinate_system,
+                diff = 'diff' in type
             )
     return no_layer
 

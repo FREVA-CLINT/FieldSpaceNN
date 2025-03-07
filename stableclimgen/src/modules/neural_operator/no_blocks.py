@@ -11,6 +11,7 @@ from ..transformer.attention import ChannelVariableAttention, ResLayer, Adaptive
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential
 
+einsum_dims = 'pqrstuvw'
 
 def get_residual(x, level_diff, mask=None):
     if level_diff > 0:
@@ -41,19 +42,26 @@ class NOBlock(nn.Module):
                  embedder: EmbedderSequential=None,
                  cross_no = False,
                  with_gamma = False,
-                 mask_as_embedding=False
+                 mask_as_embedding=False,
+                 OW_zero = False
                 ) -> None: 
       
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
-        if cross_no:
-            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
-        else:
-            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
-        
+
         self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
+        level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
+
+        if level_diff_no_out == 0 and OW_zero:
+            self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
+        else:
+            if cross_no:
+                self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+            else:
+                self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+        
         self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
         self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
 
@@ -121,17 +129,23 @@ class PreActivation_NOBlock(nn.Module):
                  p_dropout=0.,
                  cross_no = False,
                  with_gamma=False,
-                 mask_as_embedding=False
+                 mask_as_embedding=False,
+                 OW_zero = False
                 ) -> None: 
       
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
 
-        if cross_no:
-            self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+        level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
+
+        if level_diff_no_out == 0 and OW_zero:
+            self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
         else:
-            self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
+            if cross_no:
+                self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+            else:
+                self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
         self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
 
@@ -223,7 +237,8 @@ class NOConv(nn.Module):
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        x = torch.einsum("nbvpqrx, pqrxy -> nbvpqry", x, (1+self.gamma*self.weights))
+        no_dims = einsum_dims[:len(self.no_dims)]
+        x = torch.einsum(f"nbv{no_dims}x, {no_dims}xy -> nbv{no_dims}y", x, (1+self.gamma*self.weights))
     
         x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
@@ -261,7 +276,38 @@ class CrossNOConv(nn.Module):
         x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         return x, mask
+    
+class OW_NO(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: NoLayer,
+                 p_dropout=0.,
+                 layer_type="lin"
+                ) -> None: 
+      
+        super().__init__()
 
+        self.no_layer = no_layer
+
+        self.no_dims = self.no_layer.n_params_no 
+        self.global_level_in = self.no_layer.global_level_encode
+        self.global_level_out = self.no_layer.global_level_decode
+
+        if layer_type == "lin":
+            self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out, bias=False)
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        x_shape = x.shape
+        x = x.view(*x.shape[:3],-1)
+        x = self.linear_layer(x)
+    
+        #x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        return x, mask
 
 class SpatialAttention(nn.Module):
   

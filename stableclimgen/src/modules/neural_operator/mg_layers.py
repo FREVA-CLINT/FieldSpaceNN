@@ -5,6 +5,8 @@ import torch.nn as nn
 import einops
 import math
 
+from ...modules.icon_grids.grid_layer import GridLayer
+
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm, MultiHeadAttentionBlock
 
 from ...modules.embedding.embedder import EmbedderSequential
@@ -64,6 +66,7 @@ class MGAttentionReductionLayer(nn.Module):
         v = []
         for level_idx, x in enumerate(x_levels):
             emb['GridEmbedder'] = self.grid_embedding_indices[[level_idx]]
+            #add_coordinates_to_emb_dict()
             x = self.lin_projections[level_idx](x)
             v.append(x)
             x_levels[level_idx] = self.attention_ada_lns[level_idx](x, emb=emb)
@@ -118,7 +121,7 @@ class MGDiffMAttentionReductionLayer(nn.Module):
                  model_dims_in: List,
                  model_dim_out: int,
                  att_dim= 128,
-                 n_head_channels=16, 
+                 n_head_channels=16,
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
