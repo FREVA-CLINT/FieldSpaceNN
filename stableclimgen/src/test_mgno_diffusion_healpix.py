@@ -71,7 +71,7 @@ def test(cfg: DictConfig) -> None:
     output = dict(zip(test_dataset.variables_target, output.split(1, dim=-2)))
     torch.save(output, cfg.output_path)
     mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-2)))
-    torch.save(mask, cfg.output_path)
+    torch.save(mask, cfg.output_path.replace(".", "_mask."))
 
 if __name__ == "__main__":
     test()
