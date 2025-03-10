@@ -1,15 +1,17 @@
 from ...utils.helpers import check_get_missing_key
 from .polar_normal import polNormal_NoLayer
 from .von_mises import VonMises_NoLayer
+from typing import List
 from ...modules.icon_grids.grid_layer import GridLayer
 import torch
 import torch.nn as nn
 from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, BaseEmbedder
 
 def get_no_layer(type,
-                 grid_layer_encode, 
-                 grid_layer_no, 
-                 grid_layer_decode, 
+                 grid_layers: List[GridLayer],
+                 input_level: int,
+                 global_level_no: int,
+                 output_levels: List[int],
                  precompute_encode, 
                  precompute_decode, 
                  rotate_coordinate_system,
@@ -26,9 +28,10 @@ def get_no_layer(type,
         assert len(global_params_learnable)==2, "len(global_params_learnable) should be equal to 2 for polNormal_NoLayer"
 
         no_layer = polNormal_NoLayer(
-                grid_layer_encode,
-                grid_layer_no,
-                grid_layer_decode,
+                grid_layers,
+                input_level,
+                global_level_no,
+                output_levels,
                 n_phi=n_params[0],
                 n_dist=n_params[1],
                 n_sigma=n_params[2],
@@ -51,9 +54,10 @@ def get_no_layer(type,
         sigma = check_get_missing_key(layer_settings, "sigma", ref=type)
 
         no_layer = VonMises_NoLayer(
-                grid_layer_encode,
-                grid_layer_no,
-                grid_layer_decode,
+                grid_layers,
+                input_level,
+                global_level_no,
+                output_levels,
                 n_phi=n_params[0],
                 kappa=kappa,
                 sigma=sigma,

@@ -3,13 +3,15 @@ import torch.nn as nn
 
 from typing import List
 
-from ...modules.icon_grids.grid_layer import GridLayer
+from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager
 
 
 class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
-                 global_levels: List[int]
+                 global_levels: List[int],
+                 nh_up=False,
+                 nh_down=True
                  ) -> None: 
         
                 
@@ -26,6 +28,15 @@ class MGNO_base_model(nn.Module):
 
         self.grid_layer_0 = self.grid_layers["0"]
         # Construct blocks based on configurations
+
+        self.rcm = MultiStepRelativeCoordinateManager(self.grid_layers,
+                                                    nh_up=nh_up,
+                                                    nh_down=nh_down,
+                                                    precompute=True,
+                                                    coord_system="polar",
+                                                    rotate_coord_system=True
+                                                    )
+
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
 

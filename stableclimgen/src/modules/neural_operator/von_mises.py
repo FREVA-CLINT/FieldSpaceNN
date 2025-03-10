@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import math
-from .neural_operator import NoLayer
+from .neural_operator import NoLayer,StackedNoLayer
 
-class VonMises_NoLayer(NoLayer):
+class VonMises_NoLayer(StackedNoLayer):
 
     def __init__(self,
-                 grid_layer_encode,
-                 grid_layer_no,
-                 grid_layer_decode,
+                 grid_layers,
+                 global_level_encode,
+                 global_level_no,
+                 global_level_decode,
                  n_phi=4,
                  kappa=0.5,
                  sigma=0.2,
@@ -22,9 +23,10 @@ class VonMises_NoLayer(NoLayer):
                  diff=True
                 ) -> None: 
     
-        super().__init__(grid_layer_encode, 
-                 grid_layer_no,
-                 grid_layer_decode,
+        super().__init__(grid_layers,
+                 global_level_encode,
+                 global_level_no,
+                 global_level_decode,
                  nh_in_encode=nh_in_encode, 
                  nh_in_decode=nh_in_decode,
                  precompute_encode=precompute_encode,
@@ -33,7 +35,7 @@ class VonMises_NoLayer(NoLayer):
                  rotate_coord_system=rotate_coord_system)
         
         self.diff_mode=diff
-        self.grid_layer_no = grid_layer_no
+        self.grid_layer_no = grid_layers[str(global_level_no)]
         self.n_no_tot = n_phi
 
         self.n_params_no = [n_phi +1]
@@ -45,7 +47,7 @@ class VonMises_NoLayer(NoLayer):
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=kappa_learnable)
 
-        self.dist_unit = grid_layer_no.nh_dist
+        self.dist_unit = self.grid_layer_no.nh_dist
 
         self.sigma = nn.Parameter(torch.tensor(sigma), requires_grad=sigma_learnable)
         

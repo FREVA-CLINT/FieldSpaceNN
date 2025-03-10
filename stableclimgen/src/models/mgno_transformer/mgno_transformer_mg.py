@@ -9,6 +9,8 @@ from .mgno_processing_block import MGNO_Processing_Block
 from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig
 from .mgno_base_model import MGNO_base_model
 
+from ...modules.neural_operator.no_helpers import get_embedder
+from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict,add_mask_to_emb_dict
 
 class MGNO_Transformer_MG(MGNO_base_model):
     def __init__(self, 
@@ -124,3 +126,35 @@ class MGNO_Transformer_MG(MGNO_base_model):
         x = x.view(b,n,-1)
 
         return x
+    
+class EmbedLayer(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 grid_layer_0,
+                 embed_names=None,
+                 embed_confs=None,
+                ) -> None: 
+      
+        super().__init__()
+        self.grid_layer_0 = grid_layer_0
+        if embed_names is not None:
+            embedder = get_embedder(embed_names, embed_confs, embed_mode="sum")
+            emb_dim = embedder.get_out_channels if embedder is not None else None
+            self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_out*2)
+
+        self.linear = nn.Linear(model_dim_in, model_dim_out, bias=True)
+
+    def forward(self, x, mask=None, emb=None):
+        
+        emb = add_coordinates_to_emb_dict()
+        x_shape = x.shape
+        if hasattr(self,"embedding_layer"):
+            emb_ = self.embedder(emb).squeeze(dim=1)
+            scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
+            n = scale.shape[1]
+            scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
+            x = self.linear(x) * (scale + 1) + shift    
+        else:
+            x = self.linear(x)

@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from .neural_operator import NoLayer
+from .neural_operator import NoLayer,StackedNoLayer
 from.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict, update_mask
 
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
@@ -50,9 +50,11 @@ class NOBlock(nn.Module):
 
         self.mask_as_embedding = mask_as_embedding
 
-        self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
+        global_level_decode = int(no_layer.global_levels_decode_out)
 
-        level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
+        self.level_diff = (global_level_decode - no_layer.global_level_encode)
+
+        level_diff_no_out = (no_layer.global_level_no - global_level_decode)
 
         if level_diff_no_out == 0 and OW_zero:
             self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
@@ -83,10 +85,7 @@ class NOBlock(nn.Module):
         )
 
         self.activation = nn.SiLU()
-
-        if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
-            self.grid_layer = no_layer.grid_layer_decode
-        
+              
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         
@@ -100,9 +99,6 @@ class NOBlock(nn.Module):
                                 indices_sample=indices_sample, 
                                 mask=mask, 
                                 emb=emb)
-
-        if hasattr(self, 'grid_layer'):
-            emb = add_coordinates_to_emb_dict(self.grid_layer, indices_sample["indices_layers"] if indices_sample else None, emb)
 
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
@@ -136,8 +132,9 @@ class PreActivation_NOBlock(nn.Module):
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
+        global_level_decode = int(no_layer.global_levels_decode_out)
 
-        level_diff_no_out = (no_layer.global_level_no - no_layer.global_level_decode)
+        level_diff_no_out = (no_layer.global_level_no - global_level_decode)
 
         if level_diff_no_out == 0 and OW_zero:
             self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
@@ -147,7 +144,7 @@ class PreActivation_NOBlock(nn.Module):
             else:
                 self.no_conv = NOConv(model_dim_in, model_dim_out, no_layer)
         
-        self.level_diff = (no_layer.global_level_decode - no_layer.global_level_encode)
+        self.level_diff = (global_level_decode - no_layer.global_level_encode)
 
         self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
         self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
@@ -173,7 +170,6 @@ class PreActivation_NOBlock(nn.Module):
         
         if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
             self.grid_layer_1 = no_layer.grid_layer_encode
-            self.grid_layer_2 = no_layer.grid_layer_decode
 
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
@@ -198,9 +194,6 @@ class PreActivation_NOBlock(nn.Module):
                                  emb=emb)
 
         x = self.gamma1 * x_conv + self.lin_skip_inner(x_res)
-
-        if hasattr(self, 'grid_layer_2'):
-            emb = add_coordinates_to_emb_dict(self.grid_layer_2, indices_sample["indices_layers"] if indices_sample else None, emb)
         
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
@@ -213,12 +206,80 @@ class PreActivation_NOBlock(nn.Module):
     
         return x, mask
 
+
+class Stacked_NOBlock(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: StackedNoLayer,
+                 embedder: EmbedderSequential=None,
+                 p_dropout=0.,
+                 cross_no = False,
+                 with_gamma=False,
+                 mask_as_embedding=False,
+                 OW_zero = False
+                ) -> None: 
+      
+        super().__init__()
+
+        self.mask_as_embedding = mask_as_embedding
+
+        self.global_levels_out = no_layer.global_levels_decode_out
+        self.global_level_no = no_layer.global_level_no
+       
+       # if level_diff_no_out == 0 and OW_zero:
+       #     self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
+       # else:
+       #     if cross_no:
+       #         self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
+       #     else:
+        self.no_conv = StackedNOConv(model_dim_in, model_dim_out, no_layer)
+        
+       # self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
+       # self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
+
+       # self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+       # self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder)
+
+       # if with_gamma:
+       #     self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+       #     self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+       # else:
+       #     self.register_buffer('gamma1', torch.ones(model_dim_out))
+       #     self.register_buffer('gamma2', torch.ones(model_dim_out))
+
+       # self.mlp_layer = nn.Sequential(
+       #     nn.SiLU(),
+       #     nn.Linear(model_dim_out, model_dim_out),
+       #     nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
+       #     nn.Linear(model_dim_out, model_dim_out),
+       # )
+
+       # self.activation = nn.SiLU()
+        
+        #if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
+        #    self.grid_layer_1 = no_layer.grid_layer_encode
+        #    self.grid_layer_2 = no_layer.grid_layer_decode
+
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        
+        x_conv, mask = self.no_conv(x, 
+                                 coords_encode=coords_encode, 
+                                 coords_decode=coords_decode, 
+                                 indices_sample=indices_sample, 
+                                 mask=mask, 
+                                 emb=emb)
+    
+        return x, mask
+
 class NOConv(nn.Module):
   
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: NoLayer,
+                 no_layer: StackedNoLayer,
                  p_dropout=0.
                 ) -> None: 
       
@@ -228,7 +289,7 @@ class NOConv(nn.Module):
 
         self.no_dims = self.no_layer.n_params_no 
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_level_out = self.no_layer.global_level_decode
+        self.global_levels_out = self.no_layer.global_levels_decode_out
 
         self.weights = nn.Parameter(torch.randn(*self.no_dims, model_dim_in, model_dim_out), requires_grad=True)
       #  self.weights = nn.Parameter(torch.ones(*self.no_dims, model_dim_in, model_dim_out), requires_grad=False)
@@ -246,12 +307,45 @@ class NOConv(nn.Module):
 
         return x, mask
 
+
+class StackedNOConv(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 no_layer: StackedNoLayer,
+                 p_dropout=0.
+                ) -> None: 
+      
+        super().__init__()
+
+        self.no_layer = no_layer
+
+        self.no_dims = no_layer.n_params_no * no_layer.level_diff_encode
+        self.global_level_in = self.no_layer.global_level_encode
+        self.global_levels_out = self.no_layer.global_levels_decode_out
+
+        self.weights = nn.Parameter(torch.randn(*self.no_dims, model_dim_in, model_dim_out), requires_grad=True)
+
+        self.gamma = nn.Parameter(torch.ones(*self.no_dims, model_dim_in, model_dim_out)*1e-6, requires_grad=True)
+
+    def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
+        x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        no_dims = einsum_dims[:len(self.no_dims)]
+        x = torch.einsum(f"nbv{no_dims}x, {no_dims}xy -> nbv{no_dims}y", x, (1+self.gamma*self.weights))
+    
+        x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+        x = x.contiguous()
+
+        return x, mask
 class CrossNOConv(nn.Module):
   
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: NoLayer,
+                 no_layer: Stacked_NOBlock,
                  p_dropout=0.
                 ) -> None: 
       
@@ -261,7 +355,7 @@ class CrossNOConv(nn.Module):
 
         self.no_dims = self.no_layer.n_params_no 
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_level_out = self.no_layer.global_level_decode
+        self.global_level_out = int(self.no_layer.global_levels_decode_out)
 
         self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out*int(torch.tensor(self.no_dims).prod()), bias=False)
 
@@ -282,7 +376,7 @@ class OW_NO(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: NoLayer,
+                 no_layer: Stacked_NOBlock,
                  p_dropout=0.,
                  layer_type="lin"
                 ) -> None: 
@@ -293,7 +387,7 @@ class OW_NO(nn.Module):
 
         self.no_dims = self.no_layer.n_params_no 
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_level_out = self.no_layer.global_level_decode
+        self.global_level_out = int(self.no_layer.global_levels_decode_out)
 
         if layer_type == "lin":
             self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out, bias=False)

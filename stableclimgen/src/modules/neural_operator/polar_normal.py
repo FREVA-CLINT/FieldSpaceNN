@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import math
-from .neural_operator import NoLayer
+from .neural_operator import NoLayer,StackedNoLayer
 
-class polNormal_NoLayer(NoLayer):
+class polNormal_NoLayer(StackedNoLayer):
 
     def __init__(self,
                  grid_layer_encode,
