@@ -79,7 +79,7 @@ class SpacedDiffusion(GaussianDiffusion):
         self.diffusion_step_map = []  # Mapping for diffusion steps
         self.original_num_steps = diffusion_steps
 
-        base_diffusion = GaussianDiffusion(**kwargs)  # Initialize base GaussianDiffusion
+        base_diffusion = GaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
         last_alpha_cumprod = 1.0
         new_betas = []
 
@@ -91,7 +91,7 @@ class SpacedDiffusion(GaussianDiffusion):
                 self.diffusion_step_map.append(i)
 
         kwargs["betas"] = np.array(new_betas)
-        super().__init__(**kwargs)
+        super().__init__(diffusion_steps=diffusion_steps, **kwargs)
 
     def p_mean_variance(self, model, *args, **kwargs):
         """
@@ -166,4 +166,4 @@ class _WrappedModel:
         if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
         emb["DiffusionStepEmbedder"] = new_ts
-        return self.model(x, emb=emb, mask=None, **kwargs) # TODO: add mask again to input
+        return self.model(x, emb=emb, mask=mask, **kwargs)

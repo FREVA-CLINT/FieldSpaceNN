@@ -1,15 +1,20 @@
 defaults:
-  - model: mgno_vae
+  - model: mgno_diffusion_transformer
   - mgrids: healpix
   - trainer: mgno_transformer
-  - embedding: default
   - dataloader: zarr_healpix
   - hydra: default
+  - embedding: default
   - _self_
 
 ckpt_path: ../../snapshots/${project_name}/${run_name}/last.ckpt
 output_path: ../../evaluations/${project_name}/${run_name}/sample.pt
 
-project_name: healpix_vae
+project_name: mgno_diffusion_transformer
 run_name: default
 run_dir: ../..
+
+model:
+  sampler: "ddim"
+  gaussian_diffusion:
+    respacing: "ddim25"

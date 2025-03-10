@@ -45,7 +45,7 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -53,29 +53,8 @@ class CoordinateEmbedder(BaseEmbedder):
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length),
+            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-        )
-
-class MaskEmbedder(BaseEmbedder):
-    """
-    A neural network module to embed longitude and latitude coordinates.
-
-    :param embed_dim: Dimensionality of the embedding output.
-    :param in_channels: Number of input coordinate features (default is 2).
-    """
-
-    def __init__(self, name: str, in_channels: int, embed_dim: int) -> None:
-        super().__init__(name, in_channels, embed_dim)
-
-        # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "t", "s", "v", "c"]
-
-        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            torch.nn.Linear(self.in_channels, self.embed_dim),
             torch.nn.GELU(),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
@@ -94,12 +73,12 @@ class VariableEmbedder(BaseEmbedder):
 
 class MaskEmbedder(BaseEmbedder):
 
-    def __init__(self, name: str,  embed_dim: int, in_channels: int=2, init_value:float = None) -> None:
+    def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         self.keep_dims = ["b", "s", "v", "c"]
 
-        self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
+        self.embedding_fn = nn.Embedding(2, self.embed_dim)
 
         if init_value is not None:
             self.embedding_fn.weight.data.fill_(init_value)

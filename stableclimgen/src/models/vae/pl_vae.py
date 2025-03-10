@@ -82,7 +82,7 @@ class LightningVAE(pl.LightningModule):
 
         :return: Total calculated loss for the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
+        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
         reconstructions, posterior = self(gt_data)
 
         # Compute reconstruction loss
@@ -110,7 +110,7 @@ class LightningVAE(pl.LightningModule):
         :param batch: A tuple containing input tensors for validation.
         :param batch_idx: The index of the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data = batch
+        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
         reconstructions, posterior = self(gt_data)
 
         # Calculate reconstruction and KL losses

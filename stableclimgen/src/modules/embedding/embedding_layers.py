@@ -16,20 +16,27 @@ class RandomFourierLayer(nn.Module):
             self,
             in_features: int = 3,
             n_neurons: int = 512,
-            wave_length: float = 1.0
+            wave_length: float = 1.0,
+            wave_length_2: float = None
     ) -> None:
         super().__init__()
         # Initialize the weights parameter with a random normal distribution
+
+        if wave_length_2 is None:
+            wave_length_2 = wave_length
+  
+        weights = torch.concat((
+            torch.randn(in_features, n_neurons // 4)/ wave_length,
+            torch.randn(in_features, n_neurons // 4)/ wave_length_2),dim=1)
+
         self.register_parameter(
             "weights",
             torch.nn.Parameter(
-                torch.randn(in_features, n_neurons // 2), requires_grad=False
+                weights, requires_grad=False
             )
         )
         # Scaling constant to normalize the output
         self.constant = math.sqrt(2 / n_neurons)
-        # Wave length for scaling the input tensor
-        self.wave_length = wave_length
 
     def forward(self, in_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -39,7 +46,7 @@ class RandomFourierLayer(nn.Module):
         :return: Transformed output tensor.
         """
         # Normalize input tensor by the wave length
-        in_tensor = in_tensor / self.wave_length
+        in_tensor = in_tensor #/ self.wave_length
         # Apply a linear transformation using random weights
         out_tensor = 2 * torch.pi * in_tensor @ self.weights
         # Apply sine and cosine functions and concatenate the results

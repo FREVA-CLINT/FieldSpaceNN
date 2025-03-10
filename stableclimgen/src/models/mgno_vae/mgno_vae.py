@@ -7,7 +7,7 @@ import omegaconf
 from stableclimgen.src.modules.vae.quantization import Quantization
 
 from ...modules.icon_grids.grid_layer import GridLayer
-from ...modules.neural_operator.no_blocks import Serial_NOBlock
+from ..mgno_transformer.mgno_serial_block import Serial_NOBlock
 
 from ..mgno_transformer.mgno_block_confs import NOBlockConfig
 
@@ -40,6 +40,7 @@ class MGNO_VAE(nn.Module):
                  n_head_channels:int=16,
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True,
+                 mask_as_embedding: bool=False,
                  p_dropout=0.,
                  ) -> None: 
         
@@ -117,7 +118,8 @@ class MGNO_VAE(nn.Module):
                 layer_settings,
                 input_level=output_level_encoder,
                 output_dim=output_dim,
-                rotate_coordinate_system=rotate_coord_system)
+                rotate_coordinate_system=rotate_coord_system,
+                mask_as_embedding=mask_as_embedding)
                 
             self.decoder_blocks.append(block)
 

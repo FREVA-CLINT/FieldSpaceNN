@@ -18,7 +18,8 @@ class VonMises_NoLayer(NoLayer):
                  nh_in_decode=True,
                  precompute_encode=True,
                  precompute_decode=True,
-                 rotate_coord_system=True
+                 rotate_coord_system=True,
+                 diff=True
                 ) -> None: 
     
         super().__init__(grid_layer_encode, 
@@ -31,10 +32,11 @@ class VonMises_NoLayer(NoLayer):
                  coord_system='polar',
                  rotate_coord_system=rotate_coord_system)
         
+        self.diff_mode=diff
         self.grid_layer_no = grid_layer_no
         self.n_no_tot = n_phi
 
-        self.n_params_no = [n_phi]
+        self.n_params_no = [n_phi +1]
 
         self.sd_activation = nn.Identity()
   
@@ -55,22 +57,28 @@ class VonMises_NoLayer(NoLayer):
         angles_weights = torch.cos(angles.unsqueeze(dim=-1) - self.phis.view(1,1,-1))
 
         vm_weights = torch.exp(self.kappa * angles_weights)
-
+        
         sigma = self.sigma*self.dist_unit
 
         alpha = torch.exp(-0.5 * (dists**2/ sigma** 2))
 
-        return vm_weights, alpha.unsqueeze(dim=-1)
+        return vm_weights.unsqueeze(dim=-2), alpha.unsqueeze(dim=-1).unsqueeze(dim=-1)
 
 
     def mult_weights_t(self, x, weights, alpha, mask=None):
+        
+        weights = weights/weights.sum(dim=[-1], keepdim=True)
 
-        _, n_out, seq_in, seq_in_nh, n_p = weights.shape
+        weights = weights * (1 - alpha)
+
+        weights = torch.concat((alpha, weights), dim=-1)
+
+        _, n_out, seq_in, seq_in_nh, _, n_p = weights.shape
         b, n_in, nh_in, nv, nc = x.shape
 
         if n_out > n_in:
             weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:])
-            _, _, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+            _, _, seq_in, seq_in_nh = weights.shape[:4]
             c_shape = (-1, n_in, 1, seq_in_nh)
         else:
             c_shape = (-1, n_out, seq_in, seq_in_nh)
@@ -96,27 +104,26 @@ class VonMises_NoLayer(NoLayer):
             x = x * weights.unsqueeze(dim=-1)
             x = x.sum(dim=[2,3]).unsqueeze(dim=3)
 
-            total_weight = (alpha).unsqueeze(dim=-1)
-            total_weight_alpha = total_weight/total_weight.sum(dim=-2,keepdim=True)
-            data_t_mean = (total_weight_alpha*data).sum(dim=-2)
-
-            total_weight= (1-alpha.unsqueeze(dim=-1))*weights + alpha.unsqueeze(dim=-1)
-            total_weight = total_weight/total_weight.sum(dim=-2,keepdim=True)
-            data_t = (total_weight.unsqueeze(dim=-1)*data.unsqueeze(dim=-2)).sum(dim=-3)
-
-            data_tot = torch.concat((data_t_mean.unsqueeze(dim=-2), data_t-data_t_mean.unsqueeze(dim=-2)),dim=1)
+        if self.diff_mode:
+            x = torch.concat((x[...,[0],:], x[...,[0],:] - x[...,1:,:]), dim=-2)
+        
         return x, mask
 
-    
 
-    def mult_weights_invt(self, x, weights, mask=None):
-        _, n_out, seq_out, seq_in, nvw, n_phi, n_dist, n_sigma = weights.shape
+
+    def mult_weights_invt(self, x, weights, alpha, mask=None):
+        _, n_out, seq_out, seq_in = weights.shape[:4]
         nv = x.shape[3]
         n_in = x.shape[1]
 
-        if n_out > n_in:
-            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:])
-            _, _, seq_in, seq_in_nh, nvw, n_phi, n_dist, n_sigma = weights.shape
+        weights = weights/weights.sum(dim=[-1], keepdim=True)
+
+        weights = weights * (1-alpha) 
+        weights = torch.concat((alpha, weights), dim=-1)
+
+        if n_out >= n_in:
+            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:],1)
+            _, _, seq_in, seq_in_nh = weights.shape[:4]
             c_shape = (-1, n_in, 1, seq_in_nh)
         else:
             c_shape = (-1, n_out, seq_out, seq_in)
@@ -130,13 +137,17 @@ class VonMises_NoLayer(NoLayer):
             mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
            
             mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
- 
 
-        weights = weights/(weights.sum(dim=[3,-1,-2,-3], keepdim=True)+1e-20)
+        weights = weights/(weights.sum(dim=[3,-2], keepdim=True)+1e-20)
 
-        x = x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)
+        if self.diff_mode:
+            x = torch.concat((x[...,[0],:], x[...,[0],:] + x[...,1:,:]), dim=-2)
 
-        return x.sum(dim=[3,-2,-3,-4]), mask
+        x = x.unsqueeze(dim=2)
+
+        x = (weights * x).sum(dim=[3,-2])
+
+        return x, mask
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
         _, n_out, seq_out, seq_in = coordinates_rel[0].shape
@@ -160,12 +171,12 @@ class VonMises_NoLayer(NoLayer):
     def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
         
         _, n_out, seq_out, seq_in = coordinates_rel[0].shape
-        b, n, seq_in, nv, n_phi, n_dist, n_sigma, nc = x.shape
+        b, n, seq_in, nv, n_p, nc = x.shape
         c_shape = (-1, n, seq_in, nv)
 
-        weights = self.get_spatial_weights(coordinates_rel, self.sigma)
+        weights, alpha = self.get_vm_dist_weights(coordinates_rel)
 
-        x, mask = self.mult_weights_invt(x, weights, mask=mask)
+        x, mask = self.mult_weights_invt(x, weights, alpha, mask=mask)
 
         x = x.view(b,-1,nv,nc)
 
