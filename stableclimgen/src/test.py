@@ -6,30 +6,9 @@ import hydra
 import torch
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig, OmegaConf
-from pytorch_lightning.utilities import rank_zero_only
+from omegaconf import DictConfig
 
 from stableclimgen.src.utils.pl_data_module import DataModule
-
-torch.manual_seed(42)
-
-
-def get_data(ds, ts, variables): 
-
-    ds = ds.isel(time=ts)
-
-    data_g = []
-    for variable in variables:
-        data = torch.tensor(ds[variable].values)
-        data = data[0][0] if data.dim() > 2  else data
-        data = data[0] if data.dim() > 1  else data
-        data_g.append(data)
-
-    data_g = torch.stack(data_g, dim=-1)
-
-    ds.close()
-
-    return data_g
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="healpix_vae_test")
