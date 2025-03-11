@@ -1,14 +1,15 @@
 import torch
 import torch.nn as nn
 import math
-from .neural_operator import NoLayer,StackedNoLayer
+from .neural_operator import NoLayer
 
-class polNormal_NoLayer(StackedNoLayer):
+class polNormal_NoLayer(NoLayer):
 
     def __init__(self,
-                 grid_layer_encode,
-                 grid_layer_no,
-                 grid_layer_decode,
+                 rcm,
+                 global_level_encode,
+                 global_level_no,
+                 global_level_decode,
                  n_phi=4,
                  n_dist=4,
                  n_sigma=1,
@@ -18,22 +19,21 @@ class polNormal_NoLayer(StackedNoLayer):
                  nh_in_decode=True,
                  precompute_encode=True,
                  precompute_decode=True,
-                 rotate_coord_system=True,
                  normalize_to_mask=True
                 ) -> None: 
     
-        super().__init__(grid_layer_encode, 
-                 grid_layer_no,
-                 grid_layer_decode,
-                 nh_in_encode=nh_in_encode, 
-                 nh_in_decode=nh_in_decode,
-                 precompute_encode=precompute_encode,
-                 precompute_decode=precompute_decode,
-                 coord_system='cartesian',
-                 rotate_coord_system=rotate_coord_system)
-        
+        super().__init__(
+            rcm,
+            global_level_encode, 
+            global_level_no,
+            global_level_decode,
+            nh_in_encode=nh_in_encode, 
+            nh_in_decode=nh_in_decode,
+            precompute_encode=precompute_encode,
+            precompute_decode=precompute_decode)
+
         self.normalize_to_mask = normalize_to_mask
-        self.grid_layer_no = grid_layer_no
+
         self.n_no_tot = n_phi*n_dist*n_sigma
 
         self.n_params_no = [n_phi, n_dist, n_sigma]
@@ -52,7 +52,7 @@ class polNormal_NoLayer(StackedNoLayer):
         else:
             sigma = torch.tensor(1/(2*n_dist*math.sqrt(2*math.log(2)))).view(-1)
 
-        self.dist_unit = grid_layer_no.nh_dist
+        self.dist_unit = self.no_nh_dist
 
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.dists = nn.Parameter(dists, requires_grad=dist_learnable)

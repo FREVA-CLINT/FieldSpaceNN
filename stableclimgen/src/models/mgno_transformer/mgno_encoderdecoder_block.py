@@ -2,25 +2,24 @@ from typing import List,Dict
 import torch.nn as nn
 import torch
 
-from ...modules.icon_grids.grid_layer import GridLayer
+from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager, MultiRelativeCoordinateManager
 from ...utils.helpers import check_get_missing_key
 from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict
 
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict,get_embedder
-from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock
+from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, Stacked_NOBlock
 from ...modules.neural_operator import mg_layers as mg
 
 class MGNO_EncoderDecoder_Block(nn.Module):
   
     def __init__(self,
+                 rcm: MultiRelativeCoordinateManager,
                  input_levels: List[int],
                  input_dims: List[int],
                  global_levels_decode: List[int],
                  global_levels_no: List[int],
                  model_dims_out: List[int],
-                 grid_layers: List[GridLayer],
                  layer_settings: dict,
-                 rotate_coordinate_system: bool = True,
                  rule = 'fc', # ">" "<"
                  mg_reduction = 'linear',
                  mg_reduction_embed_confs: Dict = None,
@@ -36,12 +35,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
       
         super().__init__()
 
-        self.grid_layers = grid_layers
-
         self.mask_as_embedding = mask_as_embedding
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
-
+        self.rcm=rcm
         self.layers = nn.ModuleList()
         self.reduction_layers = nn.ModuleList()
         self.module_indices = []
@@ -97,14 +94,13 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                     no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
                     no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
 
-                    no_layer = get_no_layer(no_layer_type,
-                                            grid_layers,
+                    no_layer = get_no_layer(rcm,
+                                            no_layer_type,
                                             input_level,
                                             global_level_no,
-                                            [output_level],
+                                            output_level,
                                             precompute_encode=True,
                                             precompute_decode=True,
-                                            rotate_coordinate_system=rotate_coordinate_system,
                                             layer_settings=no_layer_settings,
                                             normalize_to_mask= (mask_as_embedding==False))
                 
@@ -226,7 +222,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 masks_.append(mask_out)
                 outputs_.append(x_out)
 
-            emb = add_coordinates_to_emb_dict(self.grid_layers[str(self.output_levels[output_index])], 
+            emb = add_coordinates_to_emb_dict(self.rcm.grid_layers[str(self.output_levels[output_index])], 
                                               indices_sample["indices_layers"] if indices_sample else None, 
                                               emb=emb)
             
@@ -237,12 +233,13 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
         return x_levels_out, mask_levels_out
 
-
+"""
 class MGNO_StackedEncoderDecoder_Block(nn.Module):
   
     def __init__(self,
+                 rel_coordinate_mngr: MultiStepRelativeCoordinateManager,
                  input_level: int,
-                 input_dims: List[int],
+                 input_dim: int,
                  global_levels_decode: List[int],
                  global_level_no: int,
                  model_dims_out: List[int],
@@ -263,6 +260,7 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
       
         super().__init__()
 
+        self.rcm = rel_coordinate_mngr
         self.grid_layers = grid_layers
 
         self.mask_as_embedding = mask_as_embedding
@@ -281,29 +279,23 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
 
         #Stacked_NOBlock
 
+        
+
+        Stacked_NOBlock(input_dim,
+                        model_dim_out)
+        
+
         for output_idx, output_level in enumerate(global_levels_decode):
 
             input_indices = []
             layer_indices = []
             mg_input_dims = []
             mg_input_levels = []
-            for input_idx, input_level in enumerate(input_levels):
+           
+
 
                 level_diff = output_level - input_level
 
-                if rule == "<" and level_diff>0:
-                   # self.layers.append(nn.Identity())
-                    continue
-
-                elif ">" in rule and level_diff<0:
-                    continue
-
-                elif "=" in rule and level_diff!=0:
-                    continue
-
-                if rule == ">max" and input_level!=max(input_levels) and level_diff!=0:
-                    continue
-                
                 input_indices.append(input_idx)
 
                 if list(layer_settings.keys())[0].isnumeric():
@@ -432,3 +424,4 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
 
         return x_levels
+"""

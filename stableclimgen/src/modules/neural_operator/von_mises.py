@@ -1,12 +1,12 @@
 import torch
 import torch.nn as nn
 import math
-from .neural_operator import NoLayer,StackedNoLayer
+from .neural_operator import NoLayer
 
-class VonMises_NoLayer(StackedNoLayer):
+class VonMises_NoLayer(NoLayer):
 
     def __init__(self,
-                 grid_layers,
+                 rcm,
                  global_level_encode,
                  global_level_no,
                  global_level_decode,
@@ -19,23 +19,21 @@ class VonMises_NoLayer(StackedNoLayer):
                  nh_in_decode=True,
                  precompute_encode=True,
                  precompute_decode=True,
-                 rotate_coord_system=True,
-                 diff=True
+                 diff=True,
+                 normalize_to_mask=True
                 ) -> None: 
     
-        super().__init__(grid_layers,
-                 global_level_encode,
-                 global_level_no,
-                 global_level_decode,
-                 nh_in_encode=nh_in_encode, 
-                 nh_in_decode=nh_in_decode,
-                 precompute_encode=precompute_encode,
-                 precompute_decode=precompute_decode,
-                 coord_system='polar',
-                 rotate_coord_system=rotate_coord_system)
+        super().__init__(rcm,
+            global_level_encode, 
+            global_level_no,
+            global_level_decode,
+            nh_in_encode=nh_in_encode, 
+            nh_in_decode=nh_in_decode,
+            precompute_encode=precompute_encode,
+            precompute_decode=precompute_decode)
         
+        self.normalize_to_mask = normalize_to_mask
         self.diff_mode=diff
-        self.grid_layer_no = grid_layers[str(global_level_no)]
         self.n_no_tot = n_phi
 
         self.n_params_no = [n_phi +1]
@@ -47,7 +45,7 @@ class VonMises_NoLayer(StackedNoLayer):
         self.phis =  nn.Parameter(phis, requires_grad=False)
         self.kappa = nn.Parameter(torch.tensor(kappa), requires_grad=kappa_learnable)
 
-        self.dist_unit = self.grid_layer_no.nh_dist
+        self.dist_unit = self.no_nh_dist
 
         self.sigma = nn.Parameter(torch.tensor(sigma), requires_grad=sigma_learnable)
         
@@ -86,8 +84,9 @@ class VonMises_NoLayer(StackedNoLayer):
             c_shape = (-1, n_out, seq_in, seq_in_nh)
 
         if mask is not None:
-            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
-            weights = weights*norm
+            if self.normalize_to_mask:
+                norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
+                weights = weights*norm
 
             mask = mask.view(*c_shape,nv)
             mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
@@ -131,8 +130,9 @@ class VonMises_NoLayer(StackedNoLayer):
             c_shape = (-1, n_out, seq_out, seq_in)
 
         if mask is not None:
-            norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
-            weights = weights*norm
+            if self.normalize_to_mask:
+                norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
+                weights = weights*norm
 
             mask = mask.view(*c_shape,nv)
 

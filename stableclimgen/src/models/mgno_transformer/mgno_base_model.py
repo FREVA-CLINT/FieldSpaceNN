@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from typing import List
 
-from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager
+from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager, MultiRelativeCoordinateManager
 
 
 class MGNO_base_model(nn.Module):
@@ -29,10 +29,7 @@ class MGNO_base_model(nn.Module):
         self.grid_layer_0 = self.grid_layers["0"]
         # Construct blocks based on configurations
 
-        self.rcm = MultiStepRelativeCoordinateManager(self.grid_layers,
-                                                    nh_up=nh_up,
-                                                    nh_down=nh_down,
-                                                    precompute=True,
+        self.rcm = MultiRelativeCoordinateManager(self.grid_layers,
                                                     coord_system="polar",
                                                     rotate_coord_system=True
                                                     )

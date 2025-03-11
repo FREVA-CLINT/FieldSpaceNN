@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-from .neural_operator import NoLayer,StackedNoLayer
+from .neural_operator import NoLayer
 from.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict, update_mask
 
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
@@ -84,6 +84,9 @@ class NOBlock(nn.Module):
             nn.Linear(model_dim_out, model_dim_out)
         )
 
+        if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
+            self.grid_layer_1 = no_layer.rcm.grid_layers[str(no_layer.global_level_decode)]
+
         self.activation = nn.SiLU()
               
 
@@ -102,6 +105,9 @@ class NOBlock(nn.Module):
 
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
+
+        if hasattr(self, 'grid_layer_1'):
+            emb = add_coordinates_to_emb_dict(self.grid_layer_1, indices_sample["indices_layers"] if indices_sample else None, emb)
 
         x = self.gamma1 * self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
 
@@ -169,7 +175,7 @@ class PreActivation_NOBlock(nn.Module):
         self.activation = nn.SiLU()
         
         if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
-            self.grid_layer_1 = no_layer.grid_layer_encode
+            self.grid_layer_1 = no_layer.rcm.grid_layers[str(no_layer.global_level_encode)]
 
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
@@ -212,7 +218,7 @@ class Stacked_NOBlock(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: StackedNoLayer,
+                 no_layer: NoLayer,
                  embedder: EmbedderSequential=None,
                  p_dropout=0.,
                  cross_no = False,
@@ -272,14 +278,14 @@ class Stacked_NOBlock(nn.Module):
                                  mask=mask, 
                                  emb=emb)
     
-        return x, mask
+        return x_conv, mask
 
 class NOConv(nn.Module):
   
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: StackedNoLayer,
+                 no_layer: NoLayer,
                  p_dropout=0.
                 ) -> None: 
       
@@ -313,7 +319,7 @@ class StackedNOConv(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: StackedNoLayer,
+                 no_layer: NoLayer,
                  p_dropout=0.
                 ) -> None: 
       

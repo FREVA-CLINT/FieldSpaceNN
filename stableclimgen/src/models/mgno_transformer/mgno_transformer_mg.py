@@ -51,12 +51,12 @@ class MGNO_Transformer_MG(MGNO_base_model):
             
             if isinstance(block_conf, MGEncoderDecoderConfig):
                 block = MGNO_EncoderDecoder_Block(
+                                            self.rcm,
                                             input_levels,
                                             input_dims,
                                             block_conf.global_levels_output,
                                             block_conf.global_levels_no,
                                             block_conf.model_dims_out,
-                                            self.grid_layers,
                                             block_conf.layer_settings,
                                             rule=block_conf.rule,
                                             mg_reduction=block_conf.reduction,
@@ -66,7 +66,6 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             mg_reduction_embed_mode=block_conf.mg_reduction_embed_mode,
                                             mg_att_dim=block_conf.mg_att_dim,
                                             mg_n_head_channels=block_conf.mg_n_head_channels,
-                                            rotate_coordinate_system=rotate_coord_system,
                                             level_diff_zero_linear=block_conf.level_diff_zero_linear,
                                             mask_as_embedding=mask_as_embedding)  
                 
@@ -77,7 +76,6 @@ class MGNO_Transformer_MG(MGNO_base_model):
                             input_dims,
                             block_conf.model_dims_out,
                             self.grid_layers,
-                            rotate_coordinate_system=rotate_coord_system,
                             mask_as_embedding=mask_as_embedding)
                         
                 
