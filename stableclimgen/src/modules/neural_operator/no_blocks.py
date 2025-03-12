@@ -51,7 +51,7 @@ class NOBlock(nn.Module):
 
         self.mask_as_embedding = mask_as_embedding
 
-        global_level_decode = int(no_layer.global_levels_decode_out)
+        global_level_decode = int(no_layer.global_level_decode)
 
         self.level_diff = (global_level_decode - no_layer.global_level_encode)
 
@@ -139,7 +139,7 @@ class PreActivation_NOBlock(nn.Module):
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
-        global_level_decode = int(no_layer.global_levels_decode_out)
+        global_level_decode = int(no_layer.global_level_decode)
 
         level_diff_no_out = (no_layer.global_level_no - global_level_decode)
 
@@ -283,7 +283,7 @@ class NOConv(nn.Module):
 
         self.no_dims = self.no_layer.n_params_no 
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_levels_out = self.no_layer.global_levels_decode_out
+        self.global_levels_out = self.no_layer.global_level_decode
 
         self.weights = nn.Parameter(torch.randn(*self.no_dims, model_dim_in, model_dim_out), requires_grad=True)
       #  self.weights = nn.Parameter(torch.ones(*self.no_dims, model_dim_in, model_dim_out), requires_grad=False)
@@ -317,7 +317,6 @@ class StackedNOConv(nn.Module):
 
         self.no_dims = no_layer.n_params_no * no_layer.level_diff_encode
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_levels_out = self.no_layer.global_levels_decode_out
 
         self.weights = nn.Parameter(torch.randn(*self.no_dims, model_dim_in, model_dim_out), requires_grad=True)
 
@@ -339,7 +338,7 @@ class CrossNOConv(nn.Module):
     def __init__(self,
                  model_dim_in,
                  model_dim_out,
-                 no_layer: Stacked_NOBlock,
+                 no_layer: NoLayer,
                  p_dropout=0.
                 ) -> None: 
       
@@ -349,7 +348,7 @@ class CrossNOConv(nn.Module):
 
         self.no_dims = self.no_layer.n_params_no 
         self.global_level_in = self.no_layer.global_level_encode
-        self.global_level_out = int(self.no_layer.global_levels_decode_out)
+        self.global_level_out = int(self.no_layer.global_level_decode)
 
         self.linear_layer = nn.Linear(model_dim_in*int(torch.tensor(self.no_dims).prod()), model_dim_out*int(torch.tensor(self.no_dims).prod()), bias=False)
 

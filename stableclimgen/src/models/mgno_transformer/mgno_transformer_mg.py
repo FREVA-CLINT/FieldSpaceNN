@@ -28,16 +28,14 @@ class MGNO_Transformer_MG(MGNO_base_model):
         
         self.input_dim = input_dim
         
-        global_levels = []
+        global_levels = torch.tensor(0).view(-1)
         for block_conf in block_configs:
             if hasattr(block_conf,'global_levels_output'):
-                global_levels += block_conf.global_levels_output
+                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1))) 
             if hasattr(block_conf,'global_levels_no'):
-                if not isinstance(block_conf.global_levels_no, list):
-                    global_levels.append(block_conf.global_levels_no)
-                else:
-                    global_levels += block_conf.global_levels_no
-        
+                #if not isinstance(block_conf.global_levels_no, list):
+                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1)))
+
         global_levels_max = torch.concat((torch.tensor(global_levels).view(-1)
                                      ,torch.tensor(0).view(-1))).max()
         
