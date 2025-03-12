@@ -304,7 +304,8 @@ class MultiRelativeCoordinateManager(nn.Module):
                      global_level_in, 
                      global_level_out, 
                      nh_in,
-                     precompute):
+                     precompute,
+                     ref='out'):
         
         global_level_in_str = str(global_level_in)
         global_level_out_str = str(global_level_out)
@@ -320,7 +321,8 @@ class MultiRelativeCoordinateManager(nn.Module):
                     nh_in=nh_in,
                     precompute=precompute,
                     coord_system=self.coord_system,
-                    rotate_coord_system=self.rotate_coord_system
+                    rotate_coord_system=self.rotate_coord_system,
+                    ref=ref
                 )
             
 

@@ -3,10 +3,10 @@ import torch.nn as nn
 
 from typing import List
 
-from .mgno_encoderdecoder_block import MGNO_EncoderDecoder_Block
+from .mgno_encoderdecoder_block import MGNO_EncoderDecoder_Block, MGNO_StackedEncoderDecoder_Block
 from .mgno_processing_block import MGNO_Processing_Block
 
-from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig
+from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig, MGStackedEncoderDecoderConfig
 from .mgno_base_model import MGNO_base_model
 
 from ...modules.neural_operator.no_helpers import get_embedder
@@ -33,10 +33,15 @@ class MGNO_Transformer_MG(MGNO_base_model):
             if hasattr(block_conf,'global_levels_output'):
                 global_levels += block_conf.global_levels_output
             if hasattr(block_conf,'global_levels_no'):
-                global_levels += block_conf.global_levels_no
+                if not isinstance(block_conf.global_levels_no, list):
+                    global_levels.append(block_conf.global_levels_no)
+                else:
+                    global_levels += block_conf.global_levels_no
         
-        global_levels = torch.concat((torch.tensor(global_levels).view(-1)
-                                     ,torch.tensor(0).view(-1))).unique()
+        global_levels_max = torch.concat((torch.tensor(global_levels).view(-1)
+                                     ,torch.tensor(0).view(-1))).max()
+        
+        global_levels = torch.arange(global_levels_max+1)
         
         super().__init__(mgrids, 
                          global_levels)
@@ -68,6 +73,18 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             mg_n_head_channels=block_conf.mg_n_head_channels,
                                             level_diff_zero_linear=block_conf.level_diff_zero_linear,
                                             mask_as_embedding=mask_as_embedding)  
+                
+            elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
+                block = MGNO_StackedEncoderDecoder_Block(
+                    self.rcm,
+                    input_levels,
+                    input_dims,
+                    block_conf.global_levels_output,
+                    block_conf.global_levels_no,
+                    block_conf.model_dims_out,
+                    block_conf.layer_settings,
+                    mask_as_embedding= mask_as_embedding
+                )
                 
             elif isinstance(block_conf, MGProcessingConfig):
                 block = MGNO_Processing_Block(

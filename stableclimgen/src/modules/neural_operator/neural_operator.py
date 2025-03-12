@@ -28,13 +28,13 @@ class NoLayer(nn.Module):
             global_level_no, 
             global_level_decode, 
             nh_in_decode,
-            precompute_decode)
+            precompute_decode,
+            ref='in')
         
         self.rcm = rcm
 
         self.global_level_encode = global_level_encode
         self.global_level_decode = global_level_decode
-        self.global_levels_decode_out = global_level_decode
         self.global_level_no = global_level_no
     
         self.no_nh_dist = rcm.nh_dists[global_level_no]

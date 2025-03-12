@@ -50,6 +50,20 @@ class MGEncoderDecoderConfig:
                 setattr(self, input, value)
 
 
+class MGStackedEncoderDecoderConfig:
+    def __init__(self, 
+                 global_levels_output: list,
+                 global_levels_no: int,
+                 model_dims_out: list,
+                 layer_settings: dict,
+                 encode_reduction:str = 'concat',
+                 no_level_step: int=1):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+                setattr(self, input, value)
+      
+
 class MGProcessingConfig:
     def __init__(self, 
                  layer_settings_levels: List[List],

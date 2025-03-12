@@ -2,6 +2,7 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+from typing import List
 
 from .neural_operator import NoLayer
 from.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict, update_mask
@@ -216,9 +217,11 @@ class PreActivation_NOBlock(nn.Module):
 class Stacked_NOBlock(nn.Module):
   
     def __init__(self,
-                 model_dim_in,
-                 model_dim_out,
-                 no_layer: NoLayer,
+                 model_dims_in,
+                 model_dims_out,
+                 no_layers: List[NoLayer],
+                 global_levels_decode: list,
+                 encode_reduction = 'concat',
                  embedder: EmbedderSequential=None,
                  p_dropout=0.,
                  cross_no = False,
@@ -229,56 +232,41 @@ class Stacked_NOBlock(nn.Module):
       
         super().__init__()
 
+        self.register_buffer("global_levels_decode", torch.tensor(global_levels_decode))
         self.mask_as_embedding = mask_as_embedding
 
-        self.global_levels_out = no_layer.global_levels_decode_out
-        self.global_level_no = no_layer.global_level_no
-       
-       # if level_diff_no_out == 0 and OW_zero:
-       #     self.no_conv = OW_NO(model_dim_in, model_dim_out, no_layer)
-       # else:
-       #     if cross_no:
-       #         self.no_conv = CrossNOConv(model_dim_in, model_dim_out, no_layer)
-       #     else:
-        self.no_conv = StackedNOConv(model_dim_in, model_dim_out, no_layer)
-        
-       # self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out, bias=True)
-       # self.lin_skip_inner = nn.Linear(model_dim_in, model_dim_out, bias=True)
+        self.no_layers = no_layers
 
-       # self.layer_norm1 = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
-       # self.layer_norm2 = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder)
+        self.no_dims = [no_layer.n_params_no for no_layer in no_layers]
+        self.no_dims = []
 
-       # if with_gamma:
-       #     self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-       #     self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-       # else:
-       #     self.register_buffer('gamma1', torch.ones(model_dim_out))
-       #     self.register_buffer('gamma2', torch.ones(model_dim_out))
+        for no_layer in no_layers:
+            self.no_dims += no_layer.n_params_no
 
-       # self.mlp_layer = nn.Sequential(
-       #     nn.SiLU(),
-       #     nn.Linear(model_dim_out, model_dim_out),
-       #     nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-       #     nn.Linear(model_dim_out, model_dim_out),
-       # )
-
-       # self.activation = nn.SiLU()
-        
-        #if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
-        #    self.grid_layer_1 = no_layer.grid_layer_encode
-        #    self.grid_layer_2 = no_layer.grid_layer_decode
-
+        self.n_dim_tot = int(torch.tensor(self.no_dims).prod())
+        self.weights = nn.Parameter(torch.randn(self.n_dim_tot, model_dims_in[0], model_dims_out[0]), requires_grad=True)
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         
-        x_conv, mask = self.no_conv(x, 
-                                 coords_encode=coords_encode, 
-                                 coords_decode=coords_decode, 
-                                 indices_sample=indices_sample, 
-                                 mask=mask, 
-                                 emb=emb)
-    
-        return x_conv, mask
+        for no_layer in self.no_layers:
+            x, mask = no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
+            x = x.view(*x.shape[:3],-1)
+
+        x = x.view(*x.shape[:3],self.n_dim_tot,-1)
+        x = torch.einsum("mij,bnvmi->bnvmj", self.weights, x)
+
+        x_layers = []
+        if self.no_layers[-1].global_level_no in self.global_levels_decode:
+            x_layers.append(x.view(*x.shape[:3],-1))
+
+        for k, no_layer in enumerate(self.no_layers[::-1]):
+            x = x.view(*x.shape[:3], self.no_dims[(-(1+k))], -1)
+            x, mask = no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
+
+            if no_layer.global_level_decode in self.global_levels_decode:
+                x_layers.append(x)
+
+        return x_layers, mask
 
 class NOConv(nn.Module):
   
