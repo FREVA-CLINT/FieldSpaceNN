@@ -1,25 +1,30 @@
 import os
-import math
-import torch.nn as nn
 
-import lightning.pytorch as pl
 import torch
 
-from torch.optim import AdamW
-
+from .pl_probabilistic import LightningProbabilisticModel
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
-from ...utils.visualization import scatter_plot, scatter_plot_diffusion
-from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler
+from ..diffusion.sampler import DDPMSampler, DDIMSampler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
+from ...utils.visualization import scatter_plot_diffusion
 
-class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
-    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, **base_model_args):
+
+class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
+    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", n_samples=1, max_batchsize=-1, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
+        LightningProbabilisticModel.__init__(self, n_samples=1, max_batchsize=-1)
+
         # maybe create multi_grid structure here?
         self.model = model
 
         self.lr_groups = lr_groups
         self.gaussian_diffusion = gaussian_diffusion
+        if sampler == "ddpm":
+            self.sampler = DDPMSampler(self.gaussian_diffusion)
+        else:
+            self.sampler = DDIMSampler(self.gaussian_diffusion)
+        self.n_samples = n_samples
+        self.max_batchsize = max_batchsize
         self.save_hyperparameters(ignore=['model'])
 
 
@@ -79,6 +84,11 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel):
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
+
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample):
+        return self.sampler.sample_loop(self.model, source, mask,
+                                        progress=True, emb=emb, coords_input=coords_input,
+                                        coords_output=coords_output, indices_sample=indices_sample)
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
