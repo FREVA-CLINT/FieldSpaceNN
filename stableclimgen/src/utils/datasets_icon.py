@@ -115,7 +115,15 @@ class NetCDFLoader_lazy(Dataset):
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
 
-        
+        if "timesteps" in data_dict.keys():
+            self.sample_timesteps = []
+            for t in data_dict["timesteps"]:
+                if type(t) == int or "-" not in t:
+                    self.sample_timesteps.append(int(t))
+                else:
+                    self.sample_timesteps += list(range(int(t.split("-")[0]), int(t.split("-")[1])))
+        else:
+            self.sample_timesteps = None      
 
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
@@ -211,7 +219,10 @@ class NetCDFLoader_lazy(Dataset):
         idx = 0
         for k, file in enumerate(self.files_source):
             ds = xr.open_dataset(file)
-            idx_add = len(ds.time) * self.n_regions
+            if self.sample_timesteps:
+                idx_add = len(self.sample_timesteps) * self.n_regions
+            else:
+                idx_add = len(ds.time) * self.n_regions
             self.global_indices.append(idx + idx_add)
             idx += idx_add
         
