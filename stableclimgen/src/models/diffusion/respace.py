@@ -30,6 +30,14 @@ def space_diffusion_steps(num_diffusion_steps: int, section_counts: Union[str, L
             raise ValueError(
                 f"Cannot create exactly {num_diffusion_steps} steps with an integer stride"
             )
+        elif section_counts.startswith("trailer"):
+            desired_count = int(section_counts[len("trailer"):])  # Extract step count for DDIM
+            for i in range(1, num_diffusion_steps):
+                if len(range(0, num_diffusion_steps, i)) == desired_count:
+                    return set(range(num_diffusion_steps-1, 0, -i)[::-1])
+            raise ValueError(
+                f"Cannot create exactly {num_diffusion_steps} steps with an integer stride"
+            )
         section_counts = [int(x) for x in section_counts.split(",")]
 
     size_per = num_diffusion_steps // len(section_counts)  # Size of each section
@@ -78,6 +86,8 @@ class SpacedDiffusion(GaussianDiffusion):
         self.use_steps = set(use_steps)  # Set of diffusion steps to use
         self.diffusion_step_map = []  # Mapping for diffusion steps
         self.original_num_steps = diffusion_steps
+
+        print(self.use_steps)
 
         base_diffusion = GaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
         last_alpha_cumprod = 1.0
