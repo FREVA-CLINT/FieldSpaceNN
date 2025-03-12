@@ -86,7 +86,9 @@ class NetCDFLoader_lazy(Dataset):
                  n_sample_vars=-1,
                  pert_coordinates=0,
                  fixed_sample_ids=None,
-                 fixed_seed = False):
+                 fixed_seed = False,
+                 variables_source=None,
+                 variables_target=None):
         
         super(NetCDFLoader_lazy, self).__init__()
         
@@ -110,8 +112,8 @@ class NetCDFLoader_lazy(Dataset):
         self.pert_coordinates = pert_coordinates
         self.n_drop_vars = n_drop_vars
 
-        self.variables_source = data_dict["source"]["variables"]
-        self.variables_target = data_dict["target"]["variables"]
+        self.variables_source = variables_source or data_dict["source"]["variables"]
+        self.variables_target = variables_target or data_dict["target"]["variables"]
 
         
 
