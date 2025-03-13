@@ -292,7 +292,7 @@ class GaussianDiffusion:
                 in_tensor = denoised_fn(in_tensor)
             if self.clip_denoised:
                 # Compute f(diff_step) based on the noise schedule
-                snr = self.sqrt_alphas_cumprod[t] / (1 - self.sqrt_alphas_cumprod[t] + 1e-5)
+                snr = extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) / (1 - extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) + 1e-5)
                 f_t = snr / (snr + 1)  # Alternative: use self.sqrt_alphas_cumprod[diff_steps]
 
                 # Compute a clamped version of x_0
@@ -553,7 +553,8 @@ class GaussianDiffusion:
 
         # Compute intermediate results if model is predicting epsilon
         if self.model_mean_type == ModelMeanType.EPSILON:
-            results = (x_t - self.sqrt_one_minus_alphas_cumprod[diff_steps] * model_output) / self.sqrt_alphas_cumprod[diff_steps]
+            results = (x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diff_steps, x_t.shape)
+                       * model_output) / extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_t.shape)
             if torch.is_tensor(mask):
                 results = torch.where(mask, results, x_t)
         else:
