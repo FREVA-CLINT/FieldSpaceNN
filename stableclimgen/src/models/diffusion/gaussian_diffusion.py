@@ -117,7 +117,7 @@ class GaussianDiffusion:
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
         rescale_timesteps: bool = False,
-        clip_denoised: bool = False,
+        clip_denoised: bool = True,
         diffusion_steps: int = 1000,
         diffusion_step_scheduler: str = "linear",
         diffusion_step_sampler: Optional[Callable] = None
@@ -225,6 +225,22 @@ class GaussianDiffusion:
         )
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
+    def process_xstart(self, in_tensor, t, denoised_fn):
+        if denoised_fn is not None:
+            in_tensor = denoised_fn(in_tensor)
+        if self.clip_denoised:
+            # Compute f(diff_step) based on the noise schedule
+            snr = extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) / (
+                        1 - extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) + 1e-5)
+            f_t = snr / (snr + 1)  # Alternative: use self.sqrt_alphas_cumprod[diff_steps]
+
+            # Compute a clamped version of x_0
+            in_tensor_clamp = torch.clamp(in_tensor, -1, 1)
+
+            # Weighted combination of raw prediction and clamped version
+            in_tensor = f_t * in_tensor + (1 - f_t) * in_tensor_clamp
+        return in_tensor
+
     def p_mean_variance(
         self,
         model: Callable,
@@ -287,33 +303,18 @@ class GaussianDiffusion:
             model_variance = extract_into_tensor(model_variance, diff_steps, x.shape)
             model_log_variance = extract_into_tensor(model_log_variance, diff_steps, x.shape)
 
-        def process_xstart(in_tensor, t):
-            if denoised_fn is not None:
-                in_tensor = denoised_fn(in_tensor)
-            if self.clip_denoised:
-                # Compute f(diff_step) based on the noise schedule
-                snr = extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) / (1 - extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape) + 1e-5)
-                f_t = snr / (snr + 1)  # Alternative: use self.sqrt_alphas_cumprod[diff_steps]
-
-                # Compute a clamped version of x_0
-                in_tensor_clamp = torch.clamp(in_tensor, -1, 1)
-
-                # Weighted combination of raw prediction and clamped version
-                in_tensor = f_t * in_tensor + (1 - f_t) * in_tensor_clamp
-            return in_tensor
-
         # Predict initial x depending on mean type
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
-            pred_xstart = process_xstart(
-                self._predict_xstart_from_xprev(x_t=x, t=diff_steps, xprev=model_output)
+            pred_xstart = self.process_xstart(
+                self._predict_xstart_from_xprev(x_t=x, t=diff_steps, xprev=model_output), diff_steps, denoised_fn
             )
             model_mean = model_output
         elif self.model_mean_type in [ModelMeanType.START_X, ModelMeanType.EPSILON]:
             if self.model_mean_type == ModelMeanType.START_X:
-                pred_xstart = process_xstart(model_output)
+                pred_xstart = self.process_xstart(model_output, diff_steps, denoised_fn)
             else:
-                pred_xstart = process_xstart(
-                    self._predict_xstart_from_eps(x_t=x, t=diff_steps, eps=model_output), diff_steps
+                pred_xstart = self.process_xstart(
+                    self._predict_xstart_from_eps(x_t=x, t=diff_steps, eps=model_output), diff_steps, denoised_fn
                 )
             model_mean, _, _ = self.q_posterior_mean_variance(
                 x_start=pred_xstart, x_t=x, diff_steps=diff_steps
@@ -557,6 +558,7 @@ class GaussianDiffusion:
                        * model_output) / extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_t.shape)
             if torch.is_tensor(mask):
                 results = torch.where(mask, results, x_t)
+            results = self.process_xstart(results, diff_steps, None)
         else:
             results = model_output
 
