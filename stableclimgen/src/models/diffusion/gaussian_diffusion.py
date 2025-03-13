@@ -287,11 +287,19 @@ class GaussianDiffusion:
             model_variance = extract_into_tensor(model_variance, diff_steps, x.shape)
             model_log_variance = extract_into_tensor(model_log_variance, diff_steps, x.shape)
 
-        def process_xstart(in_tensor):
+        def process_xstart(in_tensor, t):
             if denoised_fn is not None:
                 in_tensor = denoised_fn(in_tensor)
             if self.clip_denoised:
-                return x.clamp(-1, 1)
+                # Compute f(diff_step) based on the noise schedule
+                snr = self.sqrt_alphas_cumprod[t] / (1 - self.sqrt_alphas_cumprod[t] + 1e-5)
+                f_t = snr / (snr + 1)  # Alternative: use self.sqrt_alphas_cumprod[diff_steps]
+
+                # Compute a clamped version of x_0
+                in_tensor_clamp = torch.clamp(in_tensor, -1, 1)
+
+                # Weighted combination of raw prediction and clamped version
+                in_tensor = f_t * in_tensor + (1 - f_t) * in_tensor_clamp
             return in_tensor
 
         # Predict initial x depending on mean type
@@ -305,7 +313,7 @@ class GaussianDiffusion:
                 pred_xstart = process_xstart(model_output)
             else:
                 pred_xstart = process_xstart(
-                    self._predict_xstart_from_eps(x_t=x, t=diff_steps, eps=model_output)
+                    self._predict_xstart_from_eps(x_t=x, t=diff_steps, eps=model_output), diff_steps
                 )
             model_mean, _, _ = self.q_posterior_mean_variance(
                 x_start=pred_xstart, x_t=x, diff_steps=diff_steps
@@ -545,11 +553,9 @@ class GaussianDiffusion:
 
         # Compute intermediate results if model is predicting epsilon
         if self.model_mean_type == ModelMeanType.EPSILON:
-            results = (
-                    (x_t - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diff_steps,
-                                               x_t.shape) * model_output) /
-                    extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_t.shape)
-            )
+            results = (x_t - self.sqrt_one_minus_alphas_cumprod[diff_steps] * model_output) / self.sqrt_alphas_cumprod[diff_steps]
+            if torch.is_tensor(mask):
+                results = torch.where(mask, results, x_t)
         else:
             results = model_output
 
