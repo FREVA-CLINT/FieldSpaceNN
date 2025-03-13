@@ -59,7 +59,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         # Iterate over batch items and compute validation loss for each
         for i in range(target.shape[0]):
             diff_steps = self.gaussian_diffusion.diffusion_steps
-            t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(target.device)
+            t = torch.tensor([(diff_steps // 10) * x for x in range(9)] + [diff_steps-1]).to(target.device)
             in_source = torch.stack(10 * [source[i]])
             in_target = torch.stack(10 * [target[i]])
             in_coords_input = torch.stack(10 * [coords_input[i]])
