@@ -284,12 +284,10 @@ class MultiRelativeCoordinateManager(nn.Module):
 
     def __init__(self,  
                 grid_layers: List[GridLayer], 
-                coord_system:str='polar',
                 rotate_coord_system=True) -> None:
                 
         super().__init__()
 
-        self.coord_system = coord_system
         self.rotate_coord_system = rotate_coord_system
         self.rcms = nn.ModuleDict()
 
@@ -305,6 +303,7 @@ class MultiRelativeCoordinateManager(nn.Module):
                      global_level_out, 
                      nh_in,
                      precompute,
+                     coord_system,
                      ref='out'):
         
         global_level_in_str = str(global_level_in)
@@ -320,7 +319,7 @@ class MultiRelativeCoordinateManager(nn.Module):
                     grid_layer_out=self.grid_layers[global_level_out_str],
                     nh_in=nh_in,
                     precompute=precompute,
-                    coord_system=self.coord_system,
+                    coord_system=coord_system,
                     rotate_coord_system=self.rotate_coord_system,
                     ref=ref
                 )

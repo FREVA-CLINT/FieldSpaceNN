@@ -30,7 +30,8 @@ class polNormal_NoLayer(NoLayer):
             nh_in_encode=nh_in_encode, 
             nh_in_decode=nh_in_decode,
             precompute_encode=precompute_encode,
-            precompute_decode=precompute_decode)
+            precompute_decode=precompute_decode,
+            coord_system='cartesian')
 
         self.normalize_to_mask = normalize_to_mask
 

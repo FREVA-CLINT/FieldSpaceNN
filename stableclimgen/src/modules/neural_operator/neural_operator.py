@@ -14,7 +14,8 @@ class NoLayer(nn.Module):
                  nh_in_encode: bool=False,
                  nh_in_decode: bool=False,
                  precompute_encode: bool=True,
-                 precompute_decode: bool=True) -> None: 
+                 precompute_decode: bool=True,
+                 coord_system: str="polar") -> None: 
         
         super().__init__()
         
@@ -22,14 +23,16 @@ class NoLayer(nn.Module):
             global_level_encode, 
             global_level_no, 
             nh_in_encode,
-            precompute_encode)
+            precompute_encode,
+            coord_system=coord_system)
 
         rcm.register_rcm(
             global_level_no, 
             global_level_decode, 
             nh_in_decode,
             precompute_decode,
-            ref='in')
+            ref='in',
+            coord_system=coord_system)
         
         self.rcm = rcm
 

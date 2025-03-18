@@ -7,7 +7,7 @@ from ...utils.helpers import check_get_missing_key
 from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict
 
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict,get_embedder
-from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, Stacked_NOBlock
+from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, Stacked_NOConv, Stacked_NOBlock, Stacked_PreActivationNOBlock
 from ...modules.neural_operator import mg_layers as mg
 
 class MGNO_EncoderDecoder_Block(nn.Module):
@@ -19,18 +19,26 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  global_levels_decode: List[int],
                  global_levels_no: List[int],
                  model_dims_out: List[int],
-                 layer_settings: dict,
+                 no_layer_settings: dict,
                  rule = 'fc', # ">" "<"
+                 block_type = 'post_layer_norm',
                  mg_reduction = 'linear',
                  mg_reduction_embed_confs: Dict = None,
                  mg_reduction_embed_names: List = None,
                  mg_reduction_embed_names_mlp: List = None,
                  mg_reduction_embed_mode: str = 'sum',
+                 embed_confs: Dict = None,
+                 embed_names: List = None,
+                 embed_mode: str = 'sum',
+                 with_gamma: bool = True,
+                 omit_backtransform: bool = False,
                  mg_att_dim = 128,
                  mg_n_head_channels = 16,
                  p_dropout=0,
                  mask_as_embedding = False,
-                 level_diff_zero_linear = False
+                 level_diff_zero_linear = False,
+                 layer_type='Dense',
+                 rank=4
                 ) -> None: 
       
         super().__init__()
@@ -72,11 +80,6 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 
                 input_indices.append(input_idx)
 
-                if list(layer_settings.keys())[0].isnumeric():
-                    layer_setting = layer_settings[str(level_diff)]
-                else:
-                    layer_setting = layer_settings
-                
                 model_dim_in = input_dims[input_idx]
                 model_dim_out = model_dims_out[output_idx]
                 mg_input_dims.append(model_dim_out)
@@ -84,15 +87,11 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
                 global_level_no = global_levels_no[output_idx]
 
-                layer_type = check_get_missing_key(layer_setting, "type")
-
                 if level_diff_zero_linear and level_diff==0:
                     layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
 
-                elif 'NO' in layer_type:
-
-                    no_layer_settings = check_get_missing_key(layer_setting, "no_layer_settings")
-                    no_layer_type = check_get_missing_key(layer_setting, "no_layer_type")
+                else:
+                    no_layer_type = check_get_missing_key(no_layer_settings, "no_layer_type")
 
                     no_layer = get_no_layer(rcm,
                                             no_layer_type,
@@ -103,32 +102,32 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                             precompute_decode=True,
                                             layer_settings=no_layer_settings,
                                             normalize_to_mask= (mask_as_embedding==False))
-                
-                    if "mlp" in layer_type:
-                        embedder = get_embedder_from_dict(layer_setting)
-                        if 'pre' in layer_setting["type"]:
-                            layer = PreActivation_NOBlock(
+                    
+                    embedder = get_embedder(embed_names, embed_confs, embed_mode) if embed_names is not None else None
+                    
+                    if 'post_layer_norm' in block_type:
+                        layer = NOBlock(
                                         model_dim_in=model_dim_in,
                                         model_dim_out=model_dim_out,
                                         no_layer=no_layer,
                                         embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"],
-                                        with_gamma = 'gamma' in layer_setting["type"],
-                                        mask_as_embedding=mask_as_embedding
-                                        )
-                        else:
-                            layer = NOBlock(
-                                        model_dim_in=model_dim_in,
-                                        model_dim_out=model_dim_out,
-                                        no_layer=no_layer,
-                                        embedder=embedder,
-                                        cross_no = 'cross_no' in layer_setting["type"],
-                                        with_gamma = 'gamma' in layer_setting["type"],
+                                        layer_type=layer_type,
+                                        rank=rank,
+                                        with_gamma = with_gamma,
                                         mask_as_embedding=mask_as_embedding,
-                                        OW_zero=layer_setting.get("OW_zero",False)
+                                        OW_zero=omit_backtransform
                                         )
-                elif 'linear' in layer_type:
-                    layer = nn.Linear(model_dim_in, model_dim_out) if model_dim_in!=model_dim_out else nn.Identity()
+                    elif 'pre_layer_norm' in block_type:
+                        layer = PreActivation_NOBlock(
+                                    model_dim_in=model_dim_in,
+                                    model_dim_out=model_dim_out,
+                                    no_layer=no_layer,
+                                    embedder=embedder,
+                                    layer_type=layer_type,
+                                    rank=rank,
+                                    with_gamma = with_gamma,
+                                    mask_as_embedding=mask_as_embedding
+                                    )
                 
                 self.layers.append(layer)
                 layer_indices.append(layer_index)
@@ -242,11 +241,21 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                  global_levels_decode: List[int],
                  global_level_no: int,
                  model_dims_out: List[int],
-                 layer_settings: dict,
+                 no_layer_settings: dict,
                  no_level_step: int = 1,
-                 encode_reduction = 'concat',
+                 concat_model_dim = 1,
+                 block_type = 'post_layer_norm',
+                 layer_type = 'Tucker',
+                 concat_layer_type='Tucker',
+                 reduction_layer_type = 'CrossTucker', 
+                 rank=4,
+                 rank_cross=2,
+                 embed_names=None,
+                 embed_confs=None,
+                 embed_mode='sum',
+                 mask_as_embedding = False,
+                 with_gamma = False,
                  p_dropout=0,
-                 mask_as_embedding = False
                 ) -> None: 
       
         super().__init__()
@@ -255,15 +264,12 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
         self.model_dims_out = model_dims_out
         self.rcm=rcm
 
-     
+        no_layer_type = check_get_missing_key(no_layer_settings, "no_layer_type")
         no_layers = nn.ModuleList()
 
         for input_level in range(int(torch.tensor(input_levels).min()), global_level_no + 1 - no_level_step, no_level_step):
             
             global_level_no_k = input_level + no_level_step
-
-            no_layer_settings = check_get_missing_key(layer_settings, "no_layer_settings")
-            no_layer_type = check_get_missing_key(layer_settings, "no_layer_type")
 
             no_layer = get_no_layer(rcm,
                                     no_layer_type,
@@ -277,15 +283,45 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
 
             no_layers.append(no_layer)
 
-        self.layer = Stacked_NOBlock(input_dims, 
-                        model_dims_out,
-                        no_layers,
-                        global_levels_decode)
+        if embed_names is not None:
+            embedder = get_embedder(embed_names=embed_names,
+                                        embed_confs=embed_confs,
+                                        embed_mode=embed_mode)
+        else:
+            embedder = None
+        
+        no_conv_layer = Stacked_NOConv(
+            input_levels,
+            input_dims, 
+            model_dims_out,
+            no_layers,
+            global_levels_decode,
+            rank=rank,
+            rank_cross=rank_cross,
+            layer_type=layer_type,
+            concat_model_dim=concat_model_dim,
+            concat_layer_type=concat_layer_type,
+            output_reduction_layer_type=reduction_layer_type
+            )
 
-    
+        if block_type == 'post_layer_norm':
+            self.layer = Stacked_NOBlock(no_conv_layer,
+                                        layer_type=layer_type,
+                                        rank=rank,
+                                        embedder=embedder,
+                                        with_gamma=with_gamma,
+                                        grid_layers=rcm.grid_layers)
+        
+        elif block_type == 'pre_layer_norm':
+            self.layer = Stacked_PreActivationNOBlock(no_conv_layer,
+                                        layer_type=layer_type,
+                                        rank=rank,
+                                        embedder=embedder,
+                                        with_gamma=with_gamma,
+                                        grid_layers=rcm.grid_layers)
 
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
         
-        x_levels, mask_levels = self.layer(x_levels[0], indices_sample=indices_sample, mask=mask_levels[0], emb=emb)
+        x_levels, mask_levels = self.layer(x_levels, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
 
         return x_levels, mask_levels

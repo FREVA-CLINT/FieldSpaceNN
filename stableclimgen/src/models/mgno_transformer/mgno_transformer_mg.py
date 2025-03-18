@@ -19,11 +19,14 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  input_dim: int=1,
                  lifting_dim: int=1,
                  output_dim: int=1,
-                 n_head_channels:int=16,
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True,
                  p_dropout=0.,
-                 mask_as_embedding = False
+                 mask_as_embedding = False,
+                 input_embed_names = None,
+                 input_embed_confs = None,
+                 input_embed_mode = 'sum',
+                 **kwargs
                  ) -> None: 
         
         self.input_dim = input_dim
@@ -34,7 +37,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                 global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1))) 
             if hasattr(block_conf,'global_levels_no'):
                 #if not isinstance(block_conf.global_levels_no, list):
-                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1)))
+                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_no).view(-1)))
 
         global_levels_max = torch.concat((torch.tensor(global_levels).view(-1)
                                      ,torch.tensor(0).view(-1))).max()
@@ -42,7 +45,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
         global_levels = torch.arange(global_levels_max+1)
         
         super().__init__(mgrids, 
-                         global_levels)
+                         global_levels,
+                         rotate_coord_system=rotate_coord_system)
         
        
         self.Blocks = nn.ModuleList()
@@ -60,17 +64,25 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             block_conf.global_levels_output,
                                             block_conf.global_levels_no,
                                             block_conf.model_dims_out,
-                                            block_conf.layer_settings,
                                             rule=block_conf.rule,
-                                            mg_reduction=block_conf.reduction,
-                                            mg_reduction_embed_confs=block_conf.mg_reduction_embed_confs,
-                                            mg_reduction_embed_names=block_conf.mg_reduction_embed_names,
-                                            mg_reduction_embed_names_mlp=block_conf.mg_reduction_embed_names_mlp,
-                                            mg_reduction_embed_mode=block_conf.mg_reduction_embed_mode,
-                                            mg_att_dim=block_conf.mg_att_dim,
-                                            mg_n_head_channels=block_conf.mg_n_head_channels,
-                                            level_diff_zero_linear=block_conf.level_diff_zero_linear,
-                                            mask_as_embedding=mask_as_embedding)  
+                                            no_layer_settings=check_get(block_conf,kwargs,'no_layer_settings'),
+                                            block_type=check_get(block_conf,kwargs,'block_type'),
+                                            mg_reduction=check_get(block_conf, kwargs, "mg_reduction"),
+                                            mg_reduction_embed_confs=check_get(block_conf, kwargs, "mg_reduction_embed_confs"),
+                                            mg_reduction_embed_names=check_get(block_conf, kwargs, "mg_reduction_embed_names"),
+                                            mg_reduction_embed_names_mlp=check_get(block_conf, kwargs, "mg_reduction_embed_names_mlp"),
+                                            mg_reduction_embed_mode=check_get(block_conf, kwargs, "mg_reduction_embed_mode"),
+                                            embed_confs=check_get(block_conf, kwargs, "embed_confs"),
+                                            embed_names=check_get(block_conf, kwargs, "embed_names"),
+                                            embed_mode=check_get(block_conf, kwargs, "embed_mode"),
+                                            with_gamma=check_get(block_conf, kwargs, "with_gamma"),
+                                            omit_backtransform=check_get(block_conf, kwargs, "omit_backtransform"),
+                                            mg_att_dim=check_get(block_conf, kwargs, "mg_att_dim"),
+                                            mg_n_head_channels=check_get(block_conf, kwargs, "mg_n_head_channels"),
+                                            level_diff_zero_linear=check_get(block_conf, kwargs, "level_diff_zero_linear"),
+                                            mask_as_embedding=mask_as_embedding,
+                                            layer_type=check_get(block_conf, kwargs, "layer_type"),
+                                            rank=check_get(block_conf, kwargs, "rank"))  
                 
             elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
                 block = MGNO_StackedEncoderDecoder_Block(
@@ -80,8 +92,20 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     block_conf.global_levels_output,
                     block_conf.global_levels_no,
                     block_conf.model_dims_out,
-                    block_conf.layer_settings,
-                    mask_as_embedding= mask_as_embedding
+                    no_layer_settings=check_get(block_conf,kwargs,'no_layer_settings'),
+                    block_type=check_get(block_conf,kwargs,'block_type'),
+                    mask_as_embedding= mask_as_embedding,
+                    layer_type=block_conf.layer_type if "layer_type" not in kwargs.keys() else kwargs['layer_type'],
+                    no_level_step = check_get(block_conf, kwargs, "no_level_step"),
+                    concat_model_dim= check_get(block_conf, kwargs, "concat_model_dim"),
+                    reduction_layer_type=check_get(block_conf, kwargs, "reduction_layer_type"),
+                    concat_layer_type=check_get(block_conf, kwargs, "concat_layer_type"),
+                    rank=check_get(block_conf, kwargs, "rank"),
+                    rank_cross=check_get(block_conf, kwargs, "rank_cross"),
+                    with_gamma=check_get(block_conf, kwargs, "with_gamma"),
+                    embed_confs=check_get(block_conf, kwargs, "embed_confs"),
+                    embed_names=check_get(block_conf, kwargs, "embed_names"),
+                    embed_mode=check_get(block_conf, kwargs, "embed_mode"),
                 )
                 
             elif isinstance(block_conf, MGProcessingConfig):
@@ -103,7 +127,12 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         self.lifting_layer = nn.Linear(input_dim, lifting_dim, bias=False) if lifting_dim>1 else nn.Identity()
 
-        
+        self.input_layer = InputLayer(input_dim, 
+                                      lifting_dim, 
+                                      self.grid_layer_0, 
+                                      embed_names=input_embed_names,
+                                      embed_confs=input_embed_confs,
+                                      embed_mode=input_embed_mode)
 
     def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
@@ -140,7 +169,13 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         return x
     
-class EmbedLayer(nn.Module):
+def check_get(block_conf, arg_dict, key):
+    if key in arg_dict:
+        return arg_dict[key]
+    else:
+        return getattr(block_conf,key)
+    
+class InputLayer(nn.Module):
   
     def __init__(self,
                  model_dim_in,
@@ -148,20 +183,33 @@ class EmbedLayer(nn.Module):
                  grid_layer_0,
                  embed_names=None,
                  embed_confs=None,
+                 embed_mode='sum'
                 ) -> None: 
       
         super().__init__()
-        self.grid_layer_0 = grid_layer_0
+
+
         if embed_names is not None:
-            embedder = get_embedder(embed_names, embed_confs, embed_mode="sum")
-            emb_dim = embedder.get_out_channels if embedder is not None else None
+            if 'CoordinateEmbedder' in embed_names:
+                self.grid_layer_0 = grid_layer_0
+
+            self.embedder = get_embedder(embed_names, embed_confs, embed_mode=embed_mode)
+            
+            emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
+
             self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_out*2)
+
 
         self.linear = nn.Linear(model_dim_in, model_dim_out, bias=True)
 
-    def forward(self, x, mask=None, emb=None):
+    def forward(self, x, mask=None, emb=None, indices_sample=None):
         
-        emb = add_coordinates_to_emb_dict()
+        if hasattr(self, 'grid_layers') and hasattr(self,"embedding_layer"):
+            emb = add_coordinates_to_emb_dict(self.grid_layer_0, indices_layers=indices_sample["indices_layers"] if indices_sample else None, emb=emb)
+
+        if mask is not None and hasattr(self,"embedding_layer"):
+            emb = add_mask_to_emb_dict(emb, mask)
+
         x_shape = x.shape
         if hasattr(self,"embedding_layer"):
             emb_ = self.embedder(emb).squeeze(dim=1)
@@ -171,3 +219,5 @@ class EmbedLayer(nn.Module):
             x = self.linear(x) * (scale + 1) + shift    
         else:
             x = self.linear(x)
+
+        return x

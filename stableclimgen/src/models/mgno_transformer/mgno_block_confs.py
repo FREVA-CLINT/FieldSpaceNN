@@ -34,16 +34,24 @@ class MGEncoderDecoderConfig:
                  global_levels_output: list,
                  global_levels_no: list,
                  model_dims_out: list,
-                 layer_settings: list,
-                 reduction:str = 'linear',
+                 no_layer_settings: dict={},
+                 block_type: str = 'post_layer_norm',
+                 mg_reduction:str = 'linear',
                  mg_reduction_embed_confs: dict=None,
                  mg_reduction_embed_names: list=None,
                  mg_reduction_embed_names_mlp: list=None,
                  mg_reduction_embed_mode: str = 'sum',
+                 embed_confs: dict=None,
+                 embed_names: list=None,
+                 embed_mode: str = 'sum',
+                 with_gamma: bool=True,
+                 omit_backtransform: bool=False,
                  mg_att_dim: int = 128,
                  mg_n_head_channels: int=16,
                  rule: str = 'fc',
-                 level_diff_zero_linear = False):
+                 level_diff_zero_linear = False,
+                 layer_type='Dense',
+                 rank=4):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
@@ -55,9 +63,21 @@ class MGStackedEncoderDecoderConfig:
                  global_levels_output: list,
                  global_levels_no: int,
                  model_dims_out: list,
-                 layer_settings: dict,
-                 encode_reduction:str = 'concat',
-                 no_level_step: int=1):
+                 no_layer_settings: dict={},
+                 block_type: str = 'post_layer_norm',
+                 no_level_step: int = 1,
+                 layer_type = 'Tucker',
+                 concat_layer_type='Tucker',
+                 reduction_layer_type = 'CrossTucker', 
+                 concat_model_dim = 1,
+                 p_dropout=0,
+                 mask_as_embedding = False,
+                 rank=4,
+                 rank_cross=2,
+                 with_gamma=False,
+                 embed_confs: dict=None,
+                 embed_names: list=None,
+                 embed_mode: str = 'sum'):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():

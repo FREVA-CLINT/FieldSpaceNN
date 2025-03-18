@@ -10,8 +10,7 @@ class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
                  global_levels: List[int],
-                 nh_up=False,
-                 nh_down=True
+                 rotate_coord_system=True
                  ) -> None: 
         
                 
@@ -30,9 +29,8 @@ class MGNO_base_model(nn.Module):
         # Construct blocks based on configurations
 
         self.rcm = MultiRelativeCoordinateManager(self.grid_layers,
-                                                    coord_system="polar",
-                                                    rotate_coord_system=True
-                                                    )
+                                                  rotate_coord_system=rotate_coord_system
+                                                )
 
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
