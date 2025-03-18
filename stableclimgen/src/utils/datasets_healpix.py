@@ -79,6 +79,7 @@ class HealPixLoader(Dataset):
                  max_average_lvl=0,
                  drop_vars=False,
                  n_sample_vars=-1,
+                 deterministic=False,
                  variables_source=None,
                  variables_target=None):
         
@@ -97,6 +98,7 @@ class HealPixLoader(Dataset):
         self.max_average_lvl = max_average_lvl
         self.drop_vars = drop_vars
         self.n_sample_vars = n_sample_vars
+        self.deterministic = deterministic
 
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
@@ -187,7 +189,7 @@ class HealPixLoader(Dataset):
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
-        self.len_dataset = len(self.sample_timesteps) if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
+        self.len_dataset = len(self.sample_timesteps)*self.global_cells.shape[0] if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -242,7 +244,6 @@ class HealPixLoader(Dataset):
         return data_g
 
     def __getitem__(self, index):
-        
         source_index = 0
         source_file = self.files_source[source_index]
         
@@ -252,13 +253,12 @@ class HealPixLoader(Dataset):
         ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
 
         if self.random_time_idx and not self.sample_timesteps:
-            index = int(torch.randint(0, len(ds_source.time.values), (1,1)))
+            time_index = int(torch.randint(0, len(ds_source.time.values), (1, 1)))
             if self.index_range_source is not None:
-                if (index < self.index_range_source[0]) or (index > self.index_range_source[1]):
-                    index = int(torch.randint(self.index_range_source[0], self.index_range_source[1]+1, (1,1)))
+                if (time_index < self.index_range_source[0]) or (time_index > self.index_range_source[1]):
+                    time_index = int(torch.randint(self.index_range_source[0], self.index_range_source[1] + 1, (1, 1)))
         elif self.sample_timesteps:
-            index = self.sample_timesteps[index]
-
+            time_index = self.sample_timesteps[index // self.global_cells_input.shape[0]]
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
@@ -267,7 +267,10 @@ class HealPixLoader(Dataset):
         output_mapping = self.output_mapping
         output_in_range = self.output_in_range
 
-        sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
+        if self.deterministic:
+            sample_index = torch.tensor(index % global_cells_input.shape[0])
+        else:
+            sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
         if self.n_sample_vars != -1 and self.n_sample_vars != len(self.variables_source):
             sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
         else:
@@ -276,10 +279,10 @@ class HealPixLoader(Dataset):
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
 
-        data_source = self.get_data(ds_source, index, global_cells[sample_index] , variables_source, 0, input_mapping)
+        data_source = self.get_data(ds_source, time_index, global_cells[sample_index], variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, index, global_cells[sample_index] , variables_target, 0, output_mapping)
+            data_target = self.get_data(ds_target, time_index, global_cells[sample_index], variables_target, 0, output_mapping)
         else:
             data_target = data_source
 
