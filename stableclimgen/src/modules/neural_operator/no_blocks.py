@@ -6,7 +6,6 @@ from typing import List
 import copy
 
 import tensorly as tl
-from tltorch.factorized_tensors.core import FactorizedTensor
 from tensorly import einsum
 
 from .neural_operator import NoLayer
