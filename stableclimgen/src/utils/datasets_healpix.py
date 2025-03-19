@@ -81,7 +81,8 @@ class HealPixLoader(Dataset):
                  deterministic=False,
                  variables_source=None,
                  variables_target=None,
-                 max_in_grid_distance=None):
+                 max_in_grid_distance=None,
+                 one_to_one=False):
         
         super(HealPixLoader, self).__init__()
         
@@ -149,15 +150,20 @@ class HealPixLoader(Dataset):
                                                   max_nh=nh_input,
                                                   lowest_level=0,
                                                   periodic_fov=None)
-            if max_in_grid_distance:
+            if one_to_one or max_in_grid_distance:
                 # Compute pairwise distances (using broadcasting)
                 diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
 
                 # Compute Euclidean distance (or Haversine if needed)
                 distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
 
-                # Check if any input_coordinates are within d
-                self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
+                if one_to_one:
+                    closest_out_indices = torch.argmin(distances, dim=0)  # One closest out_coord per in_coord
+                    self.steady_mask = torch.ones(coords_processing.shape[0], dtype=bool)
+                    self.steady_mask[closest_out_indices] = False
+                else:
+                    # Check if any input_coordinates are within d
+                    self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
                 print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
 
             input_mapping = mapping["indices"]
