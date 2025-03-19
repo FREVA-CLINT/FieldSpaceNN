@@ -237,12 +237,14 @@ class HealPixLoader(Dataset):
         indices = indices.reshape(-1)
 
         # tbd: spatial dim as input!
+        regular = False
         if 'ncells' in dict(ds.sizes).keys():
             ds = ds.isel(ncells=indices, time=ts)
         elif 'cell' in dict(ds.sizes).keys():
             ds = ds.isel(cell=indices, time=ts)
         else:
             ds = ds.isel(time=ts)
+            regular = True
 
         data_g = []
         for variable in variables:
@@ -251,7 +253,7 @@ class HealPixLoader(Dataset):
         data_g = torch.stack(data_g, dim=-1)
         data_g = data_g.view(-1, nh, len(variables), 1)
 
-        if 'ncells' not in dict(ds.sizes).keys() and 'cells' not in dict(ds.sizes).keys():
+        if regular:
             data_g = data_g[indices]
 
         ds.close()
