@@ -74,6 +74,7 @@ class MGStackedEncoderDecoderConfig:
                  mask_as_embedding = False,
                  rank=4,
                  rank_cross=2,
+                 no_rank_decay=0,
                  with_gamma=False,
                  embed_confs: dict=None,
                  embed_names: list=None,

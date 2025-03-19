@@ -102,6 +102,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     concat_layer_type=check_get(block_conf, kwargs, "concat_layer_type"),
                     rank=check_get(block_conf, kwargs, "rank"),
                     rank_cross=check_get(block_conf, kwargs, "rank_cross"),
+                    no_rank_decay=check_get(block_conf, kwargs, "no_rank_decay"),
                     with_gamma=check_get(block_conf, kwargs, "with_gamma"),
                     embed_confs=check_get(block_conf, kwargs, "embed_confs"),
                     embed_names=check_get(block_conf, kwargs, "embed_names"),

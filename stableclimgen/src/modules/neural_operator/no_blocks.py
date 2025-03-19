@@ -58,7 +58,7 @@ class residual_layer(nn.Module):
         return self.lin_layer(get_residual(x, self.level_diff, mask=mask))
 
 
-def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, layer_type='Dense'):
+def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_rank_decay=0, layer_type='Dense'):
     if layer_type == "Dense":
         layer = DenseLayer
         
@@ -75,7 +75,8 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, layer
                 input_dim, 
                 output_dim, 
                 no_dims_out=no_dims_out, 
-                rank=rank)
+                rank=rank,
+                no_rank_decay=no_rank_decay)
 
 class Stacked_NOBlock(nn.Module):
   
@@ -517,7 +518,8 @@ class CrossTuckerLayer(nn.Module):
                  no_dims_out=None, 
                  rank=2, 
                  const_str="bnv",
-                 n_vars_total=1, 
+                 n_vars_total=1,
+                 no_rank_decay=0, 
                  norm=True):
         """
         Args:
@@ -554,13 +556,18 @@ class CrossTuckerLayer(nn.Module):
             norm_val = torch.tensor((*in_shape[:-1],*out_shape[:-1])).prod()
         else:
             norm_val = 1.
-
+        
+        """
         if rank > 1:
             ranks_in = [min([dim, rank]) for dim in in_shape]
             ranks_out = [min([dim, rank]) for dim in out_shape]
         else:
             ranks_in = [max([1,int(dim * rank)]) for dim in in_shape]
             ranks_out = [max([1,int(dim * rank)]) for dim in out_shape]
+
+        """
+        ranks_in = get_ranks(in_shape, rank, no_rank_decay=no_rank_decay)
+        ranks_out = get_ranks(out_shape, rank, no_rank_decay=no_rank_decay)
 
         self.core = nn.Parameter(torch.randn(*(*ranks_out,*ranks_in))/norm_val)
 
@@ -618,6 +625,21 @@ class CrossTuckerLayer(nn.Module):
         return x
 
 
+def get_ranks(shape, rank, no_rank_decay=0):
+    rank_ = []
+    for k in range(len(shape)):
+        r = rank * (1 - no_rank_decay*k/(len(shape)-1)) 
+        if k < len(shape)-1:
+            rank_.append(r)
+        else:
+            rank_.append(float(torch.tensor(rank_).mean()))
+
+    if rank > 1:
+        ranks = [min([dim, rank_[k]]) for k, dim in enumerate(shape)]
+    else:
+        ranks = [max([1,int(dim * rank_[k])]) for k, dim in enumerate(shape)]
+    
+    return ranks
 
 class TuckerLayer(nn.Module):
     def __init__(self, 
@@ -628,6 +650,7 @@ class TuckerLayer(nn.Module):
                  rank=2, 
                  const_str="bnv", 
                  norm=True, 
+                 no_rank_decay=0,
                  n_vars_total=1,
                  **kwargs):
 
@@ -640,12 +663,8 @@ class TuckerLayer(nn.Module):
 
         d = len(weight_shape)
 
-        if rank > 1:
-            ranks = [min([dim, rank]) for dim in weight_shape]
-        else:
-            ranks = [max([1,int(dim * rank)]) for dim in weight_shape]
+        ranks = get_ranks(in_shape, rank, no_rank_decay=no_rank_decay)
 
-        #core_shape = (rank,) * (d)
         core_shape = ranks
 
         reduction = False
@@ -735,7 +754,8 @@ class CrossTuckerConcatLayer(nn.Module):
                  no_dims: list,
                  input_dim: int,
                  output_dim: int,
-                 rank=2
+                 rank=2,
+                 no_rank_decay=0,
                 ) -> None: 
       
         super().__init__()
@@ -747,7 +767,7 @@ class CrossTuckerConcatLayer(nn.Module):
         else:
             no_dims_ = no_dims
 
-        self.layer = CrossTuckerLayer((1,)*len(no_dims_), input_dim, output_dim, no_dims_out=no_dims_, rank=rank)
+        self.layer = CrossTuckerLayer((1,)*len(no_dims_), input_dim, output_dim, no_dims_out=no_dims_, rank=rank, no_rank_decay=no_rank_decay)
 
     def forward(self, x, x_c):
        
@@ -766,7 +786,8 @@ class TuckerConcatLayer(nn.Module):
                  no_dims: list,
                  input_dim: int,
                  output_dim: int,
-                 rank=3
+                 rank=3,
+                 no_rank_decay=0
                 ) -> None: 
       
         super().__init__()
@@ -774,7 +795,7 @@ class TuckerConcatLayer(nn.Module):
         self.no_dims=no_dims
         no_dims_tot = int(torch.tensor(no_dims).prod())
 
-        self.layer = TuckerLayer((1,), input_dim, no_dims_tot*output_dim, rank=rank)
+        self.layer = TuckerLayer((1,), input_dim, no_dims_tot*output_dim, rank=rank, no_rank_decay=no_rank_decay)
 
     def forward(self, x, x_c):
        
@@ -863,7 +884,8 @@ class Stacked_NOConv(nn.Module):
                  concat_model_dim = 1,
                  output_reduction_layer_type = 'Dense',
                  rank = 4,
-                 rank_cross=2
+                 rank_cross=2,
+                 no_rank_decay=0
                 ) -> None: 
       
         super().__init__()
@@ -910,7 +932,8 @@ class Stacked_NOConv(nn.Module):
             self.level_concat_layers[str(int(global_level_input))] = layer(no_dims,
                     model_dims_in[global_level_input],
                     concat_model_dim,
-                    rank=rank)
+                    rank=rank,
+                    no_rank_decay=no_rank_decay)
             
             total_concat_model_dim += concat_model_dim
 
@@ -933,6 +956,7 @@ class Stacked_NOConv(nn.Module):
                             model_dims_out[global_level_decode], 
                             no_dims_out=(1,), 
                             rank=rank_cross if output_reduction_layer_type=='CrossTucker' else rank,
+                            no_rank_decay=no_rank_decay,
                             layer_type=output_reduction_layer_type)
 
             self.level_reduction_layers[str(global_level_decode)] = layer
@@ -943,6 +967,7 @@ class Stacked_NOConv(nn.Module):
                                model_dim_max,
                                no_dims_out=self.no_dims[max_level],
                                rank=rank_cross if layer_type == 'CrossTucker' else rank,
+                               no_rank_decay=no_rank_decay,
                                layer_type=layer_type)
 
 
