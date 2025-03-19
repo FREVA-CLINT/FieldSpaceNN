@@ -12,6 +12,7 @@ from .neural_operator import NoLayer
 from.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict, update_mask
 
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm
+from ..transformer.transformer_modules import MultiHeadAttentionBlock
 
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential
@@ -70,6 +71,10 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
 
     elif layer_type == "CrossDense":
         layer = CrossDenseLayer
+    
+    elif layer_type == "PathAttention":
+        layer = PathAttentionLayer
+
 
     return  layer(no_dims_in, 
                 input_dim, 
@@ -807,6 +812,49 @@ class TuckerConcatLayer(nn.Module):
         x_c = x_c.view(*x.shape[:3],*self.no_dims,-1)
         x = x.view(*x.shape[:3],*self.no_dims,-1)
         x = torch.concat((x, x_c), dim=-1)
+
+        return x
+
+
+class PathAttentionLayer(nn.Module):
+    def __init__(self,
+                 no_dims,
+                 input_dim,
+                 output_dim,
+                 n_vars_total=1,
+                 rank = 0.5,
+                 no_rank_decay = 0,
+                 **kwargs
+                ) -> None: 
+         
+        super().__init__()
+        
+        no_dims_out = get_ranks((*no_dims, input_dim), rank, no_rank_decay=no_rank_decay)[:-1]
+
+        self.no_dims = no_dims
+        self.no_dims_out = no_dims_out
+        self.no_dims_tot = int(torch.tensor(no_dims).prod())
+        self.no_dims_out_tot = int(torch.tensor(no_dims_out).prod())
+
+        self.path_layer = CrossTuckerLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay)
+
+        n_heads = max([1, input_dim // 16])
+        self.MHA = MultiHeadAttentionBlock(
+            input_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
+            )   
+
+
+    def forward(self, x):
+        
+        b,n,v = x.shape[:3]
+        x_cross = self.path_layer(x)
+
+        x_cross = x_cross.view(b*n*v, self.no_dims_out_tot, -1)
+        x = x.view(b*n*v, self.no_dims_tot, -1)
+
+        x = self.MHA(q=x, k=x_cross, v=x_cross)
+
+        x = x.view(b,n,v,self.no_dims_tot,-1)
 
         return x
 
