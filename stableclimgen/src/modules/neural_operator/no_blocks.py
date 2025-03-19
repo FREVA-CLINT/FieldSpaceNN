@@ -708,6 +708,7 @@ class LinConcatLayer(nn.Module):
                  no_dims: list,
                  input_dim: int,
                  concat_model_dim: int,
+                 **kwargs
                 ) -> None: 
       
         super().__init__()
