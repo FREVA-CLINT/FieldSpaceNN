@@ -204,7 +204,7 @@ class InputLayer(nn.Module):
 
     def forward(self, x, mask=None, emb=None, indices_sample=None):
         
-        if hasattr(self, 'grid_layers') and hasattr(self,"embedding_layer"):
+        if hasattr(self, 'grid_layer_0') and hasattr(self,"embedding_layer"):
             emb = add_coordinates_to_emb_dict(self.grid_layer_0, indices_layers=indices_sample["indices_layers"] if indices_sample else None, emb=emb)
 
         if mask is not None and hasattr(self,"embedding_layer"):
