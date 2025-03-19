@@ -5,8 +5,8 @@ import torch.nn as nn
 from typing import List
 import copy
 
-import tensorly as tl
-from tensorly import einsum
+#import tensorly as tl
+#from tensorly import einsum
 
 from .neural_operator import NoLayer
 from.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict, update_mask
@@ -16,7 +16,7 @@ from ..transformer.attention import ChannelVariableAttention, ResLayer, Adaptive
 from ..icon_grids.grid_attention import GridAttention
 from ...modules.embedding.embedder import EmbedderSequential
 
-tl.set_backend('pytorch')
+#tl.set_backend('pytorch')
 einsum_dims = 'pqrstuvw'
 
 
@@ -608,13 +608,12 @@ class CrossTuckerLayer(nn.Module):
     def forward(self, x):
 
         x = x.view(*x.shape[:3],*self.in_shape)
-        x = einsum(
-            self.einsum_eq,
+
+        x = torch.einsum(self.einsum_eq,
             x,
             self.core,
             *self.out_factors,
-            *self.in_factors
-        )
+            *self.in_factors)
         x = x.reshape(*x.shape[:3],-1,x.shape[-1])
         return x
 
@@ -694,7 +693,7 @@ class TuckerLayer(nn.Module):
     def forward(self, x):
 
         x = x.view(*x.shape[:3],*self.in_shape)
-        x = einsum(
+        x = torch.einsum(
             self.einsum_eq,
             x,
             self.core,
