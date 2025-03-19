@@ -628,7 +628,7 @@ class CrossTuckerLayer(nn.Module):
 def get_ranks(shape, rank, no_rank_decay=0):
     rank_ = []
     for k in range(len(shape)):
-        r = rank * (1 - no_rank_decay*k/(len(shape)-1)) 
+        r = rank * (1 - no_rank_decay*k/(max([1,len(shape)-1]))) 
         if k < len(shape)-1:
             rank_.append(r)
         else:
