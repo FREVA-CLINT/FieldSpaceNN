@@ -7,8 +7,7 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
-from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
-from .grid_utils_icon import get_coords_as_tensor
+from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid, get_coords_as_tensor
 
 
 def get_moments(data, type, level=0.9):
@@ -81,7 +80,8 @@ class HealPixLoader(Dataset):
                  n_sample_vars=-1,
                  deterministic=False,
                  variables_source=None,
-                 variables_target=None):
+                 variables_target=None,
+                 max_in_grid_distance=None):
         
         super(HealPixLoader, self).__init__()
         
@@ -129,6 +129,8 @@ class HealPixLoader(Dataset):
         self.files_source = data_dict["source"]["files"]
         self.files_target = data_dict["target"]["files"]
 
+        self.steady_mask = None
+
         coords_processing = healpix_pixel_lonlat_torch(processing_nside)
 
         if processing_nside == in_nside:
@@ -140,13 +142,23 @@ class HealPixLoader(Dataset):
                 input_coordinates = healpix_pixel_lonlat_torch(in_nside)
             else:
                 assert(in_grid is not None)
-                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid), grid_type='cell') # change for other grids
+                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid), grid_type='regular') # change for other grids
             mapping = get_mapping_to_healpix_grid(coords_processing,
                                                   input_coordinates,
                                                   search_radius=search_radius,
                                                   max_nh=nh_input,
                                                   lowest_level=0,
                                                   periodic_fov=None)
+            if max_in_grid_distance:
+                # Compute pairwise distances (using broadcasting)
+                diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
+
+                # Compute Euclidean distance (or Haversine if needed)
+                distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
+
+                # Check if any input_coordinates are within d
+                self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
+                print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
 
             input_mapping = mapping["indices"]
             input_in_range = mapping["in_rng_mask"]
@@ -160,7 +172,7 @@ class HealPixLoader(Dataset):
                 output_coordinates = healpix_pixel_lonlat_torch(out_nside)
             else:
                 assert(out_grid is not None)
-                output_coordinates = get_coords_as_tensor(xr.open_dataset(out_grid), grid_type='cell') # change for other grids
+                output_coordinates = get_coords_as_tensor(xr.open_dataset(out_grid), grid_type='regular') # change for other grids
             mapping = get_mapping_to_healpix_grid(coords_processing,
                                                   output_coordinates,
                                                   search_radius=search_radius,
@@ -188,14 +200,14 @@ class HealPixLoader(Dataset):
             self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
             self.global_cells_input = self.global_cells[:, 0]
 
-        ds_source = xr.open_zarr(self.files_source[0], decode_times=False)
+        ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         self.len_dataset = len(self.sample_timesteps)*self.global_cells.shape[0] if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
 
         if self.lazy_load:
-            ds_source = xr.open_zarr(file_path_source, decode_times=False)
+            ds_source = xr.open_dataset(file_path_source, decode_times=False)
         else:
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
@@ -207,7 +219,7 @@ class HealPixLoader(Dataset):
             
         else:
             if self.lazy_load:
-                ds_target = xr.open_zarr(file_path_target, decode_times=False)
+                ds_target = xr.open_dataset(file_path_target, decode_times=False)
             else:
                 ds_target = xr.load_dataset(file_path_target, decode_times=False)
 
@@ -227,17 +239,20 @@ class HealPixLoader(Dataset):
         # tbd: spatial dim as input!
         if 'ncells' in dict(ds.sizes).keys():
             ds = ds.isel(ncells=indices, time=ts)
-        else:
+        elif 'cell' in dict(ds.sizes).keys():
             ds = ds.isel(cell=indices, time=ts)
+        else:
+            ds = ds.isel(time=ts)
 
         data_g = []
         for variable in variables:
             data = torch.tensor(ds[variable].values)
-            data = data[0] if data.dim() > 1  else data
             data_g.append(data)
-
         data_g = torch.stack(data_g, dim=-1)
-        data_g = data_g.view(n, nh, len(variables), 1)
+        data_g = data_g.view(-1, nh, len(variables), 1)
+
+        if 'ncells' not in dict(ds.sizes).keys() and 'cells' not in dict(ds.sizes).keys():
+            data_g = data_g[indices]
 
         ds.close()
 
@@ -303,7 +318,9 @@ class HealPixLoader(Dataset):
             coords_output = torch.tensor([])
 
         n, nh, nv, f = data_source.shape
-        if self.p_average > 0 and torch.rand(1)<self.p_average:
+        if torch.is_tensor(self.steady_mask):
+            drop_mask = self.steady_mask.view(n, 1, 1).repeat(1, nh, nv)
+        elif self.p_average > 0 and torch.rand(1)<self.p_average:
             avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
             data_source_resh = data_source.view(-1,4**avg_level,nh,f)
             data_source_resh = data_source_resh.mean(dim=[1,2], keepdim=True)
@@ -347,7 +364,6 @@ class HealPixLoader(Dataset):
         else:
             indices_sample = {'sample': sample_index,
                               'sample_level': self.coarsen_sample_level}
-
         embed_data = {'VariableEmbedder': sample_vars}
         return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data
 

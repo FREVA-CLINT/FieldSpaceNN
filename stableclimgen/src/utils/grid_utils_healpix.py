@@ -7,6 +7,45 @@ import xarray as xr
 from stableclimgen.src.utils.grid_utils_icon import get_coords_as_tensor, scale_coordinates
 
 
+def get_coords_as_tensor(ds: xr.Dataset, lon: str = 'vlon', lat: str = 'vlat', grid_type: str = None, target='torch'):
+    """
+    :param ds: Input Xarray Dataset to read data from
+    :param lon: Input longitude variable to read
+    :param lat: Input latitude variable to read
+    :param grid_type: Either cell,edge or vertex to read different coordinates
+
+    :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
+    """
+    if grid_type == 'cell':
+        lon, lat = 'clon', 'clat'
+
+    elif grid_type == 'regular':
+        lon, lat = 'lon', 'lat'
+
+    elif grid_type == 'vertex':
+        lon, lat = 'vlon', 'vlat'
+
+    elif grid_type == 'edge':
+        lon, lat = 'elon', 'elat'
+
+    if target == 'torch':
+        lons = torch.tensor(ds[lon].values)
+        lats = torch.tensor(ds[lat].values)
+        if grid_type == "regular":
+            lons, lats = torch.meshgrid(lons, lats, indexing="ij")
+            theta_tensor = torch.deg2rad(90 - lons.flatten())  # Convert to colatitude
+            phi_tensor = torch.deg2rad(lats.flatten())
+            coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
+        else:
+            coords = torch.stack((lons, lats), dim=-1).float()
+    else:
+        lons = np.array(ds[lon].values)
+        lats = np.array(ds[lat].values)
+        coords = np.stack((lons, lats), axis=-1).astype(np.float32)
+
+    return coords
+
+
 def healpix_get_adjacent_cell_indices(nside: int, nh: int = 5):
     """
     Function to get neighbored cell indices for Healpix grid.
