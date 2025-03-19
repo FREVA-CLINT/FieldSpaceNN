@@ -632,7 +632,10 @@ def get_ranks(shape, rank, no_rank_decay=0):
         if k < len(shape)-1:
             rank_.append(r)
         else:
-            rank_.append(float(torch.tensor(rank_).mean()))
+            if len(rank_)>0:
+                rank_.append(float(torch.tensor(rank_).mean()))
+            else:
+                rank_.append(float(rank))
 
     if rank > 1:
         ranks = [min([dim, rank_[k]]) for k, dim in enumerate(shape)]
