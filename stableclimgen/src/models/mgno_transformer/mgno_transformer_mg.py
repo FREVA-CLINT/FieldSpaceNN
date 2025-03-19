@@ -125,7 +125,6 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
-        self.lifting_layer = nn.Linear(input_dim, lifting_dim, bias=False) if lifting_dim>1 else nn.Identity()
 
         self.input_layer = InputLayer(input_dim, 
                                       lifting_dim, 
@@ -151,7 +150,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         x = x.view(b,n,-1,self.input_dim)
         b,n,nv,nc = x.shape[:4]
 
-        x = self.lifting_layer(x)
+        x = self.input_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x_levels = [x]
         mask_levels = [mask]
@@ -194,7 +193,7 @@ class InputLayer(nn.Module):
                 self.grid_layer_0 = grid_layer_0
 
             self.embedder = get_embedder(embed_names, embed_confs, embed_mode=embed_mode)
-            
+
             emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
 
             self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_out*2)
@@ -210,14 +209,13 @@ class InputLayer(nn.Module):
         if mask is not None and hasattr(self,"embedding_layer"):
             emb = add_mask_to_emb_dict(emb, mask)
 
+        x = self.linear(x)
         x_shape = x.shape
         if hasattr(self,"embedding_layer"):
             emb_ = self.embedder(emb).squeeze(dim=1)
             scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
             n = scale.shape[1]
             scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
-            x = self.linear(x) * (scale + 1) + shift    
-        else:
-            x = self.linear(x)
+            x = x * (scale + 1) + shift    
 
         return x
