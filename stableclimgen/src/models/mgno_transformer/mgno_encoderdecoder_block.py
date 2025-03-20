@@ -7,7 +7,7 @@ from ...utils.helpers import check_get_missing_key
 from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict
 
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict,get_embedder
-from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, Stacked_NOConv, Stacked_NOBlock, Stacked_PreActivationNOBlock
+from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, Stacked_NOConv, Stacked_NOBlock, Stacked_PreActivationNOBlock, Stacked_PreActivationAttNOBlock
 from ...modules.neural_operator import mg_layers as mg
 
 class MGNO_EncoderDecoder_Block(nn.Module):
@@ -316,6 +316,14 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
         
         elif block_type == 'pre_layer_norm':
             self.layer = Stacked_PreActivationNOBlock(no_conv_layer,
+                                        layer_type=layer_type,
+                                        rank=rank,
+                                        embedder=embedder,
+                                        with_gamma=with_gamma,
+                                        grid_layers=rcm.grid_layers)
+        
+        elif block_type == 'pre_att_layer_norm':
+            self.layer = Stacked_PreActivationAttNOBlock(no_conv_layer,
                                         layer_type=layer_type,
                                         rank=rank,
                                         embedder=embedder,

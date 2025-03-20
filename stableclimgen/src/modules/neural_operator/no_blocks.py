@@ -238,8 +238,7 @@ class Stacked_PreActivationNOBlock(nn.Module):
             self.lin_skip_inner[str(output_level)] = residual_layer(level_diff, model_dim_in, model_dim_out)
             self.lin_skip_outer[str(output_level)] = residual_layer(level_diff, model_dim_in, model_dim_out)
                 
-            #self.layer_norms1[str(output_level)] = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder)
-            self.layer_norms2[str(output_level)] = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
+            self.layer_norms2[str(output_level)] = AdaptiveLayerNorm([model_dim_out], model_dim_out)
 
 
             if with_gamma:
@@ -318,6 +317,173 @@ class Stacked_PreActivationNOBlock(nn.Module):
             x_levels_out[k] = x
     
         return x_levels_out, mask_levels_out
+
+class Stacked_PreActivationAttNOBlock(nn.Module):
+  
+    def __init__(self,
+                 Stacked_NOConv_layer,
+                 layer_type = 'Tucker',
+                 rank = 4,
+                 embedder: EmbedderSequential=None,
+                 with_gamma = False,
+                 p_dropout=0,
+                 grid_layers: List = None
+                ) -> None: 
+      
+        super().__init__()
+
+        self.no_conv = Stacked_NOConv_layer
+        
+        self.input_levels = Stacked_NOConv_layer.input_levels
+        self.output_levels = Stacked_NOConv_layer.global_levels_decode
+        model_dims_in = Stacked_NOConv_layer.model_dims_in
+        model_dims_out = Stacked_NOConv_layer.model_dims_out
+
+        if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
+            self.grid_layers = nn.ModuleDict()
+
+        self.MHA = nn.ModuleDict()
+        self.lin_skip = nn.ModuleDict()
+        self.lin_proj_in = nn.ModuleDict()
+        self.layer_norms1 = nn.ModuleDict()
+        self.layer_norms2 = nn.ModuleDict()
+        self.layer_norms3 = nn.ModuleDict()
+        self.gammas1 = nn.ParameterDict()
+        self.gammas2 = nn.ParameterDict()
+        self.mlp_layers = nn.ModuleDict()
+
+        self.seq_level = 2
+        for input_level, model_dim_in in model_dims_in.items():
+            self.layer_norms1[str(input_level)] = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+
+        for output_level, model_dim_out in model_dims_out.items():
+
+            if output_level in self.input_levels:
+                model_dim_in = model_dims_in[output_level]
+                level_diff = 0
+            else:
+                level_diff = output_level
+                model_dim_in = model_dims_in[0]
+
+            n_heads = max([1, model_dim_in // 16])
+
+            self.MHA[str(output_level)] = MultiHeadAttentionBlock(model_dim_out, model_dim_out, n_heads, qkv_proj=False)
+
+            self.lin_proj_in[str(output_level)] = residual_layer(level_diff, model_dim_in, model_dim_out)
+
+            self.lin_skip[str(output_level)] = residual_layer(level_diff, model_dim_in, model_dim_out)
+                
+            self.layer_norms2[str(output_level)] = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder)
+
+            self.layer_norms3[str(output_level)] = AdaptiveLayerNorm([model_dim_out], model_dim_out)
+
+
+            if with_gamma:
+                self.gammas1[str(output_level)] = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+                self.gammas2[str(output_level)] = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+            else:
+                self.gammas1[str(output_level)] = nn.Parameter(torch.ones(1), requires_grad=False)
+                self.gammas2[str(output_level)] = nn.Parameter(torch.ones(1), requires_grad=False)
+
+            if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
+                self.grid_layers[str(output_level)] = grid_layers[str(output_level)]
+
+            self.mlp_layers[str(output_level)] = nn.Sequential(
+                nn.SiLU(),
+                nn.Linear(model_dim_out, model_dim_out),
+                nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
+                nn.Linear(model_dim_out, model_dim_out)
+            )
+
+        for input_level in self.input_levels:
+            if str(input_level) not in self.grid_layers.keys():
+                self.grid_layers[str(input_level)] = grid_layers[str(input_level)]
+
+        self.activation = nn.SiLU()
+              
+
+    def forward(self, x_levels, coords_encode=None, coords_decode=None, indices_sample=None, mask_levels=None, emb=None):
+        
+        x_levels_input = dict(zip(self.input_levels, x_levels))
+        mask_levels_input = dict(zip(self.input_levels, mask_levels))
+
+        x_levels = []
+        for input_level in self.input_levels:
+            input_level = int(input_level)
+            
+            if hasattr(self, 'grid_layers'):
+                emb = add_coordinates_to_emb_dict(self.grid_layers[str(input_level)], indices_sample["indices_layers"] if indices_sample else None, emb)
+
+            if mask_levels_input[input_level] is not None:
+                emb = add_mask_to_emb_dict(emb, mask_levels_input[input_level])
+
+            x_levels.append(self.layer_norms1[str(input_level)](x_levels_input[input_level], emb=emb))
+
+
+        x_levels_out, mask_levels_out = self.no_conv(x_levels, 
+                             coords_encode=coords_encode, 
+                             coords_decode=coords_decode, 
+                             indices_sample=indices_sample, 
+                             mask_levels=mask_levels, 
+                             emb=emb)
+
+        for k, x in enumerate(x_levels_out):
+            output_level = int(self.output_levels[k])
+            mask = mask_levels_out[k]
+
+            if output_level in self.input_levels:
+                x_res = x_levels_input[output_level]
+            else:
+                x_res = x_levels_input[0]
+
+            if mask_levels_out[k] is not None:
+                emb = add_mask_to_emb_dict(emb, mask_levels_out[k])
+
+            if hasattr(self, 'grid_layers'):
+                emb = add_coordinates_to_emb_dict(self.grid_layers[str(output_level)], indices_sample["indices_layers"] if indices_sample else None, emb)
+
+
+            if output_level in self.input_levels:
+                x_in = x_levels[output_level]
+            else:
+                x_in = x_levels[0]
+
+            x_in = self.lin_proj_in[str(output_level)](x_in)
+
+            x = self.layer_norms2[str(output_level)](x, emb=emb)
+
+            b,n,v,c = x.shape
+
+            if n == x_in.shape[1]:
+                x_in = x_in.view(b,-1,4**self.seq_level,c)
+                x = x.view(b,-1,4**self.seq_level,c)
+
+                x_in = x_in.view(-1,4**self.seq_level,c)
+                x = x.view(-1,4**self.seq_level,c)
+            else:
+                x_in = x_in.view(n*b*v,-1,c)
+                x = x.view(n*b*v,-1,c)
+
+            mask = mask.view(x.shape[:-1]) if mask is not None else None
+
+            x_mha = self.MHA[str(output_level)](q=x_in, k=x, v=x, mask=mask)
+
+            x_mha = x_mha.view(b,n,v,c)
+            x = x.view(b,n,v,c)
+
+            x =  self.lin_skip[str(output_level)](x_res) + self.gammas1[str(output_level)] * x_mha 
+
+            x_res = x 
+
+            x = self.layer_norms3[str(output_level)](x, emb=emb)
+
+            x = self.gammas2[str(output_level)] * self.mlp_layers[str(output_level)](x) + x_res
+
+            x = self.activation(x)
+    
+            x_levels_out[k] = x
+        return x_levels_out, mask_levels_out
+    
 
 class NOBlock(nn.Module):
   
@@ -558,7 +724,7 @@ class CrossTuckerLayer(nn.Module):
         self.in_shape = in_shape
 
         if norm:
-            norm_val = torch.tensor((*in_shape[:-1],*out_shape[:-1])).prod()
+            norm_val = torch.tensor((*in_shape,*out_shape)).prod().sqrt()
         else:
             norm_val = 1.
         
@@ -671,18 +837,18 @@ class TuckerLayer(nn.Module):
 
         d = len(weight_shape)
 
-        ranks = get_ranks(in_shape, rank, no_rank_decay=no_rank_decay)
+        ranks_in = get_ranks(in_shape, rank, no_rank_decay=no_rank_decay)
+        ranks_out = get_ranks((output_dim,), rank, no_rank_decay=no_rank_decay)
 
-        core_shape = ranks
+        ranks = core_shape = (*ranks_in,*ranks_out)
 
         reduction = False
 
         if no_dims_out is not None:
             no_dims_tot_out_out = int(torch.tensor(no_dims_out).prod())
             reduction = no_dims_tot_out_out == 1
-
         if norm:
-            norm = torch.tensor(weight_shape).prod()
+            norm = torch.tensor(weight_shape).prod().sqrt()
         else:
             norm = 1.
         self.core = nn.Parameter(torch.randn(*core_shape)/norm)
@@ -838,23 +1004,37 @@ class PathAttentionLayer(nn.Module):
 
         self.path_layer = CrossTuckerLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay)
 
+        #self.skip_layer = TuckerLayer(no_dims, input_dim, output_dim, no_dims_out=no_dims, rank=rank, no_rank_decay=no_rank_decay)     
+        self.layer_norm1 = nn.LayerNorm([input_dim]) 
+        self.layer_norm2 = nn.LayerNorm([input_dim]) 
+
         n_heads = max([1, input_dim // 16])
         self.MHA = MultiHeadAttentionBlock(
-            input_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
+            output_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
             )   
+        
+        self.grid_embedding1 = nn.Parameter(torch.randn(self.no_dims_tot, input_dim), requires_grad=True)
+        self.grid_embedding2 = nn.Parameter(torch.randn(self.no_dims_out_tot, input_dim), requires_grad=True)
 
-
-    def forward(self, x):
+    def forward(self, x, mask=None):
         
         b,n,v = x.shape[:3]
+
         x_cross = self.path_layer(x)
+
+       # x_res = self.skip_layer(x)
 
         x_cross = x_cross.view(b*n*v, self.no_dims_out_tot, -1)
         x = x.view(b*n*v, self.no_dims_tot, -1)
 
-        x = self.MHA(q=x, k=x_cross, v=x_cross)
+        x = self.layer_norm1(x) + self.grid_embedding1
+        x_crossk = self.layer_norm2(x_cross) + self.grid_embedding2
+
+        x = self.MHA(q=x, k=x_crossk, v=x_cross)
 
         x = x.view(b,n,v,self.no_dims_tot,-1)
+
+      #  x = x + x_res
 
         return x
 
