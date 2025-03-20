@@ -427,6 +427,8 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
                              mask_levels=mask_levels, 
                              emb=emb)
 
+        x_levels = dict(zip(self.input_levels, x_levels))
+        
         for k, x in enumerate(x_levels_out):
             output_level = int(self.output_levels[k])
             mask = mask_levels_out[k]
