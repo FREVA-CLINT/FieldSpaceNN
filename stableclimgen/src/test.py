@@ -44,7 +44,7 @@ def test(cfg: DictConfig) -> None:
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n s ... -> b2 n (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
     mask = torch.cat([batch["mask"] for batch in predictions], dim=0)
-    mask = rearrange(mask, "(b1 b2) n s ... -> b2 n (s b1) ...", b1=test_dataset.global_cells_input.shape[0])
+    mask = rearrange(mask, "(b2 b1) n s ... -> b2 n (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
 
     for k, var in enumerate(test_dataset.variables_target):
         output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
