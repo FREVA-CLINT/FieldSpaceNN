@@ -1,97 +1,57 @@
+import torch
 import torch.nn as nn
+from typing import List
 
-from ..icon_grids.grid_layer import RelativeCoordinateManager, GridLayer
-
+from ..icon_grids.grid_layer import GridLayer, MultiRelativeCoordinateManager
 
 class NoLayer(nn.Module):
 
-    def __init__(self, 
-                 grid_layer_encode: GridLayer, 
-                 grid_layer_no: GridLayer,
-                 grid_layer_decode: GridLayer,
-                 nh_in_encode=False,
-                 nh_in_decode=True,
-                 precompute_encode=True,
-                 precompute_decode=True,
-                 rotate_coord_system=True,
-                 coord_system='polar') -> None: 
+    def __init__(self,
+                 rcm: MultiRelativeCoordinateManager,
+                 global_level_encode: int, 
+                 global_level_no: int,
+                 global_level_decode: int,
+                 nh_in_encode: bool=False,
+                 nh_in_decode: bool=False,
+                 precompute_encode: bool=True,
+                 precompute_decode: bool=True,
+                 coord_system: str="polar") -> None: 
         
         super().__init__()
-        self.grid_layer_encode = grid_layer_encode
-        self.grid_layer_decode = grid_layer_decode
-        self.grid_layer_no = grid_layer_no
-
-        self.global_level_encode = int(grid_layer_encode.global_level)
-        self.global_level_decode = int(grid_layer_decode.global_level)
-        self.global_level_no = int(grid_layer_no.global_level)
-        self.nh_in_encode = nh_in_encode
-        self.nh_in_decode = nh_in_decode
-        self.rotate_coord_system = rotate_coord_system
-        self.coord_system = coord_system
-
-        self.rel_coord_mngr_encode = RelativeCoordinateManager(
-            grid_layer_encode,
-            grid_layer_no,
-            nh_in= nh_in_encode,
-            precompute = precompute_encode,
-            coord_system=coord_system,
-            rotate_coord_system=rotate_coord_system,
-            ref='out')
         
-        self.rel_coord_mngr_decode = RelativeCoordinateManager(
-            grid_layer_no,
-            grid_layer_decode,
-            nh_in= nh_in_decode,
-            precompute = precompute_decode,
-            coord_system=coord_system,
-            rotate_coord_system=rotate_coord_system,
-            ref='out')
+        rcm.register_rcm(
+            global_level_encode, 
+            global_level_no, 
+            nh_in_encode,
+            precompute_encode,
+            coord_system=coord_system)
 
-        self.nh_dist = grid_layer_no.nh_dist
+        rcm.register_rcm(
+            global_level_no, 
+            global_level_decode, 
+            nh_in_decode,
+            precompute_decode,
+            ref='in',
+            coord_system=coord_system)
+        
+        self.rcm = rcm
+
+        self.global_level_encode = global_level_encode
+        self.global_level_decode = global_level_decode
+        self.global_level_no = global_level_no
+    
+        self.no_nh_dist = rcm.nh_dists[global_level_no]
 
     def transform(self, x, coords_encode=None, coords_no=None, indices_sample=None, mask=None, emb=None):
         
-        indices_encode  = indices_sample["indices_layers"][self.global_level_encode] if indices_sample is not None else None
-        indices_no = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
-
-        coordinates_rel = self.rel_coord_mngr_encode(indices_in=indices_encode,
-                                              indices_out=indices_no,
-                                              coordinates_in=coords_encode,
-                                              coordinates_out=coords_no,
-                                              sample_dict=indices_sample)
-
-        if self.nh_in_encode:
-            x, mask = self.grid_layer_encode.get_nh(x, indices_encode, indices_sample, mask=mask)
-        else:
-            x = x.unsqueeze(dim=2)
+        coordinates_rel, x, mask = self.rcm(self.global_level_encode, self.global_level_no, indices_sample=indices_sample, x=x, mask=mask)
             
         return self.transform_(x, coordinates_rel, mask=mask, emb=emb)
         
 
     def inverse_transform(self, x, coords_no=None, coords_decode=None, indices_sample=None,  mask=None, emb=None):
         
-        indices_no = indices_sample["indices_layers"][self.global_level_no] if indices_sample is not None else None
-        indices_decode = indices_sample["indices_layers"][self.global_level_decode] if indices_sample is not None else None
-
-        #switch in and out, since out is the reference
-        coordinates_rel = self.rel_coord_mngr_decode(indices_in=indices_no,
-                                              indices_out=indices_decode,
-                                              coordinates_in=coords_no,
-                                              coordinates_out=coords_decode,
-                                              sample_dict=indices_sample)
-
-        self.global_level_decode
-        if self.nh_in_decode:
-            x, mask = self.grid_layer_no.get_nh(x, indices_no, indices_sample, mask=mask)
-        else:
-            x = x.unsqueeze(dim=2)
-            if mask is not None:
-                mask = mask.unsqueeze(dim=2)
-        
-        nh = x.shape[2]
-
-        #seq_dim_in = 4**(self.global_level_no - self.global_level_decode)*nh
-
+        coordinates_rel, x, mask = self.rcm(self.global_level_no, self.global_level_decode, indices_sample=indices_sample, x=x, mask=mask)
 
         return self.inverse_transform_(x, coordinates_rel, mask=mask, emb=emb)
 
@@ -102,5 +62,15 @@ class NoLayer(nn.Module):
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
-            
 
+def add_coordinates_to_emb_dict(grid_layer: GridLayer, indices_layers, emb):
+
+    coords = grid_layer.get_coordinates_from_grid_indices(
+        indices_layers[int(grid_layer.global_level)] if indices_layers is not None else None)
+    
+    if emb is None:
+        emb = {}
+
+    emb['CoordinateEmbedder'] = coords
+
+    return emb

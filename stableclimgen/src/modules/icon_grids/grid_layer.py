@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from typing import List
 
 from ..transformer import transformer_modules as helpers
 
@@ -278,7 +279,134 @@ class GridLayer(nn.Module):
         else:
             return x, mask, coords
 
+
+class MultiRelativeCoordinateManager(nn.Module):
+
+    def __init__(self,  
+                grid_layers: List[GridLayer], 
+                rotate_coord_system=True) -> None:
+                
+        super().__init__()
+
+        self.rotate_coord_system = rotate_coord_system
+        self.rcms = nn.ModuleDict()
+
+        global_levels = [int(global_level) for global_level in grid_layers.keys()]
+        nh_dists = [grid_layer.nh_dist for grid_layer in grid_layers.values()]
+
+        self.nh_dists = dict(zip(global_levels, nh_dists))
+        self.grid_layers = grid_layers
+        
     
+    def register_rcm(self,
+                     global_level_in, 
+                     global_level_out, 
+                     nh_in,
+                     precompute,
+                     coord_system,
+                     ref='out'):
+        
+        global_level_in_str = str(global_level_in)
+        global_level_out_str = str(global_level_out)
+
+        if global_level_in_str not in self.rcms.keys():
+            self.rcms[global_level_in_str] = nn.ModuleDict()
+            
+      
+        if global_level_out_str not in self.rcms[global_level_in_str].keys():
+            self.rcms[global_level_in_str][global_level_out_str] = RelativeCoordinateManager(
+                    grid_layer_in=self.grid_layers[global_level_in_str],
+                    grid_layer_out=self.grid_layers[global_level_out_str],
+                    nh_in=nh_in,
+                    precompute=precompute,
+                    coord_system=coord_system,
+                    rotate_coord_system=self.rotate_coord_system,
+                    ref=ref
+                )
+            
+
+    def forward(self, global_level_in, global_level_out, indices_sample=None, x=None, mask=None):
+        indices_in  = indices_sample["indices_layers"][global_level_in] if indices_sample is not None else None
+        indices_out = indices_sample["indices_layers"][global_level_out] if indices_sample is not None else None
+        
+        rcm = self.rcms[str(global_level_in)][str(global_level_out)]
+        coordinates_rel = rcm(indices_in=indices_in, indices_out=indices_out, sample_dict=indices_sample)
+
+        if x is None:
+            return coordinates_rel
+        else:
+            if rcm.nh_in:
+                x, mask = self.grid_layers[str(global_level_in)].get_nh(x, indices_in, indices_sample, mask=mask)
+            else:
+                x = x.unsqueeze(dim=2)
+                if mask is not None:
+                    mask = mask.unsqueeze(dim=2)
+            
+            return coordinates_rel, x, mask
+    
+
+class MultiStepRelativeCoordinateManager(nn.Module):
+    def __init__(self,  
+                grid_layers: List[GridLayer], 
+                nh_up:bool= False,
+                nh_down:bool= False,
+                precompute:bool=True,
+                coord_system:str='polar',
+                rotate_coord_system=True,
+                ref='out') -> None:
+                
+        super().__init__()
+
+        self.managers_up = nn.ModuleList()
+        self.managers_down = nn.ModuleList()
+        self.nh_up = nh_up
+        self.nh_down = nh_down
+
+        self.nh_dists = [grid_layer.nh_dist for grid_layer in grid_layers]
+
+        global_levels = list(grid_layers.keys())
+        
+        self.register_buffer('global_levels', torch.tensor(global_levels))
+        
+        for idx in range(1, len(global_levels)):
+            global_level_in = global_levels[idx - 1]
+            global_level_out = global_levels[idx]
+            
+            self.managers_up.append(RelativeCoordinateManager(
+                grid_layer_in=grid_layers[global_level_in],
+                grid_layer_out=grid_layers[global_level_out],
+                nh_in=nh_up,
+                precompute=precompute,
+                coord_system=coord_system,
+                rotate_coord_system=rotate_coord_system,
+                ref=ref
+            ))
+            self.managers_down.append(manager = RelativeCoordinateManager(
+                grid_layer_in=grid_layers[global_level_out],
+                grid_layer_out=grid_layers[global_level_in],
+                nh_in=nh_down,
+                precompute=precompute,
+                coord_system=coord_system,
+                rotate_coord_system=rotate_coord_system,
+                ref=ref
+            ))
+
+    def get_manager_from_levels(self, global_level_in, global_level_out):
+        index = torch.where(self.global_levels == global_level_in)
+
+        if global_level_in-global_level_out > 0:
+            return self.managers_up(index)
+        else:
+            return self.managers_down(index)
+
+    
+    def forward(self, global_level_in, global_level_out, indices_sample=None):
+        indices_in  = indices_sample["indices_layers"][global_level_in] if indices_sample is not None else None
+        indices_out = indices_sample["indices_layers"][global_level_out] if indices_sample is not None else None
+
+        coordinates_rel =self.get_manager_from_levels(global_level_in, global_level_out)(indices_in=indices_in, indices_out=indices_out, sample_dict=indices_sample)
+
+        return coordinates_rel
 
 class RelativeCoordinateManager(nn.Module):
     def __init__(self,  

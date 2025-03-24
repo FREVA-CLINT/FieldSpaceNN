@@ -86,7 +86,9 @@ class NetCDFLoader_lazy(Dataset):
                  n_sample_vars=-1,
                  pert_coordinates=0,
                  fixed_sample_ids=None,
-                 fixed_seed = False):
+                 fixed_seed = False,
+                 variables_source=None,
+                 variables_target=None):
         
         super(NetCDFLoader_lazy, self).__init__()
         
@@ -110,10 +112,18 @@ class NetCDFLoader_lazy(Dataset):
         self.pert_coordinates = pert_coordinates
         self.n_drop_vars = n_drop_vars
 
-        self.variables_source = data_dict["source"]["variables"]
-        self.variables_target = data_dict["target"]["variables"]
+        self.variables_source = variables_source or data_dict["source"]["variables"]
+        self.variables_target = variables_target or data_dict["target"]["variables"]
 
-        
+        if "timesteps" in data_dict.keys():
+            self.sample_timesteps = []
+            for t in data_dict["timesteps"]:
+                if type(t) == int or "-" not in t:
+                    self.sample_timesteps.append(int(t))
+                else:
+                    self.sample_timesteps += list(range(int(t.split("-")[0]), int(t.split("-")[1])))
+        else:
+            self.sample_timesteps = None      
 
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
@@ -209,7 +219,10 @@ class NetCDFLoader_lazy(Dataset):
         idx = 0
         for k, file in enumerate(self.files_source):
             ds = xr.open_dataset(file)
-            idx_add = len(ds.time) * self.n_regions
+            if self.sample_timesteps:
+                idx_add = len(self.sample_timesteps) * self.n_regions
+            else:
+                idx_add = len(ds.time) * self.n_regions
             self.global_indices.append(idx + idx_add)
             idx += idx_add
         
