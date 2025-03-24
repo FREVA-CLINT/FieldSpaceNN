@@ -2,6 +2,10 @@ CoordinateEmbedder:
   in_channels: 2
   embed_dim: 64
   shared: false
+DensityEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  shared: false
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
