@@ -26,9 +26,11 @@ model:
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
       block_type: 'Serial'
-      model_dims_out: [16,16,16,16,16,16,16,16,16,16,16,16]
+      model_dims_out: [16,16,16,16,16,16,16,16,16,16,16,16,16]
       layer_settings:
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 5
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -40,6 +42,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 4
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -51,6 +55,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 3
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -62,6 +68,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 2
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -73,6 +81,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 1
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -84,6 +94,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 1
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -95,6 +107,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 5
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -106,6 +120,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 4
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -117,6 +133,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 3
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -128,6 +146,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 2
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -139,6 +159,8 @@ model:
             nh_in_decode: true
             global_params_learnable: [false, false]
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 1
           global_level_decode: 0
           no_layer_type: 'polNormal'
@@ -149,7 +171,21 @@ model:
             nh_in_encode: false
             nh_in_decode: true
             global_params_learnable: [false, false]
+        - type: spatial_att
+          n_head_channels: 4
+          embed_confs: ${embedding}
+          embedder_names:
+          - - CoordinateEmbedder
+          - - CoordinateEmbedder
+          spatial_attention_configs:
+            nh: false
+            seq_lvl: 3
+            blocks:
+            - s
+            - mlp
         - type: "NO_mlp"
+          layer_type: "CrossDense"
+          with_gamma: true
           global_level_no: 1
           global_level_decode: 0
           no_layer_type: 'polNormal'

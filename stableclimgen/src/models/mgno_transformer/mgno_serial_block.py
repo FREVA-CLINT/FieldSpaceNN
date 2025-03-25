@@ -10,6 +10,7 @@ from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock,
 class Serial_NOBlock(nn.Module):
   
     def __init__(self,
+                 rcm,
                  input_dim: int,
                  model_dims_out: List[int],
                  grid_layers: List[GridLayer],
@@ -40,13 +41,13 @@ class Serial_NOBlock(nn.Module):
                 global_level_out = global_level_decode
                 current_level = global_level_out
 
-                no_layer = get_no_layer(no_layer_type,
-                                        grid_layers[str(global_level_in)],
-                                        grid_layers[str(global_level_no)],
-                                        grid_layers[str(global_level_out)],
+                no_layer = get_no_layer(rcm,
+                                        no_layer_type,
+                                        global_level_in,
+                                        global_level_no,
+                                        global_level_out,
                                         precompute_encode=True,
                                         precompute_decode=True if layer_idx < len(model_dims_out)-1 else False,
-                                        rotate_coordinate_system=rotate_coordinate_system,
                                         layer_settings=no_layer_settings,
                                         normalize_to_mask=(mask_as_embedding==False))
                 
@@ -59,8 +60,8 @@ class Serial_NOBlock(nn.Module):
                                     model_dim_out=model_dim_out,
                                     no_layer=no_layer,
                                     embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"],
-                                    with_gamma = 'gamma' in layer_setting["type"],
+                                    layer_type= layer_setting["layer_type"],
+                                    with_gamma = layer_setting["with_gamma"],
                                     mask_as_embedding=mask_as_embedding
                                     )
                     else:
@@ -69,8 +70,8 @@ class Serial_NOBlock(nn.Module):
                                     model_dim_out=model_dim_out,
                                     no_layer=no_layer,
                                     embedder=embedder,
-                                    cross_no = 'cross_no' in layer_setting["type"],
-                                    with_gamma = 'gamma' in layer_setting["type"],
+                                    layer_type= layer_setting["layer_type"],
+                                    with_gamma = layer_setting["with_gamma"],
                                     mask_as_embedding=mask_as_embedding
                                     )
                 
