@@ -737,24 +737,22 @@ class CrossTuckerLayer(nn.Module):
             norm_val = 1.
 
 
-       # self.core = nn.Parameter(torch.randn(*(*ranks_out,*ranks_in))/norm_val)
-
         fan_in = torch.tensor(ranks_in).prod()
         fan_out = torch.tensor(ranks_out).prod()
         scale = math.sqrt(2.0 / (fan_in + fan_out))
-        self.core = nn.Parameter(torch.randn(*ranks_out, *ranks_in) * scale)
+        self.core = nn.Parameter(torch.randn(*ranks_out, *ranks_in) * scale, requires_grad=True)
 
         self.out_factors = nn.ParameterList()
         for i, rank in enumerate(ranks_out):
             param = torch.empty(out_shape[i], rank)
             nn.init.xavier_uniform_(param)
-            self.out_factors.append(nn.Parameter(param))
+            self.out_factors.append(nn.Parameter(param, requires_grad=True))
         
         self.in_factors = nn.ParameterList()
         for i, rank in enumerate(ranks_in):
             param = torch.empty(in_shape[i], rank)
             nn.init.xavier_uniform_(param)
-            self.in_factors.append(nn.Parameter(param))
+            self.in_factors.append(nn.Parameter(param, requires_grad=True))
 
         in_letters = "adefghijklmß$§%"   
         out_letters = "opqrstuwxyz§%"        
@@ -855,14 +853,14 @@ class TuckerLayer(nn.Module):
         fan_in = torch.tensor(ranks_in).prod()
         fan_out = torch.tensor(ranks_out).prod()
         scale = math.sqrt(2.0 / (fan_in + fan_out))
-        self.core = nn.Parameter(torch.randn(*ranks_in, *ranks_out) * scale)
+        self.core = nn.Parameter(torch.randn(*ranks_in, *ranks_out) * scale, requires_grad=True)
 
 
         self.factors = nn.ParameterList()
         for i, rank in enumerate(ranks):
             param = torch.empty(weight_shape[i], rank)
             nn.init.xavier_uniform_(param)
-            self.factors.append(nn.Parameter(param))
+            self.factors.append(nn.Parameter(param, requires_grad=True))
 
 
         factor_letters = "adefghijklmopqrstuwxyz"   # For input dimensions.
@@ -1067,10 +1065,11 @@ class DenseLayer(nn.Module):
         no_dims_out = int(torch.tensor(no_dims_out).prod())
 
 
-        self.weights = torch.empty(self.n_dim_tot, input_dim, output_dim)
+        weights = torch.empty(self.n_dim_tot, input_dim, output_dim)
         for i in range(self.n_dim_tot):
-            nn.init.kaiming_uniform_(self.weights[i], a=0, nonlinearity='relu')
+            nn.init.kaiming_uniform_(weights[i], a=0, nonlinearity='relu')
 
+        self.weights = nn.Parameter(weights, requires_grad=True)
 
     def forward(self, x):
 
@@ -1102,10 +1101,12 @@ class CrossDenseLayer(nn.Module):
         
         #self.linear = nn.Linear(self.n_dim_tot*input_dim, self.n_dim_tot_out*output_dim, bias=False)
 
-        self.weights = torch.empty(self.n_dim_tot, input_dim, self.n_dim_tot_out, output_dim)
+        weights = torch.empty(self.n_dim_tot, input_dim, self.n_dim_tot_out, output_dim)
         for i in range(self.n_dim_tot):
             for j in range(self.n_dim_tot_out):
-                nn.init.kaiming_uniform_(self.weights[i, :, j, :], a=0, nonlinearity='relu')
+                nn.init.kaiming_uniform_(weights[i, :, j, :], a=0, nonlinearity='relu')
+        
+        self.weights = nn.Parameter(weights, requires_grad=True)
 
     def forward(self, x):
 
