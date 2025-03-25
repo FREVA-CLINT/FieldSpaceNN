@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 from typing import List
 import copy
+import math
 
 #import tensorly as tl
 #from tensorly import einsum
@@ -725,35 +726,35 @@ class CrossTuckerLayer(nn.Module):
         d_out = len(out_shape)
         self.in_shape = in_shape
 
-        if norm:
-            norm_val = torch.tensor((*in_shape,*out_shape)).prod().sqrt()
-        else:
-            norm_val = 1.
         
-        """
-        if rank > 1:
-            ranks_in = [min([dim, rank]) for dim in in_shape]
-            ranks_out = [min([dim, rank]) for dim in out_shape]
-        else:
-            ranks_in = [max([1,int(dim * rank)]) for dim in in_shape]
-            ranks_out = [max([1,int(dim * rank)]) for dim in out_shape]
 
-        """
         ranks_in = get_ranks(in_shape, rank, no_rank_decay=no_rank_decay)
         ranks_out = get_ranks(out_shape, rank, no_rank_decay=no_rank_decay)
 
-        self.core = nn.Parameter(torch.randn(*(*ranks_out,*ranks_in))/norm_val)
+        if norm:
+            norm_val = torch.tensor((in_shape)).prod()
+        else:
+            norm_val = 1.
 
-        # Create output-side factors: one for each output dimension.
-        self.out_factors = nn.ParameterList([
-            nn.Parameter(torch.randn(out_shape[i], rank))
-            for i, rank in enumerate(ranks_out)
-        ])
-        # Create input-side factors: one for each input dimension.
-        self.in_factors = nn.ParameterList([
-            nn.Parameter(torch.randn(in_shape[i], rank))
-            for i, rank in enumerate(ranks_in)
-        ])
+
+       # self.core = nn.Parameter(torch.randn(*(*ranks_out,*ranks_in))/norm_val)
+
+        fan_in = torch.tensor(ranks_in).prod()
+        fan_out = torch.tensor(ranks_out).prod()
+        scale = math.sqrt(2.0 / (fan_in + fan_out))
+        self.core = nn.Parameter(torch.randn(*ranks_out, *ranks_in) * scale)
+
+        self.out_factors = nn.ParameterList()
+        for i, rank in enumerate(ranks_out):
+            param = torch.empty(out_shape[i], rank)
+            nn.init.xavier_uniform_(param)
+            self.out_factors.append(nn.Parameter(param))
+        
+        self.in_factors = nn.ParameterList()
+        for i, rank in enumerate(ranks_in):
+            param = torch.empty(in_shape[i], rank)
+            nn.init.xavier_uniform_(param)
+            self.in_factors.append(nn.Parameter(param))
 
         in_letters = "adefghijklmß$§%"   
         out_letters = "opqrstuwxyz§%"        
@@ -849,17 +850,19 @@ class TuckerLayer(nn.Module):
         if no_dims_out is not None:
             no_dims_tot_out_out = int(torch.tensor(no_dims_out).prod())
             reduction = no_dims_tot_out_out == 1
-        if norm:
-            norm = torch.tensor(weight_shape).prod().sqrt()
-        else:
-            norm = 1.
-        self.core = nn.Parameter(torch.randn(*core_shape)/norm)
+  
+
+        fan_in = torch.tensor(ranks_in).prod()
+        fan_out = torch.tensor(ranks_out).prod()
+        scale = math.sqrt(2.0 / (fan_in + fan_out))
+        self.core = nn.Parameter(torch.randn(*ranks_in, *ranks_out) * scale)
 
 
-        self.factors = nn.ParameterList([
-            nn.Parameter(torch.randn(weight_shape[i], rank))
-            for i, rank in enumerate(ranks)
-        ])
+        self.factors = nn.ParameterList()
+        for i, rank in enumerate(ranks):
+            param = torch.empty(weight_shape[i], rank)
+            nn.init.xavier_uniform_(param)
+            self.factors.append(nn.Parameter(param))
 
 
         factor_letters = "adefghijklmopqrstuwxyz"   # For input dimensions.
@@ -1063,8 +1066,10 @@ class DenseLayer(nn.Module):
 
         no_dims_out = int(torch.tensor(no_dims_out).prod())
 
-        norm = self.n_dim_tot*input_dim*no_dims_out*output_dim
-        self.weights = nn.Parameter(torch.randn(self.n_dim_tot, input_dim, output_dim)/norm, requires_grad=True)
+
+        self.weights = torch.empty(self.n_dim_tot, input_dim, output_dim)
+        for i in range(self.n_dim_tot):
+            nn.init.kaiming_uniform_(self.weights[i], a=0, nonlinearity='relu')
 
 
     def forward(self, x):
@@ -1094,8 +1099,13 @@ class CrossDenseLayer(nn.Module):
             self.einsum_eq = "nbvmi,oipj->nbvj"
         else:
             self.einsum_eq = "nbvmi,oipj->nbvpj"
-    
-        self.weights = nn.Parameter(torch.randn(self.n_dim_tot, input_dim, self.n_dim_tot_out, output_dim), requires_grad=True)
+        
+        #self.linear = nn.Linear(self.n_dim_tot*input_dim, self.n_dim_tot_out*output_dim, bias=False)
+
+        self.weights = torch.empty(self.n_dim_tot, input_dim, self.n_dim_tot_out, output_dim)
+        for i in range(self.n_dim_tot):
+            for j in range(self.n_dim_tot_out):
+                nn.init.kaiming_uniform_(self.weights[i, :, j, :], a=0, nonlinearity='relu')
 
     def forward(self, x):
 
@@ -1270,8 +1280,8 @@ class NOConv(nn.Module):
         x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = self.layer(x)
-
-        x = x.view(*x.shape[:3], *self.no_dims, -1)
+        
+        x = x.view(*x.shape[:3],*self.no_dims,-1)
 
         x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 

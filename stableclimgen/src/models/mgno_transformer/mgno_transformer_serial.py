@@ -36,7 +36,8 @@ class MGNO_Transformer_serial(MGNO_base_model):
                                      ,torch.tensor(0).view(-1))).unique()
         
         super().__init__(mgrids, 
-                         global_levels)
+                         global_levels,
+                         rotate_coord_system=rotate_coord_system)
         
        
         self.Blocks = nn.ModuleList()
@@ -47,9 +48,10 @@ class MGNO_Transformer_serial(MGNO_base_model):
 
             if block_conf.block_type == 'Serial':
                 block = Serial_NOBlock(
+                    self.rcm,
                     lifting_dim,
                     model_dims_out,
-                    self.grid_layers,
+                    self.rcm.grid_layers,
                     layer_settings,
                     rotate_coordinate_system=rotate_coord_system,
                     mask_as_embedding=mask_as_embedding)
