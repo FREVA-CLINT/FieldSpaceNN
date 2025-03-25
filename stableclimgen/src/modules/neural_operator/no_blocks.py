@@ -1270,7 +1270,9 @@ class NOConv(nn.Module):
         x, mask = self.no_layer.transform(x, coords_encode=coords_encode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = self.layer(x)
-    
+
+        x = x.view(*x.shape[:3], *self.no_dims, -1)
+
         x, mask = self.no_layer.inverse_transform(x, coords_decode=coords_decode, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x = x.contiguous()
