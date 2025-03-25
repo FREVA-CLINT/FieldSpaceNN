@@ -23,84 +23,78 @@ model:
   n_head_channels: 32
   rotate_coord_system: true
   p_dropout: 0
+  mask_as_embedding: true
+  block_type: 'post_layer_norm'
+  with_gamma: true
+  omit_backtransform: true
+  rank: 0.5
+  rank_cross: 0.5
+  layer_type: 'CrossDense'
+  input_embed_names: [ "MaskEmbedder" ]
+  input_embed_confs: ${embedding}
   encoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
-      block_type: 'Serial'
-      model_dims_out: [8,16,32,64]
-      layer_settings:
-        - type: "NO_mlp"
-          global_level_no: 1
-          global_level_decode: 1
-          no_layer_type: 'polNormal'
-          no_layer_settings:
-            n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: false
-            global_params_learnable: [false, false]
-        - type: "spatial_att"
-          n_head_channels: 4
-          embed_confs: ${embedding}
-          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 3
-            blocks: ["s", "mlp"]
-        - type: "spatial_att"
-          n_head_channels: 4
-          embed_confs: ${embedding}
-          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 3
-            blocks: ["s", "mlp"]
-        - type: "NO_mlp"
-          global_level_no: 2
-          global_level_decode: 2
-          no_layer_type: 'polNormal'
-          no_layer_settings:
-            n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: false
-            global_params_learnable: [false, false]
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGStackedEncoderDecoderConfig
+      global_levels_output: [ 3 ]
+      global_levels_no: 4
+      model_dims_out: [ 16 ]
+      concat_layer_type: 'CrossDense'
+      reduction_layer_type: 'Dense'
+      embed_names: [ "CoordinateEmbedder" ]
+      embed_confs: ${embedding}
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
   decoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
-      block_type: 'Serial'
-      model_dims_out: [64,32,16,8]
-      layer_settings:
-        - type: "NO_mlp"
-          global_level_no: 1
-          global_level_decode: 1
-          no_layer_type: 'polNormal'
-          no_layer_settings:
-            n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: false
-            global_params_learnable: [false, false]
-        - type: "spatial_att"
-          n_head_channels: 4
-          embed_confs: ${embedding}
-          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 3
-            blocks: ["s", "mlp"]
-        - type: "spatial_att"
-          n_head_channels: 4
-          embed_confs: ${embedding}
-          embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
-          spatial_attention_configs:
-            nh: false
-            seq_lvl: 3
-            blocks: ["s", "mlp"]
-        - type: "NO_mlp"
-          global_level_no: 0
-          global_level_decode: 0
-          no_layer_type: 'polNormal'
-          no_layer_settings:
-            n_params: [4,2,1]
-            nh_in_encode: true
-            nh_in_decode: true
-            global_params_learnable: [false, false]
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      global_levels_output: [ 2 ]
+      global_levels_no: [ 2 ]
+      model_dims_out: [ 16 ]
+      rule: "fc"
+      embed_names: [ "CoordinateEmbedder" ]
+      embed_confs: ${embedding}
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      global_levels_output: [ 1 ]
+      global_levels_no: [ 1 ]
+      model_dims_out: [ 16 ]
+      rule: "fc"
+      embed_names: [ "CoordinateEmbedder" ]
+      embed_confs: ${embedding}
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGEncoderDecoderConfig
+      global_levels_output: [ 0 ]
+      global_levels_no: [ 0 ]
+      model_dims_out: [ 16 ]
+      rule: "fc"
+      embed_names: [ "CoordinateEmbedder" ]
+      embed_confs: ${embedding}
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
   quant_config:
     _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
     block_type: grid_trans
