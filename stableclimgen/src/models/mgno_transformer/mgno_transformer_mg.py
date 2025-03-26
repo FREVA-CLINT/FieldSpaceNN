@@ -197,10 +197,10 @@ class InputLayer(nn.Module):
 
             emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
 
-            self.embedding_layer = torch.nn.Linear(emb_dim, model_dim_out*2)
+            self.embedding_layer = nn.Linear(emb_dim, model_dim_out*2)
 
 
-        self.linear = nn.Linear(model_dim_in, model_dim_out, bias=True)
+        self.linear = nn.Linear(model_dim_in, model_dim_out, bias=False)
 
     def forward(self, x, mask=None, emb=None, indices_sample=None):
         
