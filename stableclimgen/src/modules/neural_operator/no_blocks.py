@@ -1095,24 +1095,25 @@ class CrossDenseLayer(nn.Module):
         self.n_dim_tot_out = int(torch.tensor(no_dims_out).prod())
 
         if no_dims_out is not None and self.n_dim_tot_out == 1:
-            self.einsum_eq = "nbvmi,oipj->nbvj"
+            self.einsum_eq = "nbvi, ji->nbvj"
         else:
-            self.einsum_eq = "nbvmi,oipj->nbvpj"
+            self.einsum_eq = "nbvi, ji->nbvj"
         
-        #self.linear = nn.Linear(self.n_dim_tot*input_dim, self.n_dim_tot_out*output_dim, bias=False)
+        bound = 1 / math.sqrt(self.n_dim_tot * input_dim)
 
-        weights = torch.empty(self.n_dim_tot, input_dim, self.n_dim_tot_out, output_dim)
-        for i in range(self.n_dim_tot):
-            for j in range(self.n_dim_tot_out):
-                nn.init.kaiming_uniform_(weights[i, :, j, :], a=0, nonlinearity='relu')
+        weights = torch.empty(self.n_dim_tot_out * output_dim, self.n_dim_tot * input_dim)
         
+        nn.init.uniform_(weights, -bound, bound)
+
         self.weights = nn.Parameter(weights, requires_grad=True)
+
 
     def forward(self, x):
 
-        x = x.view(*x.shape[:3],self.n_dim_tot,-1)
+        x = x.view(*x.shape[:3],-1)
         x = torch.einsum(self.einsum_eq, x, self.weights)
-        
+        x = x.view(*x.shape[:3],self.n_dim_tot_out,-1)
+
         return x
 
 class Stacked_NOConv(nn.Module):
