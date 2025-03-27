@@ -18,7 +18,8 @@ class MGNO_Transformer_serial(MGNO_base_model):
                  n_vars_total:int=1,
                  rotate_coord_system: bool=True,
                  p_dropout=0.,
-                 mask_as_embedding = False
+                 mask_as_embedding = False,
+                 **kwargs
                  ) -> None: 
         
         self.input_dim = input_dim
@@ -37,7 +38,9 @@ class MGNO_Transformer_serial(MGNO_base_model):
         
         super().__init__(mgrids, 
                          global_levels,
-                         rotate_coord_system=rotate_coord_system)
+                         rotate_coord_system=rotate_coord_system,
+                         interpolate_input=kwargs.get("interpolate_input",False),
+                         interpolator_settings=kwargs.get("interpolator_settings",None))
         
        
         self.Blocks = nn.ModuleList()

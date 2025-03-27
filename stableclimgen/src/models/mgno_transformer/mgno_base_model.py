@@ -1,15 +1,17 @@
 import torch
 import torch.nn as nn
 
-from typing import List
+from typing import List, Dict
 
-from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager, MultiRelativeCoordinateManager
+from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager, MultiRelativeCoordinateManager, Interpolator
 
 
 class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
                  global_levels: List[int],
+                 interpolate_input=False,
+                 interpolator_settings: Dict =None,
                  rotate_coord_system=True
                  ) -> None: 
         
@@ -31,7 +33,18 @@ class MGNO_base_model(nn.Module):
         self.rcm = MultiRelativeCoordinateManager(self.grid_layers,
                                                   rotate_coord_system=rotate_coord_system
                                                 )
+        
+        if interpolator_settings is not None:
+            self.interpolator = Interpolator(self.grid_layers,
+                                             interpolator_settings.get("search_level", 3),
+                                             interpolator_settings.get("input_level", 0),
+                                             interpolator_settings.get("target_level", 0),
+                                             interpolator_settings.get("precompute", True),
+                                             interpolator_settings.get("nh_inter", 3),
+                                             interpolator_settings.get("power", 1)
+                                             )
 
+        self.interpolate_input = interpolate_input
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
 
@@ -63,6 +76,16 @@ class MGNO_base_model(nn.Module):
                                                                         coords_output=coords_output, 
                                                                         indices_sample=indices_sample)
         
+        if self.interpolate_input:
+            x, density_map = self.interpolator(x, 
+                                            mask=mask, 
+                                            calc_density=True,
+                                            indices_sample=indices_sample)
+            
+            emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
+            mask =None
+
+        x = x.unsqueeze(dim=-2)
 
         return self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 

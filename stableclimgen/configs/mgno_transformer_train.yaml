@@ -1,7 +1,7 @@
 defaults:
   - trainer: mgno_transformer
   - logger: wandb
-  - model: mgno_transformer_mg_orig
+  - model: mgno_transformer_mg
   - mgrids: icon
   - dataloader: netcdf_mgno
   - embedding: default
