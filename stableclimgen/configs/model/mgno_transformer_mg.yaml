@@ -24,15 +24,19 @@ model:
   n_head_channels: 32 
   rotate_coord_system: true
   p_dropout: 0
-  mask_as_embedding: true
   block_type: 'pre_layer_norm'
   with_gamma: true
   omit_backtransform: true
   rank: 0.5
   rank_cross: 0.5
   layer_type: 'CrossTucker'
-  input_embed_names: ["MaskEmbedder"]
+  input_embed_names: ["DensityEmbedder"]
+  interpolate_input: true
   input_embed_confs: ${embedding}
+  interpolator_settings:
+    search_level: 3
+    nh_inter: 3
+    power: 1
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGStackedEncoderDecoderConfig
       global_levels_output: [0,2,4]

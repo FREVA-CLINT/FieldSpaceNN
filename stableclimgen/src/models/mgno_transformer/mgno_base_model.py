@@ -82,11 +82,11 @@ class MGNO_base_model(nn.Module):
                                             calc_density=True,
                                             indices_sample=indices_sample)
             
-            emb["DensityEmbedder"] = density_map
+            emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None
 
         x = x.unsqueeze(dim=-2)
-        
+
         return self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 
 

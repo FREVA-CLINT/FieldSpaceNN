@@ -552,7 +552,7 @@ def get_interpolation(x: torch.tensor,
                       mask_value:int=1e6, 
                       indices_sample: dict=None):
     x = x.clone()
-    b,n,nv,nh,f = x.shape
+    b,n,nh,nv,f = x.shape
 
     n_l = dist.shape[1]
     l = n // n_l

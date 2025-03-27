@@ -128,7 +128,9 @@ class MGNO_VAE(MGNO_base_model):
 
         super().__init__(mgrids,
                          global_levels,
-                         rotate_coord_system=rotate_coord_system)
+                         rotate_coord_system=rotate_coord_system,
+                         interpolate_input=kwargs.get("interpolate_input",False),
+                         interpolator_settings=kwargs.get("interpolator_settings",None))
 
         self.input_dim = input_dim
 

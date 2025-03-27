@@ -230,9 +230,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
                 coords_output_plot = coords_output[sample]
             
             if input_inter is not None:
-                input_inter = input_inter[sample,:,:,k]
+                input_inter_p = input_inter[sample,:,k,0]
+            else:
+                input_inter_p = None
 
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter,save_path=save_path)
+            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 
