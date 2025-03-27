@@ -189,7 +189,7 @@ class MGNO_VAE(MGNO_base_model):
 
             self.decoder_blocks.append(block)
 
-        if interpolate_input_residual is not None:
+        if interpolate_input_residual:
             self.residual_interpolator_down = Interpolator(self.grid_layers,
                                              residual_interpolator_settings.get("search_level", 3),
                                              0,
