@@ -136,6 +136,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                       embed_confs=input_embed_confs,
                                       embed_mode=input_embed_mode)
 
+        self.learn_residual = kwargs.get("learn_residual", False)
+
     def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
         """
@@ -153,6 +155,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
         x = x.view(b,n,-1,self.input_dim)
         b,n,nv,nc = x.shape[:4]
 
+        if self.learn_residual:
+            x_res = x
+
         x = self.input_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
 
         x_levels = [x]
@@ -169,6 +174,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
         x = self.out_layer(x_levels[0])
         x = x.view(b,n,-1)
 
+        if self.learn_residual:
+            x = x_res.view(x.shape) + x
+            
         return x
     
 def check_get(block_conf, arg_dict, key):

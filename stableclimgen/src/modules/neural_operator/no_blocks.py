@@ -61,6 +61,9 @@ class residual_layer(nn.Module):
 
 
 def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_rank_decay=0, layer_type='Dense'):
+
+    layer_type_c = None
+
     if layer_type == "Dense":
         layer = DenseLayer
         
@@ -73,8 +76,9 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
     elif layer_type == "CrossDense":
         layer = CrossDenseLayer
     
-    elif layer_type == "PathAttention":
+    elif "PathAttention" in layer_type:
         layer = PathAttentionLayer
+        layer_type_c = 'CrossDense' if 'CrossDense' in layer_type else 'CrossTucker'
 
 
     return  layer(no_dims_in, 
@@ -82,7 +86,8 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
                 output_dim, 
                 no_dims_out=no_dims_out, 
                 rank=rank,
-                no_rank_decay=no_rank_decay)
+                no_rank_decay=no_rank_decay,
+                layer_type=layer_type_c)
 
 class Stacked_NOBlock(nn.Module):
   
@@ -694,7 +699,8 @@ class CrossTuckerLayer(nn.Module):
                  const_str="bnv",
                  n_vars_total=1,
                  no_rank_decay=0, 
-                 norm=True):
+                 norm=True,
+                 **kwargs):
         """
         Args:
             in_shape (tuple of int): Non-batch input shape, e.g. (n1, n1, n1, c).
@@ -993,6 +999,7 @@ class PathAttentionLayer(nn.Module):
                  n_vars_total=1,
                  rank = 0.5,
                  no_rank_decay = 0,
+                 layer_type = 'CrossTucker',
                  **kwargs
                 ) -> None: 
          
@@ -1005,7 +1012,11 @@ class PathAttentionLayer(nn.Module):
         self.no_dims_tot = int(torch.tensor(no_dims).prod())
         self.no_dims_out_tot = int(torch.tensor(no_dims_out).prod())
 
-        self.path_layer = CrossTuckerLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay)
+        if layer_type == 'CrossTucker':
+            self.path_layer = CrossTuckerLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay)
+
+        elif layer_type == 'CrossDense':
+            self.path_layer = CrossDenseLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay) 
 
         #self.skip_layer = TuckerLayer(no_dims, input_dim, output_dim, no_dims_out=no_dims, rank=rank, no_rank_decay=no_rank_decay)     
         self.layer_norm1 = nn.LayerNorm([input_dim]) 
@@ -1016,8 +1027,8 @@ class PathAttentionLayer(nn.Module):
             output_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
             )   
         
-        self.grid_embedding1 = nn.Parameter(torch.randn(self.no_dims_tot, input_dim), requires_grad=True)
-        self.grid_embedding2 = nn.Parameter(torch.randn(self.no_dims_out_tot, input_dim), requires_grad=True)
+       # self.grid_embedding1 = nn.Parameter(torch.randn(self.no_dims_tot, input_dim), requires_grad=True)
+       # self.grid_embedding2 = nn.Parameter(torch.randn(self.no_dims_out_tot, input_dim), requires_grad=True)
 
     def forward(self, x, mask=None):
         
@@ -1030,8 +1041,8 @@ class PathAttentionLayer(nn.Module):
         x_cross = x_cross.view(b*n*v, self.no_dims_out_tot, -1)
         x = x.view(b*n*v, self.no_dims_tot, -1)
 
-        x = self.layer_norm1(x) + self.grid_embedding1
-        x_crossk = self.layer_norm2(x_cross) + self.grid_embedding2
+        x = self.layer_norm1(x) #+ self.grid_embedding1
+        x_crossk = self.layer_norm2(x_cross) #+ self.grid_embedding2
 
         x = self.MHA(q=x, k=x_crossk, v=x_cross)
 
