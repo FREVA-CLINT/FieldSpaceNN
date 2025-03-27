@@ -249,10 +249,10 @@ class MGNO_VAE(MGNO_base_model):
         b,n,nh,nv,nc = x.shape[:5]
         interp_x = 0
         if self.interpolate_input_residual:
-            interp_x, _ = self.residual_interpolator_down(x, mask=mask,
+            interp_x, _ = self.residual_interpolator_down(x,
                                                       calc_density=False,
                                                       indices_sample=indices_sample)
-            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-2), mask=mask,
+            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-2),
                                                       calc_density=False,
                                                       indices_sample=indices_sample)
 

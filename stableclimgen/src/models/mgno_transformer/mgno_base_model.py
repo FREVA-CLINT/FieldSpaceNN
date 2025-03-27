@@ -77,7 +77,7 @@ class MGNO_base_model(nn.Module):
                                                                         indices_sample=indices_sample)
         
         if self.interpolate_input:
-            x, density_map = self.interpolator(x, 
+            x, density_map = self.interpolator(x,
                                             mask=mask, 
                                             calc_density=True,
                                             indices_sample=indices_sample)
@@ -85,7 +85,7 @@ class MGNO_base_model(nn.Module):
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None
 
-        x = x.unsqueeze(dim=-2)
+            x = x.unsqueeze(dim=-2)
 
         return self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 

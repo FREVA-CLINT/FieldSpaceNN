@@ -17,7 +17,8 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
-    input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
+    if torch.is_tensor(input_inter):
+        input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
     gt = gt.cpu().numpy()
 
     if mask is not None:
