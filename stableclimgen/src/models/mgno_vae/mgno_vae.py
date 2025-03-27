@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import List
+from typing import List, Dict
 
 from stableclimgen.src.models.mgno_transformer.mgno_base_model import MGNO_base_model
 
@@ -11,6 +11,7 @@ from ..mgno_transformer.mgno_transformer_mg import InputLayer, check_get
 
 from ..mgno_transformer.mgno_block_confs import MGProcessingConfig, MGStackedEncoderDecoderConfig, \
     MGEncoderDecoderConfig
+from ...modules.icon_grids.grid_layer import Interpolator
 
 
 class QuantConfig:
@@ -111,6 +112,8 @@ class MGNO_VAE(MGNO_base_model):
                  input_embed_names=None,
                  input_embed_confs=None,
                  input_embed_mode='sum',
+                 interpolate_input_residual=False,
+                 residual_interpolator_settings: Dict = None,
                  **kwargs
                  ) -> None:
         global_levels = torch.tensor(0).view(-1)
@@ -163,9 +166,11 @@ class MGNO_VAE(MGNO_base_model):
             
             self.encoder_blocks.append(block)
 
+        bottleneck_level = input_levels[-1]
+
         self.quantization = Quantization(input_dims[-1], quant_config.latent_ch, quant_config.block_type, 1,
                                         **quant_config.sub_confs,
-                                        grid_layer=self.grid_layers[str(input_levels[-1])],
+                                        grid_layer=self.grid_layers[str(bottleneck_level)],
                                         rotate_coord_system=rotate_coord_system,
                                         n_head_channels=quant_config.n_head_channels)
 
@@ -183,6 +188,26 @@ class MGNO_VAE(MGNO_base_model):
             input_levels = block.output_levels
 
             self.decoder_blocks.append(block)
+
+        if interpolate_input_residual is not None:
+            self.residual_interpolator_down = Interpolator(self.grid_layers,
+                                             residual_interpolator_settings.get("search_level", 3),
+                                             0,
+                                                           bottleneck_level,
+                                             residual_interpolator_settings.get("precompute", True),
+                                             residual_interpolator_settings.get("nh_inter", 3),
+                                             residual_interpolator_settings.get("power", 1)
+                                             )
+            self.residual_interpolator_up = Interpolator(self.grid_layers,
+                                                           residual_interpolator_settings.get("search_level", 3),
+                                                           bottleneck_level,
+                                                           0,
+                                                           residual_interpolator_settings.get("precompute", True),
+                                                           residual_interpolator_settings.get("nh_inter", 3),
+                                                           residual_interpolator_settings.get("power", 1)
+                                                           )
+
+        self.interpolate_input_residual = interpolate_input_residual
 
         self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
@@ -222,13 +247,21 @@ class MGNO_VAE(MGNO_base_model):
 
     def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
         b,n,nh,nv,nc = x.shape[:5]
+        interp_x = 0
+        if self.interpolate_input_residual:
+            interp_x, _ = self.residual_interpolator_down(x, mask=mask,
+                                                      calc_density=False,
+                                                      indices_sample=indices_sample)
+            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-2), mask=mask,
+                                                      calc_density=False,
+                                                      indices_sample=indices_sample)
+
         posterior, mask = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
         if hasattr(self, "quantization"):
             z = posterior.sample()
         else:
             z = posterior
-        dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+        dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + interp_x
         dec = dec.view(b,n,-1)
-
         return dec, posterior
