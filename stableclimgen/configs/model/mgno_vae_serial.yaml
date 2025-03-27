@@ -1,0 +1,223 @@
+_target_: stableclimgen.src.models.mgno_vae.pl_mgno_vae.Lightning_MGNO_VAE
+weight_decay: 0.01
+lambda_loss_dict:
+  MSE_loss: 1
+  NH_loss: 0
+lr_groups:
+  - param_group: 'params'
+    lr: 1e-4
+    lr_warmup: 200
+  - param_group: 'no_params'
+    lr: 1e-4
+    lr_warmup: 500
+  - param_group: 'attention'
+    lr: 1e-4
+    lr_warmup: 200
+model:
+  _target_: stableclimgen.src.models.mgno_vae.mgno_vae_serial.MGNO_VAE_serial
+  mgrids: ${mgrids}
+  input_dim: 1
+  lifting_dim: 64
+  output_dim: 1
+  n_vars_total: 3
+  rotate_coord_system: true
+  p_dropout: 0
+  mask_as_embedding: false
+  block_type: 'post_layer_norm'
+  with_gamma: false
+  omit_backtransform: false
+  rank: 0.5
+  rank_cross: 0.5
+  layer_type: 'CrossDense'
+  input_embed_confs: ${embedding}
+  encoder_block_configs:
+  - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
+    block_type: Serial
+    model_dims_out:
+    - 64
+    - 64
+    - 64
+    - 64
+    - 128
+    - 128
+    - 128
+    - 256
+    layer_settings:
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 0
+      global_level_no: 1
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: false
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 1
+      global_level_no: 2
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: false
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+    - type: "spatial_att"
+      n_head_channels: 8
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "spatial_att"
+      n_head_channels: 8
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 2
+      global_level_no: 3
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: false
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+    - type: "spatial_att"
+      n_head_channels: 16
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "spatial_att"
+      n_head_channels: 16
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 3
+      global_level_no: 4
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: false
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+  decoder_block_configs:
+  - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.NOBlockConfig
+    block_type: Serial
+    model_dims_out:
+    - 256
+    - 128
+    - 128
+    - 128
+    - 128
+    - 64
+    - 64
+    - 64
+    layer_settings:
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 3
+      global_level_no: 4
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: true
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 2
+      global_level_no: 2
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+    - type: "spatial_att"
+      n_head_channels: 16
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "spatial_att"
+      n_head_channels: 16
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 1
+      global_level_no: 1
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+    - type: "spatial_att"
+      n_head_channels: 8
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "spatial_att"
+      n_head_channels: 8
+      embed_confs: ${embedding}
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      spatial_attention_configs:
+        nh: false
+        seq_lvl: 3
+        blocks: ["s", "mlp"]
+    - type: "NO_mlp"
+      layer_type: "CrossDense"
+      with_gamma: false
+      global_level_decode: 0
+      global_level_no: 0
+      no_layer_type: 'polNormal'
+      no_layer_settings:
+        n_params: [ 4,2,1 ]
+        nh_in_encode: true
+        nh_in_decode: true
+        global_params_learnable: [ false, false ]
+  quant_config:
+    _target_: stableclimgen.src.models.mgno_vae.mgno_vae.QuantConfig
+    block_type: grid_trans
+    latent_ch: [256,64,64,32,32,4]
+    n_head_channels: [32, 16, 16, 4, 4, 4]
+    sub_confs:
+      blocks: ["s", "mlp", "s", "mlp", "s", "mlp"]
+      nh: false
+      seq_lvl: -1
+      embedder_names: [["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"]]
+      embed_confs: ${embedding}
+      embed_mode: sum
+      distribution: gaussian
