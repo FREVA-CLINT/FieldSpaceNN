@@ -180,7 +180,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
   #      self.log_dict(self.get_no_params_dict(), logger=True)
 
         if batch_idx == 0:
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
+            if hasattr(self.model, "interpolator") and self.model.interpolate_input:
+                input_inter,_ = self.model.interpolator(source, mask=mask, indices_sample=indices)
+            else:
+                input_inter = None
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
             
 
         return loss
@@ -196,7 +200,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         return coords
 
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
+    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
@@ -224,8 +228,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
             else:
                 coords_input_plot = coords_input[sample]
                 coords_output_plot = coords_output[sample]
+            
+            if input_inter is not None:
+                input_inter = input_inter[sample,:,:,k]
 
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, save_path=save_path)
+            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 
