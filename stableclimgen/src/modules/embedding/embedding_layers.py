@@ -56,6 +56,45 @@ class RandomFourierLayer(nn.Module):
         return out_tensor
 
 
+class TimeScaleLayer(nn.Module):
+    """
+    A neural network layer that applies a Random Fourier Feature transformation.
+
+    :param in_features: Number of input features (default is 3).
+    :param n_neurons: Number of neurons in the layer, which will determine the dimensionality of the output (default is 512).
+    :param wave_length: Scaling factor for the input tensor, affecting the frequency of the sine and cosine functions (default is 1.0).
+    """
+
+    def __init__(
+            self,
+            in_features = 1,
+            n_neurons: int = 512,
+            time_scales: float = []
+    ) -> None:
+        super().__init__()
+
+        self.time_scales = torch.tensor(time_scales, dtype=torch.float32)
+        self.features_per_scale = n_neurons // (2 * len(time_scales))
+
+        # The first weight (alpha) is for the linear term
+        self.linear_term = nn.Linear(in_features, n_neurons // 2, bias=True)
+
+    def forward(self, in_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Perform the forward pass of the layer, applying Random Fourier Feature transformation.
+
+        :param in_tensor: Input tensor to be transformed.
+        :return: Transformed output tensor.
+        """
+        linear_term = self.linear_term(in_tensor.unsqueeze(1))
+        periodic_terms = torch.cat([
+            torch.sin(2 * torch.pi * in_tensor / scale).repeat(1, self.features_per_scale)
+            for scale in self.time_scales
+        ], dim=-1)
+
+        return torch.cat([linear_term, periodic_terms], dim=-1)
+
+
 class SinusoidalLayer(nn.Module):
     """
     Sinusoidal timestep embeddings for diffusion steps.

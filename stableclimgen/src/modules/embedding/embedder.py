@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import ModuleDict
 
-from .embedding_layers import RandomFourierLayer, SinusoidalLayer
+from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
 from ...utils.helpers import expand_tensor
 
 
@@ -35,6 +35,27 @@ class BaseEmbedder(nn.Module):
         """
         # Apply the embedder to the input tensor
         return self.embedding_fn(emb)
+
+
+class TimeEmbedder(BaseEmbedder):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales):
+        """
+        Time2Vec module with fixed periodic components based on user-defined time scales.
+        :param out_features: Number of output features (embedding dimension).
+        :param time_scales: List of time scales (e.g., [24, 168, 720, 8760] for hourly, weekly, monthly, yearly).
+        """
+        super().__init__(name, in_channels, embed_dim)
+
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "t", "c"]
+
+        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
+        self.embedding_fn = torch.nn.Sequential(
+            TimeScaleLayer(in_features=self.in_channels, n_neurons=self.embed_dim, time_scales=time_scales),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
 
 
 class CoordinateEmbedder(BaseEmbedder):

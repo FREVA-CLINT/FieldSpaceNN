@@ -77,7 +77,9 @@ class HealPixLoader(Dataset):
                  p_average_dropout=0,
                  max_average_lvl=0,
                  drop_vars=False,
+                 drop_timesteps=False,
                  n_sample_vars=-1,
+                 n_sample_timesteps=-1,
                  deterministic=False,
                  variables_source=None,
                  variables_target=None,
@@ -98,7 +100,9 @@ class HealPixLoader(Dataset):
         self.p_average_dropout = p_average_dropout
         self.max_average_lvl = max_average_lvl
         self.drop_vars = drop_vars
+        self.drop_timesteps = drop_timesteps
         self.n_sample_vars = n_sample_vars
+        self.n_sample_timesteps = n_sample_timesteps if n_sample_timesteps != -1 else 1
         self.deterministic = deterministic
 
         self.variables_source = variables_source or data_dict["source"]["variables"]
@@ -207,7 +211,8 @@ class HealPixLoader(Dataset):
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
-        self.len_dataset = len(self.sample_timesteps)*self.global_cells.shape[0] if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
+        nt = self.n_sample_timesteps
+        self.len_dataset = (len(self.sample_timesteps) - nt)*self.global_cells.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt)*self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -240,10 +245,12 @@ class HealPixLoader(Dataset):
             indices = global_indices.view(-1,1)
 
         n, nh = indices.shape
+        nt = self.n_sample_timesteps
         indices = indices.reshape(-1)
 
         # tbd: spatial dim as input!
         regular = False
+        ts = torch.arange(ts, ts + nt, 1)
         if 'ncells' in dict(ds.sizes).keys():
             ds = ds.isel(ncells=indices, time=ts)
         elif 'cell' in dict(ds.sizes).keys():
@@ -257,10 +264,10 @@ class HealPixLoader(Dataset):
             data = torch.tensor(ds[variable].values)
             data_g.append(data)
         data_g = torch.stack(data_g, dim=-1)
-        data_g = data_g.view(-1, nh, len(variables), 1)
+        data_g = data_g.view(nt, -1, nh, len(variables), 1)
 
         if regular:
-            data_g = data_g[indices]
+            data_g = data_g[:, indices]
 
         ds.close()
 
@@ -325,18 +332,18 @@ class HealPixLoader(Dataset):
         else:
             coords_output = torch.tensor([])
 
-        n, nh, nv, f = data_source.shape
+        nt, n, nh, nv, f = data_source.shape
         if torch.is_tensor(self.steady_mask):
             drop_mask = self.steady_mask[global_cells[sample_index]].view(n, 1, 1).repeat(1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
             avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
-            data_source_resh = data_source.view(-1,4**avg_level,nh,f)
-            data_source_resh = data_source_resh.mean(dim=[1,2], keepdim=True)
-            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=1)
-            data_source_resh = data_source_resh.repeat_interleave(nh, dim=2)
-            data_source = data_source_resh.view(n, nh, nv, f)
+            data_source_resh = data_source.view(nt, -1,4**avg_level,nh,f)
+            data_source_resh = data_source_resh.mean(dim=[2,3], keepdim=True)
+            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=2)
+            data_source_resh = data_source_resh.repeat_interleave(nh, dim=3)
+            data_source = data_source_resh.view(nt, n, nh, nv, f)
 
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+            drop_mask = torch.zeros((nt, n,nh,nv), dtype=bool)
 
             if self.p_average_dropout >0:
                 if self.drop_vars:
@@ -348,22 +355,26 @@ class HealPixLoader(Dataset):
                 drop_mask[drop_mask_p]=True
                 drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
         else:
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+            drop_mask = torch.zeros((nt, n,nh,nv), dtype=bool)
 
-            if self.p_dropout > 0 and not self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh))<self.p_dropout).bool()
+            if self.p_dropout > 0 and not self.drop_vars and not self.drop_timesteps:
+                drop_mask_p = (torch.rand((nt,n,nh))<self.p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
             elif self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh,nv))<self.p_dropout).bool()
+                drop_mask_p = (torch.rand((nt,n,nh,nv))<self.p_dropout).bool()
+                drop_mask[drop_mask_p]=True
+
+            elif self.drop_timesteps:
+                drop_mask_p = (torch.rand(nt)<self.p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
     
         for k, var in enumerate(variables_source):
-            data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
+            data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
         
         for k, var in enumerate(variables_target):
-            data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
+            data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
 
         data_source[drop_mask] = 0
 
