@@ -8,100 +8,34 @@ import cartopy.crs as ccrs
 import numpy as np
 import torch
 
-def make_ax(index, fig,gs):
-    return fig.add_subplot(gs[0, index], projection=projection)
-
 def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, save_path=None):
-    coords_input = coords_input.rad2deg().cpu().numpy()
-    coords_output = coords_output.rad2deg().cpu().numpy()
-
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
+    gt = gt.cpu().numpy()
+
     if torch.is_tensor(input_inter):
         input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
-    gt = gt.cpu().numpy()
 
-    if mask is not None:
-        mask = mask.cpu().bool().numpy()
-        input = input[mask==False]
-        coords_input = coords_input[mask==False]
-
-    coords_input = coords_input.reshape(-1,2)
-    coords_output = coords_output.reshape(-1,2)
-    
-    plot_input_inter = input_inter is not None
-
-    projection = ccrs.Mollweide()
-
-    n_plots = 5 + int(plot_input_inter)
-
-    fig = plt.figure(figsize=(5 * n_plots, 7))
-    gs = gridspec.GridSpec(1, n_plots, figure=fig, wspace=0.25)
-
-    plot_idx = 0
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_input[:, 0], coords_input[:, 1], c=input, transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Input")
-    plot_idx += 1
-
-    if plot_input_inter:
-        ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-        cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=input_inter, transform=ccrs.PlateCarree(), s=6)
-        plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-        ax.set_title("Input Interpolated")
-        plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=output, transform=ccrs.PlateCarree(), s=5)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Output")
-    plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=gt, transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Ground Truth")
-    plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=gt.squeeze() - output.squeeze(), transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Error")
-
-    if save_path is not None:
-        plt.savefig(save_path, bbox_inches='tight')
-
-
-def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask, save_path=None):
-    input = input.cpu().numpy()
-    output = output.cpu().to(dtype=torch.float32).numpy()
-    gt = gt.cpu().numpy()
-
-    if coords_input.shape[0] == 1:
-        coords_input = coords_input.repeat(gt.shape[0], 1, 1, 1)
-        coords_output = coords_output.repeat(gt.shape[0], 1, 1, 1)
+    coords_input = coords_input.unsqueeze(0).repeat(gt.shape[0], 1, 1, 1)
+    coords_output = coords_output.unsqueeze(0).repeat(gt.shape[0], 1, 1, 1)
 
     coords_input = coords_input.rad2deg().cpu().numpy()
     coords_output = coords_output.rad2deg().cpu().numpy()
+    plot_input_inter = input_inter is not None
 
     if mask is not None:
-        mask = mask.cpu().bool().numpy()
-        input = input[mask == False]
-        coords_input = coords_input[mask == False]
+        mask = mask.squeeze(-1).cpu().bool().numpy()
+    else:
+        mask = torch.ones_like(input).cpu().bool().numpy()
 
-    input = input.reshape(gt.shape[0], -1)
-    coords_input = coords_input.reshape(gt.shape[0], -1, 2)
     coords_output = coords_output.reshape(gt.shape[0], -1, 2)
 
     # Define image size and calculate differences between ground truth and output
     img_size = 3
-    differences = gt - output
 
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4,
+        nrows=gt.shape[0], ncols=4 + plot_input_inter,
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
@@ -109,19 +43,27 @@ def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask,
 
     # Plot each sample and timestep
     for i in range(gt.shape[0]):
+        plot_samples = [
+            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input"),
+            (1, gt[i], coords_output[i], "Ground Truth"),
+            (2, output[i], coords_output[i], "Output"),
+            (3, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error")
+        ] if not plot_input_inter else [
+            (0, input[i], coords_input[i], "Input"),
+            (1, plot_input_inter[i], coords_output[i], "Input Interpolated"),
+            (2, gt[i], coords_output[i], "Ground Truth"),
+            (3, output[i], coords_output[i], "Output"),
+            (4, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error")
+        ]
         # Loop over samples
-        for index, data, coords in [
-            (0, input[i], coords_input[i]),
-            (1, gt[i], coords_output[i]),
-            (2, output[i], coords_output[i]),
-            (3, differences[i], coords_output[i])
-        ]:
+        for index, data, coords, title in plot_samples:
             # Turn off axes for cleaner plots
             axes[i, index].set_axis_off()
+            axes[i, index].set_title(title)
             cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
 
             # Add color bar to each difference plot
-            cb = fig.colorbar(cax, ax=axes[i, index])
+            cb = fig.colorbar(cax, ax=axes[i, index], orientation='horizontal', shrink=0.6)
 
     # Adjust layout and save the figure for the current channel
     plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)

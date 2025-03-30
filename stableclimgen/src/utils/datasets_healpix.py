@@ -7,6 +7,7 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
+from .datasets_icon import skewed_random_p
 from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid, get_coords_as_tensor
 
 
@@ -76,15 +77,19 @@ class HealPixLoader(Dataset):
                  p_average=0,
                  p_average_dropout=0,
                  max_average_lvl=0,
-                 drop_vars=False,
-                 drop_timesteps=False,
                  n_sample_vars=-1,
                  n_sample_timesteps=-1,
+                 random_p = False,
+                 skewness_exp = 2,
                  deterministic=False,
                  variables_source=None,
                  variables_target=None,
                  max_in_grid_distance=None,
-                 one_to_one=False):
+                 one_to_one=False,
+                 p_drop_vars=0,
+                 n_drop_vars=-1,
+                 p_drop_timesteps=-1,
+                 ):
         
         super(HealPixLoader, self).__init__()
         
@@ -95,15 +100,18 @@ class HealPixLoader(Dataset):
         self.sample_for_norm = sample_for_norm
         self.lazy_load=lazy_load
         self.random_time_idx = random_time_idx
+        self.random_p = random_p
         self.p_dropout = p_dropout
         self.p_average = p_average
         self.p_average_dropout = p_average_dropout
         self.max_average_lvl = max_average_lvl
-        self.drop_vars = drop_vars
-        self.drop_timesteps = drop_timesteps
+        self.skewness_exp = skewness_exp
         self.n_sample_vars = n_sample_vars
         self.n_sample_timesteps = n_sample_timesteps if n_sample_timesteps != -1 else 1
         self.deterministic = deterministic
+        self.n_drop_vars = n_drop_vars
+        self.p_drop_vars = p_drop_vars
+        self.p_drop_timesteps = p_drop_timesteps
 
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
@@ -333,58 +341,67 @@ class HealPixLoader(Dataset):
             coords_output = torch.tensor([])
 
         nt, n, nh, nv, f = data_source.shape
+
+        drop_vars = torch.rand(1) < self.p_drop_vars
+        drop_timesteps = torch.rand(1) < self.p_drop_timesteps
+        drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
+
         if torch.is_tensor(self.steady_mask):
             drop_mask = self.steady_mask[global_cells[sample_index]].view(n, 1, 1).repeat(1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
-            avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
-            data_source_resh = data_source.view(nt, -1,4**avg_level,nh,f)
-            data_source_resh = data_source_resh.mean(dim=[2,3], keepdim=True)
-            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=2)
+            avg_level = int(torch.randint(1, self.max_average_lvl + 1, (1,)))
+            data_source_resh = data_source.view(-1,nt, 4 ** avg_level, nh, f)
+            data_source_resh = data_source_resh.mean(dim=[2, 3], keepdim=True)
+            data_source_resh = data_source_resh.repeat_interleave(4 ** avg_level, dim=2)
             data_source_resh = data_source_resh.repeat_interleave(nh, dim=3)
-            data_source = data_source_resh.view(nt, n, nh, nv, f)
+            data_source = data_source_resh.view(nt,n, nh, nv, f)
 
-            drop_mask = torch.zeros((nt, n,nh,nv), dtype=bool)
-
-            if self.p_average_dropout >0:
-                if self.drop_vars:
-                    drop_mask_p = (torch.rand((n//4**avg_level,nv))<self.p_average_dropout).bool()
+            if self.p_average_dropout > 0:
+                if drop_vars:
+                    drop_mask_p = (torch.rand((n // 4 ** avg_level, nv)) < self.p_average_dropout).bool()
                 else:
-                    drop_mask_p = (torch.rand((n//4**avg_level))<self.p_average_dropout).bool()
+                    drop_mask_p = (torch.rand((n // 4 ** avg_level)) < self.p_average_dropout).bool()
 
-                drop_mask = drop_mask.view(-1,4**avg_level, nh, nv).transpose(-1,1)
-                drop_mask[drop_mask_p]=True
-                drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
+                drop_mask = drop_mask.view(nt, -1, 4 ** avg_level, nh, nv).transpose(-1, 2)
+                drop_mask[drop_mask_p] = True
+                drop_mask = drop_mask.transpose(-1, 2).view(nt, -1, nh, nv)
         else:
-            drop_mask = torch.zeros((nt, n,nh,nv), dtype=bool)
+            if self.random_p and drop_vars:
+                p_dropout = skewed_random_p(nv, exponent=self.skewness_exp, max_p=self.p_dropout)
+            elif self.random_p:
+                p_dropout = skewed_random_p(1, exponent=self.skewness_exp, max_p=self.p_dropout)
+            else:
+                p_dropout = torch.tensor(self.p_dropout)
 
-            if self.p_dropout > 0 and not self.drop_vars and not self.drop_timesteps:
-                drop_mask_p = (torch.rand((nt,n,nh))<self.p_dropout).bool()
-                drop_mask[drop_mask_p]=True
+            if self.p_dropout > 0 and not drop_vars and not drop_timesteps:
+                drop_mask_p = (torch.rand((nt, n, nh)) < p_dropout).bool()
+                drop_mask[drop_mask_p] = True
 
-            elif self.drop_vars:
-                drop_mask_p = (torch.rand((nt,n,nh,nv))<self.p_dropout).bool()
-                drop_mask[drop_mask_p]=True
+            elif self.p_dropout > 0 and drop_vars:
+                drop_mask_p = (torch.rand((nt, n, nh, nv)) < p_dropout).bool()
+                drop_mask[drop_mask_p] = True
 
-            elif self.drop_timesteps:
+            elif self.p_dropout > 0 and drop_timesteps:
                 drop_mask_p = (torch.rand(nt)<self.p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
+        if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
+            not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
+            drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
     
         for k, var in enumerate(variables_source):
             data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
         
         for k, var in enumerate(variables_target):
             data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
-
         data_source[drop_mask] = 0
-
         if self.coarsen_sample_level == -1:
             indices_sample = torch.tensor([])
         else:
-            indices_sample = {'sample': sample_index,
-                              'sample_level': self.coarsen_sample_level}
-        embed_data = {'VariableEmbedder': sample_vars}
-        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data
+            indices_sample = {'sample': sample_index.repeat(nt),
+                              'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
+        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1)}
+        return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data
 
     def __len__(self):
         return self.len_dataset

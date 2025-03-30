@@ -6,7 +6,6 @@ from .pl_probabilistic import LightningProbabilisticModel
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
 from ..diffusion.sampler import DDPMSampler, DDIMSampler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
-from ...utils.visualization import scatter_plot_diffusion
 
 
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
@@ -79,7 +78,8 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                self.log_tensor_plot(in_source, output, in_target, in_coords_input, in_coords_output, in_mask, in_indices, f"tensor_plot_{self.current_epoch}", in_emb)
+                b, nt, n, nv, nc = in_source.shape[:3]
+                self.log_tensor_plot(in_source.view(1, -1, n, nv, nc), output.view(1, -1, n, nv, nc), in_target.view(1, -1, n, nv, nc), in_coords_input, in_coords_output, in_mask.view(1, -1, n, nv, nc), in_indices, f"tensor_plot_{self.current_epoch}", in_emb)
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
@@ -89,21 +89,3 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         return self.sampler.sample_loop(self.model, source, mask,
                                         progress=True, emb=emb, coords_input=coords_input,
                                         coords_output=coords_output, indices_sample=indices_sample)
-
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
-        save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
-        os.makedirs(save_dir, exist_ok=True)
-
-        for k in range(input.shape[-2]):
-            var_idx = emb['VariableEmbedder'][0, k]
-            plot_name_var = f"{plot_name}_{var_idx}"
-            save_path = os.path.join(save_dir, f"{plot_name_var}.png")
-
-            if coords_input.numel() == 0:
-                coords_input = self.get_coords_from_model(indices_dict)
-
-            if coords_output.numel() == 0:
-                coords_output = self.get_coords_from_model(indices_dict)
-            scatter_plot_diffusion(input[:, :, :, k, 0], output.view(gt.shape)[:, :, :, k, 0], gt[:, :, :, k, 0], coords_input,
-                                   coords_output, mask[:, :, :, k, 0], save_path=save_path)
-            self.logger.log_image(f"plots/{plot_name_var}", [save_path])

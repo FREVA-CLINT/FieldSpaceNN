@@ -210,11 +210,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
             var_idx = emb['VariableEmbedder'][sample, k]
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
-
-            if mask is not None:
-                mask_p = mask[sample,:,:,k]
-            else:
-                mask_p = None
             
             if coords_input.numel()==0:
                 coords_input = self.get_coords_from_model(indices_dict)
@@ -228,13 +223,17 @@ class LightningMGNOBaseModel(pl.LightningModule):
             else:
                 coords_input_plot = coords_input[sample]
                 coords_output_plot = coords_output[sample]
-            
+
+            max_nt = 8
+            if mask is not None:
+                mask_p = mask[sample, :max_nt, :, k]
+            else:
+                mask_p = None
             if input_inter is not None:
-                input_inter_p = input_inter[sample,:,k,0]
+                input_inter_p = input_inter[sample,:max_nt,k,0]
             else:
                 input_inter_p = None
-
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
+            scatter_plot(input[sample,:max_nt,:,:,k], output[sample,:max_nt,:,k], gt[sample,:max_nt,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 

@@ -68,9 +68,29 @@ class MGNO_base_model(nn.Module):
             coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
     
         return indices_sample, coords_input, coords_output
+
+    def prepare_batch(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
+        b, nt, n, nv, c = x.shape[:5]
+        x = x.view(b * nt, *x.shape[2:])
+        if mask is not None:
+            mask = mask.view(b * nt, *mask.shape[2:])
+        if coords_input is not None:
+            coords_input = coords_input.view(b * nt, *coords_input.shape[2:])
+        if coords_output is not None:
+            coords_output = coords_output.view(b * nt, *coords_output.shape[2:])
+        if indices_sample is not None and isinstance(indices_sample, dict):
+            for key, value in indices_sample.items():
+                indices_sample[key] = value.view(b * nt, *value.shape[2:])
+        if emb is not None:
+            for key, value in emb.items():
+                emb[key] = value.view(b * nt, *value.shape[2:])
+
+        return x, coords_input, coords_output, indices_sample, mask, emb
     
 
     def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
+        b, nt, n = x.shape[:3]
+        x, coords_input, coords_output, indices_sample, mask, emb = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb)
         
         indices_sample, coords_input, coords_output = self.prepare_coords_indices(coords_input,
                                                                         coords_output=coords_output, 
@@ -87,7 +107,8 @@ class MGNO_base_model(nn.Module):
 
             x = x.unsqueeze(dim=-2)
 
-        return self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+        x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+        return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1])
 
 
     def forward_(x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
@@ -95,7 +116,6 @@ class MGNO_base_model(nn.Module):
 
 
     def get_global_indices_local(self, batch_sample_indices, sampled_level_fov, global_level):
-
         global_indices_sampled  = self.global_indices.view(-1, 4**sampled_level_fov[0])[batch_sample_indices]
         global_indices_sampled = global_indices_sampled.view(global_indices_sampled.shape[0], -1, 4**global_level)[:,:,0]   
         

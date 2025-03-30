@@ -70,7 +70,7 @@ class CoordinateEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -93,7 +93,7 @@ class DensityEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -109,7 +109,7 @@ class VariableEmbedder(BaseEmbedder):
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "v", "c"]
+        self.keep_dims = ["b", "t", "v", "c"]
 
         self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
 
@@ -121,7 +121,7 @@ class MaskEmbedder(BaseEmbedder):
     def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         self.embedding_fn = nn.Embedding(2, self.embed_dim)
 
@@ -158,7 +158,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
         """
         super().__init__(name, in_channels, embed_dim)
         # keep batch and channel dimensions
-        self.keep_dims = ["b", "c"]
+        self.keep_dims = ["b", "t", "c"]
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn = nn.Sequential(
@@ -230,6 +230,11 @@ class EmbedderSequential(nn.Module):
 
             input_tensor = inputs[embedder_name]
             embed_output = embedder(input_tensor)
+
+            # Add time dimension
+            if embed_output.ndim != len(embedder.keep_dims):
+                embed_output = embed_output.unsqueeze(1)
+
 
             # Reshape the output to the target output_shape
             embed_output = expand_tensor(embed_output, dims=4 + self.spatial_dim_count, keep_dims=embedder.keep_dims)

@@ -55,7 +55,7 @@ class AdaptiveLayerNorm(nn.Module):
             scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
             n = scale.shape[1]
             scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
-            x = self.layer_norm(x) * (scale + 1) + shift    
+            x = self.layer_norm(x) * (scale + 1) + shift
         else:
             x = self.layer_norm(x)
 

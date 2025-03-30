@@ -226,14 +226,12 @@ class MGNO_VAE(MGNO_base_model):
 
         x = x_levels[0]
 
-        x = self.quantization.quantize(x.unsqueeze(1), indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
+        x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
         posterior = self.quantization.get_distribution(x)
         return posterior, mask_levels[0]
 
     def decode(self, x, coords_output=None, indices_sample=None, mask=None, emb=None):
-        x = self.quantization.post_quantize(x.unsqueeze(dim=1), indices_sample=indices_sample, emb=emb)
-        x = x.squeeze(dim=1)
+        x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
 
         x_levels = [x]
         mask_levels = [None]
