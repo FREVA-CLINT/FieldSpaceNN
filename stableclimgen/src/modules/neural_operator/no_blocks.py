@@ -1037,7 +1037,7 @@ class PathAttentionLayer(nn.Module):
         for k, no_dim in enumerate(no_dims):
             shape = [1]*len(no_dims) + [self.no_dims_out_tot]
             shape[k] = no_dim
-            token_weights = token_weights + torch.randn(shape)/2**k
+            token_weights = token_weights + torch.randn(shape) * (1./(k+1))
         
         self.token_weights = nn.Parameter(token_weights, requires_grad=True)
 
