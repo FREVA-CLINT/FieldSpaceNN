@@ -68,7 +68,6 @@ class HealPixLoader(Dataset):
                  out_nside = None,
                  search_radius=2,
                  nh_input=1,
-                 index_range_source=None,
                  index_offset_target=0,
                  sample_for_norm=-1,
                  lazy_load=False,
@@ -95,7 +94,6 @@ class HealPixLoader(Dataset):
         
         self.coarsen_sample_level = coarsen_sample_level
         self.norm_dict = norm_dict
-        self.index_range_source=index_range_source
         self.index_offset_target = index_offset_target
         self.sample_for_norm = sample_for_norm
         self.lazy_load=lazy_load
@@ -293,10 +291,7 @@ class HealPixLoader(Dataset):
         ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
 
         if self.random_time_idx and not self.sample_timesteps:
-            time_index = int(torch.randint(0, len(ds_source.time.values), (1, 1)))
-            if self.index_range_source is not None:
-                if (time_index < self.index_range_source[0]) or (time_index > self.index_range_source[1]):
-                    time_index = int(torch.randint(self.index_range_source[0], self.index_range_source[1] + 1, (1, 1)))
+            time_index = int(torch.randint(0, len(ds_source.time.values) - self.n_sample_timesteps + 1, (1, 1)))
         elif self.sample_timesteps:
             time_index = self.sample_timesteps[index // self.global_cells_input.shape[0]]
 
