@@ -83,7 +83,8 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
 
             if batch_idx == 0 and i == 0:
                 b, nt, n, nv, nc = in_source.shape[:5]
-                self.log_tensor_plot(in_source.view(1, -1, n, nv, nc), output.view(1, -1, n, nv, nc), in_target.view(1, -1, n, nv, nc), in_coords_input, in_coords_output, in_mask.view(1, -1, n, nv, nc), in_indices, f"tensor_plot_{self.current_epoch}", in_emb, None, n_samples * 8)
+                max_nt = 12
+                self.log_tensor_plot(in_source.view(1, -1, n, nv, nc), output[:, :max_nt].view(1, -1, n, nv, nc), in_target.view(1, -1, n, nv, nc), in_coords_input, in_coords_output, in_mask.view(1, -1, n, nv, nc), in_indices, f"tensor_plot_{self.current_epoch}", in_emb, None, n_samples * max_nt)
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
