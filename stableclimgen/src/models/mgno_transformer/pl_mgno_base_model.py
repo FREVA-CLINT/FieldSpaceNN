@@ -197,7 +197,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
             coords = self.model.cell_coords_global[indices].unsqueeze(dim=-2)
         else:
             coords = self.model.cell_coords_global.unsqueeze(dim=0).unsqueeze(dim=-2)
-
         return coords
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None, max_samples=8):
@@ -213,16 +212,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
             
             if coords_input.numel()==0:
                 coords_input = self.get_coords_from_model(indices_dict)
-                
+                coords_input = coords_input.unsqueeze(0)
+
             if coords_output.numel()==0:
                 coords_output = self.get_coords_from_model(indices_dict)
-
-            if coords_input.shape[0]==1:
-                coords_input_plot = coords_input[0]
-                coords_output_plot = coords_output[0]
-            else:
-                coords_input_plot = coords_input[sample]
-                coords_output_plot = coords_output[sample]
+                coords_output = coords_output.unsqueeze(0)
 
             if mask is not None:
                 mask_p = mask[sample, :max_samples, :, k]
@@ -232,7 +226,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
                 input_inter_p = input_inter[sample,:max_samples,k,0]
             else:
                 input_inter_p = None
-            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
+            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 

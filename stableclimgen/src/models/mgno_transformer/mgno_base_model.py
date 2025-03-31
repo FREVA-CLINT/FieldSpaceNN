@@ -100,7 +100,7 @@ class MGNO_base_model(nn.Module):
         
         if self.interpolate_input or self.density_embedder:
             interp_x, density_map = self.interpolator(x,
-                                            mask=mask, 
+                                            mask=mask.unsqueeze(-1),
                                             calc_density=True,
                                             indices_sample=indices_sample)
             

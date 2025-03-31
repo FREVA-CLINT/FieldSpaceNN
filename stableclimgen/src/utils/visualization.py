@@ -16,9 +16,6 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     if torch.is_tensor(input_inter):
         input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
 
-    coords_input = coords_input.unsqueeze(0).repeat(gt.shape[0], 1, 1, 1)
-    coords_output = coords_output.unsqueeze(0).repeat(gt.shape[0], 1, 1, 1)
-
     coords_input = coords_input.rad2deg().cpu().numpy()
     coords_output = coords_output.rad2deg().cpu().numpy()
     plot_input_inter = input_inter is not None
@@ -26,7 +23,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     if mask is not None:
         mask = mask.squeeze(-1).cpu().bool().numpy()
     else:
-        mask = torch.ones_like(input).cpu().bool().numpy()
+        mask = np.zeros_like(input, dtype=bool).squeeze(-1)
 
     coords_output = coords_output.reshape(gt.shape[0], -1, 2)
 
@@ -35,7 +32,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4 + plot_input_inter,
+        nrows=gt.shape[0], ncols=4 + torch.is_tensor(input_inter),
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
@@ -48,7 +45,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
             (1, gt[i], coords_output[i], "Ground Truth"),
             (2, output[i], coords_output[i], "Output"),
             (3, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error")
-        ] if not plot_input_inter else [
+        ] if not torch.is_tensor(input_inter) else [
             (0, input[i], coords_input[i], "Input"),
             (1, plot_input_inter[i], coords_output[i], "Input Interpolated"),
             (2, gt[i], coords_output[i], "Ground Truth"),
