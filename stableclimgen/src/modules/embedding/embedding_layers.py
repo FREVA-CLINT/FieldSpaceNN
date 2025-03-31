@@ -78,6 +78,7 @@ class TimeScaleLayer(nn.Module):
 
         # The first weight (alpha) is for the linear term
         self.linear_term = nn.Linear(in_features, n_neurons // 2, bias=True)
+        self.SECONDS_PER_DAY = 86400.0
 
     def forward(self, in_tensor: torch.Tensor) -> torch.Tensor:
         """
@@ -86,12 +87,12 @@ class TimeScaleLayer(nn.Module):
         :param in_tensor: Input tensor to be transformed.
         :return: Transformed output tensor.
         """
-        linear_term = self.linear_term(in_tensor.unsqueeze(1))
+        in_tensor = in_tensor.unsqueeze(-1) / self.SECONDS_PER_DAY
+        linear_term = self.linear_term(in_tensor)
         periodic_terms = torch.cat([
-            torch.sin(2 * torch.pi * in_tensor / scale).repeat(1, self.features_per_scale)
+            torch.sin(2 * torch.pi * in_tensor / scale).repeat(1, 1, self.features_per_scale)
             for scale in self.time_scales
         ], dim=-1)
-
         return torch.cat([linear_term, periodic_terms], dim=-1)
 
 

@@ -277,9 +277,11 @@ class HealPixLoader(Dataset):
         if regular:
             data_g = data_g[:, indices]
 
+        data_t = torch.tensor(ds["time"].values)
+
         ds.close()
 
-        return data_g
+        return data_g, data_t
 
     def __getitem__(self, index):
         source_index = 0
@@ -317,12 +319,12 @@ class HealPixLoader(Dataset):
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
 
-        data_source = self.get_data(ds_source, time_index, global_cells[sample_index], variables_source, 0, input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, global_cells[sample_index], variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, time_index, global_cells[sample_index], variables_target, 0, output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, global_cells[sample_index], variables_target, 0, output_mapping)
         else:
-            data_target = data_source
+            data_target, time_target = data_source, time_source
 
         indices = {'global_cell': torch.tensor(global_cells[sample_index]),
                     'local_cell': torch.tensor(global_cells[sample_index]),
@@ -400,7 +402,8 @@ class HealPixLoader(Dataset):
         else:
             indices_sample = {'sample': sample_index.repeat(nt),
                               'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
-        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1)}
+        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1),
+                      'TimeEmbedder': time_source.float()}
         return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data
 
     def __len__(self):
