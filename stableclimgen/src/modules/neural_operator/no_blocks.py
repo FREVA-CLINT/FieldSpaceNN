@@ -62,7 +62,7 @@ class residual_layer(nn.Module):
 
 def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_rank_decay=0, layer_type='Dense'):
 
-    layer_type_c = None
+    emb = False
 
     if layer_type == "Dense":
         layer = DenseLayer
@@ -78,7 +78,7 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
     
     elif "PathAttention" in layer_type:
         layer = PathAttentionLayer
-        layer_type_c = 'CrossDense' if 'CrossDense' in layer_type else 'CrossTucker'
+        emb = True if 'emb' in layer_type else False
 
 
     return  layer(no_dims_in, 
@@ -87,7 +87,7 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
                 no_dims_out=no_dims_out, 
                 rank=rank,
                 no_rank_decay=no_rank_decay,
-                layer_type=layer_type_c)
+                emb=emb)
 
 class Stacked_NOBlock(nn.Module):
   
@@ -402,7 +402,7 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
             )
 
         for input_level in self.input_levels:
-            if str(input_level) not in self.grid_layers.keys():
+            if hasattr(self,'grid_layers') and str(input_level) not in self.grid_layers.keys():
                 self.grid_layers[str(input_level)] = grid_layers[str(input_level)]
 
         self.activation = nn.SiLU()
@@ -994,11 +994,12 @@ class FactorizedNOPositionEmbedding(nn.Module):
     def __init__(self, no_dims, model_dim):
         super().__init__()
         self.no_dims = no_dims
+
         self.embs = nn.ParameterList()
         for k, no_dim in enumerate(no_dims):
             shape = [1]*len(no_dims) + [model_dim]
             shape[k] = no_dim
-            self.embs.append(nn.Parameter(torch.randn(shape)/2**k, requires_grad=True))
+            self.embs.append(nn.Parameter(torch.randn(shape), requires_grad=True))
 
     def forward(self, x):
         x_shape = x.shape
@@ -1016,7 +1017,7 @@ class PathAttentionLayer(nn.Module):
                  n_vars_total=1,
                  rank = 0.5,
                  no_rank_decay = 0,
-                 layer_type = 'CrossTucker',
+                 emb = True,
                  **kwargs
                 ) -> None: 
          
@@ -1029,7 +1030,8 @@ class PathAttentionLayer(nn.Module):
         self.no_dims_tot = int(torch.tensor(no_dims).prod())
         self.no_dims_out_tot = int(torch.tensor(no_dims_out).prod())
 
-        self.pos_emb = FactorizedNOPositionEmbedding(no_dims, input_dim)
+        if emb:
+            self.pos_emb = FactorizedNOPositionEmbedding(no_dims, input_dim)
 
         token_weights = torch.empty((*no_dims, self.no_dims_out_tot))
         for k, no_dim in enumerate(no_dims):
@@ -1059,11 +1061,14 @@ class PathAttentionLayer(nn.Module):
         
         b,n,v = x.shape[:3]
 
-        x_q = self.pos_emb(x)
+        if hasattr(self, 'pos_emb'):
+            x_q = self.pos_emb(x)
+        else:
+            x_q = x
 
         weights = torch.softmax(self.token_weights.view(-1, self.token_weights.shape[-1]), dim=0)
 
-        x_q = x.view(b,n,v,self.no_dims_tot,-1)
+        x_q = x_q.view(b,n,v,self.no_dims_tot,-1)
         x = x.view(b,n,v,self.no_dims_tot,-1)
 
         x_paths_k = torch.einsum('bnvkf,kj->bnvjf', x_q, weights)
