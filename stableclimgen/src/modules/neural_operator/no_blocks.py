@@ -265,7 +265,7 @@ class Stacked_PreActivationNOBlock(nn.Module):
             )
 
         for input_level in self.input_levels:
-            if str(input_level) not in self.grid_layers.keys():
+            if hasattr(self,'grid_layers') and str(input_level) not in self.grid_layers.keys():
                 self.grid_layers[str(input_level)] = grid_layers[str(input_level)]
 
         self.activation = nn.SiLU()
@@ -990,6 +990,23 @@ class TuckerConcatLayer(nn.Module):
 
         return x
 
+class FactorizedNOPositionEmbedding(nn.Module):
+    def __init__(self, no_dims, model_dim):
+        super().__init__()
+        self.no_dims = no_dims
+        self.embs = nn.ParameterList()
+        for k, no_dim in enumerate(no_dims):
+            shape = [1]*len(no_dims) + [model_dim]
+            shape[k] = no_dim
+            self.embs.append(nn.Parameter(torch.randn(shape)/2**k, requires_grad=True))
+
+    def forward(self, x):
+        x_shape = x.shape
+        x = x.view(*x_shape[:3],*self.no_dims, -1)
+        for embs in self.embs:
+            x = x + embs
+
+        return x
 
 class PathAttentionLayer(nn.Module):
     def __init__(self,
@@ -1012,13 +1029,23 @@ class PathAttentionLayer(nn.Module):
         self.no_dims_tot = int(torch.tensor(no_dims).prod())
         self.no_dims_out_tot = int(torch.tensor(no_dims_out).prod())
 
-        if layer_type == 'CrossTucker':
-            self.path_layer = CrossTuckerLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay)
+        self.pos_emb = FactorizedNOPositionEmbedding(no_dims, input_dim)
 
-        elif layer_type == 'CrossDense':
-            self.path_layer = CrossDenseLayer(no_dims, input_dim, input_dim, no_dims_out=no_dims_out, rank=rank, no_rank_decay=no_rank_decay) 
+        token_weights = torch.empty((*no_dims, self.no_dims_out_tot))
+        for k, no_dim in enumerate(no_dims):
+            shape = [1]*len(no_dims) + [self.no_dims_out_tot]
+            shape[k] = no_dim
+            token_weights = token_weights + torch.randn(shape)/2**k
+        
+        self.token_weights = nn.Parameter(token_weights, requires_grad=True)
 
-        #self.skip_layer = TuckerLayer(no_dims, input_dim, output_dim, no_dims_out=no_dims, rank=rank, no_rank_decay=no_rank_decay)     
+
+        eq_indices = 'abcdegh'
+        eq_x = 'bnv' + eq_indices[:len(no_dims)] + 'f'
+        eq_w = eq_indices[:len(no_dims)] + 'z'
+ 
+        self.eq = f'{eq_x},{eq_w} -> bnvzf'
+
         self.layer_norm1 = nn.LayerNorm([input_dim]) 
         self.layer_norm2 = nn.LayerNorm([input_dim]) 
 
@@ -1027,24 +1054,30 @@ class PathAttentionLayer(nn.Module):
             output_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
             )   
         
-       # self.grid_embedding1 = nn.Parameter(torch.randn(self.no_dims_tot, input_dim), requires_grad=True)
-       # self.grid_embedding2 = nn.Parameter(torch.randn(self.no_dims_out_tot, input_dim), requires_grad=True)
 
     def forward(self, x, mask=None):
         
         b,n,v = x.shape[:3]
 
-        x_cross = self.path_layer(x)
+        x_q = self.pos_emb(x)
 
-       # x_res = self.skip_layer(x)
+        weights = torch.softmax(self.token_weights.view(-1, self.token_weights.shape[-1]), dim=0)
 
-        x_cross = x_cross.view(b*n*v, self.no_dims_out_tot, -1)
-        x = x.view(b*n*v, self.no_dims_tot, -1)
+        x_q = x.view(b,n,v,self.no_dims_tot,-1)
+        x = x.view(b,n,v,self.no_dims_tot,-1)
 
-        x = self.layer_norm1(x) #+ self.grid_embedding1
-        x_crossk = self.layer_norm2(x_cross) #+ self.grid_embedding2
+        x_paths_k = torch.einsum('bnvkf,kj->bnvjf', x_q, weights)
 
-        x = self.MHA(q=x, k=x_crossk, v=x_cross)
+        x_paths_v = torch.einsum('bnvkf,kj->bnvjf', x, weights)
+
+        x_q = x_q.view(b*n*v, self.no_dims_tot, -1)
+        x_paths_k = x_paths_k.view(b*n*v, self.no_dims_out_tot, -1)
+        x_paths_v = x_paths_v.view(b*n*v, self.no_dims_out_tot, -1)
+
+        x_q = self.layer_norm1(x_q)
+        x_paths_k = self.layer_norm2(x_paths_k)
+
+        x = self.MHA(q=x_q, k=x_paths_k, v=x_paths_v)
 
         x = x.view(b,n,v,self.no_dims_tot,-1)
 
