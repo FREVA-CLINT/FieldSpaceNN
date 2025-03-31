@@ -11,9 +11,10 @@ class MGNO_base_model(nn.Module):
                  mgrids,
                  global_levels: List[int],
                  interpolate_input=False,
+                 density_embedder=False,
                  interpolator_settings: Dict =None,
-                 rotate_coord_system=True
-                 ) -> None: 
+                 rotate_coord_system=True,
+                 ) -> None:
         
                 
         super().__init__()
@@ -45,6 +46,7 @@ class MGNO_base_model(nn.Module):
                                              )
 
         self.interpolate_input = interpolate_input
+        self.density_embedder = density_embedder
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
 
@@ -96,8 +98,8 @@ class MGNO_base_model(nn.Module):
                                                                         coords_output=coords_output, 
                                                                         indices_sample=indices_sample)
         
-        if self.interpolate_input:
-            x, density_map = self.interpolator(x,
+        if self.interpolate_input or self.density_embedder:
+            interp_x, density_map = self.interpolator(x,
                                             mask=mask, 
                                             calc_density=True,
                                             indices_sample=indices_sample)
@@ -105,7 +107,8 @@ class MGNO_base_model(nn.Module):
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None
 
-            x = x.unsqueeze(dim=-2)
+            if self.interpolate_input:
+                x = interp_x.unsqueeze(dim=-2)
 
         x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
         return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1])

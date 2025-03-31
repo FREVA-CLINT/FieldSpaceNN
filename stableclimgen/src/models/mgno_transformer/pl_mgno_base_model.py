@@ -200,7 +200,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         return coords
 
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None):
+    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None, max_samples=8):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
@@ -224,16 +224,15 @@ class LightningMGNOBaseModel(pl.LightningModule):
                 coords_input_plot = coords_input[sample]
                 coords_output_plot = coords_output[sample]
 
-            max_nt = 8
             if mask is not None:
-                mask_p = mask[sample, :max_nt, :, k]
+                mask_p = mask[sample, :max_samples, :, k]
             else:
                 mask_p = None
             if input_inter is not None:
-                input_inter_p = input_inter[sample,:max_nt,k,0]
+                input_inter_p = input_inter[sample,:max_samples,k,0]
             else:
                 input_inter_p = None
-            scatter_plot(input[sample,:max_nt,:,:,k], output[sample,:max_nt,:,k], gt[sample,:max_nt,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
+            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 

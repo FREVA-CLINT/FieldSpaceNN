@@ -26,7 +26,7 @@ class GridAttention(nn.Module):
         nh = spatial_attention_configs.pop('nh')
 
         self.seq_lvl = spatial_attention_configs.pop('seq_lvl')
-        self.timesteps = spatial_attention_configs.pop('timesteps')
+        self.timesteps = spatial_attention_configs.pop('timesteps') if 'timesteps' in spatial_attention_configs.keys() else 1
 
         spatial_attention_configs['seq_lengths'] = 4 ** self.seq_lvl  if self.seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,

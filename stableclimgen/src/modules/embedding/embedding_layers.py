@@ -125,8 +125,7 @@ class SinusoidalLayer(nn.Module):
         """
 
         # Calculate arguments for sine and cosine functions
-        args = diffusion_steps[:, None].float() * self.freqs[None].to(diffusion_steps.device)
-
+        args = diffusion_steps.unsqueeze(-1).float() @ self.freqs.unsqueeze(0).to(diffusion_steps.device)
         # Combine sine and cosine embeddings along the last dimension
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 

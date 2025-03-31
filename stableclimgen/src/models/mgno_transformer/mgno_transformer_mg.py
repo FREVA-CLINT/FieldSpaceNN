@@ -47,8 +47,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
         super().__init__(mgrids, 
                          global_levels,
                          rotate_coord_system=rotate_coord_system,
-                         interpolate_input=kwargs.get("interpolate_input",False),
-                         interpolator_settings=kwargs.get("interpolator_settings",None))
+                         interpolate_input=kwargs.get("interpolate_input", False),
+                         density_embedder=kwargs.get("density_embedder", False),
+                         interpolator_settings=kwargs.get("interpolator_settings", None))
         
        
         self.Blocks = nn.ModuleList()
