@@ -646,10 +646,10 @@ class Interpolator(nn.Module):
                 input_level: int=0, 
                 target_level: int=0, 
                 precompute = True,
-                use_dists = True,
                 nh_inter=2,
-                power=2
-                ) -> None:
+                power=2,
+                use_dists=True
+                 ) -> None:
                 
         super().__init__()
 
@@ -657,7 +657,7 @@ class Interpolator(nn.Module):
         self.use_dists = use_dists
 
         if precompute:
-            dists = get_dists_interpolation(grid_layers, 
+            dists = get_dists_interpolation(grid_layers,
                                                 search_level=search_level, 
                                                 input_level=input_level,
                                                 target_level=target_level)
