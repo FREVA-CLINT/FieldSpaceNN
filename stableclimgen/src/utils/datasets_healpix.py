@@ -236,7 +236,7 @@ class HealPixLoader(Dataset):
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         nt = self.n_sample_timesteps
-        self.len_dataset = (len(self.sample_timesteps) - nt)*self.global_cell_processing_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt) * self.global_cell_processing_indices.shape[0]
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cell_processing_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cell_processing_indices.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
