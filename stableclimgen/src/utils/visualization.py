@@ -11,7 +11,7 @@ import torch
 def make_ax(index, fig,gs):
     return fig.add_subplot(gs[0, index], projection=projection)
 
-def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, save_path=None):
+def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None):
     coords_input = coords_input.rad2deg().cpu().numpy()
     coords_output = coords_output.rad2deg().cpu().numpy()
 
@@ -30,9 +30,11 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     
     plot_input_inter = input_inter is not None
 
+    plot_input_density = input_density is not None
+
     projection = ccrs.Mollweide()
 
-    n_plots = 5 + int(plot_input_inter)
+    n_plots = 5 + int(plot_input_inter) + int(plot_input_density)
 
     fig = plt.figure(figsize=(5 * n_plots, 7))
     gs = gridspec.GridSpec(1, n_plots, figure=fig, wspace=0.25)
@@ -50,6 +52,13 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
         cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=input_inter, transform=ccrs.PlateCarree(), s=6)
         plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
         ax.set_title("Input Interpolated")
+        plot_idx += 1
+    
+    if plot_input_density:
+        ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
+        cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=input_density, transform=ccrs.PlateCarree(), s=6)
+        plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
+        ax.set_title("Input density")
         plot_idx += 1
 
     ax = fig.add_subplot(gs[0, plot_idx], projection=projection)

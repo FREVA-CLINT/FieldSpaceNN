@@ -41,7 +41,8 @@ class MGNO_base_model(nn.Module):
                                              interpolator_settings.get("target_level", 0),
                                              interpolator_settings.get("precompute", True),
                                              interpolator_settings.get("nh_inter", 3),
-                                             interpolator_settings.get("power", 1)
+                                             interpolator_settings.get("power", 1),
+                                             interpolator_settings.get("cutoff_dist_level", None)
                                              )
 
         self.interpolate_input = interpolate_input
@@ -80,7 +81,8 @@ class MGNO_base_model(nn.Module):
             x, density_map = self.interpolator(x, 
                                             mask=mask, 
                                             calc_density=True,
-                                            indices_sample=indices_sample)
+                                            indices_sample=indices_sample,
+                                            input_coords=coords_input)
             
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None

@@ -651,7 +651,8 @@ class Interpolator(nn.Module):
                 precompute = True,
                 nh_inter=2,
                 power=2,
-                cutoff_dist=None
+                cutoff_dist_level=None,
+                input_coords=None # for arbitrary grids
                 ) -> None:
                 
         super().__init__()
@@ -660,9 +661,10 @@ class Interpolator(nn.Module):
 
         if precompute:
             dists = get_dists_interpolation(grid_layers, 
-                                                search_level=search_level, 
-                                                input_level=input_level,
-                                                target_level=target_level)
+                                            search_level=search_level, 
+                                            input_level=input_level,
+                                            target_level=target_level,
+                                            input_coords=input_coords)
             
             self.register_buffer('dists', dists, persistent=True)
 
@@ -674,7 +676,7 @@ class Interpolator(nn.Module):
         self.nh_inter = nh_inter
         self.power = power
 
-        self.cutoff_dist = cutoff_dist
+        self.cutoff_dist_level = input_level if cutoff_dist_level is None else cutoff_dist_level
 
     def forward(self, 
                 x, 
@@ -704,12 +706,13 @@ class Interpolator(nn.Module):
             dist = get_dists_interpolation(self.grid_layers, 
                                     search_level = search_level,
                                     input_level = input_level,
-                                    target_level = target_level)
+                                    target_level = target_level,
+                                    input_coords=input_coords,
+                                    indices_sample=indices_sample)
 
-        if self.cutoff_dist is None:
-            cutoff_dist = max([self.grid_layers[str(input_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
-        else:
-            cutoff_dist = self.cutoff_dist
+        
+        cutoff_dist = max([self.grid_layers[str(self.cutoff_dist_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
+  
 
         x, dist_ = get_interpolation(x,
                                      mask, 

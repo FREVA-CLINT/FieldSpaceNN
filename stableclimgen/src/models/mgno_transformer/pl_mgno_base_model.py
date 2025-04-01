@@ -156,6 +156,13 @@ class LightningMGNOBaseModel(pl.LightningModule):
                     noise = torch.randn_like(param.grad) * self.noise_std
                     param.grad += noise 
     
+    
+    def predict_step(self, batch, batch_idx):
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        return output
+    
+
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
@@ -181,10 +188,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         if batch_idx == 0:
             if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                input_inter,_ = self.model.interpolator(source, mask=mask, indices_sample=indices)
+                input_inter, input_density = self.model.interpolator(source, mask=mask, indices_sample=indices, calc_density=True)
             else:
                 input_inter = None
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
+                input_density = None
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter, input_density=input_density)
             
 
         return loss
@@ -200,7 +208,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         return coords
 
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None):
+    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None, input_density=None):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
@@ -231,10 +239,12 @@ class LightningMGNOBaseModel(pl.LightningModule):
             
             if input_inter is not None:
                 input_inter_p = input_inter[sample,:,k,0]
+                input_density_p = input_density[sample,:,k,0]
             else:
                 input_inter_p = None
+                input_density_p = None
 
-            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,save_path=save_path)
+            scatter_plot(input[sample,:,:,k], output[sample,:,k], gt[sample,:,:,k], coords_input_plot, coords_output_plot, mask_p, input_inter=input_inter_p,input_density=input_density_p,save_path=save_path)
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 
