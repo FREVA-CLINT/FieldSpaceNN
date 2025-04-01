@@ -47,7 +47,7 @@ def test(cfg: DictConfig) -> None:
     mask = rearrange(mask, "(b2 b1) n s ... -> b2 n (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
 
     for k, var in enumerate(test_dataset.variables_target):
-        output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
+        output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
     output = dict(zip(test_dataset.variables_target, output.split(1, dim=-1)))
     torch.save(output, cfg.output_path)
