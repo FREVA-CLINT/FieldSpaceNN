@@ -34,13 +34,12 @@ def test(cfg: DictConfig) -> None:
 
     # Initialize model and trainer
     model: Any = instantiate(cfg.model)
-    model.load_state_dict(torch.load(cfg.ckpt_path), strict=False)
     trainer: Trainer = instantiate(cfg.trainer)
 
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     # Start the training process
-    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=None)
+    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
@@ -48,7 +47,7 @@ def test(cfg: DictConfig) -> None:
     mask = rearrange(mask, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
 
     for k, var in enumerate(test_dataset.variables_target):
-        output[:, :, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, :, k])
+        output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
     output = dict(zip(test_dataset.variables_target, output.split(1, dim=-1)))
     torch.save(output, cfg.output_path)
