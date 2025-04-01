@@ -105,10 +105,11 @@ class LightningDiffusionGenerator(pl.LightningModule):
         # Iterate over batch items and compute validation loss for each
         for i in range(gt_data.shape[0]):
             diff_steps = self.gaussian_diffusion.diffusion_steps
-            t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
-            cond = torch.stack(10 * [cond_data[i]])
-            emb = {"CoordinateEmbedder": torch.stack(10 * [gt_coords[i]]), "VariableEmbedder": torch.stack(10 * [sample_vars[i]])}
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), emb, cond)
+            n_samples = 4
+            t = torch.tensor([(diff_steps // n_samples) * x for x in range(n_samples - 1)] + [diff_steps-1]).to(gt_data.device)
+            cond = torch.stack(n_samples * [cond_data[i]])
+            emb = {"CoordinateEmbedder": torch.stack(n_samples * [gt_coords[i]]), "VariableEmbedder": torch.stack(n_samples * [sample_vars[i]])}
+            l_dict, output = self(torch.stack(n_samples * [gt_data[i]]), t, torch.stack(n_samples * [mask_data[i]]), emb, cond)
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
@@ -117,7 +118,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
 
             if batch_idx == 0 and i == 0:
                 try:
-                    self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), torch.stack(10 * [cond_data[i]]),
+                    self.log_tensor_plot(torch.stack(n_samples * [gt_data[i]]), torch.stack(n_samples * [cond_data[i]]),
                                          output, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
                 except Exception as e:
                     pass
