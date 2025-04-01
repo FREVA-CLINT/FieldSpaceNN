@@ -560,7 +560,7 @@ def get_interpolation(x: torch.tensor,
     x = x.view(b,n_l,-1)
     mask = mask.view(b,n_l,-1) if mask is not None else None
 
-    local_indices = indices_sample['indices_layers'][int(grid_layer_search.global_level)] if indices_sample is not None else None
+    local_indices = indices_sample['indices_layers'][int(grid_layer_search.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
     x_nh, mask_nh = grid_layer_search.get_nh(x, local_indices=local_indices, sample_dict=indices_sample, mask = mask) 
 
     x_nh = x_nh.view(b,n_l,-1,nv,f)
@@ -609,13 +609,16 @@ def get_dists_interpolation(grid_layers,
                             search_level: int=2, 
                             input_level: int=0, 
                             target_level: int=0, 
-                            indices_sample: dict=None):
+                            indices_sample: dict=None,
+                            input_coords: torch.tensor = None):
 
+    if input_coords is None:
+        coords = grid_layers[str(input_level)].get_coordinates_from_grid_indices(
+            indices_sample['indices_layers'][input_level] if indices_sample is not None else None
+            )
+    else:
+        coords = input_coords
 
-    coords = grid_layers[str(input_level)].get_coordinates_from_grid_indices(
-        indices_sample['indices_layers'][input_level] if indices_sample is not None else None
-        )
-    
     b,n = coords.shape[:2]
     l = 4**(search_level-input_level)
     n_l = n // l
@@ -647,7 +650,8 @@ class Interpolator(nn.Module):
                 target_level: int=0, 
                 precompute = True,
                 nh_inter=2,
-                power=2
+                power=2,
+                cutoff_dist=None
                 ) -> None:
                 
         super().__init__()
@@ -670,6 +674,8 @@ class Interpolator(nn.Module):
         self.nh_inter = nh_inter
         self.power = power
 
+        self.cutoff_dist = cutoff_dist
+
     def forward(self, 
                 x, 
                 mask=None, 
@@ -677,9 +683,10 @@ class Interpolator(nn.Module):
                 indices_sample=None,
                 input_level=None,
                 target_level=None,
-                search_level=None):
+                search_level=None,
+                input_coords=None):
         
-        compute_dists = (input_level is not None) | (target_level is not None) | (search_level is not None)
+        compute_dists = (input_level is not None) | (target_level is not None) | (search_level is not None) | (input_coords is not None)
 
         search_level = self.search_level if search_level is None else search_level
         input_level = self.input_level if input_level is None else input_level
@@ -687,7 +694,7 @@ class Interpolator(nn.Module):
         
         compute_dists = compute_dists | (self.precompute == False)
 
-        if not compute_dists and indices_sample is not None:
+        if not compute_dists and indices_sample is not None and isinstance(indices_sample, dict):
             dist = self.dists[0, indices_sample['indices_layers'][self.search_level]]
 
         elif not compute_dists and indices_sample is None:
@@ -699,7 +706,10 @@ class Interpolator(nn.Module):
                                     input_level = input_level,
                                     target_level = target_level)
 
-        cutoff_dist = max([self.grid_layers[str(input_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
+        if self.cutoff_dist is not None:
+            cutoff_dist = max([self.grid_layers[str(input_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
+        else:
+            cutoff_dist = self.cutoff_dist
 
         x, dist_ = get_interpolation(x,
                                      mask, 

@@ -109,6 +109,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     embed_confs=check_get(block_conf, kwargs, "embed_confs"),
                     embed_names=check_get(block_conf, kwargs, "embed_names"),
                     embed_mode=check_get(block_conf, kwargs, "embed_mode"),
+                    n_head_channels=check_get(block_conf, kwargs, "n_head_channels"),
+                    p_dropout=check_get(block_conf, kwargs, "p_dropout"),
+                    seq_level=check_get(block_conf, kwargs, "seq_level")
                 )
                 
             elif isinstance(block_conf, MGProcessingConfig):

@@ -78,7 +78,9 @@ class MGStackedEncoderDecoderConfig:
                  with_gamma=False,
                  embed_confs: dict=None,
                  embed_names: list=None,
-                 embed_mode: str = 'sum'):
+                 embed_mode: str = 'sum',
+                 n_head_channels: int=16,
+                 seq_level: int=2):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():

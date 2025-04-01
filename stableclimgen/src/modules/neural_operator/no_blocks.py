@@ -333,7 +333,9 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
                  embedder: EmbedderSequential=None,
                  with_gamma = False,
                  p_dropout=0,
-                 grid_layers: List = None
+                 grid_layers: List = None,
+                 n_head_channels: int= 16,
+                 seq_level: int= 2
                 ) -> None: 
       
         super().__init__()
@@ -358,10 +360,11 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
         self.gammas2 = nn.ParameterDict()
         self.mlp_layers = nn.ModuleDict()
 
-        self.seq_level = 2
+        self.seq_level = seq_level
         for input_level, model_dim_in in model_dims_in.items():
             self.layer_norms1[str(input_level)] = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
 
+        self.dropout_att = nn.Dropout(p_dropout) if p_dropout > 0  else nn.Identity()
         for output_level, model_dim_out in model_dims_out.items():
 
             if output_level in self.input_levels:
@@ -371,7 +374,7 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
                 level_diff = output_level
                 model_dim_in = model_dims_in[0]
 
-            n_heads = max([1, model_dim_in // 16])
+            n_heads = max([1, model_dim_in // n_head_channels])
 
             self.MHA[str(output_level)] = MultiHeadAttentionBlock(model_dim_out, model_dim_out, n_heads, qkv_proj=False)
 
@@ -395,10 +398,10 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
                 self.grid_layers[str(output_level)] = grid_layers[str(output_level)]
 
             self.mlp_layers[str(output_level)] = nn.Sequential(
+                nn.Linear(model_dim_out, model_dim_out*2),
                 nn.SiLU(),
-                nn.Linear(model_dim_out, model_dim_out),
                 nn.Dropout(p_dropout) if p_dropout>0 else nn.Identity(),
-                nn.Linear(model_dim_out, model_dim_out)
+                nn.Linear(model_dim_out*2, model_dim_out)
             )
 
         for input_level in self.input_levels:
@@ -479,6 +482,8 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
             x_mha = x_mha.view(b,n,v,c)
             x = x.view(b,n,v,c)
 
+            x_mha = self.dropout_att(x_mha)
+            
             x =  self.lin_skip[str(output_level)](x_res) + self.gammas1[str(output_level)] * x_mha 
 
             x_res = x 
@@ -487,7 +492,7 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
 
             x = self.gammas2[str(output_level)] * self.mlp_layers[str(output_level)](x) + x_res
 
-            x = self.activation(x)
+            #x = self.activation(x)
     
             x_levels_out[k] = x
         return x_levels_out, mask_levels_out
