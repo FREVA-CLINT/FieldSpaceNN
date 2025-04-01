@@ -706,7 +706,7 @@ class Interpolator(nn.Module):
                                     input_level = input_level,
                                     target_level = target_level)
 
-        if self.cutoff_dist is not None:
+        if self.cutoff_dist is None:
             cutoff_dist = max([self.grid_layers[str(input_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
         else:
             cutoff_dist = self.cutoff_dist
