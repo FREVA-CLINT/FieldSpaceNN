@@ -212,11 +212,17 @@ class LightningMGNOBaseModel(pl.LightningModule):
             
             if coords_input.numel()==0:
                 coords_input = self.get_coords_from_model(indices_dict)
-                coords_input = coords_input.unsqueeze(0)
+            if coords_input.shape[0] != 1:
+                coords_input = coords_input.view(input.shape[0], input.shape[1], *coords_input.shape[1:])
+            elif len(coords_input.shape) == 4:
+                coords_input = coords_input.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
 
             if coords_output.numel()==0:
                 coords_output = self.get_coords_from_model(indices_dict)
-                coords_output = coords_output.unsqueeze(0)
+            if coords_output.shape[0] != 1:
+                coords_output = coords_output.view(input.shape[0], input.shape[1], *coords_output.shape[1:])
+            elif len(coords_output.shape) == 4:
+                coords_output = coords_output.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
 
             if mask is not None:
                 mask_p = mask[sample, :max_samples, :, k]
