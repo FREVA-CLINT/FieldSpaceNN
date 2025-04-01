@@ -156,10 +156,12 @@ class LightningMGNOBaseModel(pl.LightningModule):
                     noise = torch.randn_like(param.grad) * self.noise_std
                     param.grad += noise 
     
-    
+
     def predict_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        output = {'output': output,
+                  'mask': mask}
         return output
     
 
