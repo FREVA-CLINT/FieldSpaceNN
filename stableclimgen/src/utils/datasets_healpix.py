@@ -362,7 +362,7 @@ class HealPixLoader(Dataset):
         drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
 
         if torch.is_tensor(self.steady_mask):
-            drop_mask = self.steady_mask[global_cell_indices[sample_index]].view(n, 1, 1).repeat(1, nh, nv)
+            drop_mask = self.steady_mask[global_cell_indices[sample_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
             avg_level = int(torch.randint(1, self.max_average_lvl + 1, (1,)))
             data_source_resh = data_source.view(-1,nt, 4 ** avg_level, nh, f)
