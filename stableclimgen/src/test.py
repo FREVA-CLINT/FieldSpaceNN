@@ -43,12 +43,12 @@ def test(cfg: DictConfig) -> None:
     predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=None)
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
-    output = rearrange(output, "(b2 b1) n s ... -> b2 n (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
+    output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
     mask = torch.cat([batch["mask"] for batch in predictions], dim=0)
-    mask = rearrange(mask, "(b2 b1) n s ... -> b2 n (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
+    mask = rearrange(mask, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0])
 
     for k, var in enumerate(test_dataset.variables_target):
-        output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
+        output[:, :, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, :, k])
 
     output = dict(zip(test_dataset.variables_target, output.split(1, dim=-1)))
     torch.save(output, cfg.output_path)
