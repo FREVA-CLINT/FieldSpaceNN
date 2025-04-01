@@ -697,7 +697,8 @@ class Interpolator(nn.Module):
             dist = get_dists_interpolation(self.grid_layers, 
                                     search_level = search_level,
                                     input_level = input_level,
-                                    target_level = target_level)
+                                    target_level = target_level,
+                                    indices_sample=indices_sample)
 
         cutoff_dist = max([self.grid_layers[str(input_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
 
