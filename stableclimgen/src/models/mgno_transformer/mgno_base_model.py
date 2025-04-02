@@ -18,6 +18,14 @@ class MGNO_base_model(nn.Module):
         
                 
         super().__init__()
+
+        if interpolator_settings is not None:
+            level = interpolator_settings.get("search_level", 3)
+            if level not in global_levels:
+                global_levels.append(level)
+            level = interpolator_settings.get("input_level", 0)
+            if level not in global_levels:
+                global_levels.append(level)
         
         self.register_buffer('global_levels', global_levels, persistent=False)
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
