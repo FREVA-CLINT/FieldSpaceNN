@@ -111,7 +111,8 @@ class MGNO_base_model(nn.Module):
             interp_x, density_map = self.interpolator(x,
                                             mask=mask.unsqueeze(-1),
                                             calc_density=True,
-                                            indices_sample=indices_sample)
+                                            indices_sample=indices_sample,
+                                            input_coords=coords_input)
             
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None
