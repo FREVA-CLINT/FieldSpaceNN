@@ -232,7 +232,7 @@ class EmbedderSequential(nn.Module):
             embed_output = embedder(input_tensor)
 
             # Add time dimension
-            if embed_output.ndim != len(embedder.keep_dims):
+            if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):
                 embed_output = embed_output.unsqueeze(1)
 
 

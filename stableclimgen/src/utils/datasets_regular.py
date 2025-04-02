@@ -205,13 +205,15 @@ class ClimateDataset(Dataset):
             lats = torch.from_numpy(ds_source[var].coords["lat"].values)
             lons = torch.from_numpy(ds_source[var].coords["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
-            coords_in.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
+            coords = torch.stack((lat_grid, lon_grid), dim=-1).repeat(data_src.shape[0], 1, 1, 1).float()
+            coords_in.append(coords)
 
             # Load and arrange latitude and longitude coordinates
             lats = torch.from_numpy(ds_target[var].coords["lat"].values)
             lons = torch.from_numpy(ds_target[var].coords["lon"].values)
             lat_grid, lon_grid = torch.meshgrid(lats, lons, indexing='ij')
-            coords_out.append(torch.stack((lat_grid, lon_grid), dim=-1).float())
+            coords = torch.stack((lat_grid, lon_grid), dim=-1).repeat(data_src.shape[0], 1, 1, 1).float()
+            coords_out.append(coords)
 
         return torch.stack(data_in, dim=-1), torch.stack(coords_in, dim=-2), torch.stack(data_out, dim=-1), torch.stack(coords_out, dim=-2)
 
