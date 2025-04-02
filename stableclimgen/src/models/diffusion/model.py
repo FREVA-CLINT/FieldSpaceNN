@@ -159,7 +159,8 @@ class DiffusionGenerator(nn.Module):
             x: torch.Tensor,
             emb: Optional[Dict] = None,
             mask: Optional[torch.Tensor] = None,
-            cond: Optional[torch.Tensor] = None
+            cond: Optional[torch.Tensor] = None,
+            **kwargs
     ) -> torch.Tensor:
         """
         Forward pass through the Diffusion Generator model.

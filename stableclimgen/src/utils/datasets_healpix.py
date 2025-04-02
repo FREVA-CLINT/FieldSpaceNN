@@ -7,6 +7,7 @@ import xarray as xr
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
+from .datasets_icon import skewed_random_p
 from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid, get_coords_as_tensor
 
 
@@ -67,7 +68,6 @@ class HealPixLoader(Dataset):
                  out_nside = None,
                  search_radius=2,
                  nh_input=1,
-                 index_range_source=None,
                  index_offset_target=0,
                  sample_for_norm=-1,
                  lazy_load=False,
@@ -76,30 +76,41 @@ class HealPixLoader(Dataset):
                  p_average=0,
                  p_average_dropout=0,
                  max_average_lvl=0,
-                 drop_vars=False,
                  n_sample_vars=-1,
+                 n_sample_timesteps=-1,
+                 random_p = False,
+                 skewness_exp = 2,
                  deterministic=False,
                  variables_source=None,
                  variables_target=None,
                  max_in_grid_distance=None,
-                 one_to_one=False):
+                 one_to_one=False,
+                 p_drop_vars=0,
+                 n_drop_vars=-1,
+                 p_drop_timesteps=-1,
+                 map_input_to_processing=True
+                 ):
         
         super(HealPixLoader, self).__init__()
         
         self.coarsen_sample_level = coarsen_sample_level
         self.norm_dict = norm_dict
-        self.index_range_source=index_range_source
         self.index_offset_target = index_offset_target
         self.sample_for_norm = sample_for_norm
         self.lazy_load=lazy_load
         self.random_time_idx = random_time_idx
+        self.random_p = random_p
         self.p_dropout = p_dropout
         self.p_average = p_average
         self.p_average_dropout = p_average_dropout
         self.max_average_lvl = max_average_lvl
-        self.drop_vars = drop_vars
+        self.skewness_exp = skewness_exp
         self.n_sample_vars = n_sample_vars
+        self.n_sample_timesteps = n_sample_timesteps if n_sample_timesteps != -1 else 1
         self.deterministic = deterministic
+        self.n_drop_vars = n_drop_vars
+        self.p_drop_vars = p_drop_vars
+        self.p_drop_timesteps = p_drop_timesteps
 
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
@@ -139,35 +150,40 @@ class HealPixLoader(Dataset):
             input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
             input_coordinates = None
         else:
-            if in_nside is not None:
-                input_coordinates = healpix_pixel_lonlat_torch(in_nside)
+            if in_grid is not None:
+                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid),
+                                                         grid_type='regular')  # change for other grids
             else:
-                assert(in_grid is not None)
-                input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid), grid_type='regular') # change for other grids
-            mapping = get_mapping_to_healpix_grid(coords_processing,
-                                                  input_coordinates,
-                                                  search_radius=search_radius,
-                                                  max_nh=nh_input,
-                                                  lowest_level=0,
-                                                  periodic_fov=None)
-            if one_to_one or max_in_grid_distance:
-                # Compute pairwise distances (using broadcasting)
-                diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
+                input_coordinates = healpix_pixel_lonlat_torch(in_nside)
 
-                # Compute Euclidean distance (or Haversine if needed)
-                distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
+            if map_input_to_processing:
+                mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                      input_coordinates,
+                                                      search_radius=search_radius,
+                                                      max_nh=nh_input,
+                                                      lowest_level=0,
+                                                      periodic_fov=None)
+                if one_to_one or max_in_grid_distance:
+                    # Compute pairwise distances (using broadcasting)
+                    diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
 
-                if one_to_one:
-                    closest_out_indices = torch.argmin(distances, dim=0)  # One closest out_coord per in_coord
-                    self.steady_mask = torch.ones(coords_processing.shape[0], dtype=bool)
-                    self.steady_mask[closest_out_indices] = False
-                else:
-                    # Check if any input_coordinates are within d
-                    self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
-                print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
+                    # Compute Euclidean distance (or Haversine if needed)
+                    distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
 
-            input_mapping = mapping["indices"]
-            input_in_range = mapping["in_rng_mask"]
+                    if one_to_one:
+                        closest_out_indices = torch.argmin(distances, dim=0)  # One closest out_coord per in_coord
+                        self.steady_mask = torch.ones(coords_processing.shape[0], dtype=bool)
+                        self.steady_mask[closest_out_indices] = False
+                    else:
+                        # Check if any input_coordinates are within d
+                        self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
+                    print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
+
+                input_mapping = mapping["indices"]
+                input_in_range = mapping["in_rng_mask"]
+            else:
+                input_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
+                input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
 
         if processing_nside == out_nside:
             output_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
@@ -193,21 +209,34 @@ class HealPixLoader(Dataset):
         self.input_in_range = input_in_range
         self.output_mapping = output_mapping
         self.output_in_range = output_in_range
-        self.input_coordinates = input_coordinates
+        self.input_coordinates = input_coordinates if map_input_to_processing else None
         self.output_coordinates = output_coordinates
 
-        global_indices = np.arange(coords_processing.shape[0])
 
+        global_indices = np.arange(coords_processing.shape[0])
+        if map_input_to_processing:
+            global_input_indices = global_indices
+        else:
+            global_input_indices = np.arange(input_coordinates.shape[0])
 
         if coarsen_sample_level == -1:
-            self.global_cells = global_indices.reshape(1, -1)
+            self.global_cell_processing_indices = global_indices.reshape(1, -1)
+            if map_input_to_processing:
+                self.global_cell_input_indices = self.global_cell_processing_indices
+            else:
+                self.global_cell_input_indices = global_input_indices.reshape(1, -1)
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
-            self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
-            self.global_cells_input = self.global_cells[:, 0]
+            self.global_cell_processing_indices = global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            if map_input_to_processing:
+                self.global_cell_input_indices = self.global_cell_processing_indices
+            else:
+                self.global_cell_input_indices = global_input_indices.reshape(self.global_cell_processing_indices.shape[0], -1)
+            self.global_cells_input = self.global_cell_processing_indices[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
-        self.len_dataset = len(self.sample_timesteps)*self.global_cells.shape[0] if self.sample_timesteps else ds_source["time"].shape[0]*self.global_cells.shape[0]
+        nt = self.n_sample_timesteps
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cell_processing_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cell_processing_indices.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -237,13 +266,15 @@ class HealPixLoader(Dataset):
         if index_mapping_dict is not None:
             indices = index_mapping_dict[global_indices // 4**global_level_start]
         else:
-            indices = global_indices.view(-1,1)
+            indices = global_indices.reshape(-1,1)
 
         n, nh = indices.shape
+        nt = self.n_sample_timesteps
         indices = indices.reshape(-1)
 
         # tbd: spatial dim as input!
         regular = False
+        ts = torch.arange(ts, ts + nt, 1)
         if 'ncells' in dict(ds.sizes).keys():
             ds = ds.isel(ncells=indices, time=ts)
         elif 'cell' in dict(ds.sizes).keys():
@@ -257,14 +288,16 @@ class HealPixLoader(Dataset):
             data = torch.tensor(ds[variable].values)
             data_g.append(data)
         data_g = torch.stack(data_g, dim=-1)
-        data_g = data_g.view(-1, nh, len(variables), 1)
+        data_g = data_g.view(nt, -1, nh, len(variables), 1)
 
         if regular:
-            data_g = data_g[indices]
+            data_g = data_g[:, indices]
+
+        data_t = torch.tensor(ds["time"].values)
 
         ds.close()
 
-        return data_g
+        return data_g, data_t
 
     def __getitem__(self, index):
         source_index = 0
@@ -276,16 +309,14 @@ class HealPixLoader(Dataset):
         ds_source, ds_target = self.get_files(source_file, file_path_target=target_file)
 
         if self.random_time_idx and not self.sample_timesteps:
-            time_index = int(torch.randint(0, len(ds_source.time.values), (1, 1)))
-            if self.index_range_source is not None:
-                if (time_index < self.index_range_source[0]) or (time_index > self.index_range_source[1]):
-                    time_index = int(torch.randint(self.index_range_source[0], self.index_range_source[1] + 1, (1, 1)))
+            time_index = int(torch.randint(0, len(ds_source.time.values) - self.n_sample_timesteps + 1, (1, 1)))
         elif self.sample_timesteps:
             time_index = self.sample_timesteps[index // self.global_cells_input.shape[0]]
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
-        global_cells = self.global_cells
+        global_cell_indices = self.global_cell_processing_indices
+        global_cell_input_indices = self.global_cell_input_indices
         input_in_range = self.input_in_range
         output_mapping = self.output_mapping
         output_in_range = self.output_in_range
@@ -301,79 +332,92 @@ class HealPixLoader(Dataset):
 
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
-
-        data_source = self.get_data(ds_source, time_index, global_cells[sample_index], variables_source, 0, input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, global_cell_input_indices[sample_index], variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, time_index, global_cells[sample_index], variables_target, 0, output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, global_cell_indices[sample_index], variables_target, 0, output_mapping)
         else:
-            data_target = data_source
+            data_target, time_target = data_source, time_source
 
-        indices = {'global_cell': torch.tensor(global_cells[sample_index]),
-                    'local_cell': torch.tensor(global_cells[sample_index]),
+        indices = {'global_cell': torch.tensor(global_cell_indices[sample_index]),
+                    'local_cell': torch.tensor(global_cell_indices[sample_index]),
                     'sample': sample_index,
                     'sample_level': self.coarsen_sample_level,
                     'variables': sample_vars}
 
         if self.input_coordinates is not None:
-            coords_input = self.input_coordinates[input_mapping[global_cells[sample_index]]]
+            coords_input = self.input_coordinates[input_mapping[global_cell_indices[sample_index]]]
         else:
             coords_input = torch.tensor([])
 
         if self.output_coordinates is not None:
-            coords_output = self.output_coordinates[output_mapping[global_cells[sample_index]]]
+            coords_output = self.output_coordinates[output_mapping[global_cell_indices[sample_index]]]
         else:
             coords_output = torch.tensor([])
 
-        n, nh, nv, f = data_source.shape
+        nt, n, nh, nv, f = data_source.shape
+
+        drop_vars = torch.rand(1) < self.p_drop_vars
+        drop_timesteps = torch.rand(1) < self.p_drop_timesteps
+        drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
+
         if torch.is_tensor(self.steady_mask):
-            drop_mask = self.steady_mask[global_cells[sample_index]].view(n, 1, 1).repeat(1, nh, nv)
+            drop_mask = self.steady_mask[global_cell_indices[sample_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
-            avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
-            data_source_resh = data_source.view(-1,4**avg_level,nh,f)
-            data_source_resh = data_source_resh.mean(dim=[1,2], keepdim=True)
-            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=1)
-            data_source_resh = data_source_resh.repeat_interleave(nh, dim=2)
-            data_source = data_source_resh.view(n, nh, nv, f)
+            avg_level = int(torch.randint(1, self.max_average_lvl + 1, (1,)))
+            data_source_resh = data_source.view(-1,nt, 4 ** avg_level, nh, f)
+            data_source_resh = data_source_resh.mean(dim=[2, 3], keepdim=True)
+            data_source_resh = data_source_resh.repeat_interleave(4 ** avg_level, dim=2)
+            data_source_resh = data_source_resh.repeat_interleave(nh, dim=3)
+            data_source = data_source_resh.view(nt,n, nh, nv, f)
 
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
-
-            if self.p_average_dropout >0:
-                if self.drop_vars:
-                    drop_mask_p = (torch.rand((n//4**avg_level,nv))<self.p_average_dropout).bool()
+            if self.p_average_dropout > 0:
+                if drop_vars:
+                    drop_mask_p = (torch.rand((n // 4 ** avg_level, nv)) < self.p_average_dropout).bool()
                 else:
-                    drop_mask_p = (torch.rand((n//4**avg_level))<self.p_average_dropout).bool()
+                    drop_mask_p = (torch.rand((n // 4 ** avg_level)) < self.p_average_dropout).bool()
 
-                drop_mask = drop_mask.view(-1,4**avg_level, nh, nv).transpose(-1,1)
-                drop_mask[drop_mask_p]=True
-                drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
+                drop_mask = drop_mask.view(nt, -1, 4 ** avg_level, nh, nv).transpose(-1, 2)
+                drop_mask[drop_mask_p] = True
+                drop_mask = drop_mask.transpose(-1, 2).view(nt, -1, nh, nv)
         else:
-            drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+            if self.random_p and drop_vars:
+                p_dropout = skewed_random_p(nv, exponent=self.skewness_exp, max_p=self.p_dropout)
+            elif self.random_p:
+                p_dropout = skewed_random_p(1, exponent=self.skewness_exp, max_p=self.p_dropout)
+            else:
+                p_dropout = torch.tensor(self.p_dropout)
 
-            if self.p_dropout > 0 and not self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh))<self.p_dropout).bool()
+            if self.p_dropout > 0 and not drop_vars and not drop_timesteps:
+                drop_mask_p = (torch.rand((nt, n, nh)) < p_dropout).bool()
+                drop_mask[drop_mask_p] = True
+
+            elif self.p_dropout > 0 and drop_vars:
+                drop_mask_p = (torch.rand((nt, n, nh, nv)) < p_dropout).bool()
+                drop_mask[drop_mask_p] = True
+
+            elif self.p_dropout > 0 and drop_timesteps:
+                drop_mask_p = (torch.rand(nt)<self.p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
-            elif self.drop_vars:
-                drop_mask_p = (torch.rand((n,nh,nv))<self.p_dropout).bool()
-                drop_mask[drop_mask_p]=True
-
+        if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
+            not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
+            drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
     
         for k, var in enumerate(variables_source):
-            data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
+            data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
         
         for k, var in enumerate(variables_target):
-            data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
-
+            data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
         data_source[drop_mask] = 0
-
         if self.coarsen_sample_level == -1:
             indices_sample = torch.tensor([])
         else:
-            indices_sample = {'sample': sample_index,
-                              'sample_level': self.coarsen_sample_level}
-        embed_data = {'VariableEmbedder': sample_vars}
-        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data
+            indices_sample = {'sample': sample_index.repeat(nt),
+                              'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
+        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1),
+                      'TimeEmbedder': time_source.float()}
+        return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data
 
     def __len__(self):
         return self.len_dataset

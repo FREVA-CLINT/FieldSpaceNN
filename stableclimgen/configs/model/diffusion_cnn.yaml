@@ -10,7 +10,16 @@ model:
   block_configs:
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
-      depth: 4
+      depth: 1
+      enc: true
+      ch_mult: 2
+      sub_confs:
+        blocks: ["normal", "normal", "down"]
+        embedder_names: [["CoordinateEmbedder", "VariableEmbedder", "DiffusionStepEmbedder"], ["CoordinateEmbedder", "VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
+        embed_confs: ${embedding}
+    - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
+      block_type: "resnet"
+      depth: 3
       enc: true
       ch_mult: 2
       sub_confs:

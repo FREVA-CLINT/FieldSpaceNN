@@ -81,10 +81,11 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         if batch_idx == 0:
             if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                input_inter,_ = self.model.interpolator(source, mask=mask, indices_sample=indices)
+                input_inter,_ = self.model.interpolator(source.view(-1, *source.shape[2:]), mask=mask.view(-1, *mask.shape[2:]), indices_sample=indices)
+                input_inter = input_inter.view(*output.shape)
             else:
                 input_inter = None
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
+            self.log_tensor_plot(source if source.shape[2] == output.shape[2] else input_inter.view(*target.shape), output, target, coords_input, coords_output, mask if mask.shape[2] == output.shape[2] else None, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
 
         self.log_dict(loss_dict, prog_bar=False, sync_dist=True)
 

@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import ModuleDict
 
-from .embedding_layers import RandomFourierLayer, SinusoidalLayer
+from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
 from ...utils.helpers import expand_tensor
 
 
@@ -37,6 +37,27 @@ class BaseEmbedder(nn.Module):
         return self.embedding_fn(emb)
 
 
+class TimeEmbedder(BaseEmbedder):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales):
+        """
+        Time2Vec module with fixed periodic components based on user-defined time scales.
+        :param out_features: Number of output features (embedding dimension).
+        :param time_scales: List of time scales (e.g., [24, 168, 720, 8760] for hourly, weekly, monthly, yearly).
+        """
+        super().__init__(name, in_channels, embed_dim)
+
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "t", "c"]
+
+        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
+        self.embedding_fn = torch.nn.Sequential(
+            TimeScaleLayer(in_features=self.in_channels, n_neurons=self.embed_dim, time_scales=time_scales),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+
 class CoordinateEmbedder(BaseEmbedder):
     """
     A neural network module to embed longitude and latitude coordinates.
@@ -49,7 +70,7 @@ class CoordinateEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -72,7 +93,7 @@ class DensityEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -88,7 +109,7 @@ class VariableEmbedder(BaseEmbedder):
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "v", "c"]
+        self.keep_dims = ["b", "t", "v", "c"]
 
         self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
 
@@ -100,7 +121,7 @@ class MaskEmbedder(BaseEmbedder):
     def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "s", "v", "c"]
+        self.keep_dims = ["b", "t", "s", "v", "c"]
 
         self.embedding_fn = nn.Embedding(2, self.embed_dim)
 
@@ -137,7 +158,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
         """
         super().__init__(name, in_channels, embed_dim)
         # keep batch and channel dimensions
-        self.keep_dims = ["b", "c"]
+        self.keep_dims = ["b", "t", "c"]
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn = nn.Sequential(
@@ -209,6 +230,11 @@ class EmbedderSequential(nn.Module):
 
             input_tensor = inputs[embedder_name]
             embed_output = embedder(input_tensor)
+
+            # Add time dimension
+            if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):
+                embed_output = embed_output.unsqueeze(1)
+
 
             # Reshape the output to the target output_shape
             embed_output = expand_tensor(embed_output, dims=4 + self.spatial_dim_count, keep_dims=embedder.keep_dims)
