@@ -116,9 +116,6 @@ def plot_images(
         axes = np.atleast_2d(axes)
 
         # Determine color limits for data and difference plots
-        vmin_data, vmax_data = gt_data[..., v, :].min().item(), gt_data[..., v, :].max().item()
-        vmax_diff = torch.max(torch.abs(differences[..., v, :])).item()
-        vmin_diff = -vmax_diff
 
         # Set background color for the figure
         fig.patch.set_facecolor('black')
@@ -126,11 +123,13 @@ def plot_images(
         # Plot each sample and timestep
         for i in range(gt_data.shape[0]):  # Loop over samples
             for j in range(gt_data.shape[1]):  # Loop over timesteps
+                gt_min = torch.min(gt_data[i, j])
+                gt_max = torch.max(gt_data[i, j])
                 for index, data, vmin, vmax, coords in [
-                    (j, in_data, vmin_data, vmax_data, in_coords),
-                    (j + gt_data.shape[1], gt_data, vmin_data, vmax_data, gt_coords),
-                    (j + 2 * gt_data.shape[1], out_data, vmin_data, vmax_data, gt_coords),
-                    (j + 3 * gt_data.shape[1], differences, vmin_diff, vmax_diff, gt_coords)
+                    (j, in_data, None, None, in_coords),
+                    (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords),
+                    (j + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords),
+                    (j + 3 * gt_data.shape[1], differences, None, None, gt_coords)
                 ]:
                     # Turn off axes for cleaner plots
                     axes[i, index].set_axis_off()
@@ -140,9 +139,9 @@ def plot_images(
                         axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
                         # Create a pcolormesh with geospatial coordinates
                         pcm = axes[i, index].pcolormesh(
-                            coords[0, 0, :, v, 1], coords[0, :, 0, v, 0],
+                            coords[0, j, 0, :, v, 1], coords[0, j, :, 0, v, 0],
                             np.squeeze(data[i, j, ..., v, :].numpy()),
-                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), shading='auto',
+                            transform=ccrs.PlateCarree(), shading='auto',
                             cmap="RdBu_r", rasterized=True
                         )
                     else:  # Standard plot without coordinates

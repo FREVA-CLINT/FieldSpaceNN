@@ -117,11 +117,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                try:
-                    self.log_tensor_plot(torch.stack(n_samples * [gt_data[i]]), torch.stack(n_samples * [cond_data[i]]),
+                self.log_tensor_plot(torch.stack(n_samples * [gt_data[i]]), torch.stack(n_samples * [cond_data[i]]),
                                          output, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
-                except Exception as e:
-                    pass
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
