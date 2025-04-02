@@ -229,7 +229,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             else:
                 mask_p = None
             if input_inter is not None:
-                input_inter_p = input_inter[sample,:max_samples,k,0]
+                input_inter_p = input_inter[sample,:max_samples,:,k]
             else:
                 input_inter_p = None
             scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p,save_path=save_path)
