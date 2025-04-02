@@ -32,7 +32,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4 + torch.is_tensor(input_inter),
+        nrows=gt.shape[0], ncols=4 + plot_input_inter,
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
@@ -40,24 +40,26 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     # Plot each sample and timestep
     for i in range(gt.shape[0]):
+        gt_min = np.min(gt[i])
+        gt_max = np.max(gt[i])
         plot_samples = [
-            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input"),
-            (1, gt[i], coords_output[i], "Ground Truth"),
-            (2, output[i], coords_output[i], "Output"),
-            (3, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error")
-        ] if not torch.is_tensor(input_inter) else [
-            (0, input[i], coords_input[i], "Input"),
-            (1, plot_input_inter[i], coords_output[i], "Input Interpolated"),
-            (2, gt[i], coords_output[i], "Ground Truth"),
-            (3, output[i], coords_output[i], "Output"),
-            (4, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error")
+            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
+            (1, gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
+            (2, output[i], coords_output[i], "Output", gt_min, gt_max),
+            (3, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
+        ] if not plot_input_inter else [
+            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
+            (1, input_inter[i], coords_output[i], "Input Interpolated", None, None),
+            (2, gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
+            (3, output[i], coords_output[i], "Output", gt_min, gt_max),
+            (4, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
         ]
         # Loop over samples
-        for index, data, coords, title in plot_samples:
+        for index, data, coords, title, vmin, vmax in plot_samples:
             # Turn off axes for cleaner plots
             axes[i, index].set_axis_off()
             axes[i, index].set_title(title)
-            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
+            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6, vmin=vmin, vmax=vmax)
 
             # Add color bar to each difference plot
             cb = fig.colorbar(cax, ax=axes[i, index], orientation='horizontal', shrink=0.6)
