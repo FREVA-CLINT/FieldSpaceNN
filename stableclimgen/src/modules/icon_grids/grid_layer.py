@@ -648,13 +648,15 @@ class Interpolator(nn.Module):
                 precompute = True,
                 nh_inter=2,
                 power=2,
-                new_input_level=None
+                new_input_level=None,
+                new_search_level=None
                  ) -> None:
                 
         super().__init__()
 
         self.precompute = precompute
         self.new_input_level = new_input_level
+        self.new_search_level = new_search_level
 
         if precompute:
             dists = get_dists_interpolation(grid_layers,
@@ -683,7 +685,7 @@ class Interpolator(nn.Module):
         
         compute_dists = (input_level is not None) | (target_level is not None) | (search_level is not None)
 
-        search_level = self.search_level if search_level is None else search_level
+        search_level = self.new_search_level if self.new_search_level is not None else (self.search_level if search_level is None else search_level)
         input_level = self.new_input_level if self.new_input_level is not None else (self.input_level if input_level is None else input_level)
         target_level = self.target_level if target_level is None else target_level
         
