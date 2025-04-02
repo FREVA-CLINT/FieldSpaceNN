@@ -118,8 +118,8 @@ def plot_images(
         # Plot each sample and timestep
         for i in range(gt_data.shape[0]):  # Loop over samples
             for j in range(gt_data.shape[1]):  # Loop over timesteps
-                gt_min = torch.min(gt_data[i, j])
-                gt_max = torch.max(gt_data[i, j])
+                gt_min = torch.min(gt_data[i, j, ..., v, :])
+                gt_max = torch.max(gt_data[i, j, ..., v, :])
                 for index, data, vmin, vmax, coords, title in [
                     (j, in_data, None, None, in_coords, "Input"),
                     (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
@@ -147,8 +147,6 @@ def plot_images(
                         )
                     # Add color bar to each difference plot
                     cb = fig.colorbar(pcm, ax=axes[i, index])
-                    cb.ax.yaxis.set_tick_params(color="white")
-                    plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color="white")
 
         # Adjust layout and save the figure for the current channel
         plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
