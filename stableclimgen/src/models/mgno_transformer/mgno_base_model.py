@@ -20,16 +20,11 @@ class MGNO_base_model(nn.Module):
         super().__init__()
 
         if interpolator_settings is not None:
-            level_s = interpolator_settings.get("new_search_level", 3)
-            if not torch.any(global_levels == level_s):
+            level_s = interpolator_settings.get("search_level_compute", None)
+            if level_s is not None and not torch.any(global_levels == level_s):
                 level_s_tensor = torch.tensor([level_s])
                 global_levels = torch.cat((global_levels, level_s_tensor))
 
-            level_i = interpolator_settings.get("new_input_level", 0)
-            if not torch.any(global_levels == level_i):
-                level_i_tensor = torch.tensor([level_i])
-                global_levels = torch.cat((global_levels, level_i_tensor))
-        
         self.register_buffer('global_levels', global_levels, persistent=False)
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
@@ -54,8 +49,9 @@ class MGNO_base_model(nn.Module):
                                              interpolator_settings.get("precompute", True),
                                              interpolator_settings.get("nh_inter", 3),
                                              interpolator_settings.get("power", 1),
-                                             interpolator_settings.get("new_input_level", None),
-                                             interpolator_settings.get("new_search_level", None)
+                                             interpolator_settings.get("cutoff_dist_level", None),
+                                             interpolator_settings.get("cutoff_dist", None),
+                                             interpolator_settings.get("search_level_compute", None)
                                              )
 
         self.interpolate_input = interpolate_input
