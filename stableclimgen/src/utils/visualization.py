@@ -115,24 +115,20 @@ def plot_images(
         )
         axes = np.atleast_2d(axes)
 
-        # Determine color limits for data and difference plots
-
-        # Set background color for the figure
-        fig.patch.set_facecolor('black')
-
         # Plot each sample and timestep
         for i in range(gt_data.shape[0]):  # Loop over samples
             for j in range(gt_data.shape[1]):  # Loop over timesteps
                 gt_min = torch.min(gt_data[i, j])
                 gt_max = torch.max(gt_data[i, j])
-                for index, data, vmin, vmax, coords in [
-                    (j, in_data, None, None, in_coords),
-                    (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords),
-                    (j + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords),
-                    (j + 3 * gt_data.shape[1], differences, None, None, gt_coords)
+                for index, data, vmin, vmax, coords, title in [
+                    (j, in_data, None, None, in_coords, "Input"),
+                    (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
+                    (j + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords, "Output"),
+                    (j + 3 * gt_data.shape[1], differences, None, None, gt_coords, "Error")
                 ]:
                     # Turn off axes for cleaner plots
                     axes[i, index].set_axis_off()
+                    axes[i, index].set_title(title)
                     if coords is not None:  # Geospatial plotting with coordinates
                         # Add coastlines and borders
                         axes[i, index].add_feature(cartopy.feature.COASTLINE, edgecolor="black", linewidth=0.6)
@@ -142,17 +138,17 @@ def plot_images(
                             coords[0, j, 0, :, v, 1], coords[0, j, :, 0, v, 0],
                             np.squeeze(data[i, j, ..., v, :].numpy()),
                             transform=ccrs.PlateCarree(), shading='auto',
-                            cmap="RdBu_r", rasterized=True
+                            cmap="RdBu_r", rasterized=True, vmin=vmin, vmax=vmax
                         )
                     else:  # Standard plot without coordinates
                         pcm = axes[i, index].pcolormesh(
                             np.squeeze(data[i, j, ..., v, :].numpy()),
                             vmin=vmin, vmax=vmax, shading='auto', cmap="RdBu_r"
                         )
-                # Add color bar to each difference plot
-                cb = fig.colorbar(pcm, ax=axes[i, j + 3 * out_data.shape[1]])
-                cb.ax.yaxis.set_tick_params(color="white")
-                plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color="white")
+                    # Add color bar to each difference plot
+                    cb = fig.colorbar(pcm, ax=axes[i, index])
+                    cb.ax.yaxis.set_tick_params(color="white")
+                    plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color="white")
 
         # Adjust layout and save the figure for the current channel
         plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
