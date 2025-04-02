@@ -276,7 +276,7 @@ class GaussianDiffusion:
             if self.use_dynamic_clipping:
                 # --- Dynamic SNR-Weighted Clipping Logic ---
                 # Calculate a Signal-to-Noise Ratio (SNR) like term based on the schedule.
-                sqrt_alpha_cumprod_t = self.extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape)
+                sqrt_alpha_cumprod_t = extract_into_tensor(self.sqrt_alphas_cumprod, t, in_tensor.shape)
                 # Denominator uses the specific `1 - sqrt_alphas_cumprod` formulation.
                 denominator = 1.0 - sqrt_alpha_cumprod_t + 1e-5  # Add epsilon for numerical stability
                 snr = sqrt_alpha_cumprod_t / denominator
