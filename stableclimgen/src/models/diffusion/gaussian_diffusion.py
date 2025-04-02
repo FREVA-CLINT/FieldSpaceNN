@@ -618,14 +618,6 @@ class GaussianDiffusion:
 
                 # The main model output for MSE loss is just the mean part
                 model_output = model_output_mean_part
-            else:
-                 # Ensure shapes match if not learning variance
-                 if model_output.shape != x_t.shape:
-                     # Allow for simple reshaping if channel dim is last
-                     if model_output.shape == (*x_t.shape[:-1], x_t.shape[-1]):
-                          model_output = model_output.view(x_t.shape)
-                     else:
-                          raise ValueError(f"Model output shape {model_output.shape} does not match input shape {x_t.shape}")
 
             # Determine the target for the MSE loss based on model_mean_type
             if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -641,9 +633,10 @@ class GaussianDiffusion:
                  target = self._predict_v_from_eps_and_xstart(noise, gt_data, diff_steps)
             else:
                 raise NotImplementedError(self.model_mean_type)
-            # <<< END MODIFIED CODE >>>
 
-            assert model_output.shape == target.shape == gt_data.shape == noise.shape
+            target = target.view(model_output.shape)
+            mask = mask.view(model_output.shape)
+            x_t = x_t.view(model_output.shape)
 
             # Calculate MSE loss, applying mask if provided
             if torch.is_tensor(mask):
