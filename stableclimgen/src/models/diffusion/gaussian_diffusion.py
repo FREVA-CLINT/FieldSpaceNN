@@ -694,7 +694,9 @@ class GaussianDiffusion:
              else:
                  # Fallback or error if logic doesn't cover a case
                  raise RuntimeError("Could not determine intermediate results (pred_xstart)")
-        # <<< END MODIFIED CODE >>>
+
+        if torch.is_tensor(mask):
+            pred_xstart_for_results = torch.where(mask, pred_xstart_for_results, x_t)
 
         return terms, pred_xstart_for_results # Return loss dict and predicted x0
 
