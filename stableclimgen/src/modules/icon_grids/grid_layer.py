@@ -542,32 +542,34 @@ def get_density_map(grid_dist_output, dists, mask_value=1e6, power=2):
     return density
 
 
-def get_interpolation(x: torch.tensor, 
-                      mask: torch.tensor, 
+def get_interpolation(x: torch.tensor,
+                      mask: torch.tensor,
                       grid_layer_search,
                       cutoff_dist: float,
                       dist: torch.tensor,
-                      n_nh: int=3, 
-                      power:int=2, 
-                      mask_value:int=1e6, 
-                      indices_sample: dict=None):
+                      n_nh: int = 3,
+                      power: int = 2,
+                      mask_value: int = 1e6,
+                      indices_sample: dict = None):
     x = x.clone()
-    b,n,nh,nv,f = x.shape
+    b, n, nh, nv, f = x.shape
 
     n_l = dist.shape[1]
     l = n // n_l
 
-    x = x.view(b,n_l,-1)
-    mask = mask.view(b,n_l,-1) if mask is not None else None
+    x = x.view(b, n_l, -1)
+    mask = mask.view(b, n_l, -1) if mask is not None else None
 
-    local_indices = indices_sample['indices_layers'][int(grid_layer_search.global_level)] if indices_sample is not None else None
-    x_nh, mask_nh = grid_layer_search.get_nh(x, local_indices=local_indices, sample_dict=indices_sample, mask = mask) 
+    local_indices = indices_sample['indices_layers'][
+        int(grid_layer_search.global_level)] if indices_sample is not None and isinstance(indices_sample,
+                                                                                          dict) else None
+    x_nh, mask_nh = grid_layer_search.get_nh(x, local_indices=local_indices, sample_dict=indices_sample, mask=mask)
 
-    x_nh = x_nh.view(b,n_l,-1,nv,f)
-    mask_nh = mask_nh.view(b,n_l,-1,nv)
+    x_nh = x_nh.view(b, n_l, -1, nv, f)
+    mask_nh = mask_nh.view(b, n_l, -1, nv)
 
     n = dist.shape[1]
-    
+
     dist_ = dist.unsqueeze(dim=-1) + (mask_nh.unsqueeze(dim=2) * mask_value)
 
     dist_vals, indices = torch.topk(dist_, n_nh, dim=-2, largest=False)
@@ -575,32 +577,32 @@ def get_interpolation(x: torch.tensor,
     indices_offset = torch.arange(indices.shape[1], device=indices.device)
     offset = dist_.shape[-2]
 
-    indices = indices + (indices_offset*offset).view(1,indices.shape[1],1,1,1)
+    indices = indices + (indices_offset * offset).view(1, indices.shape[1], 1, 1, 1)
 
     indices = indices.view(b, -1, n_nh, nv)
 
-    x_nh = x_nh.view(b,n_l,-1,nv,f)
+    x_nh = x_nh.view(b, n_l, -1, nv, f)
 
-    x_2 = x_nh.reshape(b,-1,nv)
-    indices = indices.reshape(b,-1,nv)
+    x_2 = x_nh.reshape(b, -1, nv)
+    indices = indices.reshape(b, -1, nv)
 
     x_gath = torch.gather(x_2, 1, indices)
 
-    x_gath = x_gath.view(b,-1,n_nh,nv*f)
+    x_gath = x_gath.view(b, -1, n_nh, nv * f)
 
-    dist_vals[dist_vals<=cutoff_dist] = cutoff_dist
+    dist_vals[dist_vals <= cutoff_dist] = cutoff_dist
 
-    weights = 1/(dist_vals.view(x_gath.shape))**power
+    weights = 1 / (dist_vals.view(x_gath.shape)) ** power
 
-    weights = weights/weights.sum(dim=-2, keepdim=True)
+    weights = weights / weights.sum(dim=-2, keepdim=True)
 
-    x_inter = (x_gath*weights).sum(dim=-2)
+    x_inter = (x_gath * weights).sum(dim=-2)
 
-    x_inter = x_inter.view(b,n,-1,nv,f)
+    x_inter = x_inter.view(b, n, -1, nv, f)
 
-    x_inter = x_inter.view(b,-1,nv,f)
+    x_inter = x_inter.view(b, -1, nv, f)
 
-    dist_vals = dist_vals.view(b,-1,n_nh,nv)
+    dist_vals = dist_vals.view(b, -1, n_nh, nv)
 
     return x_inter, dist_vals
 
@@ -609,13 +611,16 @@ def get_dists_interpolation(grid_layers,
                             search_level: int=2, 
                             input_level: int=0, 
                             target_level: int=0, 
-                            indices_sample: dict=None):
+                            indices_sample: dict=None,
+                            input_coords: torch.tensor = None):
 
+    if input_coords is None:
+        coords = grid_layers[str(input_level)].get_coordinates_from_grid_indices(
+            indices_sample['indices_layers'][input_level] if indices_sample is not None else None
+            )
+    else:
+        coords = input_coords
 
-    coords = grid_layers[str(input_level)].get_coordinates_from_grid_indices(
-        indices_sample['indices_layers'][input_level] if indices_sample is not None else None
-        )
-    
     b,n = coords.shape[:2]
     l = 4**(search_level-input_level)
     n_l = n // l
