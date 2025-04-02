@@ -20,12 +20,12 @@ class MGNO_base_model(nn.Module):
         super().__init__()
 
         if interpolator_settings is not None:
-            level_s = interpolator_settings.get("search_level", 3)
+            level_s = interpolator_settings.get("new_search_level", 3)
             if not torch.any(global_levels == level_s):
                 level_s_tensor = torch.tensor([level_s])
                 global_levels = torch.cat((global_levels, level_s_tensor))
 
-            level_i = interpolator_settings.get("input_level", 0)
+            level_i = interpolator_settings.get("new_input_level", 0)
             if not torch.any(global_levels == level_i):
                 level_i_tensor = torch.tensor([level_i])
                 global_levels = torch.cat((global_levels, level_i_tensor))
