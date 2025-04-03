@@ -183,6 +183,6 @@ class LightningDiffusionGenerator(LightningProbabilisticModel):
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample):
-        return self.sampler.sample_loop(self.model, source, mask,
+        return self.sampler.sample_loop(self.model, source, mask.view(source.shape) if torch.is_tensor(mask) else None,
                                         progress=True, emb=emb, coords_input=coords_input,
                                         coords_output=coords_output, indices_sample=indices_sample)
