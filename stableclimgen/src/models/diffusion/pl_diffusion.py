@@ -138,8 +138,11 @@ class LightningDiffusionGenerator(pl.LightningModule):
         plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
 
         for c in range(gt_tensor.shape[1]):
-            filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
-            self.logger.log_image(f"plots/{plot_name}", [filename])
+            try:
+                filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
+                self.logger.log_image(f"plots/{plot_name}", [filename])
+            except Exception:
+                pass
 
     def configure_optimizers(self) -> Tuple:
         """
