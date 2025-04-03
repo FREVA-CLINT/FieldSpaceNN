@@ -68,6 +68,7 @@ class HealPixLoader(Dataset):
                  out_nside = None,
                  search_radius=2,
                  search_level_start=None,
+                 search_level_stop=0,
                  nh_input=1,
                  index_offset_target=0,
                  sample_for_norm=-1,
@@ -163,7 +164,7 @@ class HealPixLoader(Dataset):
                                                       search_radius=search_radius,
                                                       search_level_start=search_level_start,
                                                       max_nh=nh_input,
-                                                      lowest_level=0,
+                                                      lowest_level=search_level_stop,
                                                       periodic_fov=None)
                 if one_to_one or max_in_grid_distance:
                     # Compute pairwise distances (using broadcasting)
