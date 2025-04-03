@@ -239,7 +239,7 @@ class MaskClimateDataset(ClimateDataset):
         self.p_drop_vars = p_drop_vars
         self.p_drop_timesteps = p_drop_timesteps
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
+    def __getitem__(self, index: int):
         """
         Retrieve a sequence from the dataset with a mask applied.
 
@@ -269,4 +269,8 @@ class MaskClimateDataset(ClimateDataset):
             drop_mask[drop_mask_p] = True
 
         in_data[drop_mask] = 0
-        return in_data, in_coords, gt_data, gt_coords, drop_mask, sample_vars
+
+        emb = {"CoordinateEmbedder": gt_coords,
+               "VariableEmbedder": sample_vars}
+
+        return in_data, gt_data, in_coords, gt_coords, {}, drop_mask, emb
