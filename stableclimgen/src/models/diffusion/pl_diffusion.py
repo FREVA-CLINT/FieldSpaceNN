@@ -33,6 +33,7 @@ class LightningDiffusionGenerator(LightningProbabilisticModel):
         :param ema_rate: Rate for Exponential Moving Average of model parameters. Defaults to 0.999.
         """
         super().__init__()
+        LightningProbabilisticModel.__init__(self, n_samples=1, max_batchsize=-1)
         self.model: DiffusionGenerator = model
         self.ema_model = torch.optim.swa_utils.AveragedModel(
             self.model,
