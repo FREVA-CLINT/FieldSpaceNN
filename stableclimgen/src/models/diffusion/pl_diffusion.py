@@ -119,9 +119,9 @@ class LightningDiffusionGenerator(LightningProbabilisticModel):
             diff_steps = self.gaussian_diffusion.diffusion_steps
             n_samples = 4
             t = torch.tensor([(diff_steps // n_samples) * x for x in range(n_samples - 1)] + [diff_steps-1]).to(target.device)
-            emb = {"CoordinateEmbedder": torch.stack(n_samples * [emb["CoordinateEmbedder"][i]]),
-                   "VariableEmbedder": torch.stack(n_samples * [emb["VariableEmbedder"][i]])}
-            l_dict, output = self(torch.stack(n_samples * [target[i]]), t, torch.stack(n_samples * [mask[i]]), emb, torch.stack(n_samples * [source[i]]))
+            emb_input = {"CoordinateEmbedder": torch.stack(n_samples * [emb["CoordinateEmbedder"][i]]),
+                         "VariableEmbedder": torch.stack(n_samples * [emb["VariableEmbedder"][i]])}
+            l_dict, output = self(torch.stack(n_samples * [target[i]]), t, torch.stack(n_samples * [mask[i]]), emb_input, torch.stack(n_samples * [source[i]]))
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
