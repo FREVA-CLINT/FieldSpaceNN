@@ -67,6 +67,7 @@ class HealPixLoader(Dataset):
                  in_nside = None,
                  out_nside = None,
                  search_radius=2,
+                 search_level_start=None,
                  nh_input=1,
                  index_offset_target=0,
                  sample_for_norm=-1,
@@ -160,6 +161,7 @@ class HealPixLoader(Dataset):
                 mapping = get_mapping_to_healpix_grid(coords_processing,
                                                       input_coordinates,
                                                       search_radius=search_radius,
+                                                      search_level_start=search_level_start,
                                                       max_nh=nh_input,
                                                       lowest_level=0,
                                                       periodic_fov=None)
