@@ -332,11 +332,11 @@ class GaussianDiffusion:
         if emb is None:
             emb = {}
         emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
-        model_output = model(x, emb=emb, mask=mask, **model_kwargs)
+        model_output = model(x, emb=emb.copy(), mask=mask, **model_kwargs)
 
         # Reshape if necessary (e.g. if model outputs channels last)
-        if model_output.shape != x.shape and model_output.shape == (*x.shape[:-1], x.shape[-1]):
-             model_output = model_output.view(x.shape)
+        if model_output.shape != x.shape:
+            model_output = model_output.view(x.shape)
         elif model_output.shape != x.shape and self.model_var_type not in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
             # If shapes don't match and we are not learning variance (which expects double channels)
              raise ValueError(f"Model output shape {model_output.shape} does not match input shape {x.shape}")
