@@ -16,7 +16,10 @@ class MGNO_Processing_Block(nn.Module):
                  model_dims_out: List[List],
                  grid_layers: List[GridLayer],
                  rotate_coordinate_system: bool = True,
-                 mask_as_embedding = False
+                 mask_as_embedding = False,
+                 n_vars_total = 1,
+                 rank_vars = 4,
+                 factorize_vars = False
                 ) -> None: 
       
         super().__init__()
@@ -67,7 +70,10 @@ class MGNO_Processing_Block(nn.Module):
                                         no_layer=no_layer,
                                         embedder=embedder,
                                         cross_no = 'cross_no' in layer_setting["type"],
-                                        with_gamma = 'gamma' in layer_setting["type"]
+                                        with_gamma = 'gamma' in layer_setting["type"],
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars
                                         )
                         else:
                             layer = NOBlock(
@@ -76,7 +82,10 @@ class MGNO_Processing_Block(nn.Module):
                                         no_layer=no_layer,
                                         embedder=embedder,
                                         cross_no = 'cross_no' in layer_setting["type"],
-                                        with_gamma = 'gamma' in layer_setting["type"]
+                                        with_gamma = 'gamma' in layer_setting["type"],
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars
                                         )
 
                 elif "var_att" in layer_setting["type"]:
@@ -92,7 +101,10 @@ class MGNO_Processing_Block(nn.Module):
                         p_dropout=layer_setting.get("p_dropout",0),
                         embedder = embedder_att,
                         embedder_mlp= embedder_mlp,
-                        mask_as_embedding=mask_as_embedding
+                        mask_as_embedding=mask_as_embedding,
+                        n_vars_total=n_vars_total,
+                        rank_vars=rank_vars,
+                        factorize_vars=factorize_vars
                     )
                 
                 elif "spatial_att" in layer_setting["type"]:

@@ -42,7 +42,9 @@ class MGNO_base_model(nn.Module):
                                              interpolator_settings.get("precompute", True),
                                              interpolator_settings.get("nh_inter", 3),
                                              interpolator_settings.get("power", 1),
-                                             interpolator_settings.get("cutoff_dist_level", None)
+                                             interpolator_settings.get("cutoff_dist_level", None),
+                                             interpolator_settings.get("cutoff_dist", None),
+                                             interpolator_settings.get("search_level_compute", None)
                                              )
 
         self.interpolate_input = interpolate_input

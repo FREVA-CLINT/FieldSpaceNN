@@ -241,7 +241,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             
             if input_inter is not None:
                 input_inter_p = input_inter[sample,:,k,0]
-                input_density_p = input_density[sample,:,k,0]
+                input_density_p = input_density[sample,:,0,k]
             else:
                 input_inter_p = None
                 input_density_p = None

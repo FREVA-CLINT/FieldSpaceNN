@@ -559,7 +559,7 @@ def get_interpolation(x: torch.tensor,
 
     x = x.view(b,n_l,-1)
     mask = mask.view(b,n_l,-1) if mask is not None else None
-
+    
     local_indices = indices_sample['indices_layers'][int(grid_layer_search.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
     x_nh, mask_nh = grid_layer_search.get_nh(x, local_indices=local_indices, sample_dict=indices_sample, mask = mask) 
 
@@ -652,6 +652,8 @@ class Interpolator(nn.Module):
                 nh_inter=2,
                 power=2,
                 cutoff_dist_level=None,
+                cutoff_dist=None,
+                search_level_compute=None,
                 input_coords=None # for arbitrary grids
                 ) -> None:
                 
@@ -675,8 +677,10 @@ class Interpolator(nn.Module):
         self.target_level = target_level
         self.nh_inter = nh_inter
         self.power = power
+        self.search_level_compute = search_level if search_level_compute is None else search_level_compute
 
         self.cutoff_dist_level = input_level if cutoff_dist_level is None else cutoff_dist_level
+        self.cutoff_dist = cutoff_dist
 
     def forward(self, 
                 x, 
@@ -704,19 +708,22 @@ class Interpolator(nn.Module):
         
         else:
             dist = get_dists_interpolation(self.grid_layers, 
-                                    search_level = search_level,
+                                    search_level = self.search_level_compute,
                                     input_level = input_level,
                                     target_level = target_level,
                                     input_coords=input_coords,
                                     indices_sample=indices_sample)
 
         
-        cutoff_dist = max([self.grid_layers[str(self.cutoff_dist_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
+        if self.cutoff_dist is None:
+            cutoff_dist = max([self.grid_layers[str(self.cutoff_dist_level)].nh_dist, self.grid_layers[str(target_level)].nh_dist])
+        else:
+            cutoff_dist = self.cutoff_dist
   
 
         x, dist_ = get_interpolation(x,
                                      mask, 
-                                     self.grid_layers[str(self.search_level)], 
+                                     self.grid_layers[str(self.search_level_compute)], 
                                      cutoff_dist, 
                                      dist, 
                                      self.nh_inter, 

@@ -9,6 +9,8 @@ from .mgno_processing_block import MGNO_Processing_Block
 from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig, MGStackedEncoderDecoderConfig
 from .mgno_base_model import MGNO_base_model
 
+from ...modules.neural_operator.no_blocks import get_lin_layer, DenseLayer
+
 from ...modules.neural_operator.no_helpers import get_embedder
 from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict,add_mask_to_emb_dict
 
@@ -19,7 +21,6 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  input_dim: int=1,
                  lifting_dim: int=1,
                  output_dim: int=1,
-                 n_vars_total:int=1,
                  rotate_coord_system: bool=True,
                  p_dropout=0.,
                  mask_as_embedding = False,
@@ -84,7 +85,10 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             level_diff_zero_linear=check_get(block_conf, kwargs, "level_diff_zero_linear"),
                                             mask_as_embedding=mask_as_embedding,
                                             layer_type=check_get(block_conf, kwargs, "layer_type"),
-                                            rank=check_get(block_conf, kwargs, "rank"))  
+                                            rank=check_get(block_conf, kwargs, "rank"),
+                                            n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
+                                            rank_vars=check_get(block_conf, kwargs, "rank_vars"),
+                                            factorize_vars=check_get(block_conf, kwargs, "factorize_vars"))  
                 
             elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
                 block = MGNO_StackedEncoderDecoder_Block(
@@ -111,7 +115,10 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     embed_mode=check_get(block_conf, kwargs, "embed_mode"),
                     n_head_channels=check_get(block_conf, kwargs, "n_head_channels"),
                     p_dropout=check_get(block_conf, kwargs, "p_dropout"),
-                    seq_level=check_get(block_conf, kwargs, "seq_level")
+                    seq_level=check_get(block_conf, kwargs, "seq_level"),
+                    n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
+                    rank_vars=check_get(block_conf, kwargs, "rank_vars"),
+                    factorize_vars=check_get(block_conf, kwargs, "factorize_vars")
                 )
                 
             elif isinstance(block_conf, MGProcessingConfig):
@@ -121,7 +128,10 @@ class MGNO_Transformer_MG(MGNO_base_model):
                             input_dims,
                             block_conf.model_dims_out,
                             self.grid_layers,
-                            mask_as_embedding=mask_as_embedding)
+                            mask_as_embedding=mask_as_embedding,
+                            n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
+                            rank_vars=check_get(block_conf, kwargs, "rank_vars"),
+                            factorize_vars=check_get(block_conf, kwargs, "factorize_vars"))
                         
                 
             self.Blocks.append(block)     
@@ -129,15 +139,24 @@ class MGNO_Transformer_MG(MGNO_base_model):
             input_dims = block.model_dims_out
             input_levels = block.output_levels
 
-        self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
+       # self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
+        self.out_layer = get_lin_layer(input_dims[0], 
+                                       output_dim, 
+                                       n_vars_total=kwargs.get('n_vars_total',1), 
+                                       rank_vars=kwargs.get('rank_vars',4), 
+                                       factorize_vars=kwargs.get('factorize_vars',False), 
+                                       bias=False)
 
         self.input_layer = InputLayer(input_dim, 
                                       lifting_dim, 
                                       self.grid_layer_0, 
                                       embed_names=input_embed_names,
                                       embed_confs=input_embed_confs,
-                                      embed_mode=input_embed_mode)
+                                      embed_mode=input_embed_mode,
+                                      n_vars_total = kwargs.get('n_vars_total',1),
+                                      rank_vars = kwargs.get('rank_vars',4),
+                                      factorize_vars= kwargs.get('factorize_vars',False))
 
         self.learn_residual = kwargs.get("learn_residual", False)
 
@@ -173,8 +192,11 @@ class MGNO_Transformer_MG(MGNO_base_model):
             # Process input through the block
             x_levels, mask_levels = block(x_levels, coords_in=coords_in, coords_out=coords_out, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
 
-        
-        x = self.out_layer(x_levels[0])
+        if isinstance(self.out_layer, DenseLayer):
+            x = self.out_layer(x_levels[0], emb=emb)
+        else: 
+            x = self.out_layer(x_levels[0])
+
         x = x.view(b,n,-1)
 
         if self.learn_residual:
@@ -196,7 +218,10 @@ class InputLayer(nn.Module):
                  grid_layer_0,
                  embed_names=None,
                  embed_confs=None,
-                 embed_mode='sum'
+                 embed_mode='sum',
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False
                 ) -> None: 
       
         super().__init__()
@@ -212,8 +237,9 @@ class InputLayer(nn.Module):
 
             self.embedding_layer = nn.Linear(emb_dim, model_dim_out*2)
 
-
         self.linear = nn.Linear(model_dim_in, model_dim_out, bias=False)
+
+        self.linear = get_lin_layer(model_dim_in, model_dim_out, n_vars_total=n_vars_total, rank_vars=rank_vars, factorize_vars=factorize_vars, bias=False)
 
     def forward(self, x, mask=None, emb=None, indices_sample=None):
         
@@ -223,7 +249,11 @@ class InputLayer(nn.Module):
         if mask is not None and hasattr(self,"embedding_layer"):
             emb = add_mask_to_emb_dict(emb, mask)
 
-        x = self.linear(x)
+        if isinstance(self.linear, DenseLayer):
+            x = self.linear(x, emb=emb)
+        else: 
+            x = self.linear(x)
+
         x_shape = x.shape
         if hasattr(self,"embedding_layer"):
             emb_ = self.embedder(emb).squeeze(dim=1)
