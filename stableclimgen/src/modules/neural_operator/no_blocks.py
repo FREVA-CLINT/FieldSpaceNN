@@ -1802,7 +1802,8 @@ class VariableAttention(nn.Module):
         q = q.reshape(b*n, *q.shape[2:])
         k = k.reshape(b*n, *k.shape[2:])
         v = v.reshape(b*n, *v.shape[2:])
-
+        
+        mask = mask.reshape(b*n, *mask.shape[2:]) if mask is not None else None
         x = self.MHA(q=q, k=k, v=v, mask=mask if not self.mask_as_embedding else None)
 
         x = x.view(b,n,*x.shape[1:])
