@@ -64,13 +64,13 @@ class ClimateDataset(Dataset):
     :param data_dict: Dictionary containing input data paths and types.
     :param norm_dict: Dictionary containing normalizer type and variable specific data stats.
     :param lazy_load: If True, enables lazy loading of data. Default is True.
-    :param seq_length: Length of the data sequences to load.
+    :param n_sample_timesteps: Length of the data sequences to load.
     """
 
     def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], norm_dict: Dict, lazy_load: bool = True,
-                 seq_length: int = 1, n_sample_vars: int = -1, shared_files: bool = False):
+                 n_sample_timesteps: int = 1, n_sample_vars: int = -1, shared_files: bool = False):
         self.lazy_load = lazy_load
-        self.seq_length = seq_length
+        self.n_sample_timesteps = n_sample_timesteps
 
         self.var_normalizers = {}
         self.variables_source = data_dict["source"]["variables"]
@@ -132,7 +132,7 @@ class ClimateDataset(Dataset):
                 else:
                     self.climate_out_files[var] = [file] if isinstance(file, str) else file
         ds_source = xr.open_dataset(self.climate_in_files[self.variables_source[0]][0], decode_times=False)
-        self.data_file_length = ds_source["time"].shape[0] - self.seq_length + 1
+        self.data_file_length = ds_source["time"].shape[0] - self.n_sample_timesteps + 1
         self.len_dataset = self.data_file_length * len(self.climate_in_files[self.variables_source[0]])
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
@@ -194,8 +194,8 @@ class ClimateDataset(Dataset):
             # Extract data sequence and convert to torch tensor
             ds_source, ds_target = self.get_files(self.climate_in_files[var][file_index], self.climate_out_files[var][file_index])
 
-            data_src = torch.from_numpy(np.nan_to_num(ds_source[var][seq_index:seq_index + self.seq_length]))
-            data_tgt = torch.from_numpy(np.nan_to_num(ds_target[var][seq_index:seq_index + self.seq_length]))
+            data_src = torch.from_numpy(np.nan_to_num(ds_source[var][seq_index:seq_index + self.n_sample_timesteps]))
+            data_tgt = torch.from_numpy(np.nan_to_num(ds_target[var][seq_index:seq_index + self.n_sample_timesteps]))
 
             # Apply normalization if a normalizer is provided
             data_in.append(self.var_normalizers[var].normalize(data_src))
@@ -233,9 +233,11 @@ class MaskClimateDataset(ClimateDataset):
     :param mask_mode: Mode for applying masks to sequences. Options include "prob", "random", "last", and "first".
     """
 
-    def __init__(self, mask_mode: str = "prob_1.0", **kwargs):
+    def __init__(self, p_dropout, p_drop_vars, p_drop_timesteps, **kwargs):
         super().__init__(**kwargs)
-        self.mask_mode = mask_mode
+        self.p_dropout = p_dropout
+        self.p_drop_vars = p_drop_vars
+        self.p_drop_timesteps = p_drop_timesteps
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
@@ -245,23 +247,26 @@ class MaskClimateDataset(ClimateDataset):
         :return: A tuple containing input data, input coordinates, ground truth data, ground truth coordinates, and mask.
         """
         in_data, in_coords, gt_data, gt_coords, sample_vars = super().__getitem__(index)
-        mask = torch.ones_like(gt_data, dtype=torch.bool)
 
-        # Define indices to set in mask based on mask mode
-        if "prob" in self.mask_mode:
-            mask_prob = float(self.mask_mode.split("_")[1])
-            num_indices = int((1.0 - mask_prob) * self.seq_length)
-            indices_to_set = torch.randperm(self.seq_length)[:num_indices]
-        elif self.mask_mode == "random":
-            num_indices = random.randint(1, self.seq_length)
-            indices_to_set = torch.randperm(self.seq_length)[:num_indices]
-        elif "last" in self.mask_mode:
-            predict_steps = int(self.mask_mode.split('_')[1])
-            indices_to_set = torch.arange(self.seq_length - predict_steps)
-        elif "first" in self.mask_mode:
-            predict_steps = int(self.mask_mode.split('_')[1])
-            indices_to_set = torch.arange(predict_steps)
+        nt, nlon, nlat, nv = in_data.shape[:4]
 
-        # Apply mask based on selected indices
-        mask[:, indices_to_set] = False
-        return in_data, in_coords, gt_data, gt_coords, mask, sample_vars
+        drop_vars = torch.rand(1) < self.p_drop_vars
+        drop_timesteps = torch.rand(1) < self.p_drop_timesteps
+        drop_mask = torch.zeros_like(in_data, dtype=bool)
+
+        p_dropout = torch.tensor(self.p_dropout)
+
+        if self.p_dropout > 0 and not drop_vars and not drop_timesteps:
+            drop_mask_p = (torch.rand((nt, nlon, nlat)) < p_dropout).bool()
+            drop_mask[drop_mask_p] = True
+
+        elif self.p_dropout > 0 and drop_vars:
+            drop_mask_p = (torch.rand((nt, nlon, nlat, nv)) < p_dropout).bool()
+            drop_mask[drop_mask_p] = True
+
+        elif self.p_dropout > 0 and drop_timesteps:
+            drop_mask_p = (torch.rand(nt) < self.p_dropout).bool()
+            drop_mask[drop_mask_p] = True
+
+        in_data[drop_mask] = 0
+        return in_data, in_coords, gt_data, gt_coords, drop_mask, sample_vars

@@ -2,7 +2,11 @@ dataset:
   _target_: stableclimgen.src.utils.datasets_regular.MaskClimateDataset
   data_dict: ../../input/data_netcdf.json
   norm_dict: ../../input/norm_dict.json
-  seq_length: 1
+  n_sample_timesteps: 1
+  p_dropout: 0.99
+  p_drop_vars: 0
+  p_drop_timesteps: 0
+
 
 dataloader:
   _target_: torch.utils.data.DataLoader
