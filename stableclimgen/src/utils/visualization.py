@@ -17,7 +17,8 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
-    input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
+    input_inter = input_inter.cpu().to(dtype=torch.float32).numpy() if input_inter is not None else None
+    input_density = input_density.cpu().to(dtype=torch.float32).numpy() if input_density is not None else None
     gt = gt.cpu().numpy()
 
     if mask is not None:
