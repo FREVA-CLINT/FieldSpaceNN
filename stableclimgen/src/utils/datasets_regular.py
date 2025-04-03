@@ -68,13 +68,13 @@ class ClimateDataset(Dataset):
     """
 
     def __init__(self, data_dict: Dict[str, Dict[str, List[str]]], norm_dict: Dict, lazy_load: bool = True,
-                 n_sample_timesteps: int = 1, n_sample_vars: int = -1, shared_files: bool = False):
+                 n_sample_timesteps: int = 1, n_sample_vars: int = -1, shared_files: bool = False, variables_source=None, variables_target=None):
         self.lazy_load = lazy_load
         self.n_sample_timesteps = n_sample_timesteps
 
         self.var_normalizers = {}
-        self.variables_source = data_dict["source"]["variables"]
-        self.variables_target = data_dict["target"]["variables"]
+        self.variables_source = variables_source or data_dict["source"]["variables"]
+        self.variables_target = variables_target or data_dict["target"]["variables"]
         self.climate_in_files = {}
         self.climate_out_files = {}
         self.n_sample_vars = n_sample_vars
