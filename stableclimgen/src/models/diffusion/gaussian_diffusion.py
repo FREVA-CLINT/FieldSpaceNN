@@ -136,7 +136,8 @@ class GaussianDiffusion:
         use_dynamic_clipping: bool = True,
         diffusion_steps: int = 1000,
         diffusion_step_scheduler: str = "linear",
-        diffusion_step_sampler: Optional[Callable] = None
+        diffusion_step_sampler: Optional[Callable] = None,
+        unmask_existing = True
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -144,6 +145,7 @@ class GaussianDiffusion:
         self.rescale_steps = rescale_timesteps
         self.clip_denoised = clip_denoised
         self.use_dynamic_clipping = use_dynamic_clipping
+        self.unmask_existing = unmask_existing
 
         # Use float64 for accuracy.
         if betas is None:
@@ -561,7 +563,7 @@ class GaussianDiffusion:
 
         # Apply mask if provided (useful for inpainting/imputation)
         if torch.is_tensor(mask):
-            x_t = torch.where(~mask, gt_data, x_t) # Keep unmasked areas as ground truth
+            x_t = torch.where(~mask * self.unmask_existing, gt_data, x_t) # Keep unmasked areas as ground truth
 
         terms = {}
 
@@ -635,20 +637,13 @@ class GaussianDiffusion:
                 raise NotImplementedError(self.model_mean_type)
 
             target = target.view(model_output.shape)
-            mask = mask.view(model_output.shape)
             x_t = x_t.view(model_output.shape)
 
             # Calculate MSE loss, applying mask if provided
             if torch.is_tensor(mask):
-                # Only compute loss on masked regions if mask is provided
-                # Ensure mask has the same shape as target/output for broadcasting
-                mask_reshaped = mask.view(target.shape)
-                # Calculate squared error only where mask is True
-                squared_error = (torch.where(mask_reshaped, target - model_output, torch.zeros_like(target))) ** 2
+                mask = mask.view(model_output.shape)
+                squared_error = (torch.where(~mask * self.unmask_existing, torch.zeros_like(target), target - model_output)) ** 2
                 terms["mse"] = mean_flat(squared_error) # Mean over non-batch dims
-                # Optional: Normalize loss by the masked area if needed
-                # mask_ratio = mean_flat(mask_reshaped.float())
-                # terms["mse"] = terms["mse"] / (mask_ratio + 1e-8)
             else:
                  # Compute standard MSE loss over the whole input
                 terms["mse"] = mean_flat((target - model_output) ** 2)
@@ -696,7 +691,7 @@ class GaussianDiffusion:
                  raise RuntimeError("Could not determine intermediate results (pred_xstart)")
 
         if torch.is_tensor(mask):
-            pred_xstart_for_results = torch.where(mask, pred_xstart_for_results, x_t)
+            pred_xstart_for_results = torch.where(~mask * self.unmask_existing, x_t, pred_xstart_for_results)
 
         return terms, pred_xstart_for_results # Return loss dict and predicted x0
 
