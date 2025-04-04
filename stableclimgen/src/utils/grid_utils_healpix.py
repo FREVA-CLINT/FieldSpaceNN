@@ -32,10 +32,14 @@ def get_coords_as_tensor(ds: xr.Dataset, lon: str = 'vlon', lat: str = 'vlat', g
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
         if grid_type == "regular":
-            lons, lats = torch.meshgrid(lons, lats, indexing="ij")
-            theta_tensor = torch.deg2rad(90 - lons.flatten())  # Convert to colatitude
-            phi_tensor = torch.deg2rad(lats.flatten())
-            coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
+            lons, lats = torch.meshgrid(lons, lats, indexing="xy")
+            lat_rad_tensor = torch.deg2rad(lats)
+            theta_tensor = -lat_rad_tensor
+
+            lon_rad_tensor = torch.deg2rad(lons)
+            phi_tensor = lon_rad_tensor - torch.pi
+
+            coords = torch.stack([phi_tensor.flatten(), theta_tensor.flatten()], dim=-1).float()
         else:
             coords = torch.stack((lons, lats), dim=-1).float()
     else:
