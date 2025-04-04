@@ -26,10 +26,11 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  input_embed_names = None,
                  input_embed_confs = None,
                  input_embed_mode = 'sum',
+                 concat_interp = False,
                  **kwargs
                  ) -> None: 
         
-        self.input_dim = input_dim
+        self.input_dim = input_dim + concat_interp
         
         global_levels = torch.tensor(0).view(-1)
         for block_conf in block_configs:
@@ -49,7 +50,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                          rotate_coord_system=rotate_coord_system,
                          interpolate_input=kwargs.get("interpolate_input", False),
                          density_embedder=kwargs.get("density_embedder", False),
-                         interpolator_settings=kwargs.get("interpolator_settings", None))
+                         interpolator_settings=kwargs.get("interpolator_settings", None),
+                         concat_interp=concat_interp)
         
        
         self.Blocks = nn.ModuleList()
@@ -130,7 +132,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
 
-        self.input_layer = InputLayer(input_dim, 
+        self.input_layer = InputLayer(self.input_dim,
                                       lifting_dim, 
                                       self.grid_layer_0, 
                                       embed_names=input_embed_names,

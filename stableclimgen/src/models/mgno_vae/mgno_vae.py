@@ -114,6 +114,7 @@ class MGNO_VAE(MGNO_base_model):
                  input_embed_mode='sum',
                  interpolate_input_residual=False,
                  residual_interpolator_settings: Dict = None,
+                 concat_interp = False,
                  **kwargs
                  ) -> None:
         global_levels = torch.tensor(0).view(-1)
@@ -133,15 +134,16 @@ class MGNO_VAE(MGNO_base_model):
                          global_levels,
                          rotate_coord_system=rotate_coord_system,
                          interpolate_input=kwargs.get("interpolate_input",False),
-                         interpolator_settings=kwargs.get("interpolator_settings",None))
+                         interpolator_settings=kwargs.get("interpolator_settings",None),
+                         concat_interp=concat_interp)
 
-        self.input_dim = input_dim
+        self.input_dim = input_dim + concat_interp
 
         # Construct blocks based on configurations
         self.encoder_blocks = nn.ModuleList()
         self.decoder_blocks = nn.ModuleList()
         
-        self.input_layer = InputLayer(input_dim,
+        self.input_layer = InputLayer(self.input_dim,
                                       lifting_dim,
                                       self.grid_layer_0,
                                       embed_names=input_embed_names,
@@ -247,7 +249,7 @@ class MGNO_VAE(MGNO_base_model):
         b,n,nh,nv,nc = x.shape[:5]
         interp_x = 0
         if self.interpolate_input_residual:
-            interp_x, _ = self.residual_interpolator_down(x,
+            interp_x, _ = self.residual_interpolator_down(x[..., :self.input_dim-self.concat_interp],
                                                       calc_density=False,
                                                       indices_sample=indices_sample)
             interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-2),

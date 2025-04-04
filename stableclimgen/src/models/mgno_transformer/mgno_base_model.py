@@ -14,6 +14,7 @@ class MGNO_base_model(nn.Module):
                  density_embedder=False,
                  interpolator_settings: Dict =None,
                  rotate_coord_system=True,
+                 concat_interp=False
                  ) -> None:
         
                 
@@ -55,6 +56,7 @@ class MGNO_base_model(nn.Module):
                                              )
 
         self.interpolate_input = interpolate_input
+        self.concat_interp = concat_interp
         self.density_embedder = density_embedder
 
     def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
@@ -118,7 +120,10 @@ class MGNO_base_model(nn.Module):
             mask =None
 
             if self.interpolate_input:
-                x = interp_x.unsqueeze(dim=-2)
+                if self.concat_interp:
+                    x = torch.cat([x, interp_x.unsqueeze(-2)], dim=-1)
+                else:
+                    x = interp_x.unsqueeze(dim=-2)
 
         x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
         return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1])
