@@ -8,17 +8,22 @@ import cartopy.crs as ccrs
 import numpy as np
 import torch
 
-def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, save_path=None):
+def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None):
+
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
     gt = gt.cpu().numpy()
 
     if torch.is_tensor(input_inter):
         input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
+    
+    if torch.is_tensor(input_density):
+        input_density = input_density.cpu().to(dtype=torch.float32).numpy()
 
     coords_input = coords_input.rad2deg().cpu().numpy()
     coords_output = coords_output.rad2deg().cpu().numpy()
     plot_input_inter = input_inter is not None
+    plot_input_density = input_density is not None
 
     if mask is not None:
         mask = mask.squeeze(-1).cpu().bool().numpy()
@@ -32,7 +37,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
 
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4 + plot_input_inter,
+        nrows=gt.shape[0], ncols=4 + plot_input_inter  + plot_input_density,
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
@@ -43,19 +48,20 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
         gt_min = np.min(gt[i])
         gt_max = np.max(gt[i])
         plot_samples = [
-            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
-            (1, gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
-            (2, output[i], coords_output[i], "Output", gt_min, gt_max),
-            (3, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
-        ] if not plot_input_inter else [
-            (0, input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
-            (1, input_inter[i], coords_output[i], "Input Interpolated", None, None),
-            (2, gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
-            (3, output[i], coords_output[i], "Output", gt_min, gt_max),
-            (4, gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
-        ]
+            (input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
+            (gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
+            (output[i], coords_output[i], "Output", gt_min, gt_max),
+            (gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
+        ] 
+        
+        if plot_input_inter:
+          plot_samples.insert(1, (input_inter[i], coords_output[i], "Input Interpolated", None, None))
+          
+        if plot_input_density:
+          plot_samples.insert(1, (input_density[i], coords_output[i], "Input Density", None, None))
         # Loop over samples
-        for index, data, coords, title, vmin, vmax in plot_samples:
+        for index, plot_sample in enumerate(plot_samples):
+            data, coords, title, vmin, vmax = plot_sample
             # Turn off axes for cleaner plots
             axes[i, index].set_axis_off()
             axes[i, index].set_title(title)

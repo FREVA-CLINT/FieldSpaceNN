@@ -51,7 +51,10 @@ class MGEncoderDecoderConfig:
                  rule: str = 'fc',
                  level_diff_zero_linear = False,
                  layer_type='Dense',
-                 rank=4):
+                 rank=4,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
@@ -78,7 +81,12 @@ class MGStackedEncoderDecoderConfig:
                  with_gamma=False,
                  embed_confs: dict=None,
                  embed_names: list=None,
-                 embed_mode: str = 'sum'):
+                 embed_mode: str = 'sum',
+                 n_head_channels: int=16,
+                 seq_level: int=2,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
@@ -88,7 +96,10 @@ class MGStackedEncoderDecoderConfig:
 class MGProcessingConfig:
     def __init__(self, 
                  layer_settings_levels: List[List],
-                 model_dims_out: List[List]):
+                 model_dims_out: List[List],
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False):
 
         if isinstance(layer_settings_levels[0], omegaconf.DictConfig):
             layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out))]

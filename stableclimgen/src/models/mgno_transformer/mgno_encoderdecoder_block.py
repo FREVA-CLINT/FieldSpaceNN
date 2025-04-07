@@ -38,7 +38,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  mask_as_embedding = False,
                  level_diff_zero_linear = False,
                  layer_type='Dense',
-                 rank=4
+                 rank=4,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False
                 ) -> None: 
       
         super().__init__()
@@ -115,7 +118,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                         rank=rank,
                                         with_gamma = with_gamma,
                                         mask_as_embedding=mask_as_embedding,
-                                        OW_zero=omit_backtransform
+                                        OW_zero=omit_backtransform,
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars
                                         )
                     elif 'pre_layer_norm' in block_type:
                         layer = PreActivation_NOBlock(
@@ -126,7 +132,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                     layer_type=layer_type,
                                     rank=rank,
                                     with_gamma = with_gamma,
-                                    mask_as_embedding=mask_as_embedding
+                                    mask_as_embedding=mask_as_embedding,
+                                    n_vars_total=n_vars_total,
+                                    rank_vars=rank_vars,
+                                    factorize_vars=factorize_vars
                                     )
                 
                 self.layers.append(layer)
@@ -257,6 +266,11 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                  mask_as_embedding = False,
                  with_gamma = False,
                  p_dropout=0,
+                 n_head_channels=16,
+                 seq_level=2,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False
                 ) -> None: 
       
         super().__init__()
@@ -303,7 +317,10 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
             layer_type=layer_type,
             concat_model_dim=concat_model_dim,
             concat_layer_type=concat_layer_type,
-            output_reduction_layer_type=reduction_layer_type
+            output_reduction_layer_type=reduction_layer_type,
+            n_vars_total=n_vars_total,
+            rank_vars=rank_vars,
+            factorize_vars=factorize_vars
             )
 
         if block_type == 'post_layer_norm':
@@ -312,7 +329,11 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                                         rank=rank,
                                         embedder=embedder,
                                         with_gamma=with_gamma,
-                                        grid_layers=rcm.grid_layers)
+                                        grid_layers=rcm.grid_layers,
+                                        p_dropout=p_dropout,
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars)
         
         elif block_type == 'pre_layer_norm':
             self.layer = Stacked_PreActivationNOBlock(no_conv_layer,
@@ -320,7 +341,11 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                                         rank=rank,
                                         embedder=embedder,
                                         with_gamma=with_gamma,
-                                        grid_layers=rcm.grid_layers)
+                                        grid_layers=rcm.grid_layers,
+                                        p_dropout=p_dropout,
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars)
         
         elif block_type == 'pre_att_layer_norm':
             self.layer = Stacked_PreActivationAttNOBlock(no_conv_layer,
@@ -328,7 +353,13 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                                         rank=rank,
                                         embedder=embedder,
                                         with_gamma=with_gamma,
-                                        grid_layers=rcm.grid_layers)
+                                        grid_layers=rcm.grid_layers,
+                                        n_head_channels=n_head_channels,
+                                        p_dropout=p_dropout,
+                                        seq_level=seq_level,
+                                        n_vars_total=n_vars_total,
+                                        rank_vars=rank_vars,
+                                        factorize_vars=factorize_vars)
 
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
         

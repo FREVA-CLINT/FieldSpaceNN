@@ -10,6 +10,17 @@ from torch.optim import AdamW
 from ...utils.visualization import scatter_plot
 from ...modules.icon_grids.grid_layer import GridLayer
 
+
+def check_empty(x):
+
+    if isinstance(x, torch.Tensor):
+        if x.numel()==0:
+            return None
+        else:
+            return x      
+    else:
+        return x
+
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 
     def __init__(self, optimizer, lr_groups, max_iters, iter_start=0):
@@ -145,8 +156,10 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.noise_std = noise_std
         self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_0)
 
-    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
+        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
+
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, input_dists=dists_input)
         return x
 
     def on_after_backward(self):
@@ -156,9 +169,18 @@ class LightningMGNOBaseModel(pl.LightningModule):
                     noise = torch.randn_like(param.grad) * self.noise_std
                     param.grad += noise 
     
+
+    def predict_step(self, batch, batch_idx):
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
+        output = {'output': output,
+                  'mask': mask}
+        return output
+    
+
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
         
         loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
 
@@ -169,22 +191,23 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
+        coords_input, coords_output, indices, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
 
   
         loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
-  #      self.log_dict(self.get_no_params_dict(), logger=True)
 
         if batch_idx == 0:
             if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                input_inter,_ = self.model.interpolator(source, mask=mask, indices_sample=indices)
+                input_inter, input_density = self.model.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
             else:
                 input_inter = None
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
+                input_density = None
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter, input_density=input_density)
             
 
         return loss
@@ -199,7 +222,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
             coords = self.model.cell_coords_global.unsqueeze(dim=0).unsqueeze(dim=-2)
         return coords
 
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None, max_samples=8):
+
+    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb, input_inter=None, input_density=None, max_samples=8):
 
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
@@ -210,14 +234,15 @@ class LightningMGNOBaseModel(pl.LightningModule):
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
             
-            if coords_input.numel()==0:
+            if coords_input is None:
                 coords_input = self.get_coords_from_model(indices_dict)
+
             if coords_input.shape[0] != 1:
                 coords_input = coords_input.view(input.shape[0], input.shape[1], *coords_input.shape[1:])
             elif len(coords_input.shape) == 4:
                 coords_input = coords_input.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
 
-            if coords_output.numel()==0:
+            if coords_output is None:
                 coords_output = self.get_coords_from_model(indices_dict)
             if coords_output.shape[0] != 1:
                 coords_output = coords_output.view(input.shape[0], input.shape[1], *coords_output.shape[1:])
@@ -229,10 +254,14 @@ class LightningMGNOBaseModel(pl.LightningModule):
             else:
                 mask_p = None
             if input_inter is not None:
+
                 input_inter_p = input_inter[sample,:max_samples,:,k]
+                input_density_p = input_density[sample,:max_samples,:,k]
             else:
                 input_inter_p = None
-            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p,save_path=save_path)
+                input_density_p = None
+            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p, input_density=input_density_p, save_path=save_path)
+
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 
 

@@ -59,7 +59,7 @@ class MGNO_base_model(nn.Module):
         self.concat_interp = concat_interp
         self.density_embedder = density_embedder
 
-    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
+    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None, input_dists=None):
 
         if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
@@ -69,21 +69,16 @@ class MGNO_base_model(nn.Module):
                                                global_level) 
                                                for global_level in self.global_levels]))
             indices_sample['indices_layers'] = indices_layers
-            indices_base = indices_layers[0]
-        else:           
-            indices_base = indices_sample = None
 
-        # Use global cell coordinates if none are provided
-        if coords_input is None or coords_input.numel()==0:
-            coords_input = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
+        if input_dists is not None and input_dists.numel()==0:
+            input_dists = None
 
-        if coords_output is None or coords_output.numel()==0:
-            coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
-    
-        return indices_sample, coords_input, coords_output
 
-    def prepare_batch(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
-        b, nt, n, nv, c = x.shape[:5]
+        return indices_sample, coords_input, coords_output, input_dists
+
+
+    def prepare_batch(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
+        b, nt = x.shape[:2]
         x = x.view(b * nt, *x.shape[2:])
         if mask is not None:
             mask = mask.view(b * nt, *mask.shape[2:])
@@ -91,6 +86,8 @@ class MGNO_base_model(nn.Module):
             coords_input = coords_input.view(b * nt, *coords_input.shape[2:])
         if coords_output is not None:
             coords_output = coords_output.view(b * nt, *coords_output.shape[2:])
+        if input_dists is not None:
+            input_dists = input_dists.view(b * nt, *input_dists.shape[2:])
         if indices_sample is not None and isinstance(indices_sample, dict):
             for key, value in indices_sample.items():
                 indices_sample[key] = value.view(b * nt, *value.shape[2:]) if torch.is_tensor(value) else value
@@ -98,23 +95,27 @@ class MGNO_base_model(nn.Module):
             for key, value in emb.items():
                 emb[key] = value.view(b * nt, *value.shape[2:])
 
-        return x, coords_input, coords_output, indices_sample, mask, emb
+        return x, coords_input, coords_output, indices_sample, mask, emb, input_dists
     
 
-    def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
+    def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
         b, nt, n = x.shape[:3]
-        x, coords_input, coords_output, indices_sample, mask, emb = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb)
+        x, coords_input, coords_output, indices_sample, mask, emb = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, input_dists)
+
         
-        indices_sample, coords_input, coords_output = self.prepare_coords_indices(coords_input,
+        indices_sample, coords_input, coords_output, input_dists = self.prepare_coords_indices(coords_input,
                                                                         coords_output=coords_output, 
-                                                                        indices_sample=indices_sample)
+                                                                        indices_sample=indices_sample,
+                                                                        input_dists=input_dists)
         
         if self.interpolate_input or self.density_embedder:
             interp_x, density_map = self.interpolator(x,
                                             mask=mask.unsqueeze(-1),
                                             calc_density=True,
                                             indices_sample=indices_sample,
-                                            input_coords=coords_input)
+                                            input_coords=coords_input,
+                                            input_dists=input_dists)
+
             
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None
