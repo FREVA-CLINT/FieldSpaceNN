@@ -49,7 +49,7 @@ class MGNO_base_model(nn.Module):
 
         self.interpolate_input = interpolate_input
 
-    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None):
+    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None, input_dists=None):
 
         if indices_sample is not None and isinstance(indices_sample, dict):
             indices_layers = dict(zip(
@@ -59,32 +59,28 @@ class MGNO_base_model(nn.Module):
                                                global_level) 
                                                for global_level in self.global_levels]))
             indices_sample['indices_layers'] = indices_layers
-            indices_base = indices_layers[0]
-        else:           
-            indices_base = indices_sample = None
 
-        # Use global cell coordinates if none are provided
-        if coords_input is None or coords_input.numel()==0:
-            coords_input = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
+        if input_dists is not None and input_dists.numel()==0:
+            input_dists = None
 
-        if coords_output is None or coords_output.numel()==0:
-            coords_output = self.cell_coords_global[indices_base].unsqueeze(dim=-2)
     
-        return indices_sample, coords_input, coords_output
+        return indices_sample, coords_input, coords_output, input_dists
     
 
-    def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
+    def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
         
-        indices_sample, coords_input, coords_output = self.prepare_coords_indices(coords_input,
+        indices_sample, coords_input, coords_output, input_dists = self.prepare_coords_indices(coords_input,
                                                                         coords_output=coords_output, 
-                                                                        indices_sample=indices_sample)
+                                                                        indices_sample=indices_sample,
+                                                                        input_dists=input_dists)
         
         if self.interpolate_input:
             x, density_map = self.interpolator(x, 
                                             mask=mask, 
                                             calc_density=True,
                                             indices_sample=indices_sample,
-                                            input_coords=coords_input)
+                                            input_coords=coords_input,
+                                            input_dists=input_dists)
             
             emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
             mask =None

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import xarray as xr
 from torch.utils.data import Dataset, Sampler
-from .grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon
+from .grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon, get_grid_type_from_var
 from . import normalizer as normalizers
 
 
@@ -62,6 +62,13 @@ def get_stats(files, variable, norm_dict, n_sample=None):
 
     return get_moments(np.concatenate(data), norm_dict["type"], level=norm_dict["level"])
 
+def invert_dict(dict):
+    dict_out = {}
+    unique_values = np.unique(np.array(list(dict.values())))
+
+    for uni_value in unique_values:
+        dict_out[uni_value] = [key for key,value in dict.items() if value==uni_value]
+    return dict_out
 
 class NetCDFLoader_lazy(Dataset):
     def __init__(self, data_dict,
@@ -151,13 +158,17 @@ class NetCDFLoader_lazy(Dataset):
         grid_output = data_dict["target"]["grid"]
 
         coords_processing = get_coords_as_tensor(xr.open_dataset(grid_processing), lon='clon', lat='clat', target='numpy')
-
         
+        self.grid_types_vars_input = [get_grid_type_from_var(xr.open_dataset(self.files_source[0]), variable) for variable in self.variables_source]
+        grid_types_vars_unique = np.unique(np.array(self.grid_types_vars_input))
+        
+        self.vars_grid_types_input = invert_dict(dict(zip(self.variables_source, self.grid_types_vars_input)))
+
         if  grid_input != grid_processing:
             input_mapping, input_in_range, positions = get_nh_variable_mapping_icon(grid_processing, 
                                                                         ['cell'], 
                                                                         grid_input, 
-                                                                        ['cell'], 
+                                                                        grid_types_vars_unique, 
                                                                         search_radius=search_radius, 
                                                                         max_nh=nh_input,
                                                                         lowest_level=0,
@@ -165,13 +176,18 @@ class NetCDFLoader_lazy(Dataset):
                                                                         scale_input=1.,
                                                                         periodic_fov= None)
                             
-            input_mapping = input_mapping['cell']['cell']
-            input_in_range = input_in_range['cell']['cell']
-            input_coordinates = get_coords_as_tensor(xr.open_dataset(grid_input), lon='clon', lat='clat', target='numpy')
+            input_mapping = input_mapping['cell']
+           # input_in_range = input_in_range['cell']
+            input_coordinates = {}
+            for grid_type in grid_types_vars_unique:
+                input_coordinates[grid_type] = get_coords_as_tensor(xr.open_dataset(grid_input), grid_type=grid_type, target='numpy')
+            
+            input_positions = positions['cell']
         else:
-            input_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            input_in_range = np.ones_like(input_mapping, dtype=bool)
+            input_mapping = {'cell': np.arange(coords_processing.shape[0])[:,np.newaxis]}
+            #input_in_range = {'cell': np.ones_like(input_mapping['cell'], dtype=bool)}
             input_coordinates = None
+            input_positions = None
             
         if grid_output != grid_processing:
             output_mapping, output_in_range, positions = get_nh_variable_mapping_icon(
@@ -186,19 +202,15 @@ class NetCDFLoader_lazy(Dataset):
                                                         periodic_fov= None)
             
             output_mapping = output_mapping['cell']['cell']
-            output_in_range = output_in_range['cell']['cell']
             positions = positions['cell']['cell']
             output_coordinates = get_coords_as_tensor(xr.open_dataset(grid_output), lon='clon', lat='clat', target='numpy')
         else:
-            output_mapping = np.arange(coords_processing.shape[0])[:,np.newaxis]
-            output_in_range = np.ones_like(output_mapping, dtype=bool)
+            output_mapping = {'cell': np.arange(coords_processing.shape[0])[:,np.newaxis]}
             output_coordinates = None
             
-        
+        self.input_positions = input_positions
         self.input_mapping = input_mapping
-        self.input_in_range = input_in_range
         self.output_mapping = output_mapping
-        self.output_in_range = output_in_range
         self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
         
@@ -262,8 +274,9 @@ class NetCDFLoader_lazy(Dataset):
         return ds_source, ds_target
 
 
-    def get_data(self, ds, ts, global_indices, variables, global_level_start, index_mapping_dict=None, sizes=None):
+    def get_data(self, ds, ts, global_indices, variables, global_level_start, grid_type, index_mapping_dict=None):
         
+
         if index_mapping_dict is not None:
             indices = index_mapping_dict[global_indices // 4**global_level_start] 
         else:
@@ -272,17 +285,36 @@ class NetCDFLoader_lazy(Dataset):
         n, nh = indices.shape
         indices = indices.reshape(-1)
 
-        # tbd: spatial dim as input!
-        if 'ncells' in dict(ds.sizes).keys():
-            ds = ds.isel(ncells=indices, time=ts)
-        else:
-            ds = ds.isel(cell=indices, time=ts)
-
         data_g = []
-        for variable in variables:
-            data = torch.tensor(ds[variable].values)
-            data = data[0] if data.dim() > 1  else data
-            data_g.append(data)
+
+        if grid_type == 'lonlat':
+            for variable in variables:
+                data = torch.tensor(ds[variable][ts].values)
+
+                data = data[0] if data.dim() > 2  else data
+                data = data.reshape(-1)
+                data_g.append(data[indices].reshape(-1, nh))
+
+        else:
+            isel_dict = {}
+            if 'ncells' in dict(ds.sizes).keys():
+                isel_dict['ncells'] = indices
+            elif 'cell' in dict(ds.sizes).keys():
+                isel_dict['cell'] = indices
+
+            if 'time' in dict(ds.sizes).keys():
+                isel_dict['time'] = ts
+
+            if 'plev' in dict(ds.sizes).keys():
+                isel_dict['plev'] = [0]
+            
+            ds = ds.isel(isel_dict)
+    
+            for variable in variables:
+
+                data = torch.tensor(ds[variable].values)
+                data = data[0] if data.dim() > 1  else data
+                data_g.append(data)
 
         data_g = torch.stack(data_g, dim=-1)
         data_g = data_g.view(n, nh, len(variables), 1)
@@ -316,9 +348,9 @@ class NetCDFLoader_lazy(Dataset):
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
         global_cells = self.global_cells
-        input_in_range = self.input_in_range
+    #    input_in_range = self.input_in_range
         output_mapping = self.output_mapping
-        output_in_range = self.output_in_range
+     #   output_in_range = self.output_in_range
 
         if self.n_sample_vars !=-1 and self.n_sample_vars != len(self.variables_source):
             sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
@@ -332,10 +364,16 @@ class NetCDFLoader_lazy(Dataset):
             variables_source = [variables_source]
             variables_target = [variables_target]
 
-        data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables_source, 0, input_mapping, sizes=self.var_sizes_source)
+        data_source_grids = {}
+        for grid_type, variables in self.vars_grid_types_input.items():
+            variables = [var for var in variables if var in variables_source]
+            data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables, 0, grid_type, input_mapping[grid_type])
+            data_source_grids[grid_type] = data_source 
+
+        data_source = torch.concat(list(data_source_grids.values()), dim=-2)
 
         if ds_target is not None:
-            data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, output_mapping, sizes=self.var_sizes_target)
+            data_target = self.get_data(ds_target, time_point_idx, global_cells[region_idx] , variables_target, 0, 'cell',output_mapping['cell'])
         else:
             data_target = data_source
 
@@ -343,12 +381,19 @@ class NetCDFLoader_lazy(Dataset):
         ds_target.close()   
 
         if self.input_coordinates is not None:
-            coords_input = torch.tensor(self.input_coordinates[input_mapping[global_cells[region_idx]]])
+            grid_type = self.grid_types_vars_input[0]
+            coords_input = torch.tensor(self.input_coordinates[grid_type])[self.input_mapping[grid_type][global_cells[region_idx]]]
         else:
             coords_input = torch.tensor([])
 
+        if self.input_positions is not None:
+            grid_type = self.grid_types_vars_input[0]
+            dists_input = self.input_positions[grid_type][0][global_cells[region_idx]]
+        else:
+            dists_input = torch.tensor([])
+
         if self.output_coordinates is not None:
-            coords_output = torch.tensor(self.output_coordinates[output_mapping[global_cells[region_idx]]])
+            coords_output = torch.tensor(self.output_coordinates[self.output_mapping[global_cells[region_idx]]])
         else:
             coords_output = torch.tensor([])
 
@@ -403,7 +448,7 @@ class NetCDFLoader_lazy(Dataset):
             data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
 
         if hasattr(self,'input_in_range'):
-            input_in_range = input_in_range[global_cells[region_idx]]
+            input_in_range = input_in_range[grid_type][global_cells[region_idx]]
             drop_mask[input_in_range==False] = True
 
         data_source[drop_mask] = 0
@@ -418,7 +463,7 @@ class NetCDFLoader_lazy(Dataset):
                 
         embed_data = {'VariableEmbedder': sample_vars}
 
-        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data 
+        return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data, dists_input
 
     def __len__(self):
         return self.len_dataset

@@ -26,16 +26,49 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
     elif grid_type == 'edge':
         lon, lat = 'elon', 'elat'
     
+    elif grid_type == 'lonlat':
+        lon, lat = 'lon', 'lat'
+    
     if target=='torch':
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
+
+        if grid_type=='lonlat':
+            lons, lats = torch.meshgrid((lons.deg2rad(),lats.deg2rad()), indexing='xy')
+            lons = lons.reshape(-1)
+            lats = lats.reshape(-1)
+
+
         coords = torch.stack((lons, lats), dim=-1).float()
     else:
         lons = np.array(ds[lon].values)
         lats = np.array(ds[lat].values)
+
+        if grid_type=='lonlat':
+            lons, lats = np.meshgrid(np.deg2rad(lons),np.deg2rad(lats),indexing='xy')
+            lons = lons.reshape(-1)
+            lats = lats.reshape(-1) 
         coords = np.stack((lons, lats), axis=-1).astype(np.float32)
 
     return coords
+
+def get_grid_type_from_var(ds:xr.Dataset, variable:str) -> dict:
+    dims = ds[variable].dims
+    spatial_dim = dims[-1]
+
+    if 'lon' in spatial_dim or 'lat' in spatial_dim:
+        return 'lonlat'
+    
+    elif 'cell' in spatial_dim:
+        return 'cell'
+
+    elif 'vertex' in spatial_dim:
+        return 'vertex'
+    
+    elif 'edge' in spatial_dim:
+        return 'edge'
+    
+
 
 def get_coord_dict_from_var(ds:xr.Dataset, variable:str) -> dict:
     """
@@ -488,7 +521,7 @@ def get_nh_variable_mapping_icon(grid_icon:str|xr.Dataset,
             if scale_input > 1:
                 coords_input = scale_coordinates(coords_input, scale_input)
 
-            if grid_icon.attrs['uuidOfHGrid'] == grid.attrs['uuidOfHGrid']:
+            if 'uuidOfHGrid' in grid.attrs and grid_icon.attrs['uuidOfHGrid'] == grid.attrs['uuidOfHGrid']:
                 indices = torch.arange(coords_icon.shape[1]).view(-1,1)
                 in_rng_mask = torch.ones_like(indices, dtype=torch.bool)
 
