@@ -110,7 +110,7 @@ class Sampler:
                     **model_kwargs
                 )
                 # Reapply mask to the sample output
-                out["sample"] = torch.where(~mask, input_data, out["sample"])
+                out["sample"] = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, out["sample"])
                 yield out
                 x_0 = out["sample"]
 

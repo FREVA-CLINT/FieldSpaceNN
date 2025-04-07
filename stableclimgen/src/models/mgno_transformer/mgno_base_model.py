@@ -93,7 +93,7 @@ class MGNO_base_model(nn.Module):
             coords_output = coords_output.view(b * nt, *coords_output.shape[2:])
         if indices_sample is not None and isinstance(indices_sample, dict):
             for key, value in indices_sample.items():
-                indices_sample[key] = value.view(b * nt, *value.shape[2:])
+                indices_sample[key] = value.view(b * nt, *value.shape[2:]) if torch.is_tensor(value) else value
         if emb is not None:
             for key, value in emb.items():
                 emb[key] = value.view(b * nt, *value.shape[2:])
