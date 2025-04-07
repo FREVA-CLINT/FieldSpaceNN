@@ -3,13 +3,14 @@ from .gaussian_diffusion import extract_into_tensor, GaussianDiffusion
 
 
 class Sampler:
-    def __init__(self, gaussian_diffusion: GaussianDiffusion):
+    def __init__(self, gaussian_diffusion: GaussianDiffusion, condition_input=False):
         """
         Initialize the Sampler class with a Gaussian diffusion process.
 
         :param gaussian_diffusion: Gaussian diffusion object with necessary properties and methods.
         """
         self.gaussian_diffusion = gaussian_diffusion
+        self.condition_input = condition_input
 
     def sample_loop(
         self,
@@ -86,7 +87,7 @@ class Sampler:
         :return: A generator yielding the sample dictionary for each diffusion step.
         """
         if torch.is_tensor(mask):
-            x_0 = torch.where(~mask, input_data, x_0)
+            x_0 = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, x_0)
 
         indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
 
@@ -98,6 +99,14 @@ class Sampler:
         # Iterate over diffusion steps in reverse
         for i in indices:
             diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
+            if self.condition_input:
+                alpha_cumprod = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_0.shape)
+                input_weight = torch.sqrt(alpha_cumprod)
+                input_part = input_weight * input_data
+                noise_weight = torch.sqrt((1 - alpha_cumprod))
+                noise_part = noise_weight * torch.randn_like(x_0)
+                weighed_input = input_part + noise_part
+                x_0 = torch.where(~mask, weighed_input, x_0)
             with torch.no_grad():
                 out = self.sample(
                     model,
