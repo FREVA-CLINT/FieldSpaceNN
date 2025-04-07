@@ -159,7 +159,8 @@ class DiffusionGenerator(nn.Module):
             x: torch.Tensor,
             emb: Optional[Dict] = None,
             mask: Optional[torch.Tensor] = None,
-            cond: Optional[torch.Tensor] = None
+            cond: Optional[torch.Tensor] = None,
+            **kwargs
     ) -> torch.Tensor:
         """
         Forward pass through the Diffusion Generator model.
@@ -193,20 +194,20 @@ class DiffusionGenerator(nn.Module):
 
         # Encoder forward pass with optional skip connections
         for module in self.encoder:
-            h = module(h, emb, mask, cond)
+            h = module(h, emb, mask)
             if self.skip_connections:
                 hs.append(h)
 
         # Processor forward pass
         for module in self.processor:
-            h = module(h, emb, mask, cond)
+            h = module(h, emb, mask)
 
         # Decoder forward pass with optional skip connections
         for module in self.decoder:
             if self.skip_connections:
                 h = torch.cat([h, hs.pop()], dim=-1)
-            h = module(h, emb, mask, cond)
+            h = module(h, emb, mask)
 
         # Output layer reconstruction with unpatchifying
-        h = self.out(h, emb, mask, cond, out_shape=out_shape)
+        h = self.out(h, emb, mask, out_shape=out_shape)
         return h

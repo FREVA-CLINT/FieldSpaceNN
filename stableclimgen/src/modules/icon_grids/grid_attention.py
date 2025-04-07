@@ -2,6 +2,7 @@ import copy
 
 import torch
 import torch.nn as nn
+from numpy.ma.core import indices
 
 from .grid_layer import RelativeCoordinateManager, GridLayer
 from ..transformer.transformer_base import TransformerBlock
@@ -25,6 +26,7 @@ class GridAttention(nn.Module):
         nh = spatial_attention_configs.pop('nh')
 
         self.seq_lvl = spatial_attention_configs.pop('seq_lvl')
+        self.timesteps = spatial_attention_configs.pop('timesteps') if 'timesteps' in spatial_attention_configs.keys() else 1
 
         spatial_attention_configs['seq_lengths'] = 4 ** self.seq_lvl  if self.seq_lvl != -1 else None
         self.attention_layer = TransformerBlock(ch_in,
@@ -48,9 +50,17 @@ class GridAttention(nn.Module):
         return emb
 
     def forward(self, x, indices_sample=None, mask=None, emb=None, *args, **kwargs):
-
+        b = x.shape[0]
         emb = self.get_coordinates(indices_sample["indices_layers"] if indices_sample else None, emb)
-
+        x, mask, emb = self.prepare_batch(x, mask, emb.copy())
         x = self.attention_layer(x, emb=emb, mask=mask)
+        return x.view(b, *x.shape[2:])
 
-        return x
+    def prepare_batch(self, x, mask, emb):
+        bt, nt = x.shape[0], self.timesteps
+        x = x.view(bt // nt, nt, *x.shape[1:])
+        if emb is not None:
+            for key, value in emb.items():
+                if value.shape[0] == bt:
+                    emb[key] = value.view(bt // nt, nt, *value.shape[1:])
+        return x, mask, emb

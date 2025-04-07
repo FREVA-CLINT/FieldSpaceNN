@@ -8,109 +8,36 @@ import cartopy.crs as ccrs
 import numpy as np
 import torch
 
-def make_ax(index, fig,gs):
-    return fig.add_subplot(gs[0, index], projection=projection)
-
 def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None):
-    coords_input = coords_input.rad2deg().cpu().numpy()
-    coords_output = coords_output.rad2deg().cpu().numpy()
 
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
-    input_inter = input_inter.cpu().to(dtype=torch.float32).numpy() if input_inter is not None else None
-    input_density = input_density.cpu().to(dtype=torch.float32).numpy() if input_density is not None else None
     gt = gt.cpu().numpy()
 
-    if mask is not None:
-        mask = mask.cpu().bool().numpy()
-        input = input[mask==False]
-        coords_input = coords_input[mask==False]
-
-    coords_input = coords_input.reshape(-1,2)
-    coords_output = coords_output.reshape(-1,2)
+    if torch.is_tensor(input_inter):
+        input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
     
-    plot_input_inter = input_inter is not None
+    if torch.is_tensor(input_density):
+        input_density = input_density.cpu().to(dtype=torch.float32).numpy()
 
+    coords_input = coords_input.rad2deg().cpu().numpy()
+    coords_output = coords_output.rad2deg().cpu().numpy()
+    plot_input_inter = input_inter is not None
     plot_input_density = input_density is not None
 
-    projection = ccrs.Mollweide()
-
-    n_plots = 5 + int(plot_input_inter) + int(plot_input_density)
-
-    fig = plt.figure(figsize=(5 * n_plots, 7))
-    gs = gridspec.GridSpec(1, n_plots, figure=fig, wspace=0.25)
-
-    plot_idx = 0
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_input[:, 0], coords_input[:, 1], c=input, transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Input")
-    plot_idx += 1
-
-    if plot_input_inter:
-        ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-        cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=input_inter, transform=ccrs.PlateCarree(), s=6)
-        plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-        ax.set_title("Input Interpolated")
-        plot_idx += 1
-    
-    if plot_input_density:
-        ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-        cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=input_density, transform=ccrs.PlateCarree(), s=6)
-        plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-        ax.set_title("Input density")
-        plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=output, transform=ccrs.PlateCarree(), s=5)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Output")
-    plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=gt, transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Ground Truth")
-    plot_idx += 1
-
-    ax = fig.add_subplot(gs[0, plot_idx], projection=projection)
-    cax = ax.scatter(coords_output[:, 0], coords_output[:, 1], c=gt.squeeze() - output.squeeze(), transform=ccrs.PlateCarree(), s=6)
-    plt.colorbar(cax, ax=ax, orientation='horizontal', shrink=0.6)
-    ax.set_title("Error")
-
-    if save_path is not None:
-        plt.savefig(save_path, bbox_inches='tight')
-
-
-def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask, save_path=None):
-    input = input.cpu().numpy()
-    output = output.cpu().to(dtype=torch.float32).numpy()
-    gt = gt.cpu().numpy()
-
-    if coords_input.shape[0] == 1:
-        coords_input = coords_input.repeat(gt.shape[0], 1, 1, 1)
-        coords_output = coords_output.repeat(gt.shape[0], 1, 1, 1)
-
-    coords_input = coords_input.rad2deg().cpu().numpy()
-    coords_output = coords_output.rad2deg().cpu().numpy()
-
     if mask is not None:
-        mask = mask.cpu().bool().numpy()
-        input = input[mask == False]
-        coords_input = coords_input[mask == False]
+        mask = mask.squeeze(-1).cpu().bool().numpy()
+    else:
+        mask = np.zeros_like(input, dtype=bool).squeeze(-1)
 
-    input = input.reshape(gt.shape[0], -1)
-    coords_input = coords_input.reshape(gt.shape[0], -1, 2)
     coords_output = coords_output.reshape(gt.shape[0], -1, 2)
 
     # Define image size and calculate differences between ground truth and output
     img_size = 3
-    differences = gt - output
 
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4,
+        nrows=gt.shape[0], ncols=4 + plot_input_inter  + plot_input_density,
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
@@ -118,19 +45,30 @@ def scatter_plot_diffusion(input, output, gt, coords_input, coords_output, mask,
 
     # Plot each sample and timestep
     for i in range(gt.shape[0]):
+        gt_min = np.min(gt[i])
+        gt_max = np.max(gt[i])
+        plot_samples = [
+            (input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
+            (gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
+            (output[i], coords_output[i], "Output", gt_min, gt_max),
+            (gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
+        ] 
+        
+        if plot_input_inter:
+          plot_samples.insert(1, (input_inter[i], coords_output[i], "Input Interpolated", None, None))
+          
+        if plot_input_density:
+          plot_samples.insert(1, (input_density[i], coords_output[i], "Input Density", None, None))
         # Loop over samples
-        for index, data, coords in [
-            (0, input[i], coords_input[i]),
-            (1, gt[i], coords_output[i]),
-            (2, output[i], coords_output[i]),
-            (3, differences[i], coords_output[i])
-        ]:
+        for index, plot_sample in enumerate(plot_samples):
+            data, coords, title, vmin, vmax = plot_sample
             # Turn off axes for cleaner plots
             axes[i, index].set_axis_off()
-            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
+            axes[i, index].set_title(title)
+            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6, vmin=vmin, vmax=vmax)
 
             # Add color bar to each difference plot
-            cb = fig.colorbar(cax, ax=axes[i, index])
+            cb = fig.colorbar(cax, ax=axes[i, index], orientation='horizontal', shrink=0.6)
 
     # Adjust layout and save the figure for the current channel
     plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
@@ -183,45 +121,38 @@ def plot_images(
         )
         axes = np.atleast_2d(axes)
 
-        # Determine color limits for data and difference plots
-        vmin_data, vmax_data = gt_data[..., v, :].min().item(), gt_data[..., v, :].max().item()
-        vmax_diff = torch.max(torch.abs(differences[..., v, :])).item()
-        vmin_diff = -vmax_diff
-
-        # Set background color for the figure
-        fig.patch.set_facecolor('black')
-
         # Plot each sample and timestep
         for i in range(gt_data.shape[0]):  # Loop over samples
             for j in range(gt_data.shape[1]):  # Loop over timesteps
-                for index, data, vmin, vmax, coords in [
-                    (j, in_data, vmin_data, vmax_data, in_coords),
-                    (j + gt_data.shape[1], gt_data, vmin_data, vmax_data, gt_coords),
-                    (j + 2 * gt_data.shape[1], out_data, vmin_data, vmax_data, gt_coords),
-                    (j + 3 * gt_data.shape[1], differences, vmin_diff, vmax_diff, gt_coords)
+                gt_min = torch.min(gt_data[i, j, ..., v, :])
+                gt_max = torch.max(gt_data[i, j, ..., v, :])
+                for index, data, vmin, vmax, coords, title in [
+                    (j, in_data, None, None, in_coords, "Input"),
+                    (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
+                    (j + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords, "Output"),
+                    (j + 3 * gt_data.shape[1], differences, None, None, gt_coords, "Error")
                 ]:
                     # Turn off axes for cleaner plots
                     axes[i, index].set_axis_off()
+                    axes[i, index].set_title(title)
                     if coords is not None:  # Geospatial plotting with coordinates
                         # Add coastlines and borders
                         axes[i, index].add_feature(cartopy.feature.COASTLINE, edgecolor="black", linewidth=0.6)
                         axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
                         # Create a pcolormesh with geospatial coordinates
                         pcm = axes[i, index].pcolormesh(
-                            coords[0, 0, :, v, 1], coords[0, :, 0, v, 0],
+                            coords[0, j, 0, :, v, 1], coords[0, j, :, 0, v, 0],
                             np.squeeze(data[i, j, ..., v, :].numpy()),
-                            vmin=vmin, vmax=vmax, transform=ccrs.PlateCarree(), shading='auto',
-                            cmap="RdBu_r", rasterized=True
+                            transform=ccrs.PlateCarree(), shading='auto',
+                            cmap="RdBu_r", rasterized=True, vmin=vmin, vmax=vmax
                         )
                     else:  # Standard plot without coordinates
                         pcm = axes[i, index].pcolormesh(
                             np.squeeze(data[i, j, ..., v, :].numpy()),
                             vmin=vmin, vmax=vmax, shading='auto', cmap="RdBu_r"
                         )
-                # Add color bar to each difference plot
-                cb = fig.colorbar(pcm, ax=axes[i, j + 3 * out_data.shape[1]])
-                cb.ax.yaxis.set_tick_params(color="white")
-                plt.setp(plt.getp(cb.ax.axes, 'yticklabels'), color="white")
+                    # Add color bar to each difference plot
+                    cb = fig.colorbar(pcm, ax=axes[i, index])
 
         # Adjust layout and save the figure for the current channel
         plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)

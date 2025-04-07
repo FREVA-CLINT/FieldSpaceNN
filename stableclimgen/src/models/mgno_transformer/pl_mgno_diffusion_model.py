@@ -6,7 +6,6 @@ from .pl_probabilistic import LightningProbabilisticModel
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
 from ..diffusion.sampler import DDPMSampler, DDIMSampler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
-from ...utils.visualization import scatter_plot_diffusion
 
 
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
@@ -39,6 +38,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
+        diffusion_steps = diffusion_steps.unsqueeze(-1).repeat(1, target.shape[1])
 
         l_dict, _ = self(target, diffusion_steps, coords_input, coords_output, indices, mask.unsqueeze(-1), emb)
 
@@ -59,27 +59,39 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         # Iterate over batch items and compute validation loss for each
         for i in range(target.shape[0]):
             diff_steps = self.gaussian_diffusion.diffusion_steps
-            t = torch.tensor([(diff_steps // 10) * x for x in range(9)] + [diff_steps-1]).to(target.device)
-            in_source = torch.stack(10 * [source[i]])
-            in_target = torch.stack(10 * [target[i]])
-            in_coords_input = torch.stack(10 * [coords_input[i]])
-            in_coords_output = torch.stack(10 * [coords_output[i]])
-            in_mask = torch.stack(10 * [mask[i]]).unsqueeze(-1)
+            n_samples = 4
+            t = torch.tensor([(diff_steps // n_samples) * x for x in range(n_samples - 1)] + [diff_steps-1]).to(target.device)
+            t = t.unsqueeze(-1).repeat(1, target.shape[1])
+            in_source = torch.stack(n_samples * [source[i]])
+            in_target = torch.stack(n_samples * [target[i]])
+            in_coords_input = torch.stack(n_samples * [coords_input[i]])
+            in_coords_output = torch.stack(n_samples * [coords_output[i]])
+            in_mask = torch.stack(n_samples * [mask[i]]).unsqueeze(-1)
             if torch.is_tensor(indices):
-                in_indices = torch.stack(10*[indices[i]])
+                in_indices = torch.stack(n_samples*[indices[i]])
             else:
-                in_indices = {"sample": torch.stack(10*[indices["sample"][i]]), "sample_level": torch.stack(10*[indices["sample_level"][i]])}
+                in_indices = {"sample": torch.stack(n_samples*[indices["sample"][i]]), "sample_level": torch.stack(n_samples*[indices["sample_level"][i]])}
             if emb:
-                in_emb = {"VariableEmbedder": torch.stack(10 * [emb["VariableEmbedder"][i]])}
+                in_emb = {"VariableEmbedder": torch.stack(n_samples * [emb["VariableEmbedder"][i]]),
+                          "TimeEmbedder": torch.stack(n_samples * [emb["TimeEmbedder"][i]])}
             l_dict, output = self(in_target, t, in_coords_input, in_coords_output, in_indices, in_mask, in_emb)
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
-                    loss_dict[f'val/step_{t[ti].item()}_{k}'] = v[ti]
+                    loss_dict[f'val/step_{t[ti][0].item()}_{k}'] = v[ti]
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                self.log_tensor_plot(in_source, output, in_target, in_coords_input, in_coords_output, in_mask, in_indices, f"tensor_plot_{self.current_epoch}", in_emb)
+                b, nt, n, nv, nc = in_source.shape[:5]
+                if hasattr(self.model, "interpolator") and self.model.interpolate_input:
+                    input_inter, _ = self.model.interpolator(in_source.view(-1, *in_source.shape[2:]),
+                                                             mask=in_mask.view(-1, *in_mask.shape[2:]),
+                                                             indices_sample=in_indices)
+                    input_inter = input_inter.view(1, -1, n, nv, nc)
+                else:
+                    input_inter = None
+                max_nt = 12
+                self.log_tensor_plot(in_source.view(1, -1, n, nv, nc), output[:, :max_nt].view(1, -1, n, nv, nc), in_target.view(1, -1, n, nv, nc), in_coords_input, in_coords_output, in_mask.view(1, -1, n, nv, nc), in_indices, f"tensor_plot_{self.current_epoch}", in_emb, input_inter, n_samples * max_nt)
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
@@ -89,21 +101,3 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         return self.sampler.sample_loop(self.model, source, mask,
                                         progress=True, emb=emb, coords_input=coords_input,
                                         coords_output=coords_output, indices_sample=indices_sample)
-
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, indices_dict, plot_name, emb):
-        save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
-        os.makedirs(save_dir, exist_ok=True)
-
-        for k in range(input.shape[-2]):
-            var_idx = emb['VariableEmbedder'][0, k]
-            plot_name_var = f"{plot_name}_{var_idx}"
-            save_path = os.path.join(save_dir, f"{plot_name_var}.png")
-
-            if coords_input.numel() == 0:
-                coords_input = self.get_coords_from_model(indices_dict)
-
-            if coords_output.numel() == 0:
-                coords_output = self.get_coords_from_model(indices_dict)
-            scatter_plot_diffusion(input[:, :, :, k, 0], output.view(gt.shape)[:, :, :, k, 0], gt[:, :, :, k, 0], coords_input,
-                                   coords_output, mask[:, :, :, k, 0], save_path=save_path)
-            self.logger.log_image(f"plots/{plot_name_var}", [save_path])

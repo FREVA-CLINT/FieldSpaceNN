@@ -72,12 +72,14 @@ def get_no_layer(rcm,
 
 
 def add_mask_to_emb_dict(emb_dict: dict, mask: torch.tensor):
+    if mask.dim()==6:
+        mask = mask.squeeze(dim=3).squeeze(-1)
 
     if mask.dim()==5:
-        mask = mask.squeeze(dim=2).squeeze(dim=-1)
+        mask = mask.squeeze(dim=3)
 
-    if mask.dim()==4:
-        mask = mask.squeeze(dim=2)
+    if mask.dim()==3:
+        mask = mask.unsqueeze(dim=1)
 
     emb_dict['MaskEmbedder'] = mask.int()
 

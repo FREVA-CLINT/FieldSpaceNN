@@ -39,9 +39,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.save_hyperparameters(ignore=['model'])
 
 
-    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
-        return self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
-
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb = batch
         output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
@@ -83,10 +80,12 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         # Calculate total loss
 
         if batch_idx == 0:
-            try:
-                self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb)
-            except Exception as e:
-                pass
+            if hasattr(self.model, "interpolator") and self.model.interpolate_input:
+                input_inter,_ = self.model.interpolator(source.view(-1, *source.shape[2:]), mask=mask.view(-1, *mask.shape[2:]), indices_sample=indices)
+                input_inter = input_inter.view(*output.shape)
+            else:
+                input_inter = None
+            self.log_tensor_plot(source if source.shape[2] == output.shape[2] else input_inter.view(*target.shape), output, target, coords_input, coords_output, mask if mask.shape[2] == output.shape[2] else None, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
 
         self.log_dict(loss_dict, prog_bar=False, sync_dist=True)
 

@@ -1702,22 +1702,12 @@ class SpatialAttention(nn.Module):
         self.mask_as_embedding = mask_as_embedding
        
     def forward(self, x, indices_sample=None, mask=None, emb=None):
-        nv = x.shape[2]
-
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
-
-        # insert time dimension
-        x = x.unsqueeze(dim=1)
-        mask = mask.unsqueeze(dim=1) if mask is not None else mask
-        
-      #      emb['MaskEmbedder'] = emb['MaskEmbedder'].unsqueeze(dim=1)
-
-        x = self.grid_attention_layer(x, 
+        x = self.grid_attention_layer(x,
                                       indices_sample=indices_sample, 
                                       mask=mask if not self.mask_as_embedding else None, 
                                       emb=emb)
-        x = x.squeeze(dim=1)
         return x
 
 

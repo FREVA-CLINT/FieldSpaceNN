@@ -21,3 +21,7 @@ GridEmbedder:
 MaskEmbedder:
   in_channels: 2
   embed_dim: 64
+TimeEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  time_scales: [1, 7, 30.4375, 365.25]

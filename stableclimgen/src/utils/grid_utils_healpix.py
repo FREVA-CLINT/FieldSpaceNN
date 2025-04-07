@@ -32,10 +32,14 @@ def get_coords_as_tensor(ds: xr.Dataset, lon: str = 'vlon', lat: str = 'vlat', g
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
         if grid_type == "regular":
-            lons, lats = torch.meshgrid(lons, lats, indexing="ij")
-            theta_tensor = torch.deg2rad(90 - lons.flatten())  # Convert to colatitude
-            phi_tensor = torch.deg2rad(lats.flatten())
-            coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
+            lons, lats = torch.meshgrid(lons, lats, indexing="xy")
+            lat_rad_tensor = torch.deg2rad(lats)
+            theta_tensor = -lat_rad_tensor
+
+            lon_rad_tensor = torch.deg2rad(lons)
+            phi_tensor = lon_rad_tensor - torch.pi
+
+            coords = torch.stack([phi_tensor.flatten(), theta_tensor.flatten()], dim=-1).float()
         else:
             coords = torch.stack((lons, lats), dim=-1).float()
     else:
@@ -251,11 +255,7 @@ def get_nearest_to_healpix_recursive(c_t_global: torch.tensor, c_i: torch.tensor
 
     :returns: indices in range, in radius mask, tuple(distances, angles) between points
     """
-    c_t_global = c_t_global.transpose(0, 1)
-    c_i = c_i.transpose(0, 2)
-
-    _, n_sec_i, _ = c_i.shape
-    n_target = c_t_global.shape[-1]
+    n_target = c_t_global.shape[0]
 
     id_t = torch.arange(n_target)
 
@@ -269,19 +269,20 @@ def get_nearest_to_healpix_recursive(c_t_global: torch.tensor, c_i: torch.tensor
         mid_points = id_t.unsqueeze(dim=-1)
 
     # get radius
-    c_t_ = c_t_global[:, mid_points_corners]
-    c_t_m = c_t_global[:, mid_points]
+    c_t_ = c_t_global[mid_points_corners]
+    c_t_m = c_t_global[mid_points]
 
-    dist_corners = get_distance_angle(c_t_[0].unsqueeze(dim=-1), c_t_[1].unsqueeze(dim=-1), c_t_m[0].unsqueeze(dim=-2),
-                                      c_t_m[1].unsqueeze(dim=-2))[0]
-    dist_corners_max = search_radius * dist_corners.max(dim=-1).values.max()
+    dist_corners = get_distance_angle(c_t_[:, :, 0].unsqueeze(dim=-1), c_t_[:, :, 1].unsqueeze(dim=-1),
+                                      c_t_m[:, :, 0].unsqueeze(dim=-2), c_t_m[:, :, 1].unsqueeze(dim=-2))[0]
+    dist_corners_max = search_radius * dist_corners.max(dim=1).values
 
     c_i_ = c_i
 
-    c_t_m = c_t_m.reshape(2, n_sec_i, -1)
+    c_t_m = c_t_m.reshape(c_i.shape[0], -1, 2)
 
-    dist, phi = get_distance_angle(c_t_m[0].unsqueeze(dim=-1), c_t_m[1].unsqueeze(dim=-1), c_i_[0].unsqueeze(dim=-2),
-                                   c_i_[1].unsqueeze(dim=-2), periodic_fov=periodic_fov)
+    dist, phi = get_distance_angle(c_t_m[:, :, 0].unsqueeze(dim=-1), c_t_m[:, :, 1].unsqueeze(dim=-1),
+                                   c_i_[:, :, 0].unsqueeze(dim=-2), c_i_[:, :, 1].unsqueeze(dim=-2),
+                                   periodic_fov=periodic_fov)
     dist = dist.reshape(n_level, -1)
     phi = phi.reshape(n_level, -1)
 
@@ -297,23 +298,24 @@ def get_nearest_to_healpix_recursive(c_t_global: torch.tensor, c_i: torch.tensor
         global_indices = global_indices.reshape(n_level, -1)
 
     if nh is not None:
-        n_keep = nh
+        n_keep = torch.tensor([nh, dist_values.shape[1]]).min()
     else:
         n_keep = dist_values.shape[1]
 
     indices_keep = dist_values.topk(int(n_keep), dim=-1, largest=False, sorted=True)[1]
 
     dist_values = torch.gather(dist_values, index=indices_keep, dim=-1)
-    in_rad = torch.gather(in_rad.reshape(n_level, -1), index=indices_keep, dim=-1)
     global_indices = torch.gather(global_indices, index=indices_keep, dim=-1)
+
+    in_range_unique = dist_values <= dist_corners.max(dim=1).values
 
     phi_values = torch.gather(phi, index=indices_keep, dim=-1)
 
-    return global_indices, in_rad, (dist_values, phi_values)
+    return global_indices, in_range_unique, (dist_values, phi_values)
 
 
 def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torch.tensor, search_radius: int = 3,
-                                max_nh: int = 10, lowest_level: int = 0, periodic_fov=None) -> dict:
+                                max_nh: int = 1, lowest_level: int = 0, periodic_fov=None, search_level_start=None) -> dict:
     """
     Iterator of the get_nearest_to_icon_recursive function
 
@@ -328,7 +330,7 @@ def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torc
     :returns: grid mapping (dict)
     """
 
-    level_start = int(math.log(coords_healpix.shape[-1]) / math.log(4))
+    level_start = search_level_start or int(math.log(coords_healpix.shape[0]) / math.log(4))
 
     grid_mapping = {
         "level": [],
@@ -345,7 +347,7 @@ def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torc
             nh = None
 
         if k == 0:
-            indices, in_rng, pos = get_nearest_to_healpix_recursive(coords_healpix, coords_input.unsqueeze(dim=1),
+            indices, in_rng, pos = get_nearest_to_healpix_recursive(coords_healpix, coords_input.unsqueeze(dim=0),
                                                                     level=level, nh=nh, search_radius=search_radius,
                                                                     periodic_fov=periodic_fov)
         else:

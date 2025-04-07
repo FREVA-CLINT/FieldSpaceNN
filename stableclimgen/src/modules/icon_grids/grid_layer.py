@@ -541,6 +541,7 @@ def get_density_map(grid_dist_output, dists, mask_value=1e6, power=2):
     return density
 
 
+
 def get_interpolation(x: torch.tensor, 
                       mask: torch.tensor, 
                       cutoff_dist: float,
@@ -550,8 +551,9 @@ def get_interpolation(x: torch.tensor,
                       mask_value:int=1e6,
                       grid_layer_search = None, 
                       indices_sample: dict=None):
+
     x = x.clone()
-    b,n,nh,nv,f = x.shape
+    b, n, nh, nv, f = x.shape
 
     n_l = dist.shape[1]
     l = n // n_l
@@ -571,7 +573,7 @@ def get_interpolation(x: torch.tensor,
         mask_nh = mask.view(b,n_l,-1,nv)
 
     n = dist.shape[1]
-    
+
     dist_ = dist.unsqueeze(dim=-1) + (mask_nh.unsqueeze(dim=2) * mask_value)
 
     dist_vals, indices = torch.topk(dist_, n_nh, dim=-2, largest=False)
@@ -579,32 +581,32 @@ def get_interpolation(x: torch.tensor,
     indices_offset = torch.arange(indices.shape[1], device=indices.device)
     offset = dist_.shape[-2]
 
-    indices = indices + (indices_offset*offset).view(1,indices.shape[1],1,1,1)
+    indices = indices + (indices_offset * offset).view(1, indices.shape[1], 1, 1, 1)
 
     indices = indices.view(b, -1, n_nh, nv)
 
-    x_nh = x_nh.view(b,n_l,-1,nv,f)
+    x_nh = x_nh.view(b, n_l, -1, nv, f)
 
-    x_2 = x_nh.reshape(b,-1,nv)
-    indices = indices.reshape(b,-1,nv)
+    x_2 = x_nh.reshape(b, -1, nv)
+    indices = indices.reshape(b, -1, nv)
 
     x_gath = torch.gather(x_2, 1, indices)
 
-    x_gath = x_gath.view(b,-1,n_nh,nv*f)
+    x_gath = x_gath.view(b, -1, n_nh, nv * f)
 
-    dist_vals[dist_vals<=cutoff_dist] = cutoff_dist
+    dist_vals[dist_vals <= cutoff_dist] = cutoff_dist
 
-    weights = 1/(dist_vals.view(x_gath.shape))**power
+    weights = 1 / (dist_vals.view(x_gath.shape)) ** power
 
-    weights = weights/weights.sum(dim=-2, keepdim=True)
+    weights = weights / weights.sum(dim=-2, keepdim=True)
 
-    x_inter = (x_gath*weights).sum(dim=-2)
+    x_inter = (x_gath * weights).sum(dim=-2)
 
-    x_inter = x_inter.view(b,n,-1,nv,f)
+    x_inter = x_inter.view(b, n, -1, nv, f)
 
-    x_inter = x_inter.view(b,-1,nv,f)
+    x_inter = x_inter.view(b, -1, nv, f)
 
-    dist_vals = dist_vals.view(b,-1,n_nh,nv)
+    dist_vals = dist_vals.view(b, -1, n_nh, nv)
 
     return x_inter, dist_vals
 
@@ -620,11 +622,13 @@ def get_dists_interpolation(grid_layers,
         coords = grid_layers[str(input_level)].get_coordinates_from_grid_indices(
             indices_sample['indices_layers'][input_level] if indices_sample is not None else None
             )
+
         coords = coords.unsqueeze(dim=-2)
     else:
         coords = input_coords
 
     b, n, nh = coords.shape[:3]
+
     l = 4**(search_level-input_level)
     n_l = n // l
 
@@ -647,7 +651,9 @@ def get_dists_interpolation(grid_layers,
 
     return dist
 
+
 class Interpolator(nn.Module):
+
     def __init__(self,  
                 grid_layers, 
                 search_level: int=2, 
@@ -663,6 +669,7 @@ class Interpolator(nn.Module):
                 input_dists=None
                 ) -> None:
                 
+
         super().__init__()
 
         self.precompute = precompute
@@ -678,6 +685,7 @@ class Interpolator(nn.Module):
             else:
                 dists = input_dists
 
+
             self.register_buffer('dists', dists, persistent=True)
 
         self.grid_layers = grid_layers
@@ -688,13 +696,14 @@ class Interpolator(nn.Module):
         self.power = power
         
         self.search_level_compute = search_level_compute
+
         self.cutoff_dist_level = input_level if cutoff_dist_level is None else cutoff_dist_level
         self.cutoff_dist = cutoff_dist
 
-    def forward(self, 
-                x, 
-                mask=None, 
-                calc_density=False, 
+    def forward(self,
+                x,
+                mask=None,
+                calc_density=False,
                 indices_sample=None,
                 input_level=None,
                 target_level=None,
@@ -706,15 +715,17 @@ class Interpolator(nn.Module):
 
         compute_dists = compute_dists & (input_dists is None)
 
+
         search_level = self.search_level if search_level is None else search_level
         input_level = self.input_level if input_level is None else input_level
         target_level = self.target_level if target_level is None else target_level
-        
+
         compute_dists = compute_dists | (self.precompute == False)
 
         grid_layer_search = self.grid_layers[str(self.search_level_compute)] if self.search_level_compute is not None else self.grid_layers[str(self.search_level)]
         nh_inter = self.nh_inter
         if not compute_dists and indices_sample is not None and input_dists is None:
+
             dist = self.dists[0, indices_sample['indices_layers'][self.search_level]]
 
         elif not compute_dists and indices_sample is None and input_dists is None:
@@ -748,11 +759,12 @@ class Interpolator(nn.Module):
                                     indices_sample=indices_sample,
                                     grid_layer_search=grid_layer_search)
         
+
         if calc_density:
             grid_dist_output = self.grid_layers[str(target_level)].nh_dist
             density = get_density_map(grid_dist_output, dist_, power=self.power)
 
         else:
             density = None
-        
+
         return x, density

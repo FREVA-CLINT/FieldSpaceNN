@@ -87,8 +87,6 @@ class SpacedDiffusion(GaussianDiffusion):
         self.diffusion_step_map = []  # Mapping for diffusion steps
         self.original_num_steps = diffusion_steps
 
-        print(self.use_steps)
-
         base_diffusion = GaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
         last_alpha_cumprod = 1.0
         new_betas = []

@@ -10,17 +10,19 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from .model import DiffusionGenerator
 from .gaussian_diffusion import GaussianDiffusion
+from .sampler import DDPMSampler, DDIMSampler
+from ..mgno_transformer.pl_probabilistic import LightningProbabilisticModel
 from ...utils.visualization import plot_images
 
 
-class LightningDiffusionGenerator(pl.LightningModule):
+class LightningDiffusionGenerator(LightningProbabilisticModel):
     """
     A PyTorch Lightning Module for training and validating a Diffusion Generator model with Exponential Moving Average (EMA)
     and cosine annealing warm-up restarts for the learning rate scheduler.
     """
 
     def __init__(self, model: DiffusionGenerator, gaussian_diffusion: GaussianDiffusion, lr: float, lr_warmup: int = None,
-                 ema_rate: float = 0.999):
+                 ema_rate: float = 0.999, sampler="ddpm", n_samples=1, max_batchsize=-1):
         """
         Initializes the LightningDiffusionGenerator with model, diffusion process, and optimizer parameters.
 
@@ -31,6 +33,7 @@ class LightningDiffusionGenerator(pl.LightningModule):
         :param ema_rate: Rate for Exponential Moving Average of model parameters. Defaults to 0.999.
         """
         super().__init__()
+        LightningProbabilisticModel.__init__(self, n_samples=1, max_batchsize=-1)
         self.model: DiffusionGenerator = model
         self.ema_model = torch.optim.swa_utils.AveragedModel(
             self.model,
@@ -38,8 +41,18 @@ class LightningDiffusionGenerator(pl.LightningModule):
         )
         self.ema_model.requires_grad_(False)  # Ensure no gradient updates for EMA model
         self.gaussian_diffusion = gaussian_diffusion
+
+        if sampler == "ddpm":
+            self.sampler = DDPMSampler(self.gaussian_diffusion)
+        else:
+            self.sampler = DDIMSampler(self.gaussian_diffusion)
+
         self.lr = lr
         self.lr_warmup = lr_warmup
+
+        self.n_samples = n_samples
+        self.max_batchsize = max_batchsize
+
         self.save_hyperparameters(ignore=['model'])
 
     def on_before_zero_grad(self, optimizer):
@@ -81,10 +94,9 @@ class LightningDiffusionGenerator(pl.LightningModule):
 
         :return: Calculated loss for the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
-        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(gt_data.shape[0], gt_data.device)
-        emb = {"CoordinateEmbedder": gt_coords, "VariableEmbedder": sample_vars}
-        l_dict, _ = self(gt_data, diffusion_steps, mask_data, emb, cond_data)
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
+        l_dict, _ = self(target, diffusion_steps, mask, emb, source)
         loss = (l_dict["loss"] * weights).mean()
 
         loss_dict = {f'train/{k}': v.mean() for k, v in l_dict.items()}
@@ -98,17 +110,18 @@ class LightningDiffusionGenerator(pl.LightningModule):
         :param batch: Batch of input data.
         :param batch_idx: Index of the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
+        source, target, coords_input, coords_output, indices, mask, emb = batch
         loss_dict = {}
         loss = []
 
         # Iterate over batch items and compute validation loss for each
-        for i in range(gt_data.shape[0]):
+        for i in range(target.shape[0]):
             diff_steps = self.gaussian_diffusion.diffusion_steps
-            t = torch.tensor([(diff_steps // 10) * x for x in range(10)]).to(gt_data.device)
-            cond = torch.stack(10 * [cond_data[i]])
-            emb = {"CoordinateEmbedder": torch.stack(10 * [gt_coords[i]]), "VariableEmbedder": torch.stack(10 * [sample_vars[i]])}
-            l_dict, output = self(torch.stack(10 * [gt_data[i]]), t, torch.stack(10 * [mask_data[i]]), emb, cond)
+            n_samples = 4
+            t = torch.tensor([(diff_steps // n_samples) * x for x in range(n_samples - 1)] + [diff_steps-1]).to(target.device)
+            emb_input = {"CoordinateEmbedder": torch.stack(n_samples * [emb["CoordinateEmbedder"][i]]),
+                         "VariableEmbedder": torch.stack(n_samples * [emb["VariableEmbedder"][i]])}
+            l_dict, output = self(torch.stack(n_samples * [target[i]]), t, torch.stack(n_samples * [mask[i]]), emb_input, torch.stack(n_samples * [source[i]]))
 
             for k, v in l_dict.items():
                 for ti in range(t.shape[0]):
@@ -116,11 +129,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
                 loss.append(v.mean())
 
             if batch_idx == 0 and i == 0:
-                try:
-                    self.log_tensor_plot(torch.stack(10 * [gt_data[i]]), torch.stack(10 * [cond_data[i]]),
-                                         output, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
-                except Exception as e:
-                    pass
+                self.log_tensor_plot(torch.stack(n_samples * [target[i]]), torch.stack(n_samples * [source[i]]),
+                                         output, coords_output, coords_input, f"tensor_plot_{self.current_epoch}")
 
         self.log_dict(loss_dict, sync_dist=True)
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
@@ -140,8 +150,11 @@ class LightningDiffusionGenerator(pl.LightningModule):
         plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
 
         for c in range(gt_tensor.shape[1]):
-            filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
-            self.logger.log_image(f"plots/{plot_name}", [filename])
+            try:
+                filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
+                self.logger.log_image(f"plots/{plot_name}", [filename])
+            except Exception:
+                pass
 
     def configure_optimizers(self) -> Tuple:
         """
@@ -167,3 +180,8 @@ class LightningDiffusionGenerator(pl.LightningModule):
             scheduler = LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
 
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample):
+        return self.sampler.sample_loop(self.model, source, mask.view(source.shape) if torch.is_tensor(mask) else None,
+                                        progress=True, emb=emb, coords_input=coords_input,
+                                        coords_output=coords_output, indices_sample=indices_sample)
