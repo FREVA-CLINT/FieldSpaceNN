@@ -840,12 +840,11 @@ class CrossTuckerLayer(nn.Module):
         fan_out = torch.tensor(ranks_out).prod()
 
         scale = math.sqrt(2.0 / (fan_in + fan_out))
-        scale_vars = math.sqrt(2.0 / (rank_vars))
-
+        scale_vars = 1.0 / (rank_vars)
 
         if n_vars_total > 1 and factorize_vars:
             self.core = nn.Parameter(torch.randn(*ranks_out, rank_vars, *ranks_in) * scale, requires_grad=True)
-            self.in_factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)/scale_vars, requires_grad=True)
+            self.in_factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
             self.contract_fun = self.contract_vars_fac
 
         elif n_vars_total > 1 and not factorize_vars:
@@ -1010,10 +1009,10 @@ class TuckerLayer(nn.Module):
         fan_out = torch.tensor(ranks_out).prod()
         scale = math.sqrt(2.0 / (fan_in + fan_out))
 
-        scale_vars = math.sqrt(2.0 / (rank_vars))
+        scale_vars = (1.0 / (rank_vars))
         if n_vars_total > 1 and factorize_vars:
             self.core = nn.Parameter(torch.randn(rank_vars, *ranks_in, *ranks_out) * scale, requires_grad=True)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)/scale_vars, requires_grad=True)
+            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
             self.contract_fun = self.contract_vars_fac
 
         elif n_vars_total > 1 and not factorize_vars:
@@ -1324,11 +1323,12 @@ class DenseLayer(nn.Module):
         no_dims_out = int(torch.tensor(no_dims_out).prod())
 
         bound = 1 / math.sqrt(self.n_dim_tot * input_dim)
-        scale_vars = math.sqrt(2.0 / (rank_vars))
+
+        scale_vars = (1.0 / (rank_vars))
 
         if n_vars_total>1 and factorize_vars:
             weights = torch.empty(rank_vars, self.n_dim_tot, input_dim, output_dim)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)/scale_vars, requires_grad=True)
+            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
             self.contract_fun = self.contract_vars_fac
         
         elif n_vars_total>1 and not factorize_vars:
@@ -1399,11 +1399,12 @@ class CrossDenseLayer(nn.Module):
         no_dims_out = int(torch.tensor(no_dims_out).prod())
 
         bound = 1 / math.sqrt(self.n_dim_tot * input_dim)
-        scale_vars = math.sqrt(2.0 / (rank_vars))
+
+        scale_vars = (1.0 / (rank_vars))
 
         if n_vars_total>1 and factorize_vars:
             weights = torch.empty(rank_vars, self.n_dim_tot_out * output_dim, self.n_dim_tot * input_dim)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)/scale_vars, requires_grad=True)
+            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
             self.contract_fun = self.contract_vars_fac
         
         elif n_vars_total>1 and not factorize_vars:

@@ -369,7 +369,7 @@ class NetCDFLoader_lazy(Dataset):
 
         data_source_grids = {}
         for grid_type, variables in self.vars_grid_types_input.items():
-            variables = [var for var in variables if var in variables_source]
+            variables = [var for var in variables_source if var in variables]
             data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables, 0, grid_type, input_mapping[grid_type])
             data_source_grids[grid_type] = data_source 
 

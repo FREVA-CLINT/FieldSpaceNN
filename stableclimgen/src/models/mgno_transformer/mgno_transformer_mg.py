@@ -145,7 +145,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                       embed_mode=input_embed_mode,
                                       n_vars_total = kwargs.get('n_vars_total',1),
                                       rank_vars = kwargs.get('rank_vars',4),
-                                      factorize_vars= kwargs.get('factorize_vars',False))
+                                      factorize_vars= kwargs.get('factorize_vars',False),
+                                      with_gamma=kwargs.get('with_input_gamma',False))
 
         self.learn_residual = kwargs.get("learn_residual", False)
 
@@ -210,7 +211,8 @@ class InputLayer(nn.Module):
                  embed_mode='sum',
                  n_vars_total=1,
                  rank_vars=4,
-                 factorize_vars=False
+                 factorize_vars=False,
+                 with_gamma=False
                 ) -> None: 
       
         super().__init__()
@@ -226,10 +228,15 @@ class InputLayer(nn.Module):
 
             self.embedding_layer = nn.Linear(emb_dim, model_dim_out*2)
 
+            if with_gamma:
+                self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+                self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+
         self.linear = nn.Linear(model_dim_in, model_dim_out, bias=False)
 
         self.linear = get_lin_layer(model_dim_in, model_dim_out, n_vars_total=n_vars_total, rank_vars=rank_vars, factorize_vars=factorize_vars, bias=False)
 
+        
     def forward(self, x, mask=None, emb=None, indices_sample=None):
         
         if hasattr(self, 'grid_layer_0') and hasattr(self,"embedding_layer"):
@@ -249,6 +256,10 @@ class InputLayer(nn.Module):
             scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
             n = scale.shape[1]
             scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
-            x = x * (scale + 1) + shift    
+
+            if hasattr(self, "gamma1"):
+                x = x * (self.gamma1 * scale + 1) + self.gamma2 * shift
+            else:
+                x = x * (scale + 1) + shift
 
         return x
