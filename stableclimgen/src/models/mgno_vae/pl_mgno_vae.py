@@ -87,7 +87,8 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
                 _, density = self.model.interpolator(source,
                                                      mask=mask,
                                                      indices_sample=indices,
-                                                     calc_density=True)
+                                                     calc_density=True,
+                                                     input_dists=dists_input)
             else:
                 input_inter = None
                 density = None
