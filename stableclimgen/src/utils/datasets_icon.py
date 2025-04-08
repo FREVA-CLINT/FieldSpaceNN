@@ -317,7 +317,7 @@ class NetCDFLoader_lazy(Dataset):
                 data_g.append(data)
 
         data_g = torch.stack(data_g, dim=-1)
-        data_g = data_g.view(n, nh, len(variables), 1)
+        data_g = data_g.view(1, n, nh, len(variables), 1)
 
         ds.close()
 
@@ -382,13 +382,13 @@ class NetCDFLoader_lazy(Dataset):
 
         if self.input_coordinates is not None:
             grid_type = self.grid_types_vars_input[0]
-            coords_input = torch.tensor(self.input_coordinates[grid_type])[self.input_mapping[grid_type][global_cells[region_idx]]]
+            coords_input = torch.tensor(self.input_coordinates[grid_type])[self.input_mapping[grid_type][global_cells[region_idx]]].unsqueeze(dim=0)
         else:
             coords_input = torch.tensor([])
 
         if self.input_positions is not None:
             grid_type = self.grid_types_vars_input[0]
-            dists_input = self.input_positions[grid_type][0][global_cells[region_idx]]
+            dists_input = self.input_positions[grid_type][0][global_cells[region_idx]].unsqueeze(dim=0)
         else:
             dists_input = torch.tensor([])
 
@@ -397,18 +397,18 @@ class NetCDFLoader_lazy(Dataset):
         else:
             coords_output = torch.tensor([])
 
-        n, nh, nv, f = data_source.shape
+        nt, n, nh, nv, f = data_source.shape
         
         drop_vars = torch.rand(1)<self.p_drop_vars
-        drop_mask = torch.zeros((n,nh,nv), dtype=bool)
+        drop_mask = torch.zeros((nt, n,nh,nv), dtype=bool)
 
         if self.p_average > 0 and torch.rand(1)<self.p_average:
             avg_level = int(torch.randint(1,self.max_average_lvl+1,(1,)))
-            data_source_resh = data_source.view(-1,4**avg_level,nh,f)
-            data_source_resh = data_source_resh.mean(dim=[1,2], keepdim=True)
-            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=1)
-            data_source_resh = data_source_resh.repeat_interleave(nh, dim=2)
-            data_source = data_source_resh.view(n, nh, nv, f)
+            data_source_resh = data_source.view(nt, -1,4**avg_level,nh,f)
+            data_source_resh = data_source_resh.mean(dim=[2,3], keepdim=True)
+            data_source_resh = data_source_resh.repeat_interleave(4**avg_level, dim=2)
+            data_source_resh = data_source_resh.repeat_interleave(nh, dim=3)
+            data_source = data_source_resh.view(nt, n, nh, nv, f)
 
 
             if self.p_average_dropout >0:
@@ -417,9 +417,9 @@ class NetCDFLoader_lazy(Dataset):
                 else:
                     drop_mask_p = (torch.rand((n//4**avg_level))<self.p_average_dropout).bool()
 
-                drop_mask = drop_mask.view(-1,4**avg_level, nh, nv).transpose(-1,1)
+                drop_mask = drop_mask.view(nt, -1,4**avg_level, nh, nv).transpose(-1,2)
                 drop_mask[drop_mask_p]=True
-                drop_mask = drop_mask.transpose(-1,1).view(-1,nh,nv)
+                drop_mask = drop_mask.transpose(-1,2).view(nt, -1,nh,nv)
         else:
 
             if self.random_p and drop_vars:
@@ -430,22 +430,22 @@ class NetCDFLoader_lazy(Dataset):
                 p_dropout = torch.tensor(self.p_dropout)
 
             if self.p_dropout > 0 and not drop_vars:
-                drop_mask_p = (torch.rand((n,nh))<p_dropout).bool()
+                drop_mask_p = (torch.rand((nt,n,nh))<p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
             elif self.p_dropout > 0 and drop_vars:
-                drop_mask_p = (torch.rand((n,nh,nv))<p_dropout).bool()
+                drop_mask_p = (torch.rand((nt,n,nh,nv))<p_dropout).bool()
                 drop_mask[drop_mask_p]=True
 
         if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
             not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
-            drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
+            drop_mask[:,:,:,not_drop_vars] = (drop_mask[:,:,:,not_drop_vars]*0).bool()
 
         for k, var in enumerate(variables_source):
-            data_source[:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,k,:])
+            data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
         
         for k, var in enumerate(variables_target):
-            data_target[:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,k,:])
+            data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
 
         if hasattr(self,'input_in_range'):
             input_in_range = input_in_range[grid_type][global_cells[region_idx]]
@@ -461,7 +461,7 @@ class NetCDFLoader_lazy(Dataset):
             indices_sample = {'sample': region_idx,
                 'sample_level': self.coarsen_sample_level}
                 
-        embed_data = {'VariableEmbedder': sample_vars}
+        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(dim=0)}
 
         return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data, dists_input
 

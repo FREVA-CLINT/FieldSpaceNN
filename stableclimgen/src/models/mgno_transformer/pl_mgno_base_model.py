@@ -203,6 +203,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         if batch_idx == 0:
             if hasattr(self.model, "interpolator") and self.model.interpolate_input:
+                _, coords_input, _, _, _, _, dists_input = self.model.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
                 input_inter, input_density = self.model.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
             else:
                 input_inter = None
@@ -228,38 +229,42 @@ class LightningMGNOBaseModel(pl.LightningModule):
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
         
+        if coords_input is None:
+            coords_input = self.get_coords_from_model(indices_dict)
+
+        if coords_input.shape[0] != 1:
+            coords_input = coords_input.view(input.shape[0], input.shape[1], *coords_input.shape[1:])
+
+        elif len(coords_input.shape) == 4:
+            coords_input = coords_input.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
+
+        if coords_output is None:
+            coords_output = self.get_coords_from_model(indices_dict)
+
+        if coords_output.shape[0] != 1:
+            coords_output = coords_output.view(input.shape[0], input.shape[1], *coords_output.shape[1:])
+
+        elif len(coords_output.shape) == 4:
+            coords_output = coords_output.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
+
         sample = 0
         for k in range(input.shape[-2]):
             var_idx = emb['VariableEmbedder'][sample, k]
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
             
-            if coords_input is None:
-                coords_input = self.get_coords_from_model(indices_dict)
-
-            if coords_input.shape[0] != 1:
-                coords_input = coords_input.view(input.shape[0], input.shape[1], *coords_input.shape[1:])
-            elif len(coords_input.shape) == 4:
-                coords_input = coords_input.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
-
-            if coords_output is None:
-                coords_output = self.get_coords_from_model(indices_dict)
-            if coords_output.shape[0] != 1:
-                coords_output = coords_output.view(input.shape[0], input.shape[1], *coords_output.shape[1:])
-            elif len(coords_output.shape) == 4:
-                coords_output = coords_output.repeat(input.shape[1], 1, 1, 1).unsqueeze(0)
-
             if mask is not None:
-                mask_p = mask[sample, :max_samples, :, k]
+                mask_p = mask[sample, :max_samples, :, :, k]
             else:
                 mask_p = None
-            if input_inter is not None:
 
+            if input_inter is not None:
                 input_inter_p = input_inter[sample,:max_samples,:,k]
-                input_density_p = input_density[sample,:max_samples,:,k]
+                input_density_p = input_density[sample,:max_samples,:,:,k]
             else:
                 input_inter_p = None
                 input_density_p = None
+
             scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p, input_density=input_density_p, save_path=save_path)
 
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])

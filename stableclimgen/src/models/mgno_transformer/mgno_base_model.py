@@ -100,17 +100,17 @@ class MGNO_base_model(nn.Module):
 
     def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
         b, nt, n = x.shape[:3]
-        x, coords_input, coords_output, indices_sample, mask, emb = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, input_dists)
+        x, coords_input, coords_output, indices_sample, mask, emb, input_dists = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, input_dists)
 
         
         indices_sample, coords_input, coords_output, input_dists = self.prepare_coords_indices(coords_input,
                                                                         coords_output=coords_output, 
                                                                         indices_sample=indices_sample,
                                                                         input_dists=input_dists)
-        
+        mask=None
         if self.interpolate_input or self.density_embedder:
             interp_x, density_map = self.interpolator(x,
-                                            mask=mask.unsqueeze(-1),
+                                            mask=mask,
                                             calc_density=True,
                                             indices_sample=indices_sample,
                                             input_coords=coords_input,
@@ -127,6 +127,7 @@ class MGNO_base_model(nn.Module):
                     x = interp_x.unsqueeze(dim=-2)
 
         x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+
         return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1])
 
 

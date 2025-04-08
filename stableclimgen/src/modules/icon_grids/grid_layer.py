@@ -551,6 +551,13 @@ def get_interpolation(x: torch.tensor,
                       mask_value:int=1e6,
                       grid_layer_search = None, 
                       indices_sample: dict=None):
+    
+    return_time_dim = False
+
+    if x.dim()>5:
+        nt = x.shape[1]
+        x = x.view(x.shape[0]*nt,*x.shape[2:])
+        return_time_dim=True
 
     x = x.clone()
     b, n, nh, nv, f = x.shape
@@ -570,11 +577,14 @@ def get_interpolation(x: torch.tensor,
     
     else:
         x_nh = x.view(b,n_l,-1,nv,f)
-        mask_nh = mask.view(b,n_l,-1,nv)
+        mask_nh = mask.view(b,n_l,-1,nv) if mask is not None else None
 
     n = dist.shape[1]
 
-    dist_ = dist.unsqueeze(dim=-1) + (mask_nh.unsqueeze(dim=2) * mask_value)
+    if mask is not None:
+        dist_ = dist.unsqueeze(dim=-1) + (mask_nh.unsqueeze(dim=2) * mask_value)
+    else:
+        dist_ = dist.unsqueeze(dim=-1).repeat(*(1,)*dist.dim(),nv)
 
     dist_vals, indices = torch.topk(dist_, n_nh, dim=-2, largest=False)
 
@@ -604,9 +614,12 @@ def get_interpolation(x: torch.tensor,
 
     x_inter = x_inter.view(b, n, -1, nv, f)
 
-    x_inter = x_inter.view(b, -1, nv, f)
-
-    dist_vals = dist_vals.view(b, -1, n_nh, nv)
+    if return_time_dim:
+        x_inter = x_inter.view(b, nt, -1, nv, f)
+        dist_vals = dist_vals.view(b, nt, -1, n_nh, nv)
+    else:
+        x_inter = x_inter.view(b, -1, nv, f)
+        dist_vals = dist_vals.view(b, -1, n_nh, nv)
 
     return x_inter, dist_vals
 
