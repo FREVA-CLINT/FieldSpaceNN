@@ -536,16 +536,16 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
             b,n,v,c = x.shape
 
             if n == x_in.shape[1]:
-                x_in = x_in.view(b,-1,4**self.seq_level,c)
-                x = x.view(b,-1,4**self.seq_level,c)
+                x_in = x_in.reshape(b,-1,4**self.seq_level,c)
+                x = x.reshape(b,-1,4**self.seq_level,c)
 
-                x_in = x_in.view(-1,4**self.seq_level,c)
-                x = x.view(-1,4**self.seq_level,c)
+                x_in = x_in.reshape(-1,4**self.seq_level,c)
+                x = x.reshape(-1,4**self.seq_level,c)
             else:
-                x_in = x_in.view(n*b*v,-1,c)
-                x = x.view(n*b*v,-1,c)
+                x_in = x_in.reshape(n*b*v,-1,c)
+                x = x.reshape(n*b*v,-1,c)
 
-            mask = mask.view(x.shape[:-1]) if mask is not None else None
+            mask = mask.reshape(x.shape[:-1]) if mask is not None else None
 
             x_mha = self.MHA[str(output_level)](q=x_in, k=x, v=x, mask=mask)
 
