@@ -98,6 +98,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         return loss
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample):
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
+        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, dists_input=input_dists)
         return output
