@@ -29,7 +29,7 @@ def test(cfg: DictConfig) -> None:
         data = json.load(json_file)
     test_dataset = instantiate(cfg.dataloader.dataset,
                                data_dict=data["test"],
-                               variables_source=data["train"]["source"]["variables"],
+                               variables_source = data["train"]["source"]["variables"],
                                variables_target = data["train"]["target"]["variables"])
 
     # Initialize model and trainer
