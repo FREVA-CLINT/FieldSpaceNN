@@ -128,7 +128,7 @@ class MGNO_base_model(nn.Module):
 
         x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 
-        return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1])
+        return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1], x[2].view(b, nt, *x[2].shape[1:]))
 
 
     def forward_(x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):

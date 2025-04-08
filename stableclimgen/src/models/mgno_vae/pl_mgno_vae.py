@@ -9,7 +9,7 @@ from torch.optim import AdamW
 
 from ..mgno_transformer.pl_probabilistic import LightningProbabilisticModel
 from ...utils.visualization import scatter_plot
-from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler
+from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler, check_empty
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
 
 
@@ -40,8 +40,8 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb = batch
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
+        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
 
         rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
 
@@ -61,8 +61,9 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb = batch
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb)
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
+        coords_input, coords_output, indices, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
 
         rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='val/')
 
@@ -81,11 +82,16 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         if batch_idx == 0:
             if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                input_inter,_ = self.model.interpolator(source.view(-1, *source.shape[2:]), mask=mask.view(-1, *mask.shape[2:]), indices_sample=indices)
-                input_inter = input_inter.view(*output.shape)
+                input_inter = interp_x
+                _, coords_input, _, _, _, _, dists_input = self.model.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
+                _, density = self.model.interpolator(source,
+                                                     mask=mask,
+                                                     indices_sample=indices,
+                                                     calc_density=True)
             else:
                 input_inter = None
-            self.log_tensor_plot(source if source.shape[2] == output.shape[2] else input_inter.view(*target.shape), output, target, coords_input, coords_output, mask if mask.shape[2] == output.shape[2] else None, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter)
+                density = None
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=input_inter, input_density=density)
 
         self.log_dict(loss_dict, prog_bar=False, sync_dist=True)
 

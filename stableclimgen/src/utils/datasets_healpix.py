@@ -89,8 +89,7 @@ class HealPixLoader(Dataset):
                  one_to_one=False,
                  p_drop_vars=0,
                  n_drop_vars=-1,
-                 p_drop_timesteps=-1,
-                 map_input_to_processing=True
+                 p_drop_timesteps=-1
                  ):
         
         super(HealPixLoader, self).__init__()
@@ -149,8 +148,8 @@ class HealPixLoader(Dataset):
 
         if processing_nside == in_nside:
             input_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
-            input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
             input_coordinates = None
+            input_positions = None
         else:
             if in_grid is not None:
                 input_coordinates = get_coords_as_tensor(xr.open_dataset(in_grid),
@@ -158,39 +157,34 @@ class HealPixLoader(Dataset):
             else:
                 input_coordinates = healpix_pixel_lonlat_torch(in_nside)
 
-            if map_input_to_processing:
-                mapping = get_mapping_to_healpix_grid(coords_processing,
-                                                      input_coordinates,
-                                                      search_radius=search_radius,
-                                                      search_level_start=search_level_start,
-                                                      max_nh=nh_input,
-                                                      lowest_level=search_level_stop,
-                                                      periodic_fov=None)
-                if one_to_one or max_in_grid_distance:
-                    # Compute pairwise distances (using broadcasting)
-                    diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
+            mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                  input_coordinates,
+                                                  search_radius=search_radius,
+                                                  search_level_start=search_level_start,
+                                                  max_nh=nh_input,
+                                                  lowest_level=search_level_stop,
+                                                  periodic_fov=None)
+            if one_to_one or max_in_grid_distance:
+                # Compute pairwise distances (using broadcasting)
+                diff = coords_processing.unsqueeze(1) - input_coordinates.unsqueeze(0)   # Shape: (grid_size, num_in, 2)
 
-                    # Compute Euclidean distance (or Haversine if needed)
-                    distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
+                # Compute Euclidean distance (or Haversine if needed)
+                distances = torch.norm(diff, dim=-1)  # Shape: (grid_size, num_in)
 
-                    if one_to_one:
-                        closest_out_indices = torch.argmin(distances, dim=0)  # One closest out_coord per in_coord
-                        self.steady_mask = torch.ones(coords_processing.shape[0], dtype=bool)
-                        self.steady_mask[closest_out_indices] = False
-                    else:
-                        # Check if any input_coordinates are within d
-                        self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
-                    print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
+                if one_to_one:
+                    closest_out_indices = torch.argmin(distances, dim=0)  # One closest out_coord per in_coord
+                    self.steady_mask = torch.ones(coords_processing.shape[0], dtype=bool)
+                    self.steady_mask[closest_out_indices] = False
+                else:
+                    # Check if any input_coordinates are within d
+                    self.steady_mask = ~(distances <= max_in_grid_distance).any(dim=1)
+                print("Dropout percentage: {:.2f}".format((self.steady_mask == True).float().mean().item() * 100))
 
-                input_mapping = mapping["indices"]
-                input_in_range = mapping["in_rng_mask"]
-            else:
-                input_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
-                input_in_range = np.ones_like(input_mapping, dtype=bool)[:, np.newaxis]
+            input_mapping = mapping["indices"]
+            input_positions = mapping["pos"]
 
         if processing_nside == out_nside:
             output_mapping = np.arange(coords_processing.shape[0])[:, np.newaxis]
-            output_in_range = np.ones_like(output_mapping, dtype=bool)[:, np.newaxis]
             output_coordinates = None
         else:
             if out_nside is not None:
@@ -206,40 +200,28 @@ class HealPixLoader(Dataset):
                                                   periodic_fov=None)
 
             output_mapping = mapping["indices"]
-            output_in_range = mapping["in_rng_mask"]
+
 
         self.input_mapping = input_mapping
-        self.input_in_range = input_in_range
+        self.input_positions = input_positions
         self.output_mapping = output_mapping
-        self.output_in_range = output_in_range
-        self.input_coordinates = input_coordinates if map_input_to_processing else None
+        self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
 
 
         global_indices = np.arange(coords_processing.shape[0])
-        if map_input_to_processing:
-            global_input_indices = global_indices
-        else:
-            global_input_indices = np.arange(input_coordinates.shape[0])
+        global_input_indices = global_indices
 
         if coarsen_sample_level == -1:
-            self.global_cell_processing_indices = global_indices.reshape(1, -1)
-            if map_input_to_processing:
-                self.global_cell_input_indices = self.global_cell_processing_indices
-            else:
-                self.global_cell_input_indices = global_input_indices.reshape(1, -1)
+            self.global_cell_indices = global_indices.reshape(1, -1)
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
-            self.global_cell_processing_indices = global_indices.reshape(-1, 4 ** coarsen_sample_level)
-            if map_input_to_processing:
-                self.global_cell_input_indices = self.global_cell_processing_indices
-            else:
-                self.global_cell_input_indices = global_input_indices.reshape(self.global_cell_processing_indices.shape[0], -1)
-            self.global_cells_input = self.global_cell_processing_indices[:, 0]
+            self.global_cell_indices = global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            self.global_cells_input = self.global_cell_indices[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         nt = self.n_sample_timesteps
-        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cell_processing_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cell_processing_indices.shape[0]
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cell_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cell_indices.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -318,16 +300,13 @@ class HealPixLoader(Dataset):
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
-        global_cell_indices = self.global_cell_processing_indices
-        global_cell_input_indices = self.global_cell_input_indices
-        input_in_range = self.input_in_range
+        global_cell_indices = self.global_cell_indices
         output_mapping = self.output_mapping
-        output_in_range = self.output_in_range
 
         if self.deterministic:
-            sample_index = torch.tensor(index % global_cells_input.shape[0])
+            region_index = torch.tensor(index % global_cells_input.shape[0])
         else:
-            sample_index = torch.randint(global_cells_input.shape[0],(1,))[0]
+            region_index = torch.randint(global_cells_input.shape[0],(1,))[0]
         if self.n_sample_vars != -1 and self.n_sample_vars != len(self.variables_source):
             sample_vars = torch.randperm(len(self.variables_source))[:self.n_sample_vars]
         else:
@@ -335,26 +314,25 @@ class HealPixLoader(Dataset):
 
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
-        data_source, time_source = self.get_data(ds_source, time_index, global_cell_input_indices[sample_index], variables_source, 0, input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, global_cell_indices[region_index], variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target, time_target = self.get_data(ds_target, time_index, global_cell_indices[sample_index], variables_target, 0, output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, global_cell_indices[region_index], variables_target, 0, output_mapping)
         else:
             data_target, time_target = data_source, time_source
 
-        indices = {'global_cell': torch.tensor(global_cell_indices[sample_index]),
-                    'local_cell': torch.tensor(global_cell_indices[sample_index]),
-                    'sample': sample_index,
-                    'sample_level': self.coarsen_sample_level,
-                    'variables': sample_vars}
-
         if self.input_coordinates is not None:
-            coords_input = self.input_coordinates[input_mapping[global_cell_indices[sample_index]]]
+            coords_input = self.input_coordinates[input_mapping[global_cell_indices[region_index]]]
         else:
             coords_input = torch.tensor([])
 
+        if self.input_positions is not None:
+            dists_input = self.input_positions[0][global_cell_indices[region_index]]
+        else:
+            dists_input = torch.tensor([])
+
         if self.output_coordinates is not None:
-            coords_output = self.output_coordinates[output_mapping[global_cell_indices[sample_index]]]
+            coords_output = self.output_coordinates[output_mapping[global_cell_indices[region_index]]]
         else:
             coords_output = torch.tensor([])
 
@@ -365,7 +343,7 @@ class HealPixLoader(Dataset):
         drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
 
         if torch.is_tensor(self.steady_mask):
-            drop_mask = self.steady_mask[global_cell_indices[sample_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
+            drop_mask = self.steady_mask[global_cell_indices[region_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
             avg_level = int(torch.randint(1, self.max_average_lvl + 1, (1,)))
             data_source_resh = data_source.view(-1,nt, 4 ** avg_level, nh, f)
@@ -416,11 +394,11 @@ class HealPixLoader(Dataset):
         if self.coarsen_sample_level == -1:
             indices_sample = torch.tensor([])
         else:
-            indices_sample = {'sample': sample_index.repeat(nt),
+            indices_sample = {'sample': region_index.repeat(nt),
                               'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
         embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1),
                       'TimeEmbedder': time_source.float()}
-        return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data
+        return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data, dists_input.unsqueeze(0).repeat(nt, *[1] * dists_input.ndim)
 
     def __len__(self):
         return self.len_dataset
