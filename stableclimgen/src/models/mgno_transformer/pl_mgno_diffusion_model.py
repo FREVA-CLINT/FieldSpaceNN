@@ -110,6 +110,11 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
 
+    def predict_step(self, batch, batch_idx):
+        # Call the desired parent's method directly
+        # Note: Pass 'self' explicitly here
+        return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
+
     def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
         return self.sampler.sample_loop(self.model, source, mask,
                                         progress=True, emb=emb, coords_input=coords_input,
