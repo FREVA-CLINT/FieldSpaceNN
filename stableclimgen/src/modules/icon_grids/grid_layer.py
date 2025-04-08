@@ -573,7 +573,7 @@ def get_interpolation(x: torch.tensor,
         x_nh, mask_nh = grid_layer_search.get_nh(x, local_indices=local_indices, sample_dict=indices_sample, mask = mask) 
 
         x_nh = x_nh.view(b,n_l,-1,nv,f)
-        mask_nh = mask_nh.view(b,n_l,-1,nv)
+        mask_nh = mask_nh.view(b,n_l,-1,nv) if mask_nh is not None else None
     
     else:
         x_nh = x.view(b,n_l,-1,nv,f)
@@ -581,10 +581,12 @@ def get_interpolation(x: torch.tensor,
 
     n = dist.shape[1]
 
-    if mask is not None:
+    if mask_nh is not None:
         dist_ = dist.unsqueeze(dim=-1) + (mask_nh.unsqueeze(dim=2) * mask_value)
     else:
         dist_ = dist.unsqueeze(dim=-1).repeat(*(1,)*dist.dim(),nv)
+        if dist_.shape[0] < b:
+            dist_ = dist_.repeat(b,*(1,)*(dist_.dim()-1))
 
     dist_vals, indices = torch.topk(dist_, n_nh, dim=-2, largest=False)
 

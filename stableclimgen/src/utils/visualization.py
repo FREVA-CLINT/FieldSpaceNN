@@ -25,7 +25,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     plot_input_inter = input_inter is not None
     plot_input_density = input_density is not None
 
-    if mask is None:
+    if mask is not None:
         mask = mask.cpu().bool().numpy()
     else:
         mask = np.zeros_like(input, dtype=bool).squeeze(-1)
