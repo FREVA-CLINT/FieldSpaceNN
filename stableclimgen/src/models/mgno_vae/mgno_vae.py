@@ -245,7 +245,7 @@ class MGNO_VAE(MGNO_base_model):
         return x
 
 
-    def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
+    def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, input_dists=None):
         b,n,nh,nv,nc = x.shape[:5]
         interp_x = 0
         if self.interpolate_input_residual:
@@ -264,4 +264,4 @@ class MGNO_VAE(MGNO_base_model):
             z = posterior
         dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + interp_x
         dec = dec.view(b,n,-1)
-        return dec, posterior
+        return dec, posterior, interp_x
