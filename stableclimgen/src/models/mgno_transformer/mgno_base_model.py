@@ -9,7 +9,6 @@ from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordin
 class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
-                 global_levels: List[int],
                  interpolate_input=False,
                  density_embedder=False,
                  interpolator_settings: Dict =None,
@@ -20,20 +19,17 @@ class MGNO_base_model(nn.Module):
                 
         super().__init__()
 
-        if interpolator_settings is not None:
-            level_s = interpolator_settings.get("search_level_compute", None)
-            if level_s is not None and not torch.any(global_levels == level_s):
-                level_s_tensor = torch.tensor([level_s])
-                global_levels = torch.cat((global_levels, level_s_tensor))
-
-        self.register_buffer('global_levels', global_levels, persistent=False)
         self.register_buffer('global_indices', torch.arange(mgrids[0]['coords'].shape[0]).unsqueeze(dim=0), persistent=False)
         self.register_buffer('cell_coords_global', mgrids[0]['coords'], persistent=False)
         
         # Create grid layers for each unique global level
+        global_levels = []
         self.grid_layers = nn.ModuleDict()
-        for global_level in global_levels:
-            self.grid_layers[str(int(global_level))] = GridLayer(global_level, mgrids[global_level]['adjc_lvl'], mgrids[global_level]['adjc_mask'], mgrids[global_level]['coords'], coord_system='polar')
+        for global_level, mgrid in enumerate(mgrids):
+            self.grid_layers[str(int(global_level))] = GridLayer(global_level, mgrid['adjc_lvl'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar')
+            global_levels.append(global_level)
+
+        self.register_buffer('global_levels', torch.tensor(global_levels), persistent=False)
 
         self.grid_layer_0 = self.grid_layers["0"]
         # Construct blocks based on configurations
@@ -107,7 +103,7 @@ class MGNO_base_model(nn.Module):
                                                                         coords_output=coords_output, 
                                                                         indices_sample=indices_sample,
                                                                         input_dists=input_dists)
-        mask=None
+  
         if self.interpolate_input or self.density_embedder:
             interp_x, density_map = self.interpolator(x,
                                             mask=mask,
@@ -122,9 +118,9 @@ class MGNO_base_model(nn.Module):
 
             if self.interpolate_input:
                 if self.concat_interp:
-                    x = torch.cat([x, interp_x.unsqueeze(-2)], dim=-1)
+                    x = torch.cat([x, interp_x.unsqueeze(-3)], dim=-1)
                 else:
-                    x = interp_x.unsqueeze(dim=-2)
+                    x = interp_x.unsqueeze(dim=-3)
 
         x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
 

@@ -117,21 +117,8 @@ class MGNO_VAE(MGNO_base_model):
                  concat_interp = False,
                  **kwargs
                  ) -> None:
-        global_levels = torch.tensor(0).view(-1)
-        for block_conf in encoder_block_configs:
-            if hasattr(block_conf, 'global_levels_output'):
-                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1)))
-            if hasattr(block_conf, 'global_levels_no'):
-                # if not isinstance(block_conf.global_levels_no, list):
-                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_no).view(-1)))
-
-        global_levels_max = torch.concat((torch.tensor(global_levels).view(-1)
-                                          , torch.tensor(0).view(-1))).max()
-
-        global_levels = torch.arange(global_levels_max + 1)
 
         super().__init__(mgrids,
-                         global_levels,
                          rotate_coord_system=rotate_coord_system,
                          interpolate_input=kwargs.get("interpolate_input",False),
                          interpolator_settings=kwargs.get("interpolator_settings",None),
@@ -252,7 +239,7 @@ class MGNO_VAE(MGNO_base_model):
             interp_x, _ = self.residual_interpolator_down(x[..., :self.input_dim-self.concat_interp],
                                                       calc_density=False,
                                                       indices_sample=indices_sample)
-            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-2),
+            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
                                                       calc_density=False,
                                                       indices_sample=indices_sample)
 

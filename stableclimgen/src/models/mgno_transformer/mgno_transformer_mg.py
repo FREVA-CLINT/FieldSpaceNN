@@ -32,22 +32,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  ) -> None: 
         
         self.input_dim = input_dim + concat_interp
-        
-        global_levels = torch.tensor(0).view(-1)
-        for block_conf in block_configs:
-            if hasattr(block_conf,'global_levels_output'):
-                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_output).view(-1))) 
-            if hasattr(block_conf,'global_levels_no'):
-                #if not isinstance(block_conf.global_levels_no, list):
-                global_levels = torch.concat((global_levels, torch.tensor(block_conf.global_levels_no).view(-1)))
-
-        global_levels_max = torch.concat((torch.tensor(global_levels).view(-1)
-                                     ,torch.tensor(0).view(-1))).max()
-        
-        global_levels = torch.arange(global_levels_max+1)
-        
-        super().__init__(mgrids, 
-                         global_levels,
+                
+        super().__init__(mgrids,
                          rotate_coord_system=rotate_coord_system,
                          interpolate_input=kwargs.get("interpolate_input", False),
                          density_embedder=kwargs.get("density_embedder", False),
