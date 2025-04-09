@@ -42,8 +42,7 @@ class AdaptiveLayerNorm(nn.Module):
         emb_dim = embedder.get_out_channels if embedder is not None else None
 
         self.embedder = embedder
-       # self.layer_norm = nn.LayerNorm(layer_norm_dims)
-        self.layer_norm = nn.Identity()
+        self.layer_norm = nn.LayerNorm(layer_norm_dims)
 
         if embedder is not None:
             self.embedding_layer = torch.nn.Linear(emb_dim, model_dim*2)

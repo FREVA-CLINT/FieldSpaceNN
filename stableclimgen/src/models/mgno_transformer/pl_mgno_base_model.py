@@ -173,8 +173,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
     def predict_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
-        output = {'output': output,
-                  'mask': mask}
+        output = {'output': output.unsqueeze(dim=1),
+                  'mask': mask.unsqueeze(dim=1)}
         return output
     
 
