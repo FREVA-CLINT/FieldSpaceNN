@@ -251,4 +251,4 @@ class MGNO_VAE(MGNO_base_model):
             z = posterior
         dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + interp_x
         dec = dec.view(b,n,-1)
-        return dec, posterior, interp_x
+        return dec, posterior, interp_x if self.interpolate_input_residual else dec
