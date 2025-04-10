@@ -35,14 +35,20 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     # Define image size and calculate differences between ground truth and output
     img_size = 3
 
+    plot_var = False
+    if output.ndim>2 and output.shape[-1]>1:
+        output_var = output[...,1]
+        output = output[...,0]
+        plot_var = True
+
     # Set up the figure layout
     fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4 + plot_input_inter  + plot_input_density,
+        nrows=gt.shape[0], ncols=4 + plot_input_inter  + plot_input_density + plot_var,
         figsize=(2 * img_size * 4, img_size * gt.shape[0]),
         subplot_kw={"projection": ccrs.Mollweide()}
     )
     axes = np.atleast_2d(axes)
-
+    
     # Plot each sample and timestep
     for i in range(gt.shape[0]):
         gt_min = np.min(gt[i])
@@ -59,6 +65,10 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
           
         if plot_input_density:
           plot_samples.insert(1, (input_density[i], coords_output[i], "Input Density", None, None))
+
+        if plot_var:
+          plot_samples.insert(-2, (output_var[i], coords_output[i], "Output variance", None, None))
+
         # Loop over samples
         for index, plot_sample in enumerate(plot_samples):
             data, coords, title, vmin, vmax = plot_sample

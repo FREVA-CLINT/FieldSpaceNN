@@ -52,8 +52,18 @@ class MSE_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None, indices_sample=None):
+    def forward(self, output, target, mask=None, indices_sample=None,**kwargs):
         loss = self.loss_fcn(output, target.view(output.shape))
+        return loss
+    
+class GNLLL_loss(nn.Module):
+    def __init__(self, grid_layer=None):
+        super().__init__()
+
+        self.loss_fcn = torch.nn.GaussianNLLLoss() 
+
+    def forward(self, output, target, output_var=None,**kwargs):
+        loss = self.loss_fcn(output, target.view(*output.shape), output_var)
         return loss
     
 class MSE_Hole_loss(nn.Module):
@@ -62,7 +72,7 @@ class MSE_Hole_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None, indices_sample=None):
+    def forward(self, output, target, mask=None, indices_sample=None,**kwargs):
         if mask is not None:
             mask = mask.view(output.shape)
             target = target.view(output.shape)[mask]
@@ -83,8 +93,14 @@ class MultiLoss(nn.Module):
     def forward(self, output, target, mask=None, indices_sample=None, prefix=''):
         loss_dict = {}
         total_loss = 0
+        if output.shape[-1]>1:
+            output_var = output[...,1]
+            output = output[...,0]
+        else:
+            output_var = None
+
         for loss_fcn in self.loss_fcns:
-            loss = loss_fcn['fcn'](output, target, mask=mask, indices_sample=indices_sample)
+            loss = loss_fcn['fcn'](output, target, mask=mask, indices_sample=indices_sample, output_var=output_var)
             loss_dict[prefix + loss_fcn['fcn']._get_name()] = loss.item()
             total_loss = total_loss + loss_fcn['lambda'] * loss
         
@@ -97,7 +113,7 @@ class Grad_loss(nn.Module):
         self.grid_layer: GridLayer = grid_layer
         self.loss_fcn = torch.nn.KLDivLoss(log_target=True, reduction='batchmean') 
 
-    def forward(self, output, target, indices_sample=None, mask=None):
+    def forward(self, output, target, indices_sample=None, mask=None,**kwargs):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
         
@@ -120,7 +136,7 @@ class NH_loss(nn.Module):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
 
-    def forward(self, output, target=None, indices_sample=None, mask=None):
+    def forward(self, output, target=None, indices_sample=None, mask=None,**kwargs):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
 
@@ -132,7 +148,7 @@ class NH_loss_rel(nn.Module):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
 
-    def forward(self, output, target=None, indices_sample=None, mask=None):
+    def forward(self, output, target=None, indices_sample=None, mask=None,**kwargs):
         indices_in  = indices_sample["indices_layers"][int(self.grid_layer.global_level)] if indices_sample is not None and isinstance(indices_sample, dict) else None
         output_nh, _ = self.grid_layer.get_nh(output, indices_in, indices_sample)
         
@@ -195,7 +211,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
         coords_input, coords_output, indices, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices), check_empty(mask), check_empty(emb), check_empty(dists_input)
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
 
-  
         loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)

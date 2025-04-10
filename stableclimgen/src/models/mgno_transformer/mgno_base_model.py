@@ -113,7 +113,9 @@ class MGNO_base_model(nn.Module):
                                             input_dists=input_dists)
 
             
-            emb["DensityEmbedder"] = 1-density_map.transpose(-2,-1)
+            emb["DensityEmbedder"] = 1 - density_map.transpose(-2,-1)
+            emb["UncertaintyEmbedder"] = (density_map.transpose(-2,-1), emb['VariableEmbedder'])
+
             mask =None
 
             if self.interpolate_input:

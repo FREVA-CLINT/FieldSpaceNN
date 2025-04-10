@@ -28,6 +28,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  input_embed_confs = None,
                  input_embed_mode = 'sum',
                  concat_interp = False,
+                 predict_var = False,
                  **kwargs
                  ) -> None: 
         
@@ -40,7 +41,13 @@ class MGNO_Transformer_MG(MGNO_base_model):
                          interpolator_settings=kwargs.get("interpolator_settings", None),
                          concat_interp=concat_interp)
         
-       
+        if predict_var:
+            output_dim = output_dim * 2
+            self.activation_var = nn.Softplus()
+
+        self.output_dim = output_dim
+        self.predict_var = predict_var
+
         self.Blocks = nn.ModuleList()
 
         input_levels = [0]
@@ -169,6 +176,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         if self.learn_residual:
             x_res = x
+            # assume gauss
+           # if self.predict_var:
+           #     x_res_var = x_res.abs() * (1-(emb['DensityEmbedder']))
 
         x = self.input_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
 
@@ -187,11 +197,20 @@ class MGNO_Transformer_MG(MGNO_base_model):
         else: 
             x = self.out_layer(x_levels[0])
 
-        x = x.view(b,n,-1)
+        x = x.view(b,n,nv,-1)
 
-        if self.learn_residual:
+        if self.learn_residual and not self.predict_var:
             x = x_res.view(x.shape) + x
-            
+
+        elif self.predict_var and self.learn_residual:
+            x, x_var = x.chunk(2,dim=-1) 
+            x = x_res.view(x.shape) + x
+            x = torch.concat((x, self.activation_var(x_var)),dim=-1)
+
+        elif self.predict_var:
+            x, x_var = x.chunk(2,dim=-1) 
+            x = torch.concat((x, self.activation_var(x_var)),dim=-1)
+
         return x
     
 def check_get(block_conf, arg_dict, key):
