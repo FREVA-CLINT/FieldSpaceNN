@@ -214,10 +214,12 @@ class MGNO_Transformer_MG(MGNO_base_model):
         return x
     
 def check_get(block_conf, arg_dict, key):
-    if key in arg_dict:
+    if hasattr(block_conf,key):
+        return getattr(block_conf, key)
+    elif key in arg_dict:
         return arg_dict[key]
     else:
-        return getattr(block_conf,key)
+        raise KeyError(f"Key '{key}' not found block_conf and model arguments")
     
 class InputLayer(nn.Module):
   

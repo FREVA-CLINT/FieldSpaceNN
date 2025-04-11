@@ -26,7 +26,7 @@ class BaseEmbedder(nn.Module):
 
         self.keep_dims = []
 
-    def forward(self, emb: torch.Tensor) -> torch.Tensor:
+    def forward(self, emb: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Perform the forward pass to embed the tensor.
 
@@ -127,8 +127,13 @@ class UncertaintyEmbedder(BaseEmbedder):
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
     
-    def forward(self, density_var):
+    def forward(self, density_var, **kwargs):
+        global_level = kwargs.get('global_level', 0)
+
         density, var_indices = density_var
+        
+        if global_level > 0:
+            density = density.view(density.shape[0],-1, 4**global_level, density.shape[-2], density.shape[-1]).mean(dim=2)
 
         betas = self.betas[var_indices].view(var_indices.shape[0],1,var_indices.shape[-1],1)
 
@@ -259,8 +264,10 @@ class EmbedderSequential(nn.Module):
             if embedder_name not in inputs:
                 raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
 
+            args_ = inputs.get("args", {})
+
             input_tensor = inputs[embedder_name]
-            embed_output = embedder(input_tensor)
+            embed_output = embedder(input_tensor, **args_)
 
             # Add time dimension
             if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):

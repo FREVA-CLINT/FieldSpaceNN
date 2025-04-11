@@ -90,7 +90,7 @@ class MGNO_base_model(nn.Module):
         if emb is not None:
             for key, value in emb.items():
                 emb[key] = value.view(b * nt, *value.shape[2:])
-
+            emb['args'] = {}
         return x, coords_input, coords_output, indices_sample, mask, emb, input_dists
     
 

@@ -44,20 +44,22 @@ class MGEncoderDecoderConfig:
                  embed_confs: dict=None,
                  embed_names: list=None,
                  embed_mode: str = 'sum',
-                 with_gamma: bool=True,
                  omit_backtransform: bool=False,
                  mg_att_dim: int = 128,
                  mg_n_head_channels: int=16,
                  rule: str = 'fc',
                  level_diff_zero_linear = False,
                  layer_type='Dense',
-                 rank=4,
                  n_vars_total=1,
-                 rank_vars=4,
-                 factorize_vars=False):
+                 factorize_vars=False,
+                 **kwargs):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
                 setattr(self, input, value)
 
 
@@ -75,10 +77,6 @@ class MGStackedEncoderDecoderConfig:
                  concat_model_dim = 1,
                  p_dropout=0,
                  mask_as_embedding = False,
-                 rank=4,
-                 rank_cross=2,
-                 no_rank_decay=0,
-                 with_gamma=False,
                  embed_confs: dict=None,
                  embed_names: list=None,
                  embed_mode: str = 'sum',
@@ -86,10 +84,15 @@ class MGStackedEncoderDecoderConfig:
                  seq_level: int=2,
                  n_vars_total=1,
                  rank_vars=4,
-                 factorize_vars=False):
+                 factorize_vars=False,
+                 **kwargs):
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
                 setattr(self, input, value)
       
 
