@@ -137,7 +137,9 @@ class GaussianDiffusion:
         diffusion_steps: int = 1000,
         diffusion_step_scheduler: str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
-        unmask_existing = True
+        unmask_existing = True,
+        uncertainty_diffusion = False,
+        density_diffusion=False
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
@@ -190,6 +192,8 @@ class GaussianDiffusion:
             * np.sqrt(alphas)
             / (1.0 - self.alphas_cumprod)
         )
+        self.uncertainty_diffusion = uncertainty_diffusion
+        self.density_diffusion = density_diffusion
 
     def q_mean_variance(
         self, x_start: torch.Tensor, t: torch.Tensor
@@ -563,6 +567,11 @@ class GaussianDiffusion:
         """
         if noise is None:
             noise = torch.randn_like(gt_data)
+        if self.uncertainty_diffusion:
+            diff_steps = self.get_uncertainty_timesteps(emb["UncertaintyEmbedder"][0])
+        elif self.density_diffusion:
+            diff_steps = self.get_uncertainty_timesteps(emb["DensityEmbedder"])
+
         x_t = self.q_sample(gt_data, diff_steps, noise=noise)
 
         # Apply mask if provided (useful for inpainting/imputation)
@@ -708,6 +717,13 @@ class GaussianDiffusion:
         """ samples diffusion steps """
         t, weights = self.diffusion_step_sampler.sample(batch_size)
         return t.to(device), weights.to(device)
+
+    def get_uncertainty_timesteps(self, uncertainty_embedding):
+        """ Maps uncertainty [0, 1] to discrete timesteps [0, num_timesteps-1]. """
+        # Ensure uncertainty is clipped
+        # Linear mapping: u=0 -> t=0, u=1 -> t = num_timesteps - 1
+        t_map = (uncertainty_embedding * (self.diffusion_steps - 1)).round().long()
+        return t_map
 
 
 def extract_into_tensor(arr: Union[np.ndarray, torch.Tensor], diffusion_steps: torch.Tensor, broadcast_shape: Tuple[int, ...]) -> torch.Tensor:
