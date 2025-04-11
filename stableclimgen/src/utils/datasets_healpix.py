@@ -213,15 +213,15 @@ class HealPixLoader(Dataset):
         global_input_indices = global_indices
 
         if coarsen_sample_level == -1:
-            self.global_cell_indices = global_indices.reshape(1, -1)
+            self.global_cells = global_indices.reshape(1, -1)
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
-            self.global_cell_indices = global_indices.reshape(-1, 4 ** coarsen_sample_level)
-            self.global_cells_input = self.global_cell_indices[:, 0]
+            self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         nt = self.n_sample_timesteps
-        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cell_indices.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cell_indices.shape[0]
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cells.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cells.shape[0]
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -300,7 +300,7 @@ class HealPixLoader(Dataset):
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
-        global_cell_indices = self.global_cell_indices
+        global_cells = self.global_cells
         output_mapping = self.output_mapping
 
         if self.deterministic:
@@ -314,25 +314,25 @@ class HealPixLoader(Dataset):
 
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
-        data_source, time_source = self.get_data(ds_source, time_index, global_cell_indices[region_index], variables_source, 0, input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, global_cells[region_index], variables_source, 0, input_mapping)
 
         if ds_target is not None:
-            data_target, time_target = self.get_data(ds_target, time_index, global_cell_indices[region_index], variables_target, 0, output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, global_cells[region_index], variables_target, 0, output_mapping)
         else:
             data_target, time_target = data_source, time_source
 
         if self.input_coordinates is not None:
-            coords_input = self.input_coordinates[input_mapping[global_cell_indices[region_index]]]
+            coords_input = self.input_coordinates[input_mapping[global_cells[region_index]]]
         else:
             coords_input = torch.tensor([])
 
         if self.input_positions is not None:
-            dists_input = self.input_positions[0][global_cell_indices[region_index]]
+            dists_input = self.input_positions[0][global_cells[region_index]]
         else:
             dists_input = torch.tensor([])
 
         if self.output_coordinates is not None:
-            coords_output = self.output_coordinates[output_mapping[global_cell_indices[region_index]]]
+            coords_output = self.output_coordinates[output_mapping[global_cells[region_index]]]
         else:
             coords_output = torch.tensor([])
 
@@ -343,7 +343,7 @@ class HealPixLoader(Dataset):
         drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
 
         if torch.is_tensor(self.steady_mask):
-            drop_mask = self.steady_mask[global_cell_indices[region_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
+            drop_mask = self.steady_mask[global_cells[region_index]].view(1, n, 1, 1).repeat(nt, 1, nh, nv)
         elif self.p_average > 0 and torch.rand(1) < self.p_average:
             avg_level = int(torch.randint(1, self.max_average_lvl + 1, (1,)))
             data_source_resh = data_source.view(-1,nt, 4 ** avg_level, nh, f)
@@ -391,6 +391,7 @@ class HealPixLoader(Dataset):
         for k, var in enumerate(variables_target):
             data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
         data_source[drop_mask] = 0
+
         if self.coarsen_sample_level == -1:
             indices_sample = torch.tensor([])
         else:

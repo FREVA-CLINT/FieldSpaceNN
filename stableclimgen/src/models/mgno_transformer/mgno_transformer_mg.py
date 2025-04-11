@@ -6,13 +6,12 @@ from typing import List
 from .mgno_encoderdecoder_block import MGNO_EncoderDecoder_Block, MGNO_StackedEncoderDecoder_Block
 from .mgno_processing_block import MGNO_Processing_Block
 
+
 from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig, MGStackedEncoderDecoderConfig, defaults
-from .mgno_base_model import MGNO_base_model
+from .mgno_base_model import MGNO_base_model, InputLayer, check_get
 
 from ...modules.neural_operator.no_blocks import get_lin_layer, DenseLayer
 
-from ...modules.neural_operator.no_helpers import get_embedder
-from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict,add_mask_to_emb_dict
 
 class MGNO_Transformer_MG(MGNO_base_model):
     def __init__(self, 
@@ -24,16 +23,13 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  **kwargs
                  ) -> None: 
         
-        self.input_dim = input_dim + kwargs.get("concat_interp", False)
+        self.input_dim = input_dim 
         
         predict_var = kwargs.get("predict_var", defaults['predict_var'])
         
         super().__init__(mgrids,
-                         rotate_coord_system=kwargs.get("rotate_coord_system", False),
-                         interpolate_input=kwargs.get("interpolate_input", False),
-                         density_embedder=kwargs.get("density_embedder", False),
-                         interpolator_settings=kwargs.get("interpolator_settings", None),
-                         concat_interp=kwargs.get("concat_interp", False))
+                         rotate_coord_system=kwargs.get("rotate_coord_system", False))
+
         
         mask_as_embedding = kwargs.get("mask_as_embedding", False)
 
@@ -153,7 +149,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         self.learn_residual = kwargs.get("learn_residual", False)
 
-    def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -206,79 +202,5 @@ class MGNO_Transformer_MG(MGNO_base_model):
         elif self.predict_var:
             x, x_var = x.chunk(2,dim=-1) 
             x = torch.concat((x, self.activation_var(x_var)),dim=-1)
-
-        return x
-    
-def check_get(block_conf, arg_dict, defaults, key):
-    if hasattr(block_conf,key):
-        return getattr(block_conf, key)
-    elif key in arg_dict:
-        return arg_dict[key]
-    elif key in defaults:
-        return defaults[key]
-    else:
-        raise KeyError(f"Key '{key}' not found block_conf, model arguments and defaults")
-    
-class InputLayer(nn.Module):
-  
-    def __init__(self,
-                 model_dim_in,
-                 model_dim_out,
-                 grid_layer_0,
-                 embed_names=None,
-                 embed_confs=None,
-                 embed_mode='sum',
-                 n_vars_total=1,
-                 rank_vars=4,
-                 factorize_vars=False,
-                 with_gamma=False
-                ) -> None: 
-      
-        super().__init__()
-
-
-        if embed_names is not None:
-            if 'CoordinateEmbedder' in embed_names:
-                self.grid_layer_0 = grid_layer_0
-
-            self.embedder = get_embedder(embed_names, embed_confs, embed_mode=embed_mode)
-
-            emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
-
-            self.embedding_layer = nn.Linear(emb_dim, model_dim_out*2)
-
-            if with_gamma:
-                self.gamma1 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-                self.gamma2 = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
-
-        self.linear = nn.Linear(model_dim_in, model_dim_out, bias=False)
-
-        self.linear = get_lin_layer(model_dim_in, model_dim_out, n_vars_total=n_vars_total, rank_vars=rank_vars, factorize_vars=factorize_vars, bias=False)
-
-        
-    def forward(self, x, mask=None, emb=None, indices_sample=None):
-        
-        if hasattr(self, 'grid_layer_0') and hasattr(self,"embedding_layer"):
-            emb = add_coordinates_to_emb_dict(self.grid_layer_0, indices_layers=indices_sample["indices_layers"] if indices_sample else None, emb=emb)
-
-        if mask is not None and hasattr(self,"embedding_layer"):
-            emb = add_mask_to_emb_dict(emb, mask)
-
-        if isinstance(self.linear, DenseLayer):
-            x = self.linear(x, emb=emb)
-        else: 
-            x = self.linear(x)
-
-        x_shape = x.shape
-        if hasattr(self,"embedding_layer"):
-            emb_ = self.embedder(emb).squeeze(dim=1)
-            scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
-            n = scale.shape[1]
-            scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])
-
-            if hasattr(self, "gamma1"):
-                x = x * (self.gamma1 * scale + 1) + self.gamma2 * shift
-            else:
-                x = x * (scale + 1) + shift
 
         return x

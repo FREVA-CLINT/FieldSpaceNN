@@ -11,7 +11,6 @@ from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel, check_
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", n_samples=1, max_batchsize=-1, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
-        LightningProbabilisticModel.__init__(self, n_samples=1, max_batchsize=-1)
 
         # maybe create multi_grid structure here?
         self.model = model
@@ -28,14 +27,38 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
 
 
     def forward(self, x, diffusion_steps, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
-        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        b, nt, n = x.shape[:3]
+        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(
+            coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        x, coords_input, coords_output, indices_sample, mask, emb, dists_input = self.prepare_batch(x, coords_input,
+                                                                                                    coords_output,
+                                                                                                    indices_sample,
+                                                                                                    mask, emb,
+                                                                                                    dists_input)
+        indices_sample, coords_input, coords_output, dists_input = self.prepare_coords_indices(coords_input,
+                                                                                               coords_output=coords_output,
+                                                                                               indices_sample=indices_sample,
+                                                                                               input_dists=dists_input)
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'indices_sample': indices_sample,
-            'input_dists': dists_input
+            'indices_sample': indices_sample
         }
-        return self.gaussian_diffusion.training_losses(self.model, x, diffusion_steps, mask, emb, **model_kwargs)
+
+        if self.interpolator:
+            interp_x, density_map = self.interpolator(x,
+                                                      mask=mask,
+                                                      calc_density=True,
+                                                      indices_sample=indices_sample,
+                                                      input_coords=coords_input,
+                                                      input_dists=dists_input)
+            emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
+            emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
+            mask = None
+            model_kwargs['condition'] = interp_x.unsqueeze(-3)
+
+        l_dict, output = self.gaussian_diffusion.training_losses(self.model, x, diffusion_steps.view(-1), mask, emb, **model_kwargs)
+        return l_dict, output.view(b, nt, *output.shape[1:])
 
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
@@ -91,14 +114,14 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
 
             if batch_idx == 0 and i == 0:
                 b, nt, n, nv, nc = in_source.shape[:5]
-                if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                    input_inter, density = self.model.interpolator(in_source,
-                                                                   mask=in_mask,
-                                                                   indices_sample=in_indices,
-                                                                   calc_density=True,
-                                                                   input_dists=in_dists_input)
+                if self.interpolator:
+                    input_inter, density = self.interpolator(in_source,
+                                                             mask=in_mask,
+                                                             indices_sample=in_indices,
+                                                             calc_density=True,
+                                                             input_dists=in_dists_input)
                     input_inter = input_inter.view(1, -1, n, nv, nc)
-                    density = density.view(1, -1, n, nv, nc)
+                    density = 1 - density.view(1, -1, n, nv, nc)
                 else:
                     input_inter = None
                     density = None
@@ -110,7 +133,13 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         self.log('val_loss', torch.stack(loss).mean(), sync_dist=True)
         return self.log_dict
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample):
+    def predict_step(self, batch, batch_idx):
+        # Call the desired parent's method directly
+        # Note: Pass 'self' explicitly here
+        return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
+
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
         return self.sampler.sample_loop(self.model, source, mask,
                                         progress=True, emb=emb, coords_input=coords_input,
-                                        coords_output=coords_output, indices_sample=indices_sample)
+                                        coords_output=coords_output, indices_sample=indices_sample,
+                                        input_dists=input_dists)

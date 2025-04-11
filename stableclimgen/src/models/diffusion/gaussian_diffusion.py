@@ -334,7 +334,11 @@ class GaussianDiffusion:
         if emb is None:
             emb = {}
         emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
-        model_output = model(x, emb=emb.copy(), mask=mask, **model_kwargs)
+        if 'condition' in model_kwargs.keys():
+            x_input = torch.cat([x, model_kwargs.pop('condition')], dim=-1)
+        else:
+            x_input = x
+        model_output = model(x_input, emb=emb.copy(), mask=mask, **model_kwargs)
 
         # Reshape if necessary (e.g. if model outputs channels last)
         if model_output.shape != x.shape:
@@ -589,7 +593,11 @@ class GaussianDiffusion:
             if emb is None:
                 emb = {}
             emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
-            model_output = model(x_t, emb=emb, mask=mask, **model_kwargs)
+            if 'condition' in model_kwargs.keys():
+                x_input = torch.cat([x_t, model_kwargs.pop('condition')], dim=-1)
+            else:
+                x_input = x_t
+            model_output = model(x_input, emb=emb, mask=mask, **model_kwargs)
 
             # Handle learned variance if applicable
             if self.model_var_type in {ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE}:

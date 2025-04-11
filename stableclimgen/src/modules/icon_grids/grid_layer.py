@@ -701,7 +701,7 @@ class Interpolator(nn.Module):
                 dists = input_dists
 
 
-            self.register_buffer('dists', dists, persistent=True)
+            self.register_buffer('dists', dists, persistent=False)
 
         self.grid_layers = grid_layers
         self.search_level = search_level

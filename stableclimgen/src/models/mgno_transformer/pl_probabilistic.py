@@ -9,7 +9,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         self.max_batchsize = max_batchsize
 
     def predict_step(self, batch, batch_index):
-        source, target, coords_input, coords_output, indices, mask, emb = batch
+        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
         batch_size = source.shape[0]
         total_samples = batch_size * self.n_samples  # Total expanded batch size
 
@@ -17,6 +17,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         source = source.repeat_interleave(self.n_samples, dim=0)
         coords_input = coords_input.repeat_interleave(self.n_samples, dim=0)
         coords_output = coords_output.repeat_interleave(self.n_samples, dim=0)
+        dists_input = dists_input.repeat_interleave(self.n_samples, dim=0)
         mask = mask.repeat_interleave(self.n_samples, dim=0).unsqueeze(-1)
 
         indices = indices.repeat_interleave(self.n_samples, dim=0) if torch.is_tensor(indices) else {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in indices.items()}
@@ -38,6 +39,7 @@ class LightningProbabilisticModel(pl.LightningModule):
                 coords_input=coords_input[start:end],
                 coords_output=coords_output[start:end],
                 indices_sample=indices_chunk,
+                input_dists=dists_input[start:end]
             )
             outputs.append(output_chunk)
 
