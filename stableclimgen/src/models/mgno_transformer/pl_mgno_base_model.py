@@ -8,7 +8,7 @@ import torch
 from torch.optim import AdamW
 
 from ...utils.visualization import scatter_plot
-from ...modules.icon_grids.grid_layer import GridLayer
+from ...modules.icon_grids.grid_layer import GridLayer, Interpolator
 
 
 def check_empty(x):
@@ -160,10 +160,25 @@ class NH_loss_rel(nn.Module):
         return loss
 
 class LightningMGNOBaseModel(pl.LightningModule):
-    def __init__(self, model, lr_groups, lambda_loss_dict: dict, weight_decay=0, noise_std=0.0):
+    def __init__(self, model, lr_groups, lambda_loss_dict: dict, weight_decay=0, noise_std=0.0, interpolator_settings=None):
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
+
+        if interpolator_settings is not None:
+            self.interpolator = Interpolator(self.model.grid_layers,
+                                             interpolator_settings.get("search_level", 3),
+                                             interpolator_settings.get("input_level", 0),
+                                             interpolator_settings.get("target_level", 0),
+                                             interpolator_settings.get("precompute", True),
+                                             interpolator_settings.get("nh_inter", 3),
+                                             interpolator_settings.get("power", 1),
+                                             interpolator_settings.get("cutoff_dist_level", None),
+                                             interpolator_settings.get("cutoff_dist", None),
+                                             interpolator_settings.get("search_level_compute", None)
+                                             )
+        else:
+            self.interpolator = None
 
         self.weight_decay = weight_decay
         self.lr_groups=lr_groups
@@ -173,10 +188,26 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_0)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
+        b, nt, n = x.shape[:3]
         coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        x, coords_input, coords_output, indices_sample, mask, emb, dists_input = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
+        indices_sample, coords_input, coords_output, dists_input = self.prepare_coords_indices(coords_input,
+                                                                                               coords_output=coords_output,
+                                                                                               indices_sample=indices_sample,
+                                                                                               input_dists=dists_input)
+        if self.interpolator:
+            x, density_map = self.interpolator(x,
+                                  mask=mask,
+                                  calc_density=True,
+                                  indices_sample=indices_sample,
+                                  input_coords=coords_input,
+                                  input_dists=dists_input)
+            emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
+            emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
 
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, input_dists=dists_input)
-        return x
+            mask = None
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
+        return x.view(b, nt, *x.shape[1:])
 
     def on_after_backward(self):
         if self.noise_std > 0:
@@ -340,3 +371,40 @@ class LightningMGNOBaseModel(pl.LightningModule):
         #for name, param in self.named_parameters():
          #   if param.grad is None:
           #      print(f"Parameter with no gradient: {name}")
+
+    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None, input_dists=None):
+
+        if indices_sample is not None and isinstance(indices_sample, dict):
+            indices_layers = dict(zip(
+                self.model.global_levels.tolist(),
+                [self.model.get_global_indices_local(indices_sample['sample'],
+                                               indices_sample['sample_level'],
+                                               global_level)
+                                               for global_level in self.model.global_levels]))
+            indices_sample['indices_layers'] = indices_layers
+
+        if input_dists is not None and input_dists.numel()==0:
+            input_dists = None
+
+
+        return indices_sample, coords_input, coords_output, input_dists
+
+    def prepare_batch(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
+        b, nt = x.shape[:2]
+        x = x.view(b * nt, *x.shape[2:])
+        if mask is not None:
+            mask = mask.view(b * nt, *mask.shape[2:])
+        if coords_input is not None:
+            coords_input = coords_input.view(b * nt, *coords_input.shape[2:])
+        if coords_output is not None:
+            coords_output = coords_output.view(b * nt, *coords_output.shape[2:])
+        if input_dists is not None:
+            input_dists = input_dists.view(b * nt, *input_dists.shape[2:])
+        if indices_sample is not None and isinstance(indices_sample, dict):
+            for key, value in indices_sample.items():
+                indices_sample[key] = value.view(b * nt, *value.shape[2:]) if torch.is_tensor(value) else value
+        if emb is not None:
+            for key, value in emb.items():
+                emb[key] = value.view(b * nt, *value.shape[2:])
+
+        return x, coords_input, coords_output, indices_sample, mask, emb, input_dists

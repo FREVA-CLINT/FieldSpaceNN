@@ -1,19 +1,16 @@
 import torch
 import torch.nn as nn
 
-from typing import List, Dict
-
-from ...modules.icon_grids.grid_layer import GridLayer, MultiStepRelativeCoordinateManager, MultiRelativeCoordinateManager, Interpolator
+from ...modules.icon_grids.grid_layer import GridLayer, MultiRelativeCoordinateManager
+from ...modules.neural_operator.no_blocks import DenseLayer, get_lin_layer
+from ...modules.neural_operator.no_helpers import add_coordinates_to_emb_dict, add_mask_to_emb_dict
+from ...modules.neural_operator.no_helpers import get_embedder
 
 
 class MGNO_base_model(nn.Module):
     def __init__(self, 
                  mgrids,
-                 interpolate_input=False,
-                 density_embedder=False,
-                 interpolator_settings: Dict =None,
                  rotate_coord_system=True,
-                 concat_interp=False
                  ) -> None:
         
                 
@@ -38,103 +35,82 @@ class MGNO_base_model(nn.Module):
                                                   rotate_coord_system=rotate_coord_system
                                                 )
         
-        if interpolator_settings is not None:
-            self.interpolator = Interpolator(self.grid_layers,
-                                             interpolator_settings.get("search_level", 3),
-                                             interpolator_settings.get("input_level", 0),
-                                             interpolator_settings.get("target_level", 0),
-                                             interpolator_settings.get("precompute", True),
-                                             interpolator_settings.get("nh_inter", 3),
-                                             interpolator_settings.get("power", 1),
-                                             interpolator_settings.get("cutoff_dist_level", None),
-                                             interpolator_settings.get("cutoff_dist", None),
-                                             interpolator_settings.get("search_level_compute", None)
-                                             )
-
-        self.interpolate_input = interpolate_input
-        self.concat_interp = concat_interp
-        self.density_embedder = density_embedder
-
-    def prepare_coords_indices(self, coords_input=None, coords_output=None, indices_sample=None, input_dists=None):
-
-        if indices_sample is not None and isinstance(indices_sample, dict):
-            indices_layers = dict(zip(
-                self.global_levels.tolist(),
-                [self.get_global_indices_local(indices_sample['sample'], 
-                                               indices_sample['sample_level'], 
-                                               global_level) 
-                                               for global_level in self.global_levels]))
-            indices_sample['indices_layers'] = indices_layers
-
-        if input_dists is not None and input_dists.numel()==0:
-            input_dists = None
-
-
-        return indices_sample, coords_input, coords_output, input_dists
-
-
-    def prepare_batch(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
-        b, nt = x.shape[:2]
-        x = x.view(b * nt, *x.shape[2:])
-        if mask is not None:
-            mask = mask.view(b * nt, *mask.shape[2:])
-        if coords_input is not None:
-            coords_input = coords_input.view(b * nt, *coords_input.shape[2:])
-        if coords_output is not None:
-            coords_output = coords_output.view(b * nt, *coords_output.shape[2:])
-        if input_dists is not None:
-            input_dists = input_dists.view(b * nt, *input_dists.shape[2:])
-        if indices_sample is not None and isinstance(indices_sample, dict):
-            for key, value in indices_sample.items():
-                indices_sample[key] = value.view(b * nt, *value.shape[2:]) if torch.is_tensor(value) else value
-        if emb is not None:
-            for key, value in emb.items():
-                emb[key] = value.view(b * nt, *value.shape[2:])
-
-        return x, coords_input, coords_output, indices_sample, mask, emb, input_dists
-    
-
-    def forward(self, x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None, input_dists=None):
-        b, nt, n = x.shape[:3]
-        x, coords_input, coords_output, indices_sample, mask, emb, input_dists = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, input_dists)
-
-        
-        indices_sample, coords_input, coords_output, input_dists = self.prepare_coords_indices(coords_input,
-                                                                        coords_output=coords_output, 
-                                                                        indices_sample=indices_sample,
-                                                                        input_dists=input_dists)
-  
-        if self.interpolate_input or self.density_embedder:
-            interp_x, density_map = self.interpolator(x,
-                                            mask=mask,
-                                            calc_density=True,
-                                            indices_sample=indices_sample,
-                                            input_coords=coords_input,
-                                            input_dists=input_dists)
-
-            
-            emb["DensityEmbedder"] = 1 - density_map.transpose(-2,-1)
-            emb["UncertaintyEmbedder"] = (density_map.transpose(-2,-1), emb['VariableEmbedder'])
-
-            mask =None
-
-            if self.interpolate_input:
-                if self.concat_interp:
-                    x = torch.cat([x, interp_x.unsqueeze(-3)], dim=-1)
-                else:
-                    x = interp_x.unsqueeze(dim=-3)
-
-        x = self.forward_(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb)
-
-        return x.view(b, nt, *x.shape[1:]) if torch.is_tensor(x) else (x[0].view(b, nt, *x[0].shape[1:]), x[1], x[2].view(b, nt, *x[2].shape[1:]))
-
-
-    def forward_(x, coords_input=None, coords_output=None, indices_sample=None, mask=None, emb=None):
-        pass
-
-
     def get_global_indices_local(self, batch_sample_indices, sampled_level_fov, global_level):
         global_indices_sampled  = self.global_indices.view(-1, 4**sampled_level_fov[0])[batch_sample_indices]
         global_indices_sampled = global_indices_sampled.view(global_indices_sampled.shape[0], -1, 4**global_level)[:,:,0]   
         
         return global_indices_sampled // 4**global_level
+
+
+class InputLayer(nn.Module):
+
+    def __init__(self,
+                 model_dim_in,
+                 model_dim_out,
+                 grid_layer_0,
+                 embed_names=None,
+                 embed_confs=None,
+                 embed_mode='sum',
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False,
+                 with_gamma=False
+                 ) -> None:
+
+        super().__init__()
+
+        if embed_names is not None:
+            if 'CoordinateEmbedder' in embed_names:
+                self.grid_layer_0 = grid_layer_0
+
+            self.embedder = get_embedder(embed_names, embed_confs, embed_mode=embed_mode)
+
+            emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
+
+            self.embedding_layer = nn.Linear(emb_dim, model_dim_out * 2)
+
+            if with_gamma:
+                self.gamma1 = nn.Parameter(torch.ones(model_dim_out) * 1e-6, requires_grad=True)
+                self.gamma2 = nn.Parameter(torch.ones(model_dim_out) * 1e-6, requires_grad=True)
+
+        self.linear = nn.Linear(model_dim_in, model_dim_out, bias=False)
+
+        self.linear = get_lin_layer(model_dim_in, model_dim_out, n_vars_total=n_vars_total, rank_vars=rank_vars,
+                                    factorize_vars=factorize_vars, bias=False)
+
+    def forward(self, x, mask=None, emb=None, indices_sample=None):
+
+        if hasattr(self, 'grid_layer_0') and hasattr(self, "embedding_layer"):
+            emb = add_coordinates_to_emb_dict(self.grid_layer_0, indices_layers=indices_sample[
+                "indices_layers"] if indices_sample else None, emb=emb)
+
+        if mask is not None and hasattr(self, "embedding_layer"):
+            emb = add_mask_to_emb_dict(emb, mask)
+
+        if isinstance(self.linear, DenseLayer):
+            x = self.linear(x, emb=emb)
+        else:
+            x = self.linear(x)
+
+        x_shape = x.shape
+        if hasattr(self, "embedding_layer"):
+            emb_ = self.embedder(emb).squeeze(dim=1)
+            scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
+            n = scale.shape[1]
+            scale, shift = scale.view(scale.shape[0], scale.shape[1], -1, *x_shape[3:]), shift.view(scale.shape[0],
+                                                                                                    scale.shape[1], -1,
+                                                                                                    *x_shape[3:])
+
+            if hasattr(self, "gamma1"):
+                x = x * (self.gamma1 * scale + 1) + self.gamma2 * shift
+            else:
+                x = x * (scale + 1) + shift
+
+        return x
+
+
+def check_get(block_conf, arg_dict, key):
+    if key in arg_dict:
+        return arg_dict[key]
+    else:
+        return getattr(block_conf, key)

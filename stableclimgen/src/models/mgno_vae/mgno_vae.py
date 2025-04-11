@@ -2,12 +2,10 @@ import torch
 import torch.nn as nn
 from typing import List, Dict
 
-from stableclimgen.src.models.mgno_transformer.mgno_base_model import MGNO_base_model
-
 from stableclimgen.src.modules.vae.quantization import Quantization
 from ..mgno_transformer.mgno_encoderdecoder_block import MGNO_StackedEncoderDecoder_Block, MGNO_EncoderDecoder_Block
 from ..mgno_transformer.mgno_processing_block import MGNO_Processing_Block
-from ..mgno_transformer.mgno_transformer_mg import InputLayer, check_get
+from ..mgno_transformer.mgno_base_model import InputLayer, check_get, MGNO_base_model
 
 from ..mgno_transformer.mgno_block_confs import MGProcessingConfig, MGStackedEncoderDecoderConfig, \
     MGEncoderDecoderConfig
@@ -112,19 +110,12 @@ class MGNO_VAE(MGNO_base_model):
                  input_embed_names=None,
                  input_embed_confs=None,
                  input_embed_mode='sum',
-                 interpolate_input_residual=False,
-                 residual_interpolator_settings: Dict = None,
-                 concat_interp = False,
                  **kwargs
                  ) -> None:
 
-        super().__init__(mgrids,
-                         rotate_coord_system=rotate_coord_system,
-                         interpolate_input=kwargs.get("interpolate_input",False),
-                         interpolator_settings=kwargs.get("interpolator_settings",None),
-                         concat_interp=concat_interp)
+        super().__init__(mgrids,rotate_coord_system=rotate_coord_system)
 
-        self.input_dim = input_dim + concat_interp
+        self.input_dim = input_dim
 
         # Construct blocks based on configurations
         self.encoder_blocks = nn.ModuleList()
@@ -178,26 +169,6 @@ class MGNO_VAE(MGNO_base_model):
 
             self.decoder_blocks.append(block)
 
-        if interpolate_input_residual:
-            self.residual_interpolator_down = Interpolator(self.grid_layers,
-                                             residual_interpolator_settings.get("search_level", 3),
-                                             0,
-                                                           bottleneck_level,
-                                             residual_interpolator_settings.get("precompute", True),
-                                             residual_interpolator_settings.get("nh_inter", 3),
-                                             residual_interpolator_settings.get("power", 1)
-                                             )
-            self.residual_interpolator_up = Interpolator(self.grid_layers,
-                                                           residual_interpolator_settings.get("search_level", 3),
-                                                           bottleneck_level,
-                                                           0,
-                                                           residual_interpolator_settings.get("precompute", True),
-                                                           residual_interpolator_settings.get("nh_inter", 3),
-                                                           residual_interpolator_settings.get("power", 1)
-                                                           )
-
-        self.interpolate_input_residual = interpolate_input_residual
-
         self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
 
 
@@ -232,16 +203,8 @@ class MGNO_VAE(MGNO_base_model):
         return x
 
 
-    def forward_(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, input_dists=None):
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, residual=None):
         b,n,nh,nv,nc = x.shape[:5]
-        interp_x = 0
-        if self.interpolate_input_residual:
-            interp_x, _ = self.residual_interpolator_down(x[..., :self.input_dim-self.concat_interp],
-                                                      calc_density=False,
-                                                      indices_sample=indices_sample)
-            interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
-                                                      calc_density=False,
-                                                      indices_sample=indices_sample)
 
         posterior, mask = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
 
@@ -249,6 +212,6 @@ class MGNO_VAE(MGNO_base_model):
             z = posterior.sample()
         else:
             z = posterior
-        dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + interp_x
+        dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (residual if torch.is_tensor(residual) else 0)
         dec = dec.view(b,n,-1)
-        return dec, posterior, interp_x if self.interpolate_input_residual else dec
+        return dec, posterior
