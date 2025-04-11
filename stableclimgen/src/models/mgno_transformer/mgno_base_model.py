@@ -110,8 +110,12 @@ class InputLayer(nn.Module):
         return x
 
 
-def check_get(block_conf, arg_dict, key):
-    if key in arg_dict:
-        return arg_dict[key]
-    else:
+def check_get(block_conf, arg_dict, defaults, key):
+    if hasattr(block_conf,key):
         return getattr(block_conf, key)
+    elif key in arg_dict:
+        return arg_dict[key]
+    elif key in defaults:
+        return defaults[key]
+    else:
+        raise KeyError(f"Key '{key}' not found block_conf, model arguments and defaults")
