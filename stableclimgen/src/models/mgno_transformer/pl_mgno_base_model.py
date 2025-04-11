@@ -190,7 +190,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
         output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
         output = {'output': output[...,0].unsqueeze(dim=1),
-                  'output_var': output[...,1].unsqueeze(dim=1) if self.model.predict_var else None,
+                  'output_var': output[...,1].unsqueeze(dim=1) if hasattr(self.model,'predict_var') and self.model.predict_var else None,
                   'mask': mask.unsqueeze(dim=1)}
         return output
     

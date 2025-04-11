@@ -32,6 +32,15 @@ class DataNormalizer:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
+    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Abstract method for denormalizing the variance of the input data tensor.
+
+        :param data: Normalized data tensor to be denormalized.
+        :return: Denormalized data tensor.
+        """
+        raise NotImplementedError("This method should be implemented by subclasses.")
+
 
 class QuantileNormalizer(DataNormalizer):
     """
@@ -83,6 +92,17 @@ class QuantileNormalizer(DataNormalizer):
         # Rescale data to the original min-max range
         return data_rescaled * (self.q_high - self.q_low) + self.q_low
 
+    def denormalize_var(self, data_var: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the min-max normalization and return data to its original scale.
+
+        :param data: Normalized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data from the output range to [0, 1]
+        data_rescaled = (data_var) / (self.output_range[1] - self.output_range[0])**2
+        # Rescale data to the original min-max range
+        return data_rescaled * (self.q_high - self.q_low)**2
 
 class AbsQuantileNormalizer(DataNormalizer):
     """
@@ -132,6 +152,18 @@ class AbsQuantileNormalizer(DataNormalizer):
         # Rescale data to the original scale using the upper quantile
         return data_rescaled * self.q_high
 
+    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the max normalization and return data to its original scale.
+
+        :param data: Normalized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data from the output range to [0, 1]
+        data_rescaled = (data) / (self.output_range[1] - self.output_range[0])**2
+        # Rescale data to the original scale using the upper quantile
+        return data_rescaled * self.q_high**2
+
 
 class MeanStdNormalizer(DataNormalizer):
     """
@@ -167,3 +199,13 @@ class MeanStdNormalizer(DataNormalizer):
         """
         # Rescale data to the original scale by multiplying by std and adding the mean
         return data * self.std + self.mean
+
+    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the standardization and return data to its original scale.
+
+        :param data: Standardized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data to the original scale by multiplying by std and adding the mean
+        return data * self.std**2
