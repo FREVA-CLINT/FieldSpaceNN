@@ -5,17 +5,16 @@ dataset:
   processing_nside: 64
   in_nside: 64
   out_nside: 64
-  coarsen_sample_level: -1
+  coarsen_sample_level: 6
   search_radius: 2
   nh_input: 1
   sample_for_norm: 2
   lazy_load: true
-  p_dropout: 1.0
+  p_dropout: 0.9
   p_average: 0
   p_average_dropout: 0.5
   max_average_lvl: 3
-  drop_vars: false
-
+  n_sample_timesteps: 1
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule

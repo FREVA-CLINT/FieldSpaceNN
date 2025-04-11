@@ -121,7 +121,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
                                                              calc_density=True,
                                                              input_dists=in_dists_input)
                     input_inter = input_inter.view(1, -1, n, nv, nc)
-                    density = 1 - density.view(1, -1, n, nv, nc)
+                    density = density.view(1, -1, n, nv, nc)
                 else:
                     input_inter = None
                     density = None
