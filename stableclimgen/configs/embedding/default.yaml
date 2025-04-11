@@ -6,6 +6,11 @@ DensityEmbedder:
   in_channels: 1
   embed_dim: 64
   shared: false
+UncertaintyEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  in_channels_var: ${embedding.VariableEmbedder.in_channels}
+  shared: false
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64

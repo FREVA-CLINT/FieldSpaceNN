@@ -29,7 +29,7 @@ def test(cfg: DictConfig) -> None:
         data = json.load(json_file)
     test_dataset = instantiate(cfg.dataloader.dataset,
                                data_dict=data["test"],
-                               variables_source=data["train"]["source"]["variables"],
+                               variables_source = data["train"]["source"]["variables"],
                                variables_target = data["train"]["target"]["variables"])
 
     # Initialize model and trainer
@@ -53,6 +53,16 @@ def test(cfg: DictConfig) -> None:
     torch.save(output, cfg.output_path)
     mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
+
+    if 'output_var' in predictions[0].keys() and predictions[0]['output_var'] is not None:
+        output_var = torch.cat([batch["output_var"] for batch in predictions], dim=0)
+        output_var = rearrange(output_var, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset, "global_cells_input") else 1)
+
+        for k, var in enumerate(test_dataset.variables_target):
+            output_var[..., k] = test_dataset.var_normalizers[var].denormalize_var(output_var[..., k])
+
+        output_var = dict(zip(test_dataset.variables_target, output_var.split(1, dim=-1)))
+        torch.save(output_var, cfg.output_path.replace(".pt", "_var.pt"))
 
 if __name__ == "__main__":
     test()

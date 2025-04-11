@@ -119,8 +119,11 @@ class NetCDFLoader_lazy(Dataset):
         self.pert_coordinates = pert_coordinates
         self.n_drop_vars = n_drop_vars
 
-        self.variables_source = variables_source or data_dict["source"]["variables"]
-        self.variables_target = variables_target or data_dict["target"]["variables"]
+        self.variables_source = data_dict["source"]["variables"]
+        self.variables_target = data_dict["target"]["variables"]
+
+        self.variables_source_train = variables_source if variables_source is not None else self.variables_source
+        self.variables_target_train = variables_target if variables_target is not None else self.variables_target
 
         if "timesteps" in data_dict.keys():
             self.sample_timesteps = []
@@ -366,7 +369,7 @@ class NetCDFLoader_lazy(Dataset):
 
         data_source_grids = {}
         for grid_type, variables in self.vars_grid_types_input.items():
-            variables = [var for var in variables if var in variables_source]
+            variables = [var for var in variables_source if var in variables]
             data_source = self.get_data(ds_source, time_point_idx, global_cells[region_idx], variables, 0, grid_type, input_mapping[grid_type])
             data_source_grids[grid_type] = data_source 
 
@@ -460,8 +463,9 @@ class NetCDFLoader_lazy(Dataset):
         else:
             indices_sample = {'sample': region_idx,
                 'sample_level': self.coarsen_sample_level}
-                
-        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(dim=0)}
+        
+        var_indices = torch.tensor([np.where(np.array(self.variables_source_train)==var)[0][0] for var in variables_source])
+        embed_data = {'VariableEmbedder': var_indices.unsqueeze(dim=0)}
 
         return data_source.float(), data_target.float(), coords_input.float(), coords_output.float(), indices_sample, drop_mask, embed_data, dists_input
 

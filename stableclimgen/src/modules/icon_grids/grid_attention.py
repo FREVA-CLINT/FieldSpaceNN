@@ -61,6 +61,6 @@ class GridAttention(nn.Module):
         x = x.view(bt // nt, nt, *x.shape[1:])
         if emb is not None:
             for key, value in emb.items():
-                if value.shape[0] == bt:
+                if not isinstance(value, tuple) and (value.shape[0] == bt):
                     emb[key] = value.view(bt // nt, nt, *value.shape[1:])
         return x, mask, emb

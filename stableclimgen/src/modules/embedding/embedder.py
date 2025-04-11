@@ -103,7 +103,38 @@ class DensityEmbedder(BaseEmbedder):
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
 
+class UncertaintyEmbedder(BaseEmbedder):
+    """
+    A neural network module to embed longitude and latitude coordinates.
 
+    :param embed_dim: Dimensionality of the embedding output.
+    :param in_channels: Number of input coordinate features (default is 2).
+    """
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None) -> None:
+        super().__init__(name, in_channels, embed_dim)
+
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "t", "s", "v", "c"]
+
+        self.betas = nn.Parameter(torch.ones(in_channels_var), requires_grad=True)
+
+        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
+        self.embedding_fn = torch.nn.Sequential(
+            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
+    
+    def forward(self, density_var):
+        density, var_indices = density_var
+
+        betas = self.betas[var_indices].view(var_indices.shape[0],1,var_indices.shape[-1],1)
+
+        uncertainty =  1 - density**betas
+
+        return self.embedding_fn(uncertainty)
 class VariableEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
