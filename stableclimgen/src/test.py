@@ -54,7 +54,7 @@ def test(cfg: DictConfig) -> None:
     mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
-    if 'output_var' in predictions[0].keys():
+    if 'output_var' in predictions[0].keys() and predictions[0]['output_var'] is not None:
         output_var = torch.cat([batch["output_var"] for batch in predictions], dim=0)
         output_var = rearrange(output_var, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset, "global_cells_input") else 1)
 
