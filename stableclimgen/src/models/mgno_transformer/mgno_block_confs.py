@@ -9,6 +9,38 @@ def check_value(value, n_repeat):
         value = [list(value) for _ in range(n_repeat)] if len(value)==0 else list(value)*n_repeat
     return value
 
+defaults = {
+    "predict_var":False,
+    'n_vars_total': 1,
+    'n_head_channels': 32, 
+    'factorize_vars': True,
+    'rank_vars': 8,
+    'rotate_coord_system': True,
+    'p_dropout': 0,
+    'block_type': 'pre_layer_norm',
+    'with_gamma': True,
+    'omit_backtransform': True,
+    'rank': 0.7,
+    'rank_cross': 0.7,
+    'no_rank_decay': 0,
+    'no_level_step': 1,
+    'concat_model_dim': 1,
+    'seq_level': 2,
+    'layer_type': 'Dense',
+    'embed_mode': 'sum',
+    'interpolate_input': True,
+    'learn_residual': True,
+    'input_embed_names': [],
+    'input_embed_confs': {},
+    'input_embed_mode': "sum",
+    'mg_reduction_embed_confs': {},
+    'mg_reduction_embed_names': [],
+    'mg_reduction_embed_names_mlp': [],
+    'mg_reduction_embed_mode': "sum",
+    'mg_att_dim': 64,
+    'mg_n_head_channels': 16,
+    'level_diff_zero_linear': True
+}
 
 class NOBlockConfig:
 
@@ -35,23 +67,6 @@ class MGEncoderDecoderConfig:
                  global_levels_no: list,
                  model_dims_out: list,
                  no_layer_settings: dict={},
-                 block_type: str = 'post_layer_norm',
-                 mg_reduction:str = 'linear',
-                 mg_reduction_embed_confs: dict=None,
-                 mg_reduction_embed_names: list=None,
-                 mg_reduction_embed_names_mlp: list=None,
-                 mg_reduction_embed_mode: str = 'sum',
-                 embed_confs: dict=None,
-                 embed_names: list=None,
-                 embed_mode: str = 'sum',
-                 omit_backtransform: bool=False,
-                 mg_att_dim: int = 128,
-                 mg_n_head_channels: int=16,
-                 rule: str = 'fc',
-                 level_diff_zero_linear = False,
-                 layer_type='Dense',
-                 n_vars_total=1,
-                 factorize_vars=False,
                  **kwargs):
 
         inputs = copy.deepcopy(locals())
@@ -69,22 +84,6 @@ class MGStackedEncoderDecoderConfig:
                  global_levels_no: int,
                  model_dims_out: list,
                  no_layer_settings: dict={},
-                 block_type: str = 'post_layer_norm',
-                 no_level_step: int = 1,
-                 layer_type = 'Tucker',
-                 concat_layer_type='Tucker',
-                 reduction_layer_type = 'CrossTucker', 
-                 concat_model_dim = 1,
-                 p_dropout=0,
-                 mask_as_embedding = False,
-                 embed_confs: dict=None,
-                 embed_names: list=None,
-                 embed_mode: str = 'sum',
-                 n_head_channels: int=16,
-                 seq_level: int=2,
-                 n_vars_total=1,
-                 rank_vars=4,
-                 factorize_vars=False,
                  **kwargs):
 
         inputs = copy.deepcopy(locals())
@@ -99,10 +98,7 @@ class MGStackedEncoderDecoderConfig:
 class MGProcessingConfig:
     def __init__(self, 
                  layer_settings_levels: List[List],
-                 model_dims_out: List[List],
-                 n_vars_total=1,
-                 rank_vars=4,
-                 factorize_vars=False):
+                 model_dims_out: List[List]):
 
         if isinstance(layer_settings_levels[0], omegaconf.DictConfig):
             layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out))]
