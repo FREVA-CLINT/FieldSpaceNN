@@ -240,13 +240,18 @@ class Stacked_NOBlock(nn.Module):
 
             if mask_levels_out[k] is not None:
                 emb = add_mask_to_emb_dict(emb, mask_levels_out[k])
+            
+            emb['args']['global_level'] = output_level
 
             if hasattr(self, 'grid_layers'):
                 emb = add_coordinates_to_emb_dict(self.grid_layers[str(output_level)], indices_sample["indices_layers"] if indices_sample else None, emb)
 
             x = self.gammas1[str(output_level)] * self.layer_norms1[str(output_level)](x, emb=emb) + self.lin_skip_inner[str(output_level)](x_res)
 
-            x = self.mlp_layers[str(output_level)](x)  
+            if isinstance(self.mlp_layers[str(output_level)], MLP_fac):
+                x = self.mlp_layers[str(output_level)](x, emb=emb)  
+            else:
+                x = self.mlp_layers[str(output_level)](x)  
         
             x = self.layer_norms2[str(output_level)](x, emb=emb)
 
@@ -350,6 +355,8 @@ class Stacked_PreActivationNOBlock(nn.Module):
             if mask_levels_input[input_level] is not None:
                 emb = add_mask_to_emb_dict(emb, mask_levels_input[input_level])
 
+            emb['args']['global_level'] = input_level
+
             x_levels.append(self.layer_norms1[str(input_level)](x_levels_input[input_level], emb=emb))
 
 
@@ -373,6 +380,8 @@ class Stacked_PreActivationNOBlock(nn.Module):
 
             if hasattr(self, 'grid_layers'):
                 emb = add_coordinates_to_emb_dict(self.grid_layers[str(output_level)], indices_sample["indices_layers"] if indices_sample else None, emb)
+
+            emb['args']['global_level'] = output_level
 
             x = self.gammas1[str(output_level)] * x + self.lin_skip_inner[str(output_level)](x_res)
 
@@ -496,6 +505,7 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
             if mask_levels_input[input_level] is not None:
                 emb = add_mask_to_emb_dict(emb, mask_levels_input[input_level])
 
+            emb['args']['global_level'] = input_level
             x_levels.append(self.layer_norms1[str(input_level)](x_levels_input[input_level], emb=emb))
 
 
@@ -523,6 +533,7 @@ class Stacked_PreActivationAttNOBlock(nn.Module):
             if hasattr(self, 'grid_layers'):
                 emb = add_coordinates_to_emb_dict(self.grid_layers[str(output_level)], indices_sample["indices_layers"] if indices_sample else None, emb)
 
+            emb['args']['global_level'] = output_level
 
             if output_level in self.input_levels:
                 x_in = x_levels[output_level]
@@ -661,6 +672,8 @@ class NOBlock(nn.Module):
         if hasattr(self, 'grid_layer_1'):
             emb = add_coordinates_to_emb_dict(self.grid_layer_1, indices_sample["indices_layers"] if indices_sample else None, emb)
 
+        emb['args']['global_level'] = self.grid_layer_1.global_level
+
         x = self.gamma1 * self.layer_norm1(x_conv, emb=emb) + self.lin_skip_inner(x_res)
 
         if isinstance(self.mlp_layer, MLP_fac):
@@ -760,6 +773,8 @@ class PreActivation_NOBlock(nn.Module):
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
 
+        emb['args']['global_level'] = self.grid_layer_1.global_level
+
         x = self.layer_norm1(x, emb=emb)
 
         x_conv, mask = self.no_conv(x, 
@@ -776,6 +791,8 @@ class PreActivation_NOBlock(nn.Module):
 
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
+
+        emb['args']['global_level'] = self.grid_layer_2.global_level
 
         x = self.layer_norm2(x, emb=emb)
 
@@ -964,7 +981,7 @@ def get_ranks(shape, rank, no_rank_decay=0):
                 rank_.append(float(rank))
 
     if rank > 1:
-        ranks = [min([dim, rank_[k]]) for k, dim in enumerate(shape)]
+        ranks = [min([dim, int(rank_[k])]) for k, dim in enumerate(shape)]
     else:
         ranks = [max([1,int(dim * rank_[k])]) for k, dim in enumerate(shape)]
     
@@ -1700,15 +1717,19 @@ class SpatialAttention(nn.Module):
             rotate_coord_system=rotate_coord_system
         )
 
+        self.global_level = grid_layer.global_level
         self.mask_as_embedding = mask_as_embedding
        
     def forward(self, x, indices_sample=None, mask=None, emb=None):
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
+        
+        emb['args']['global_level'] = self.global_level
+
         x = self.grid_attention_layer(x,
-                                      indices_sample=indices_sample, 
-                                      mask=mask if not self.mask_as_embedding else None, 
-                                      emb=emb)
+                                    indices_sample=indices_sample, 
+                                    mask=mask if not self.mask_as_embedding else None, 
+                                    emb=emb)
         return x
 
 
@@ -1733,6 +1754,8 @@ class VariableAttention(nn.Module):
         super().__init__()
 
         self.mask_as_embedding = mask_as_embedding
+
+        self.global_level = grid_layer.global_level
 
         if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
             self.grid_layer = grid_layer
@@ -1785,6 +1808,8 @@ class VariableAttention(nn.Module):
 
         if mask is not None:
             emb = add_mask_to_emb_dict(emb, mask)
+
+        emb['args']['global_level'] = self.global_level
 
         x_res = self.lin_skip_outer(x)
 

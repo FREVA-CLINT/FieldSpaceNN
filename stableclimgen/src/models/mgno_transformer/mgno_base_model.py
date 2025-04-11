@@ -35,6 +35,7 @@ class MGNO_base_model(nn.Module):
                                                   rotate_coord_system=rotate_coord_system
                                                 )
         
+
     def get_global_indices_local(self, batch_sample_indices, sampled_level_fov, global_level):
         global_indices_sampled  = self.global_indices.view(-1, 4**sampled_level_fov[0])[batch_sample_indices]
         global_indices_sampled = global_indices_sampled.view(global_indices_sampled.shape[0], -1, 4**global_level)[:,:,0]   
@@ -109,8 +110,12 @@ class InputLayer(nn.Module):
         return x
 
 
-def check_get(block_conf, arg_dict, key):
-    if key in arg_dict:
-        return arg_dict[key]
-    else:
+def check_get(block_conf, arg_dict, defaults, key):
+    if hasattr(block_conf,key):
         return getattr(block_conf, key)
+    elif key in arg_dict:
+        return arg_dict[key]
+    elif key in defaults:
+        return defaults[key]
+    else:
+        raise KeyError(f"Key '{key}' not found block_conf, model arguments and defaults")

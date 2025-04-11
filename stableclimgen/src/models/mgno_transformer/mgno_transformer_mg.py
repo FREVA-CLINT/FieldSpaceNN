@@ -6,7 +6,8 @@ from typing import List
 from .mgno_encoderdecoder_block import MGNO_EncoderDecoder_Block, MGNO_StackedEncoderDecoder_Block
 from .mgno_processing_block import MGNO_Processing_Block
 
-from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig, MGStackedEncoderDecoderConfig
+
+from .mgno_block_confs import MGProcessingConfig, MGEncoderDecoderConfig, MGStackedEncoderDecoderConfig, defaults
 from .mgno_base_model import MGNO_base_model, InputLayer, check_get
 
 from ...modules.neural_operator.no_blocks import get_lin_layer, DenseLayer
@@ -19,21 +20,19 @@ class MGNO_Transformer_MG(MGNO_base_model):
                  input_dim: int=1,
                  lifting_dim: int=1,
                  output_dim: int=1,
-                 rotate_coord_system: bool=True,
-                 p_dropout=0.,
-                 mask_as_embedding = False,
-                 input_embed_names = None,
-                 input_embed_confs = None,
-                 input_embed_mode = 'sum',
-                 concat_interp = False,
-                 predict_var = False,
                  **kwargs
                  ) -> None: 
         
-        self.input_dim = input_dim + concat_interp
-                
-        super().__init__(mgrids, rotate_coord_system=rotate_coord_system)
+        self.input_dim = input_dim 
         
+        predict_var = kwargs.get("predict_var", defaults['predict_var'])
+        
+        super().__init__(mgrids,
+                         rotate_coord_system=kwargs.get("rotate_coord_system", False))
+
+        
+        mask_as_embedding = kwargs.get("mask_as_embedding", False)
+
         if predict_var:
             output_dim = output_dim * 2
             self.activation_var = nn.Softplus()
@@ -57,27 +56,27 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             block_conf.global_levels_no,
                                             block_conf.model_dims_out,
                                             rule=block_conf.rule,
-                                            no_layer_settings=check_get(block_conf,kwargs,'no_layer_settings'),
-                                            block_type=check_get(block_conf,kwargs,'block_type'),
-                                            mg_reduction=check_get(block_conf, kwargs, "mg_reduction"),
-                                            mg_reduction_embed_confs=check_get(block_conf, kwargs, "mg_reduction_embed_confs"),
-                                            mg_reduction_embed_names=check_get(block_conf, kwargs, "mg_reduction_embed_names"),
-                                            mg_reduction_embed_names_mlp=check_get(block_conf, kwargs, "mg_reduction_embed_names_mlp"),
-                                            mg_reduction_embed_mode=check_get(block_conf, kwargs, "mg_reduction_embed_mode"),
-                                            embed_confs=check_get(block_conf, kwargs, "embed_confs"),
-                                            embed_names=check_get(block_conf, kwargs, "embed_names"),
-                                            embed_mode=check_get(block_conf, kwargs, "embed_mode"),
-                                            with_gamma=check_get(block_conf, kwargs, "with_gamma"),
-                                            omit_backtransform=check_get(block_conf, kwargs, "omit_backtransform"),
-                                            mg_att_dim=check_get(block_conf, kwargs, "mg_att_dim"),
-                                            mg_n_head_channels=check_get(block_conf, kwargs, "mg_n_head_channels"),
-                                            level_diff_zero_linear=check_get(block_conf, kwargs, "level_diff_zero_linear"),
+                                            no_layer_settings=check_get(block_conf,kwargs,defaults,'no_layer_settings'),
+                                            block_type=check_get(block_conf,kwargs,defaults,'block_type'),
+                                            mg_reduction=check_get(block_conf, kwargs,defaults, "mg_reduction"),
+                                            mg_reduction_embed_confs=check_get(block_conf, kwargs,defaults, "mg_reduction_embed_confs"),
+                                            mg_reduction_embed_names=check_get(block_conf, kwargs,defaults, "mg_reduction_embed_names"),
+                                            mg_reduction_embed_names_mlp=check_get(block_conf, kwargs,defaults, "mg_reduction_embed_names_mlp"),
+                                            mg_reduction_embed_mode=check_get(block_conf, kwargs,defaults, "mg_reduction_embed_mode"),
+                                            embed_confs=check_get(block_conf, kwargs,defaults, "embed_confs"),
+                                            embed_names=check_get(block_conf, kwargs,defaults, "embed_names"),
+                                            embed_mode=check_get(block_conf, kwargs,defaults, "embed_mode"),
+                                            with_gamma=check_get(block_conf, kwargs,defaults, "with_gamma"),
+                                            omit_backtransform=check_get(block_conf, kwargs,defaults, "omit_backtransform"),
+                                            mg_att_dim=check_get(block_conf, kwargs,defaults, "mg_att_dim"),
+                                            mg_n_head_channels=check_get(block_conf, kwargs,defaults, "mg_n_head_channels"),
+                                            level_diff_zero_linear=check_get(block_conf, kwargs,defaults, "level_diff_zero_linear"),
                                             mask_as_embedding=mask_as_embedding,
-                                            layer_type=check_get(block_conf, kwargs, "layer_type"),
-                                            rank=check_get(block_conf, kwargs, "rank"),
-                                            n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
-                                            rank_vars=check_get(block_conf, kwargs, "rank_vars"),
-                                            factorize_vars=check_get(block_conf, kwargs, "factorize_vars"))  
+                                            layer_type=check_get(block_conf, kwargs,defaults, "layer_type"),
+                                            rank=check_get(block_conf, kwargs,defaults, "rank"),
+                                            n_vars_total=check_get(block_conf, kwargs,defaults, "n_vars_total"),
+                                            rank_vars=check_get(block_conf, kwargs,defaults, "rank_vars"),
+                                            factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars"))  
                 
             elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
                 block = MGNO_StackedEncoderDecoder_Block(
@@ -87,27 +86,27 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     block_conf.global_levels_output,
                     block_conf.global_levels_no,
                     block_conf.model_dims_out,
-                    no_layer_settings=check_get(block_conf,kwargs,'no_layer_settings'),
-                    block_type=check_get(block_conf,kwargs,'block_type'),
+                    no_layer_settings=check_get(block_conf,kwargs,defaults,'no_layer_settings'),
+                    block_type=check_get(block_conf,kwargs,defaults,'block_type'),
                     mask_as_embedding= mask_as_embedding,
                     layer_type=block_conf.layer_type if "layer_type" not in kwargs.keys() else kwargs['layer_type'],
-                    no_level_step = check_get(block_conf, kwargs, "no_level_step"),
-                    concat_model_dim= check_get(block_conf, kwargs, "concat_model_dim"),
-                    reduction_layer_type=check_get(block_conf, kwargs, "reduction_layer_type"),
-                    concat_layer_type=check_get(block_conf, kwargs, "concat_layer_type"),
-                    rank=check_get(block_conf, kwargs, "rank"),
-                    rank_cross=check_get(block_conf, kwargs, "rank_cross"),
-                    no_rank_decay=check_get(block_conf, kwargs, "no_rank_decay"),
-                    with_gamma=check_get(block_conf, kwargs, "with_gamma"),
-                    embed_confs=check_get(block_conf, kwargs, "embed_confs"),
-                    embed_names=check_get(block_conf, kwargs, "embed_names"),
-                    embed_mode=check_get(block_conf, kwargs, "embed_mode"),
-                    n_head_channels=check_get(block_conf, kwargs, "n_head_channels"),
-                    p_dropout=check_get(block_conf, kwargs, "p_dropout"),
-                    seq_level=check_get(block_conf, kwargs, "seq_level"),
-                    n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
-                    rank_vars=check_get(block_conf, kwargs, "rank_vars"),
-                    factorize_vars=check_get(block_conf, kwargs, "factorize_vars")
+                    no_level_step = check_get(block_conf, kwargs,defaults, "no_level_step"),
+                    concat_model_dim= check_get(block_conf, kwargs,defaults, "concat_model_dim"),
+                    reduction_layer_type=check_get(block_conf, kwargs,defaults, "reduction_layer_type"),
+                    concat_layer_type=check_get(block_conf, kwargs,defaults, "concat_layer_type"),
+                    rank=check_get(block_conf, kwargs,defaults, "rank"),
+                    rank_cross=check_get(block_conf, kwargs,defaults, "rank_cross"),
+                    no_rank_decay=check_get(block_conf, kwargs,defaults, "no_rank_decay"),
+                    with_gamma=check_get(block_conf, kwargs,defaults, "with_gamma"),
+                    embed_confs=check_get(block_conf, kwargs,defaults, "embed_confs"),
+                    embed_names=check_get(block_conf, kwargs,defaults, "embed_names"),
+                    embed_mode=check_get(block_conf, kwargs,defaults, "embed_mode"),
+                    n_head_channels=check_get(block_conf, kwargs,defaults, "n_head_channels"),
+                    p_dropout=check_get(block_conf, kwargs,defaults, "p_dropout"),
+                    seq_level=check_get(block_conf, kwargs,defaults, "seq_level"),
+                    n_vars_total=check_get(block_conf, kwargs,defaults, "n_vars_total"),
+                    rank_vars=check_get(block_conf, kwargs,defaults, "rank_vars"),
+                    factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars")
                 )
                 
             elif isinstance(block_conf, MGProcessingConfig):
@@ -118,9 +117,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
                             block_conf.model_dims_out,
                             self.grid_layers,
                             mask_as_embedding=mask_as_embedding,
-                            n_vars_total=check_get(block_conf, kwargs, "n_vars_total"),
-                            rank_vars=check_get(block_conf, kwargs, "rank_vars"),
-                            factorize_vars=check_get(block_conf, kwargs, "factorize_vars"))
+                            n_vars_total=check_get(block_conf, kwargs,defaults, "n_vars_total"),
+                            rank_vars=check_get(block_conf, kwargs,defaults, "rank_vars"),
+                            factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars"))
                         
                 
             self.Blocks.append(block)     
@@ -140,9 +139,9 @@ class MGNO_Transformer_MG(MGNO_base_model):
         self.input_layer = InputLayer(self.input_dim,
                                       lifting_dim, 
                                       self.grid_layer_0, 
-                                      embed_names=input_embed_names,
-                                      embed_confs=input_embed_confs,
-                                      embed_mode=input_embed_mode,
+                                      embed_names=kwargs.get('input_embed_names',defaults['input_embed_names']),
+                                      embed_confs=kwargs.get('input_embed_confs',defaults['input_embed_confs']),
+                                      embed_mode=kwargs.get('input_embed_mode',defaults['input_embed_mode']),
                                       n_vars_total = kwargs.get('n_vars_total',1),
                                       rank_vars = kwargs.get('rank_vars',4),
                                       factorize_vars= kwargs.get('factorize_vars',False),
