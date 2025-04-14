@@ -45,7 +45,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 ) -> None: 
       
         super().__init__()
-
+        
+        vars_settings = {'n_vars_total': n_vars_total,
+                         'rank_vars': rank_vars,
+                         'factorize_vars': factorize_vars}
         self.mask_as_embedding = mask_as_embedding
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
@@ -106,7 +109,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                             layer_settings=no_layer_settings,
                                             normalize_to_mask= (mask_as_embedding==False))
                     
-                    embedder = get_embedder(embed_names, embed_confs, embed_mode) if embed_names is not None else None
+                    embedder = get_embedder(embed_names, embed_confs, embed_mode) if embed_names is not None and len(embed_names)>0 else None
                     
                     if 'post_layer_norm' in block_type:
                         layer = NOBlock(
@@ -144,8 +147,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
             if len(mg_input_dims)>1:
                 if mg_reduction == 'linear':
-                    reduction_layer = mg.LinearReductionLayer(mg_input_dims, model_dim_out)
-                
+                    reduction_layer = mg.LinearReductionLayer(mg_input_dims, model_dim_out,**vars_settings)
+                                    
                 elif mg_reduction == 'sum':
                     reduction_layer = mg.SumReductionLayer()
 
@@ -172,7 +175,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                                                     n_head_channels=mg_n_head_channels,
                                                                     embedder_grid=embedder,
                                                                     embedder_mlp=embedder_mlp,
-                                                                    p_dropout=p_dropout)
+                                                                    p_dropout=p_dropout,
+                                                                    **vars_settings)
                     elif mg_reduction == 'MGDiffAttention':
                         reduction_layer = mg.MGDiffAttentionReductionLayer(torch.tensor(mg_input_levels)-output_level,
                                                                     mg_input_dims, 
@@ -181,7 +185,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                                                     n_head_channels=mg_n_head_channels,
                                                                     embedder_grid=embedder,
                                                                     embedder_mlp=embedder_mlp,
-                                                                    p_dropout=p_dropout)
+                                                                    p_dropout=p_dropout,
+                                                                    **vars_settings)
                     elif mg_reduction == 'MGDiffMAttention':
                         reduction_layer = mg.MGDiffMAttentionReductionLayer(torch.tensor(mg_input_levels)-output_level,
                                                                     mg_input_dims, 
@@ -190,7 +195,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                                                     n_head_channels=mg_n_head_channels,
                                                                     embedder_grid=embedder,
                                                                     embedder_mlp=embedder_mlp,
-                                                                    p_dropout=p_dropout)
+                                                                    p_dropout=p_dropout,
+                                                                    **vars_settings)
             else:
                 reduction_layer = mg.IdentityReductionLayer()
             

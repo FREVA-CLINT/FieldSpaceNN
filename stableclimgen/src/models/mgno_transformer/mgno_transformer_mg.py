@@ -89,7 +89,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     no_layer_settings=check_get(block_conf,kwargs,defaults,'no_layer_settings'),
                     block_type=check_get(block_conf,kwargs,defaults,'block_type'),
                     mask_as_embedding= mask_as_embedding,
-                    layer_type=block_conf.layer_type if "layer_type" not in kwargs.keys() else kwargs['layer_type'],
+                    layer_type=check_get(block_conf, kwargs,defaults, "layer_type"),
                     no_level_step = check_get(block_conf, kwargs,defaults, "no_level_step"),
                     concat_model_dim= check_get(block_conf, kwargs,defaults, "concat_model_dim"),
                     reduction_layer_type=check_get(block_conf, kwargs,defaults, "reduction_layer_type"),

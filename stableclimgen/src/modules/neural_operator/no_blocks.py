@@ -757,9 +757,8 @@ class PreActivation_NOBlock(nn.Module):
 
         self.activation = nn.SiLU()
         
-        if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
-            self.grid_layer_1 = no_layer.rcm.grid_layers[str(no_layer.global_level_encode)]
-            self.grid_layer_2 = no_layer.rcm.grid_layers[str(no_layer.global_level_decode)]
+        self.grid_layer_1 = no_layer.rcm.grid_layers[str(no_layer.global_level_encode)]
+        self.grid_layer_2 = no_layer.rcm.grid_layers[str(no_layer.global_level_decode)]
 
     def forward(self, x, coords_encode=None, coords_decode=None, indices_sample=None, mask=None, emb=None):
         
@@ -1246,6 +1245,10 @@ class PathAttentionLayer(nn.Module):
                 ) -> None: 
          
         super().__init__()
+
+        vars_settings = {'n_vars_total': n_vars_total,
+                         'rank_vars': rank_vars,
+                         'factorize_vars': factorize_vars}
         
         no_dims_out = get_ranks((*no_dims, input_dim), rank, no_rank_decay=no_rank_decay)[:-1]
 
@@ -1257,11 +1260,22 @@ class PathAttentionLayer(nn.Module):
         if emb:
             self.pos_emb = FactorizedNOPositionEmbedding(no_dims, input_dim)
 
-        token_weights = torch.empty((*no_dims, self.no_dims_out_tot))
-        for k, no_dim in enumerate(no_dims):
-            shape = [1]*len(no_dims) + [self.no_dims_out_tot]
-            shape[k] = no_dim
-            token_weights = token_weights + torch.randn(shape) * (1./(k+1))
+        if n_vars_total==1:
+            token_weights = torch.empty((*no_dims, self.no_dims_out_tot))
+            for k, no_dim in enumerate(no_dims):
+                shape = [1]*len(no_dims) + [self.no_dims_out_tot]
+                shape[k] = no_dim
+                token_weights = token_weights + torch.randn(shape) * (1./(k+1))
+            
+            self.contract_fun = self.contract
+        else:
+            token_weights = torch.empty((n_vars_total, *no_dims, self.no_dims_out_tot))
+            for k, no_dim in enumerate(no_dims):
+                shape = [n_vars_total] + [1]*len(no_dims) + [self.no_dims_out_tot]
+                shape[1+k] = no_dim
+                token_weights = token_weights + torch.randn(shape) * (1./(k+1))
+            
+            self.contract_fun = self.contract_vars
         
         self.token_weights = nn.Parameter(token_weights, requires_grad=True)
 
@@ -1276,12 +1290,29 @@ class PathAttentionLayer(nn.Module):
         self.layer_norm2 = nn.LayerNorm([input_dim]) 
 
         n_heads = max([1, input_dim // 16])
-        self.MHA = MultiHeadAttentionBlock(
-            output_dim, output_dim, n_heads, input_dim=input_dim, qkv_proj=True
-            )   
-        
 
-    def forward(self, x, mask=None):
+        self.MHA = MultiHeadAttentionBlock(
+            output_dim, output_dim, n_heads, qkv_proj=True
+            )   
+    
+    def contract_vars(self, x_q, x, emb=None):
+        weights = torch.softmax(self.token_weights.view(self.token_weights.shape[0],-1, self.token_weights.shape[-1]), dim=1)[emb['VariableEmbedder']]
+
+        x_paths_k = torch.einsum('bnvkf,bvkj->bnvjf', x_q, weights)
+        x_paths_v = torch.einsum('bnvkf,bvkj->bnvjf', x, weights)
+
+        return x_paths_k, x_paths_v
+    
+    def contract(self, x_q, x, emb=None):
+
+        weights = torch.softmax(self.token_weights.view(-1, self.token_weights.shape[-1]), dim=0)
+
+        x_paths_k = torch.einsum('bnvkf,kj->bnvjf', x_q, weights)
+        x_paths_v = torch.einsum('bnvkf,kj->bnvjf', x, weights)
+
+        return x_paths_k, x_paths_v
+
+    def forward(self, x, mask=None, emb=None):
         
         b,n,v = x.shape[:3]
 
@@ -1290,21 +1321,17 @@ class PathAttentionLayer(nn.Module):
         else:
             x_q = x
 
-        weights = torch.softmax(self.token_weights.view(-1, self.token_weights.shape[-1]), dim=0)
-
         x_q = x_q.view(b,n,v,self.no_dims_tot,-1)
         x = x.view(b,n,v,self.no_dims_tot,-1)
 
-        x_paths_k = torch.einsum('bnvkf,kj->bnvjf', x_q, weights)
-
-        x_paths_v = torch.einsum('bnvkf,kj->bnvjf', x, weights)
-
-        x_q = x_q.view(b*n*v, self.no_dims_tot, -1)
-        x_paths_k = x_paths_k.view(b*n*v, self.no_dims_out_tot, -1)
-        x_paths_v = x_paths_v.view(b*n*v, self.no_dims_out_tot, -1)
+        x_paths_k, x_paths_v = self.contract_fun(x_q, x, emb=emb)
 
         x_q = self.layer_norm1(x_q)
         x_paths_k = self.layer_norm2(x_paths_k)
+
+        x_q = x_q.view(b*n*v, self.no_dims_tot, -1)
+        x_paths_k = x_paths_k.reshape(b*n*v, self.no_dims_out_tot, -1)
+        x_paths_v = x_paths_v.reshape(b*n*v, self.no_dims_out_tot, -1)
 
         x = self.MHA(q=x_q, k=x_paths_k, v=x_paths_v)
 
@@ -1332,9 +1359,9 @@ class DenseLayer(nn.Module):
         self.n_dim_tot = int(torch.tensor(no_dims).prod())
 
         if no_dims_out is not None and int(torch.tensor(no_dims_out).prod()) == 1:
-            self.eq_out = 'nbvj'
+            self.eq_out = 'bnvj'
         else:
-            self.eq_out = 'nbvmj'
+            self.eq_out = 'bnvmj'
             no_dims_out = 1
             
         no_dims_out = int(torch.tensor(no_dims_out).prod())
@@ -1358,13 +1385,12 @@ class DenseLayer(nn.Module):
 
         nn.init.uniform_(weights, -bound, bound)
 
-        self.einsum_eq = "nbvmi,mij->nbvmj"
         self.weights = nn.Parameter(weights, requires_grad=True)
 
 
     def contract_vars_fac(self, x, emb=None):
-
-        x = torch.einsum(f"nbvmi,nvf,fmij->{self.eq_out}", 
+        
+        x = torch.einsum(f"bnvmi,bvf,fmij->{self.eq_out}", 
                          x, 
                          self.factors_vars[emb['VariableEmbedder']], 
                          self.weights)
@@ -1372,14 +1398,14 @@ class DenseLayer(nn.Module):
 
     def contract_vars(self, x, emb=None):
 
-        x = torch.einsum(f"nbvmi,nvmij->{self.eq_out}", 
+        x = torch.einsum(f"bnvmi,bvmij->{self.eq_out}", 
                          x, 
                          self.weights[emb['VariableEmbedder']])
         return x
 
     def contract(self, x, emb=None):
 
-        x = torch.einsum(f"nbvmi,mij->{self.eq_out}", 
+        x = torch.einsum(f"bnvmi,mij->{self.eq_out}", 
                          x, 
                          self.weights)
         return x
@@ -1753,6 +1779,10 @@ class VariableAttention(nn.Module):
       
         super().__init__()
 
+        vars_settings = {'n_vars_total': n_vars_total,
+                         'rank_vars': rank_vars,
+                         'factorize_vars': factorize_vars}
+        
         self.mask_as_embedding = mask_as_embedding
 
         self.global_level = grid_layer.global_level
@@ -1761,7 +1791,8 @@ class VariableAttention(nn.Module):
             self.grid_layer = grid_layer
 
         if model_dim_in != model_dim_out:
-            self.lin_skip_outer = nn.Linear(model_dim_in, model_dim_out)
+            self.lin_skip_outer = get_lin_layer(model_dim_in, model_dim_out, **n_vars_total)
+
         else:
             self.lin_skip_outer = nn.Identity()
 
@@ -1779,13 +1810,11 @@ class VariableAttention(nn.Module):
         """
         self.lin_proj_qkv = get_lin_layer(model_dim_in, 
                                         model_dim_in*3, 
-                                        n_vars_total=n_vars_total,
-                                        rank_vars=rank_vars,
-                                        factorize_vars=factorize_vars,
+                                        **vars_settings,
                                         bias=False) 
         
         self.MHA = MultiHeadAttentionBlock(
-            model_dim_in, model_dim_in, model_dim_in//n_head_channels, input_dim=model_dim_in, qkv_proj=False
+            model_dim_in, model_dim_out, model_dim_in//n_head_channels, input_dim=model_dim_in, qkv_proj=False
             )   
         
 
@@ -1795,9 +1824,7 @@ class VariableAttention(nn.Module):
         self.mlp_layer = get_mlp(model_dim_out, 
                                 model_dim_out, 
                                 pre_activation_mlp=False, 
-                                n_vars_total=n_vars_total,
-                                rank_vars=rank_vars,
-                                factorize_vars=factorize_vars)
+                                **vars_settings)
 
 
         self.attention_dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
@@ -1811,7 +1838,10 @@ class VariableAttention(nn.Module):
 
         emb['args']['global_level'] = self.global_level
 
-        x_res = self.lin_skip_outer(x)
+        if isinstance(self.lin_skip_outer, DenseLayer):
+            x_res = self.lin_skip_outer(x, emb=emb)
+        else:
+            x_res = self.lin_skip_outer(x)
 
         x = self.attention_ada_ln(x, emb=emb)
 

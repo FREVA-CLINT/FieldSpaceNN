@@ -28,6 +28,8 @@ defaults = {
     'seq_level': 2,
     'layer_type': 'Dense',
     'embed_mode': 'sum',
+    'embed_names': [],
+    'embed_confs': {},
     'interpolate_input': True,
     'learn_residual': True,
     'input_embed_names': [],

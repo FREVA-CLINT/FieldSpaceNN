@@ -8,6 +8,7 @@ import math
 from ...modules.icon_grids.grid_layer import GridLayer
 
 from ..transformer.attention import ChannelVariableAttention, ResLayer, AdaptiveLayerNorm, MultiHeadAttentionBlock
+from .no_blocks import get_mlp,get_lin_layer,DenseLayer
 
 from ...modules.embedding.embedder import EmbedderSequential
 
@@ -23,9 +24,16 @@ class MGAttentionReductionLayer(nn.Module):
                  embedder_grid: EmbedderSequential=None,
                  embedder_mlp: EmbedderSequential=None,
                  cross_var=False,
-                 p_dropout=0) -> None: 
+                 p_dropout=0,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False) -> None: 
         
         super().__init__()
+        
+        vars_settings = {'n_vars_total': n_vars_total,
+                         'rank_vars': rank_vars,
+                         'factorize_vars': factorize_vars}
         
         self.register_buffer('grid_embedding_indices', torch.tensor(global_level_in))
 
@@ -37,7 +45,9 @@ class MGAttentionReductionLayer(nn.Module):
 
         self.lin_projections = nn.ModuleList()
         for model_dim_in in model_dims_in:
-            self.lin_projections.append(nn.Linear(model_dim_in, model_dim_att_out, bias=False))
+
+            self.lin_projections.append(get_lin_layer(model_dim_in, model_dim_att_out, **vars_settings))
+
             self.attention_ada_lns.append(AdaptiveLayerNorm([model_dim_att_out], model_dim_att_out, embedder=embedder_grid))
 
 
@@ -48,14 +58,20 @@ class MGAttentionReductionLayer(nn.Module):
                                                         model_dim_out=model_dim_att_out//len(model_dims_in),
                                                         with_res=False)
 
-        self.lin_skip_att = nn.Linear(model_dim_total, model_dim_att_out)
-        self.lin_skip_mlp = nn.Linear(model_dim_att_out, model_dim_out)
+        self.lin_skip_att = get_lin_layer(model_dim_total, model_dim_att_out, **vars_settings)
+        
+        self.lin_skip_mlp = get_lin_layer(model_dim_att_out, model_dim_out, **vars_settings)
 
+        
         self.attention_gamma = nn.Parameter(torch.ones(model_dim_att_out)*1e-6, requires_grad=True)
         self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
 
         self.attention_ada_ln_mlp = AdaptiveLayerNorm([model_dim_att_out], model_dim_att_out, embedder=embedder_mlp)
-        self.attention_mlp = ResLayer(model_dim_att_out, model_dim_out=model_dim_out, with_res=False, p_dropout=p_dropout)
+
+        self.attention_mlp = get_mlp(model_dim_att_out, 
+                                    model_dim_out, 
+                                    **vars_settings)
+        
         self.cross_var = cross_var
 
     def forward(self, x_levels, mask_levels=None, emb=None):
@@ -66,7 +82,6 @@ class MGAttentionReductionLayer(nn.Module):
         v = []
         for level_idx, x in enumerate(x_levels):
             emb['GridEmbedder'] = self.grid_embedding_indices[[level_idx]]
-            #add_coordinates_to_emb_dict()
             x = self.lin_projections[level_idx](x)
             v.append(x)
             x_levels[level_idx] = self.attention_ada_lns[level_idx](x, emb=emb)
@@ -330,10 +345,18 @@ class LinearReductionLayer(nn.Module):
   
     def __init__(self, 
                  model_dims_in: List,
-                 model_dim_out: int) -> None: 
+                 model_dim_out: int,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False) -> None: 
         super().__init__()
 
-        self.layer = nn.Linear(int(torch.tensor(model_dims_in).sum()), model_dim_out, bias=True)
+        self.layer = get_lin_layer(int(torch.tensor(model_dims_in).sum()), 
+                      model_dim_out, 
+                      bias=True, 
+                      n_vars_total=n_vars_total,
+                      rank_vars=rank_vars,
+                      factorize_vars=factorize_vars)
 
     def forward(self, x_levels, mask_levels=None, emb=None):
 
@@ -342,7 +365,10 @@ class LinearReductionLayer(nn.Module):
         else:
             mask_out = None
         
-        x_out = self.layer(torch.concat(x_levels, dim=-1))
+        if isinstance(self.layer, DenseLayer):
+            x_out = self.layer(torch.concat(x_levels, dim=-1), emb=emb)
+        else:
+            x_out = self.layer(torch.concat(x_levels, dim=-1))
 
         return x_out, mask_out
     
