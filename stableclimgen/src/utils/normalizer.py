@@ -32,7 +32,7 @@ class DataNormalizer:
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
 
-    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+    def denormalize_var(self, data_var: torch.Tensor, data=None) -> torch.Tensor:
         """
         Abstract method for denormalizing the variance of the input data tensor.
 
@@ -92,7 +92,7 @@ class QuantileNormalizer(DataNormalizer):
         # Rescale data to the original min-max range
         return data_rescaled * (self.q_high - self.q_low) + self.q_low
 
-    def denormalize_var(self, data_var: torch.Tensor) -> torch.Tensor:
+    def denormalize_var(self, data_var: torch.Tensor, data=None) -> torch.Tensor:
         """
         Reverse the min-max normalization and return data to its original scale.
 
@@ -152,7 +152,7 @@ class AbsQuantileNormalizer(DataNormalizer):
         # Rescale data to the original scale using the upper quantile
         return data_rescaled * self.q_high
 
-    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+    def denormalize_var(self, data_var: torch.Tensor, data=None) -> torch.Tensor:
         """
         Reverse the max normalization and return data to its original scale.
 
@@ -200,7 +200,7 @@ class MeanStdNormalizer(DataNormalizer):
         # Rescale data to the original scale by multiplying by std and adding the mean
         return data * self.std + self.mean
 
-    def denormalize_var(self, data: torch.Tensor) -> torch.Tensor:
+    def denormalize_var(self, data_var: torch.Tensor, data=None)-> torch.Tensor:
         """
         Reverse the standardization and return data to its original scale.
 
@@ -209,3 +209,54 @@ class MeanStdNormalizer(DataNormalizer):
         """
         # Rescale data to the original scale by multiplying by std and adding the mean
         return data * self.std**2
+    
+
+class ScaledLogNormalizer(DataNormalizer):
+    """
+    Normalizer that standardizes data using mean and standard deviation from precomputed statistics.
+
+    :param stat_dict: Dictionary containing mean and standard deviation for normalization.
+    :param definition_dict: Dictionary containing additional settings for normalization.
+    """
+
+    def __init__(self, stat_dict: Dict, definition_dict: Dict):
+        super().__init__()
+
+        self.scale = definition_dict.get('scale', 1e6)
+        self.quantile_normalizer = QuantileNormalizer(stat_dict, definition_dict)
+
+
+    def normalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Standardize data using mean and standard deviation.
+
+        :param data: Input data tensor to normalize.
+        :return: Standardized data tensor.
+        """
+        # Standardize data by subtracting the mean and dividing by the standard deviation
+
+        data = torch.log1p(data * self.scale)
+
+        return self.quantile_normalizer.normalize(data)
+
+    def denormalize(self, data: torch.Tensor) -> torch.Tensor:
+        """
+        Reverse the standardization and return data to its original scale.
+
+        :param data: Standardized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data to the original scale by multiplying by std and adding the mean
+        data = torch.expm1(data)/self.scale
+
+        return self.quantile_normalizer.denormalize(data)
+
+    def denormalize_var(self, data_var: torch.Tensor, data=None) -> torch.Tensor:
+        """
+        Reverse the standardization and return data to its original scale.
+
+        :param data: Standardized data tensor to be denormalized.
+        :return: Data tensor in the original scale.
+        """
+        # Rescale data to the original scale by multiplying by std and adding the mean
+        return data_var*(torch.expm1(data)/self.scale)**2
