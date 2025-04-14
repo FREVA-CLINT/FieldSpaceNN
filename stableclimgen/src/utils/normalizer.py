@@ -223,6 +223,10 @@ class ScaledLogNormalizer(DataNormalizer):
         super().__init__()
 
         self.scale = definition_dict.get('scale', 1e6)
+
+        for key, val in stat_dict['quantiles'].items():
+            stat_dict['quantiles'][key] = float(torch.log1p(torch.tensor(val * self.scale)))
+
         self.quantile_normalizer = QuantileNormalizer(stat_dict, definition_dict)
 
 
