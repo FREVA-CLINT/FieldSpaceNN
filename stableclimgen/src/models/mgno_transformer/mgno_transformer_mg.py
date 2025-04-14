@@ -162,7 +162,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
-        b,n,nv,nc = x.shape[:5]
+        b,n,nh,nv,nc = x.shape[:5]
         x = x.view(b,n,-1,self.input_dim)
         b,n,nv,nc = x.shape[:4]
 

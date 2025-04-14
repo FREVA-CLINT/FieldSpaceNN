@@ -71,6 +71,7 @@ class Sampler:
         device: torch.device = None,
         eta: float = 0.0,
         progress: bool = False,
+        interpolator=None,
         **model_kwargs
     ) -> dict:
         """
@@ -92,10 +93,10 @@ class Sampler:
             x_0 = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, x_0)
 
         if self.gaussian_diffusion.density_diffusion:
-            indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
+            indices = list(range(torch.max(self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]))))[::-1]  # Reverse the diffusion steps
             dists_input = model_kwargs.pop("dists_input")
         else:
-            indices = list(range(torch.max(self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]))))[::-1]  # Reverse the diffusion steps
+            indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
@@ -131,16 +132,16 @@ class Sampler:
                 yield out
                 x_0 = out["sample"]
                 if self.gaussian_diffusion.density_diffusion:
-                    next_diffusion_steps = diffusion_steps[diffusion_steps != 0] - 1
+                    next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
                     nonzero_mask = (next_diffusion_steps != 0)
-                    condition, density_map = self.interpolator(x_0,
-                                                               mask=nonzero_mask,
-                                                               calc_density=True,
-                                                               indices_sample=model_kwargs["indices_sample"],
-                                                               input_coords=model_kwargs["coords_input"],
-                                                               input_dists=dists_input)
+                    condition, density_map = interpolator(x_0,
+                                                          mask=nonzero_mask,
+                                                          calc_density=True,
+                                                          indices_sample=model_kwargs["indices_sample"],
+                                                          input_coords=model_kwargs["coords_input"],
+                                                          input_dists=dists_input)
                     model_kwargs["emb"]["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
-                    model_kwargs["condition"] = condition
+                    model_kwargs["condition"] = condition.unsqueeze(-3)
 
 
     def sample(

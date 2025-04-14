@@ -150,6 +150,5 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
 
     def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
         source, mask, emb, model_kwargs = self.prepare_inputs(source, coords_input, coords_output, indices_sample, mask, emb, input_dists)
-
         return self.sampler.sample_loop(self.model, source, mask,
-                                        progress=True, emb=emb, **model_kwargs)
+                                        progress=True, emb=emb, interpolator=self.interpolator, **model_kwargs)
