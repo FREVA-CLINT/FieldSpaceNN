@@ -56,7 +56,7 @@ class MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
     
-class GNLLL_loss(nn.Module):
+class GNLL_loss(nn.Module):
     def __init__(self, grid_layer=None):
         super().__init__()
 
