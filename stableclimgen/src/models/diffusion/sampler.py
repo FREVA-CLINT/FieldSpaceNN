@@ -99,7 +99,7 @@ class Sampler:
         # Iterate over diffusion steps in reverse
         for i in indices:
             diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
-            if self.condition_input:
+            if self.condition_input and torch.is_tensor(mask):
                 alpha_cumprod = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_0.shape)
                 input_weight = torch.sqrt(alpha_cumprod)
                 input_part = input_weight * input_data
@@ -119,7 +119,7 @@ class Sampler:
                     **model_kwargs
                 )
                 # Reapply mask to the sample output
-                out["sample"] = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, out["sample"])
+                out["sample"] = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, out["sample"]) if torch.is_tensor(mask) else out["sample"]
                 yield out
                 x_0 = out["sample"]
 
