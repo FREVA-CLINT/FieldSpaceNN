@@ -249,9 +249,9 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0:
-            if hasattr(self.model, "interpolator") and self.model.interpolate_input:
-                _, coords_input, _, _, _, _, dists_input = self.model.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
-                input_inter, input_density = self.model.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
+            if hasattr(self, "interpolator"):
+                _, coords_input, _, _, _, _, dists_input = self.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
+                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
             else:
                 input_inter = None
                 input_density = None
