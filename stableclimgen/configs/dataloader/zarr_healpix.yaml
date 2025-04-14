@@ -5,7 +5,7 @@ dataset:
   processing_nside: 64
   in_nside: 64
   out_nside: 64
-  coarsen_sample_level: 6
+  coarsen_sample_level: 5
   search_radius: 2
   nh_input: 1
   sample_for_norm: 2

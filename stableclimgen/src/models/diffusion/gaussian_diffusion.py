@@ -334,16 +334,14 @@ class GaussianDiffusion:
                  - 'pred_xstart': the predicted x_start.
         """
         b, c = x.shape[0], x.shape[-1] if len(x.shape) > 1 else 1 # Handle potential 1D data
-        assert diff_steps.shape == (b,)
         if emb is None:
             emb = {}
-        emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+        emb["DiffusionStepEmbedder"] = diff_steps#self._scale_steps(diff_steps)
         if 'condition' in model_kwargs.keys():
             x_input = torch.cat([x, model_kwargs.pop('condition')], dim=-1)
         else:
             x_input = x
         model_output = model(x_input, emb=emb.copy(), mask=mask, **model_kwargs)
-
         # Reshape if necessary (e.g. if model outputs channels last)
         if model_output.shape != x.shape:
             model_output = model_output.view(x.shape)
@@ -426,7 +424,6 @@ class GaussianDiffusion:
         assert pred_xstart.shape == x.shape
         assert model_variance.shape == x.shape
         assert model_log_variance.shape == x.shape
-
         return {
             "mean": model_mean,
             "variance": model_variance,
@@ -568,9 +565,9 @@ class GaussianDiffusion:
         if noise is None:
             noise = torch.randn_like(gt_data)
         if self.uncertainty_diffusion:
-            diff_steps = self.get_uncertainty_timesteps(emb["UncertaintyEmbedder"][0])
+            diff_steps = self.uncertainty_to_diffusion_steps(emb["UncertaintyEmbedder"][0])
         elif self.density_diffusion:
-            diff_steps = self.get_uncertainty_timesteps(emb["DensityEmbedder"])
+            diff_steps = self.uncertainty_to_diffusion_steps(emb["DensityEmbedder"])
 
         x_t = self.q_sample(gt_data, diff_steps, noise=noise)
 
@@ -718,7 +715,7 @@ class GaussianDiffusion:
         t, weights = self.diffusion_step_sampler.sample(batch_size)
         return t.to(device), weights.to(device)
 
-    def get_uncertainty_timesteps(self, uncertainty_embedding):
+    def uncertainty_to_diffusion_steps(self, uncertainty_embedding):
         """ Maps uncertainty [0, 1] to discrete timesteps [0, num_timesteps-1]. """
         # Ensure uncertainty is clipped
         # Linear mapping: u=0 -> t=0, u=1 -> t = num_timesteps - 1

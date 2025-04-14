@@ -14,10 +14,14 @@ lr_groups:
   - param_group: 'attention'
     lr: 2e-4
     lr_warmup: 500
+interpolator_settings:
+  search_level: 3
+  nh_inter: 3
+  power: 1
 model:
   _target_: stableclimgen.src.models.mgno_transformer.mgno_transformer_mg.MGNO_Transformer_MG
   mgrids: ${mgrids}
-  input_dim: 1
+  input_dim: 2
   lifting_dim: 8
   output_dim: 1
   n_vars_total: 3
@@ -31,13 +35,7 @@ model:
   rank_cross: 0.5
   layer_type: 'CrossTucker'
   input_embed_names: ["DensityEmbedder", "CoordinateEmbedder"]
-  interpolate_input: false
-  density_embedder: true
   input_embed_confs: ${embedding}
-  interpolator_settings:
-    search_level: 3
-    nh_inter: 3
-    power: 1
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGStackedEncoderDecoderConfig
       global_levels_output: [0,2,4]

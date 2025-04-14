@@ -22,6 +22,7 @@ class Sampler:
         cond_fn: callable = None,
         eta: float = 0.0,
         progress: bool = False,
+        interpolator=None,
         **model_kwargs
     ) -> torch.Tensor:
         """
@@ -52,6 +53,7 @@ class Sampler:
             device=input_data.device,
             eta=eta,
             progress=progress,
+            interpolator=interpolator,
             **model_kwargs
         ):
             final = sample
@@ -89,8 +91,11 @@ class Sampler:
         if torch.is_tensor(mask):
             x_0 = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, x_0)
 
-        indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
-
+        if self.gaussian_diffusion.density_diffusion:
+            indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
+            dists_input = model_kwargs.pop("dists_input")
+        else:
+            indices = list(range(torch.max(self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]))))[::-1]  # Reverse the diffusion steps
         if progress:
             # Lazy import so that we don't depend on tqdm.
             from tqdm.auto import tqdm
@@ -98,7 +103,10 @@ class Sampler:
 
         # Iterate over diffusion steps in reverse
         for i in indices:
-            diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
+            if self.gaussian_diffusion.density_diffusion:
+                diffusion_steps = self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"])
+            else:
+                diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
             if self.condition_input and torch.is_tensor(mask):
                 alpha_cumprod = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_0.shape)
                 input_weight = torch.sqrt(alpha_cumprod)
@@ -122,6 +130,18 @@ class Sampler:
                 out["sample"] = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, out["sample"]) if torch.is_tensor(mask) else out["sample"]
                 yield out
                 x_0 = out["sample"]
+                if self.gaussian_diffusion.density_diffusion:
+                    next_diffusion_steps = diffusion_steps[diffusion_steps != 0] - 1
+                    nonzero_mask = (next_diffusion_steps != 0)
+                    condition, density_map = self.interpolator(x_0,
+                                                               mask=nonzero_mask,
+                                                               calc_density=True,
+                                                               indices_sample=model_kwargs["indices_sample"],
+                                                               input_coords=model_kwargs["coords_input"],
+                                                               input_dists=dists_input)
+                    model_kwargs["emb"]["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
+                    model_kwargs["condition"] = condition
+
 
     def sample(
         self,
@@ -247,6 +267,10 @@ class DDIMSampler(Sampler):
 
         noise = torch.randn_like(x_t)
         mean_pred = out["pred_xstart"] * torch.sqrt(alpha_bar_prev) + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
-        nonzero_mask = (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
+        nonzero_mask = (diffusion_steps != 0).float()
+        if self.gaussian_diffusion.density_diffusion:
+            nonzero_mask = nonzero_mask.view(mean_pred.shape)
+        else:
+            nonzero_mask = nonzero_mask.view(-1, *([1] * (len(x_t.shape) - 1)))
         sample = mean_pred + nonzero_mask * sigma * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
