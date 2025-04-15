@@ -147,6 +147,7 @@ class Sampler:
                                                           input_coords=model_kwargs["coords_input"],
                                                           input_dists=dists_input)
                     model_kwargs["emb"]["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
+                    model_kwargs["emb"]["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), model_kwargs["emb"]['VariableEmbedder'])
                     model_kwargs["condition"] = condition.unsqueeze(-3)
 
 
