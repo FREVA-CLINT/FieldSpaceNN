@@ -214,7 +214,11 @@ class DDPMSampler(Sampler):
             **model_kwargs
         )
         noise = torch.randn_like(x_t)
-        nonzero_mask = (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
+        nonzero_mask = (diffusion_steps != 0).float()
+        if self.gaussian_diffusion.density_diffusion:
+            nonzero_mask = nonzero_mask.view(out["mean"].shape)
+        else:
+            nonzero_mask = nonzero_mask.view(-1, *([1] * (len(x_t.shape) - 1)))
         sample = out["mean"] + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * noise
         return {"sample": sample, "pred_xstart": out["pred_xstart"]}
 
@@ -265,6 +269,7 @@ class DDIMSampler(Sampler):
 
         alpha_bar = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t.shape)
         alpha_bar_prev = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t.shape)
+        print(diffusion_steps.shape, alpha_bar_prev.shape, alpha_bar.shape)
         sigma = eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar)) * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
 
         noise = torch.randn_like(x_t)
