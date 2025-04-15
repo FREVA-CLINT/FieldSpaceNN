@@ -140,7 +140,7 @@ class Sampler:
                 if self.gaussian_diffusion.density_diffusion:
                     next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
                     nonzero_mask = (next_diffusion_steps != 0)
-                    condition, density_map = interpolator(x_0,
+                    condition, density_map = interpolator(out["pred_xstart"],
                                                           mask=nonzero_mask,
                                                           calc_density=True,
                                                           indices_sample=model_kwargs["indices_sample"],
