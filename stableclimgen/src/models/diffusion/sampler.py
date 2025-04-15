@@ -39,7 +39,10 @@ class Sampler:
         :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: Final batch of non-differentiable samples.
         """
-        x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
+        if not self.gaussian_diffusion.density_diffusion:
+            x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
+        else:
+            x_0 = input_data
 
         final = None
         # Progressive sampling loop
