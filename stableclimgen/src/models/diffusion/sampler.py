@@ -44,7 +44,7 @@ class Sampler:
         if not self.gaussian_diffusion.density_diffusion:
             x_0 = noise
         else:
-            x_0 = self.gaussian_diffusion.q_sample(input_data, self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
+            x_0 = self.gaussian_diffusion.q_sample(model_kwargs["condition"], self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
 
         final = None
         # Progressive sampling loop
