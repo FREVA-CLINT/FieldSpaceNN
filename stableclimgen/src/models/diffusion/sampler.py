@@ -39,8 +39,10 @@ class Sampler:
         :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: Final batch of non-differentiable samples.
         """
+        if noise is None:
+            noise = torch.randn_like(input_data).to(input_data.device)
         if not self.gaussian_diffusion.density_diffusion:
-            x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
+            x_0 = noise
         else:
             x_0 = self.gaussian_diffusion.q_sample(input_data, self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
 

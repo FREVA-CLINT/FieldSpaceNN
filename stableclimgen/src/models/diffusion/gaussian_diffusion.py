@@ -336,12 +336,12 @@ class GaussianDiffusion:
         b, c = x.shape[0], x.shape[-1] if len(x.shape) > 1 else 1 # Handle potential 1D data
         if emb is None:
             emb = {}
-        emb["DiffusionStepEmbedder"] = diff_steps#self._scale_steps(diff_steps)
+        emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
         if 'condition' in model_kwargs.keys():
             x_input = torch.cat([x, model_kwargs.pop('condition')], dim=-1)
         else:
             x_input = x
-        model_output = model(x_input, emb=emb.copy(), mask=mask, **model_kwargs)
+        model_output = model(x_input, emb=emb, mask=mask, **model_kwargs)
         # Reshape if necessary (e.g. if model outputs channels last)
         if model_output.shape != x.shape:
             model_output = model_output.view(x.shape)
@@ -391,12 +391,7 @@ class GaussianDiffusion:
             model_log_variance = extract_into_tensor(model_log_variance, diff_steps, x.shape)
 
         # --- Calculate predicted x_start and model mean based on model_mean_type ---
-        if self.model_mean_type == ModelMeanType.PREVIOUS_X:
-            pred_xstart = self.process_xstart(
-                self._predict_xstart_from_xprev(x_t=x, t=diff_steps, xprev=model_output), diff_steps, denoised_fn
-            )
-            model_mean = model_output
-        elif self.model_mean_type == ModelMeanType.START_X:
+        if self.model_mean_type == ModelMeanType.START_X:
             pred_xstart = self.process_xstart(model_output, diff_steps, denoised_fn)
             model_mean, _, _ = self.q_posterior_mean_variance(
                 x_start=pred_xstart, x_t=x, diff_steps=diff_steps
@@ -409,14 +404,17 @@ class GaussianDiffusion:
                 x_start=pred_xstart, x_t=x, diff_steps=diff_steps
             )
         elif self.model_mean_type == ModelMeanType.V_PREDICTION:
-             # Model outputs v_pred
-            v_pred = model_output
             pred_xstart = self.process_xstart(
-                self._predict_xstart_from_v(x_t=x, t=diff_steps, v=v_pred), diff_steps, denoised_fn
+                self._predict_xstart_from_v(x_t=x, t=diff_steps, v=model_output), diff_steps, denoised_fn
             )
             model_mean, _, _ = self.q_posterior_mean_variance(
                 x_start=pred_xstart, x_t=x, diff_steps=diff_steps
             )
+        elif self.model_mean_type == ModelMeanType.PREVIOUS_X:
+            pred_xstart = self.process_xstart(
+                self._predict_xstart_from_xprev(x_t=x, t=diff_steps, xprev=model_output), diff_steps, denoised_fn
+            )
+            model_mean = model_output
         else:
             raise NotImplementedError(self.model_mean_type)
 
@@ -666,7 +664,6 @@ class GaussianDiffusion:
             terms["loss"] = terms["mse"] + terms.get("vb", 0)
 
             # Store predicted x_start for results (needs to be calculated based on model output type)
-            # <<< START MODIFIED CODE >>>
             if self.model_mean_type == ModelMeanType.START_X:
                 pred_xstart_for_results = self.process_xstart(model_output, diff_steps, None)
             elif self.model_mean_type == ModelMeanType.EPSILON:
@@ -677,28 +674,17 @@ class GaussianDiffusion:
                  pred_xstart_for_results = self.process_xstart(
                      self._predict_xstart_from_v(x_t=x_t, t=diff_steps, v=model_output), diff_steps, None
                  )
-            # Note: PREVIOUS_X case needs careful handling if results are needed,
-            # as model_output is x_{t-1}, not directly related to x_0 for results tensor.
-            # For simplicity, we might assume results are primarily used/meaningful
-            # when predicting START_X, EPSILON, or V. If PREVIOUS_X results needed,
-            # calculate pred_xstart from xprev:
             elif self.model_mean_type == ModelMeanType.PREVIOUS_X:
                  pred_xstart_for_results = self.process_xstart(
                      self._predict_xstart_from_xprev(x_t=x_t, t=diff_steps, xprev=model_output), diff_steps, None
                  )
-            # <<< END MODIFIED CODE >>>
-
+            else:
+                raise NotImplementedError(self.model_mean_type)
         else:
             raise NotImplementedError(self.loss_type)
 
-        # Return the loss terms and the predicted x_start (or equivalent)
-        # The 'results' tensor now consistently holds the predicted x_start regardless of loss type
-        # <<< START MODIFIED CODE >>>
-        # Ensure results are assigned even if loss is KL based
-        if 'pred_xstart_for_results' not in locals(): # Handle KL loss case where it wasn't calculated in MSE block
+        if 'pred_xstart_for_results' not in locals():
              if self.loss_type in {LossType.KL, LossType.RESCALED_KL}:
-                 # Re-run p_mean_variance minimally if needed, or use the one from _vb_terms_bpd
-                 # Using the one from _vb_terms_bpd is more efficient
                   pred_xstart_for_results = vb_output["pred_xstart"] # Already computed in _vb_terms_bpd
              else:
                  # Fallback or error if logic doesn't cover a case
