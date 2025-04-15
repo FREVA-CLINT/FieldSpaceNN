@@ -37,7 +37,13 @@ def train(cfg: DictConfig) -> None:
     with open(cfg.dataloader.dataset.data_dict) as json_file:
         data = json.load(json_file)
     train_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["train"])
-    val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
+
+    if hasattr(cfg.dataloader,'val_dataset') and cfg.dataloader.val_dataset is not None:
+        with open(cfg.dataloader.val_dataset.data_dict) as json_file:
+            data = json.load(json_file)
+        val_dataset = instantiate(cfg.dataloader.val_dataset, data_dict=data["val"])
+    else:
+        val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
 
     # Initialize the logger (e.g., Weights & Biases)
