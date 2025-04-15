@@ -138,8 +138,7 @@ class Sampler:
                 yield out
                 x_0 = out["sample"]
                 if self.gaussian_diffusion.density_diffusion:
-                    next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
-                    nonzero_mask = (next_diffusion_steps != 0)
+                    nonzero_mask = (diffusion_steps != 0)
                     condition, density_map = interpolator(out["pred_xstart"],
                                                           mask=nonzero_mask,
                                                           calc_density=True,
@@ -149,6 +148,7 @@ class Sampler:
                     model_kwargs["emb"]["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
                     model_kwargs["emb"]["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), model_kwargs["emb"]['VariableEmbedder'])
                     model_kwargs["condition"] = condition.unsqueeze(-3)
+                    next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
 
 
     def sample(
