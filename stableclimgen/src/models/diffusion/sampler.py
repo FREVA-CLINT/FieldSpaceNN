@@ -42,7 +42,7 @@ class Sampler:
         if not self.gaussian_diffusion.density_diffusion:
             x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
         else:
-            x_0 = input_data
+            x_0 = self.gaussian_diffusion.q_sample(input_data, self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
 
         final = None
         # Progressive sampling loop
@@ -272,7 +272,6 @@ class DDIMSampler(Sampler):
 
         alpha_bar = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t.shape)
         alpha_bar_prev = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t.shape)
-        print(diffusion_steps.shape, alpha_bar_prev.shape, alpha_bar.shape)
         sigma = eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar)) * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
 
         noise = torch.randn_like(x_t)
