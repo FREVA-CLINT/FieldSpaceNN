@@ -35,6 +35,7 @@ defaults = {
     'input_embed_names': None,
     'input_embed_confs': {},
     'input_embed_mode': "sum",
+    'mg_reduction': "linear",
     'mg_reduction_embed_confs': {},
     'mg_reduction_embed_names': [],
     'mg_reduction_embed_names_mlp': [],

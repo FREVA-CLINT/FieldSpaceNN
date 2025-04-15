@@ -185,7 +185,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.save_hyperparameters(ignore=['model'])
   
         self.noise_std = noise_std
-        self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_0)
+        self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_0 if hasattr(self.model,'grid_layer_0') else None)
 
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
         b, nt, n = x.shape[:3]
@@ -249,7 +249,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0:
-            if hasattr(self, "interpolator"):
+            if hasattr(self, "interpolator") and self.interpolator is not None:
                 _, coords_input, _, _, _, _, dists_input = self.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
                 input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
             else:

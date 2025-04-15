@@ -273,4 +273,4 @@ class MaskClimateDataset(ClimateDataset):
         emb = {"CoordinateEmbedder": gt_coords,
                "VariableEmbedder": sample_vars}
 
-        return in_data, gt_data, in_coords, gt_coords, {}, drop_mask, emb
+        return in_data, gt_data, in_coords, gt_coords, {}, drop_mask, emb, torch.tensor([])

@@ -164,7 +164,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         b,n,nv,nc = x.shape[:5]
         x = x.view(b,n,-1,self.input_dim)
-        b,n,nv,nc = x.shape[:4]
+        #b,n,nv,nc = x.shape[:4]
 
         if self.learn_residual:
             x_res = x
