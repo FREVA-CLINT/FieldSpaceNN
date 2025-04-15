@@ -39,7 +39,8 @@ defaults = {
     'mg_reduction_embed_mode': "sum",
     'mg_att_dim': 64,
     'mg_n_head_channels': 16,
-    'level_diff_zero_linear': True
+    'level_diff_zero_linear': True,
+    'mg_reduction': "linear"
 }
 
 class NOBlockConfig:

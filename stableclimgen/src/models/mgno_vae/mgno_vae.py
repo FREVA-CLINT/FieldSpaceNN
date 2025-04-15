@@ -8,7 +8,7 @@ from ..mgno_transformer.mgno_processing_block import MGNO_Processing_Block
 from ..mgno_transformer.mgno_base_model import InputLayer, check_get, MGNO_base_model
 
 from ..mgno_transformer.mgno_block_confs import MGProcessingConfig, MGStackedEncoderDecoderConfig, \
-    MGEncoderDecoderConfig
+    MGEncoderDecoderConfig, defaults
 from ...modules.icon_grids.grid_layer import Interpolator
 
 
@@ -38,24 +38,27 @@ def create_encoder_decoder_block(rcm, input_levels, input_dims, mask_as_embeddin
             block_conf.global_levels_no,
             block_conf.model_dims_out,
             rule=block_conf.rule,
-            no_layer_settings=check_get(block_conf, kwargs, 'no_layer_settings'),
-            block_type=check_get(block_conf, kwargs, 'block_type'),
-            mg_reduction=check_get(block_conf, kwargs, "mg_reduction"),
-            mg_reduction_embed_confs=check_get(block_conf, kwargs, "mg_reduction_embed_confs"),
-            mg_reduction_embed_names=check_get(block_conf, kwargs, "mg_reduction_embed_names"),
-            mg_reduction_embed_names_mlp=check_get(block_conf, kwargs, "mg_reduction_embed_names_mlp"),
-            mg_reduction_embed_mode=check_get(block_conf, kwargs, "mg_reduction_embed_mode"),
-            embed_confs=check_get(block_conf, kwargs, "embed_confs"),
-            embed_names=check_get(block_conf, kwargs, "embed_names"),
-            embed_mode=check_get(block_conf, kwargs, "embed_mode"),
-            with_gamma=check_get(block_conf, kwargs, "with_gamma"),
-            omit_backtransform=check_get(block_conf, kwargs, "omit_backtransform"),
-            mg_att_dim=check_get(block_conf, kwargs, "mg_att_dim"),
-            mg_n_head_channels=check_get(block_conf, kwargs, "mg_n_head_channels"),
-            level_diff_zero_linear=check_get(block_conf, kwargs, "level_diff_zero_linear"),
+            no_layer_settings=check_get(block_conf, kwargs, defaults, 'no_layer_settings'),
+            block_type=check_get(block_conf, kwargs, defaults, 'block_type'),
+            mg_reduction=check_get(block_conf, kwargs, defaults, "mg_reduction"),
+            mg_reduction_embed_confs=check_get(block_conf, kwargs, defaults, "mg_reduction_embed_confs"),
+            mg_reduction_embed_names=check_get(block_conf, kwargs, defaults, "mg_reduction_embed_names"),
+            mg_reduction_embed_names_mlp=check_get(block_conf, kwargs, defaults, "mg_reduction_embed_names_mlp"),
+            mg_reduction_embed_mode=check_get(block_conf, kwargs, defaults, "mg_reduction_embed_mode"),
+            embed_confs=check_get(block_conf, kwargs, defaults, "embed_confs"),
+            embed_names=check_get(block_conf, kwargs, defaults, "embed_names"),
+            embed_mode=check_get(block_conf, kwargs, defaults, "embed_mode"),
+            with_gamma=check_get(block_conf, kwargs, defaults, "with_gamma"),
+            omit_backtransform=check_get(block_conf, kwargs, defaults, "omit_backtransform"),
+            mg_att_dim=check_get(block_conf, kwargs, defaults, "mg_att_dim"),
+            mg_n_head_channels=check_get(block_conf, kwargs, defaults, "mg_n_head_channels"),
+            level_diff_zero_linear=check_get(block_conf, kwargs, defaults, "level_diff_zero_linear"),
             mask_as_embedding=mask_as_embedding,
-            layer_type=check_get(block_conf, kwargs, "layer_type"),
-            rank=check_get(block_conf, kwargs, "rank"))
+            layer_type=check_get(block_conf, kwargs, defaults, "layer_type"),
+            rank=check_get(block_conf, kwargs, defaults, "rank"),
+            n_vars_total=check_get(block_conf, kwargs, defaults, "n_vars_total"),
+            rank_vars=check_get(block_conf, kwargs, defaults, "rank_vars"),
+            factorize_vars=check_get(block_conf, kwargs, defaults, "factorize_vars"))
 
     elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
         block = MGNO_StackedEncoderDecoder_Block(
@@ -65,21 +68,27 @@ def create_encoder_decoder_block(rcm, input_levels, input_dims, mask_as_embeddin
             block_conf.global_levels_output,
             block_conf.global_levels_no,
             block_conf.model_dims_out,
-            no_layer_settings=check_get(block_conf, kwargs, 'no_layer_settings'),
-            block_type=check_get(block_conf, kwargs, 'block_type'),
+            no_layer_settings=check_get(block_conf, kwargs, defaults, 'no_layer_settings'),
+            block_type=check_get(block_conf, kwargs, defaults, 'block_type'),
             mask_as_embedding=mask_as_embedding,
             layer_type=block_conf.layer_type if "layer_type" not in kwargs.keys() else kwargs['layer_type'],
-            no_level_step=check_get(block_conf, kwargs, "no_level_step"),
-            concat_model_dim=check_get(block_conf, kwargs, "concat_model_dim"),
-            reduction_layer_type=check_get(block_conf, kwargs, "reduction_layer_type"),
-            concat_layer_type=check_get(block_conf, kwargs, "concat_layer_type"),
-            rank=check_get(block_conf, kwargs, "rank"),
-            rank_cross=check_get(block_conf, kwargs, "rank_cross"),
-            no_rank_decay=check_get(block_conf, kwargs, "no_rank_decay"),
-            with_gamma=check_get(block_conf, kwargs, "with_gamma"),
-            embed_confs=check_get(block_conf, kwargs, "embed_confs"),
-            embed_names=check_get(block_conf, kwargs, "embed_names"),
-            embed_mode=check_get(block_conf, kwargs, "embed_mode"),
+            no_level_step=check_get(block_conf, kwargs, defaults, "no_level_step"),
+            concat_model_dim=check_get(block_conf, kwargs, defaults, "concat_model_dim"),
+            reduction_layer_type=check_get(block_conf, kwargs, defaults, "reduction_layer_type"),
+            concat_layer_type=check_get(block_conf, kwargs, defaults, "concat_layer_type"),
+            rank=check_get(block_conf, kwargs, defaults, "rank"),
+            rank_cross=check_get(block_conf, kwargs, defaults, "rank_cross"),
+            no_rank_decay=check_get(block_conf, kwargs, defaults, "no_rank_decay"),
+            with_gamma=check_get(block_conf, kwargs, defaults, "with_gamma"),
+            embed_confs=check_get(block_conf, kwargs, defaults, "embed_confs"),
+            embed_names=check_get(block_conf, kwargs, defaults, "embed_names"),
+            embed_mode=check_get(block_conf, kwargs, defaults, "embed_mode"),
+            n_head_channels=check_get(block_conf, kwargs, defaults, "n_head_channels"),
+            p_dropout=check_get(block_conf, kwargs, defaults, "p_dropout"),
+            seq_level=check_get(block_conf, kwargs, defaults, "seq_level"),
+            n_vars_total=check_get(block_conf, kwargs, defaults, "n_vars_total"),
+            rank_vars=check_get(block_conf, kwargs, defaults, "rank_vars"),
+            factorize_vars=check_get(block_conf, kwargs, defaults, "factorize_vars")
         )
 
     else:
