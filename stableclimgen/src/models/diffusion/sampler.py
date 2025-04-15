@@ -1,5 +1,8 @@
 import torch
+from matplotlib import pyplot as plt
+
 from .gaussian_diffusion import extract_into_tensor, GaussianDiffusion
+from ...utils.visualization import griddata_plot
 
 
 class Sampler:
@@ -148,6 +151,12 @@ class Sampler:
                     model_kwargs["emb"]["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
                     model_kwargs["emb"]["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), model_kwargs["emb"]['VariableEmbedder'])
                     model_kwargs["condition"] = condition.unsqueeze(-3)
+
+                    griddata_plot(condition, model_kwargs["indices_sample"], model, "Interp")
+                    griddata_plot(density_map, model_kwargs["indices_sample"], model, "Density")
+                    griddata_plot(out["sample"].squeeze(-1), model_kwargs["indices_sample"], model, "Mean")
+                    griddata_plot(out["pred_xstart"].squeeze(-1), model_kwargs["indices_sample"], model, "pred_xstart")
+
                     next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
 
 

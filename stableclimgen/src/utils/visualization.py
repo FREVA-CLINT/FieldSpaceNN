@@ -2,11 +2,12 @@ import os
 from typing import Optional
 
 import cartopy
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
 import cartopy.crs as ccrs
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from scipy.interpolate import griddata
+
 
 def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None):
 
@@ -172,3 +173,47 @@ def plot_images(
 
     # Close all open figures to free memory
     plt.close('all')
+
+
+def griddata_plot(tensor, indices_dict, model, title):
+    fig, axes = plt.subplots(
+        nrows=1, ncols=1,
+        figsize=(6, 6),
+        subplot_kw={"projection": ccrs.Mollweide()}
+    )
+
+    if indices_dict is not None and isinstance(indices_dict, dict):
+        indices = model.get_global_indices_local(indices_dict['sample'],
+                                                 indices_dict['sample_level'],
+                                                 0)
+        coords = model.cell_coords_global[indices].unsqueeze(dim=-2)
+    else:
+        coords = model.cell_coords_global.unsqueeze(dim=0).unsqueeze(dim=-2)
+    coords = coords.rad2deg().cpu().numpy().reshape(tensor.shape[0], -1, 2)
+
+    data = tensor.cpu().to(dtype=torch.float32).squeeze(-1).squeeze(-1).numpy()
+
+    grid_lon = np.arange(-180, 181, 1)
+    grid_lat = np.arange(-90, 91, 1)
+    target_lon, target_lat = np.meshgrid(grid_lon, grid_lat)
+
+    values = data[0]
+    points = coords[0]
+
+    grid_data = griddata(points, values, (target_lon, target_lat), method='linear')
+
+    mesh = axes.pcolormesh(target_lon, target_lat, grid_data,
+                           transform=ccrs.PlateCarree(),
+                           cmap='viridis',
+                           shading='auto')  # Added shading for potentially better results with pcolormesh
+
+    axes.coastlines()
+    axes.gridlines(draw_labels=False, linestyle='--', color='gray', alpha=0.5)
+
+    cbar = plt.colorbar(mesh, ax=axes, orientation='vertical', shrink=0.7, pad=0.05)
+    cbar.set_label('Interpolated Data Value')
+
+    axes.set_title(title)
+    axes.set_global()
+
+    plt.show()
