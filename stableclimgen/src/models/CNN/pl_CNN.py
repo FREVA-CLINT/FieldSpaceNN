@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from ..mgno_transformer import pl_mgno_base_model
 
+from pytorch_lightning.utilities import rank_zero_only
 from ...utils.visualization import plot_images
 import math
 
@@ -61,13 +62,14 @@ class LightningCNNModel(pl_mgno_base_model.LightningMGNOBaseModel):
         :param rec_tensor: Reconstructed tensor.
         :param plot_name: Name for the plot to be saved.
         """
-        save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
-        os.makedirs(save_dir, exist_ok=True)
-        plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
+        if rank_zero_only:
+            save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
+            os.makedirs(save_dir, exist_ok=True)
+            plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
 
-        for c in range(gt_tensor.shape[1]):
-            try:
-                filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
-                self.logger.log_image(f"plots/{plot_name}", [filename])
-            except Exception:
-                pass
+            for c in range(gt_tensor.shape[1]):
+                try:
+                    filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
+                    self.logger.log_image(f"plots/{plot_name}", [filename])
+                except Exception:
+                    pass
