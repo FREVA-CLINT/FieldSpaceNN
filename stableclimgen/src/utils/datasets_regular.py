@@ -193,6 +193,8 @@ class ClimateDataset(Dataset):
             var = self.variables_source[i.item()]
             # Extract data sequence and convert to torch tensor
             ds_source, ds_target = self.get_files(self.climate_in_files[var][file_index], self.climate_out_files[var][file_index])
+            
+            seq_index = min([len(ds_source.time)-self.n_sample_timesteps, seq_index])
 
             data_src = torch.from_numpy(np.nan_to_num(ds_source[var][seq_index:seq_index + self.n_sample_timesteps]))
             data_tgt = torch.from_numpy(np.nan_to_num(ds_target[var][seq_index:seq_index + self.n_sample_timesteps]))
