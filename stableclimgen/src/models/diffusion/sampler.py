@@ -103,7 +103,7 @@ class Sampler:
         if self.gaussian_diffusion.density_diffusion:
             indices = list(range(torch.max(self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]))))[::-1]  # Reverse the diffusion steps
             dists_input = model_kwargs.pop("dists_input")
-            next_diffusion_steps = self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"])
+            diffusion_steps = self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"])
         else:
             indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
         if progress:
@@ -113,9 +113,7 @@ class Sampler:
 
         # Iterate over diffusion steps in reverse
         for i in indices:
-            if self.gaussian_diffusion.density_diffusion:
-                diffusion_steps = next_diffusion_steps
-            else:
+            if not self.gaussian_diffusion.density_diffusion:
                 diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
             if self.condition_input and torch.is_tensor(mask):
                 alpha_cumprod = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_0.shape)
@@ -141,6 +139,7 @@ class Sampler:
                 yield out
                 x_0 = out["sample"]
                 if self.gaussian_diffusion.density_diffusion:
+                    diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
                     nonzero_mask = (diffusion_steps != 0)
                     condition, density_map = interpolator(out["pred_xstart"],
                                                           mask=nonzero_mask,
@@ -154,11 +153,9 @@ class Sampler:
 
                     griddata_plot(condition, model_kwargs["indices_sample"], model, "Interp")
                     griddata_plot(density_map, model_kwargs["indices_sample"], model, "Density")
+                    griddata_plot(nonzero_mask, model_kwargs["indices_sample"], model, "Mask")
                     griddata_plot(out["sample"].squeeze(-1), model_kwargs["indices_sample"], model, "Mean")
                     griddata_plot(out["pred_xstart"].squeeze(-1), model_kwargs["indices_sample"], model, "pred_xstart")
-
-                    next_diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
-
 
     def sample(
         self,
