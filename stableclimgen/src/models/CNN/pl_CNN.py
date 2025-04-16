@@ -14,7 +14,7 @@ from ...utils.visualization import plot_images
 import math
 
 class LightningCNNModel(pl_mgno_base_model.LightningMGNOBaseModel):
-    def __init__(self, model, lr_groups, lambda_loss_dict: dict):
+    def __init__(self, model, lr_groups, lambda_loss_dict: dict, plot_snapshots=False):
 
         super().__init__(model, lr_groups, lambda_loss_dict, weight_decay=0, noise_std=0, interpolator_settings=None)
 
@@ -28,7 +28,7 @@ class LightningCNNModel(pl_mgno_base_model.LightningMGNOBaseModel):
         :param ema_rate: Rate for Exponential Moving Average of model parameters. Defaults to 0.999.
         """
 
-
+        self.plot_snapshots = plot_snapshots
  
     def forward(self, x, **kwargs) -> Tuple[Dict[str, Tensor], Tensor]:
         """
@@ -62,7 +62,7 @@ class LightningCNNModel(pl_mgno_base_model.LightningMGNOBaseModel):
         :param rec_tensor: Reconstructed tensor.
         :param plot_name: Name for the plot to be saved.
         """
-        if rank_zero_only:
+        if rank_zero_only and self.plot_snapshots:
             save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
             os.makedirs(save_dir, exist_ok=True)
             plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
