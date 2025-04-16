@@ -139,6 +139,7 @@ class Sampler:
                 yield out
                 x_0 = out["sample"]
                 if self.gaussian_diffusion.density_diffusion:
+                    griddata_plot(diffusion_steps, model_kwargs["indices_sample"], model, "Interp")
                     diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
                     nonzero_mask = (diffusion_steps != 0)
                     condition, density_map = interpolator(out["pred_xstart"],
