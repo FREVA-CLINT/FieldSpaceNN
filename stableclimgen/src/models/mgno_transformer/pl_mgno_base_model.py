@@ -7,6 +7,7 @@ import torch
 
 from torch.optim import AdamW
 
+from pytorch_lightning.utilities import rank_zero_only
 from ...utils.visualization import scatter_plot
 from ...modules.icon_grids.grid_layer import GridLayer, Interpolator
 
@@ -248,7 +249,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-        if batch_idx == 0:
+        if batch_idx == 0 and rank_zero_only:
             if hasattr(self, "interpolator") and self.interpolator is not None:
                 _, coords_input, _, _, _, _, dists_input = self.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
                 input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, indices_sample=indices, calc_density=True, input_dists=dists_input)
