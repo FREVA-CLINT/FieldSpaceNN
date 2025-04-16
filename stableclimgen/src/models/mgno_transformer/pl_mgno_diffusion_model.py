@@ -9,7 +9,7 @@ from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel, check_
 
 
 class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
-    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", n_samples=1, max_batchsize=-1, **base_model_args):
+    def __init__(self, model, gaussian_diffusion: GaussianDiffusion, lr_groups, sampler="ddpm", n_samples=1, max_batchsize=-1, concat_interp=True, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
 
         # maybe create multi_grid structure here?
@@ -23,6 +23,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
             self.sampler = DDIMSampler(self.gaussian_diffusion)
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
+        self.concat_interp = concat_interp
         self.save_hyperparameters(ignore=['model'])
 
 
@@ -56,7 +57,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
             emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
             emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
             mask = None
-            condition = interp_x.unsqueeze(-3)
+            condition = interp_x.unsqueeze(-3) if self.concat_interp else None
         else:
             condition = None
         model_kwargs = {
