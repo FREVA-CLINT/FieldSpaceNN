@@ -148,8 +148,9 @@ class NetCDFLoader_lazy(Dataset):
                 norm_dict[var]['normalizer'])
 
 
-        self.files_source = np.loadtxt(data_dict["source"]["files"],dtype='str')
-        self.files_target = np.loadtxt(data_dict["target"]["files"],dtype='str')
+        self.files_source = np.loadtxt(data_dict["source"]["files"], dtype='str', ndmin=1)
+        self.files_target = np.loadtxt(data_dict["target"]["files"], dtype='str', ndmin=1)
+
 
         """
         permutation_indices =  np.random.permutation(np.arange(len(self.files_source)))
