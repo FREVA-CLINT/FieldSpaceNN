@@ -708,6 +708,13 @@ class GaussianDiffusion:
         t_map = (uncertainty_embedding * (self.diffusion_steps - 1)).round().long()
         return t_map
 
+    def diffusion_steps_to_uncertainty(self, diffusion_steps):
+        """ Maps uncertainty [0, 1] to discrete timesteps [0, num_timesteps-1]. """
+        # Ensure uncertainty is clipped
+        # Linear mapping: u=0 -> t=0, u=1 -> t = num_timesteps - 1
+        t_map = diffusion_steps / (self.diffusion_steps - 1)
+        return t_map
+
 
 def extract_into_tensor(arr: Union[np.ndarray, torch.Tensor], diffusion_steps: torch.Tensor, broadcast_shape: Tuple[int, ...]) -> torch.Tensor:
     """
