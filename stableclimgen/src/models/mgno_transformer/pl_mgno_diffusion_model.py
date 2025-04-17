@@ -29,8 +29,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
 
     def forward(self, x, diffusion_steps, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
         b, nt, n = x.shape[:3]
-        x, mask, emb, model_kwargs = self.prepare_inputs(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
-        model_kwargs.pop("dists_input")
+        x, mask, emb, _, model_kwargs = self.prepare_inputs(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
         l_dict, output = self.gaussian_diffusion.training_losses(self.model, x, diffusion_steps.view(-1), mask, emb, **model_kwargs)
         return l_dict, output.view(b, nt, *output.shape[1:])
 
@@ -63,12 +62,11 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'indices_sample': indices_sample,
-            'dists_input': dists_input
+            'indices_sample': indices_sample
         }
         if torch.is_tensor(condition):
             model_kwargs['condition'] = condition
-        return x, mask, emb, model_kwargs
+        return x, mask, emb, interp_x, model_kwargs
 
 
     def training_step(self, batch, batch_idx):
@@ -150,6 +148,6 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
     def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
-        source, mask, emb, model_kwargs = self.prepare_inputs(source, coords_input, coords_output, indices_sample, mask, emb, input_dists)
-        return self.sampler.sample_loop(self.model, source, mask,
+        source, mask, emb, interp_x, model_kwargs = self.prepare_inputs(source, coords_input, coords_output, indices_sample, mask, emb, input_dists)
+        return self.sampler.sample_loop(self.model, interp_x if torch.is_tensor(interp_x) else source, mask,
                                         progress=True, emb=emb, interpolator=self.interpolator, **model_kwargs)

@@ -47,7 +47,7 @@ class Sampler:
         if not self.gaussian_diffusion.density_diffusion:
             x_0 = noise
         else:
-            x_0 = self.gaussian_diffusion.q_sample(model_kwargs["condition"], self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
+            x_0 = self.gaussian_diffusion.q_sample(input_data, self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]), noise=noise)
 
         final = None
         # Progressive sampling loop
@@ -102,7 +102,6 @@ class Sampler:
 
         if self.gaussian_diffusion.density_diffusion:
             indices = list(range(torch.max(self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"]))))[::-1]  # Reverse the diffusion steps
-            dists_input = model_kwargs.pop("dists_input")
             diffusion_steps = self.gaussian_diffusion.uncertainty_to_diffusion_steps(model_kwargs["emb"]["DensityEmbedder"])
         else:
             indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
@@ -139,24 +138,9 @@ class Sampler:
                 yield out
                 x_0 = out["sample"]
                 if self.gaussian_diffusion.density_diffusion:
-                    #griddata_plot(diffusion_steps, model_kwargs["indices_sample"], model, "Interp")
                     diffusion_steps = diffusion_steps - (diffusion_steps != 0).int()
-                    #nonzero_mask = (diffusion_steps != 0)
-                    #condition, density_map = interpolator(out["pred_xstart"],
-                    #                                      mask=nonzero_mask,
-                    #                                      calc_density=True,
-                    #                                      indices_sample=model_kwargs["indices_sample"],
-                    #                                      input_coords=model_kwargs["coords_input"],
-                    #                                      input_dists=dists_input)
                     model_kwargs["emb"]["DensityEmbedder"] = self.gaussian_diffusion.diffusion_steps_to_uncertainty(diffusion_steps)
                     model_kwargs["emb"]["UncertaintyEmbedder"] = (1 - model_kwargs["emb"]["DensityEmbedder"], model_kwargs["emb"]['VariableEmbedder'])
-                    model_kwargs["condition"] = out["pred_xstart"]
-
-                    #griddata_plot(condition, model_kwargs["indices_sample"], model, "Interp")
-                    #griddata_plot(density_map, model_kwargs["indices_sample"], model, "Density")
-                    #griddata_plot(nonzero_mask, model_kwargs["indices_sample"], model, "Mask")
-                    griddata_plot(out["sample"].squeeze(-1), model_kwargs["indices_sample"], model, "Mean")
-                    griddata_plot(out["pred_xstart"].squeeze(-1), model_kwargs["indices_sample"], model, "pred_xstart")
 
     def sample(
         self,
