@@ -1521,7 +1521,7 @@ class Stacked_NOConv(nn.Module):
 
         self.no_layers = no_layers
         max_level = no_layers[-1].global_level_no
-        level_step = no_layers[1].global_level_no - no_layers[0].global_level_no
+        level_step = no_layers[0].global_level_no - no_layers[0].global_level_encode
         
         self.no_dims = {0:[]}
 
