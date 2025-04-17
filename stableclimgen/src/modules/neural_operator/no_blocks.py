@@ -1791,7 +1791,7 @@ class VariableAttention(nn.Module):
             self.grid_layer = grid_layer
 
         if model_dim_in != model_dim_out:
-            self.lin_skip_outer = get_lin_layer(model_dim_in, model_dim_out, **n_vars_total)
+            self.lin_skip_outer = get_lin_layer(model_dim_in, model_dim_out, **vars_settings)
 
         else:
             self.lin_skip_outer = nn.Identity()

@@ -28,7 +28,7 @@ class MGNO_Processing_Block(nn.Module):
         self.output_levels = input_levels
         self.layers = nn.ModuleList()
 
-        self.model_dims_out = []
+        self.model_dims_out = model_dims_out[-1]
         for level_idx, layer_settings_level in enumerate(layer_settings_levels):
             
             input_dim = input_dims[level_idx]
@@ -37,7 +37,7 @@ class MGNO_Processing_Block(nn.Module):
             level_layers_ = nn.ModuleList()
 
             for layer_idx, layer_setting in enumerate(layer_settings_level):
-                model_dim_out = model_dims_out[level_idx][layer_idx]
+                model_dim_out = model_dims_out[layer_idx][level_idx]
 
                 min_lvl = layer_setting.get("min_lvl",0)
                 
@@ -130,7 +130,7 @@ class MGNO_Processing_Block(nn.Module):
                 level_layers_.append(layer)
 
             self.layers.append(level_layers_)
-            self.model_dims_out.append(model_dim_out)
+        
 
 
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
