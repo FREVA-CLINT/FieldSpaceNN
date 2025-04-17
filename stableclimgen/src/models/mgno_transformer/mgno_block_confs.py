@@ -105,7 +105,7 @@ class MGProcessingConfig:
                  model_dims_out: List[List]):
 
         if isinstance(layer_settings_levels[0], omegaconf.DictConfig):
-            layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out))]
+            layer_settings_levels = [layer_settings_levels for _ in range(len(model_dims_out[0]))]
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
