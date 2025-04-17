@@ -273,10 +273,12 @@ class HealPixLoader(Dataset):
             data = torch.tensor(ds[variable].values)
             data_g.append(data)
         data_g = torch.stack(data_g, dim=-1)
-        data_g = data_g.view(nt, -1, nh, len(variables), 1)
 
         if regular:
-            data_g = data_g[:, indices]
+            data_g = data_g.view(nt, len(variables), -1, 1)
+            data_g = data_g[:, :, indices]
+
+        data_g = data_g.view(nt, -1, nh, len(variables), 1)
 
         data_t = torch.tensor(ds["time"].values)
 
