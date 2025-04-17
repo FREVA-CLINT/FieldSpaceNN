@@ -41,7 +41,8 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  rank=4,
                  n_vars_total=1,
                  rank_vars=4,
-                 factorize_vars=False
+                 factorize_vars=False,
+                 concat_prev=False
                 ) -> None: 
       
         super().__init__()
@@ -61,6 +62,12 @@ class MGNO_EncoderDecoder_Block(nn.Module):
         self.output_levels = []
         self.add_coordinate_embedding_dict = {}
         layer_index = 0
+
+        self.concat_prev = concat_prev
+        if concat_prev:
+            self.indices_concat = [(k, int(torch.where(torch.tensor(input_levels)==global_levels_decode[k])[0])) for k in range(len(self.model_dims_out)) if global_levels_decode[k] in input_levels]
+            self.model_dims_out = [model_dim + input_dims[k] if global_levels_decode[k] in input_levels else model_dim for k,model_dim in enumerate(self.model_dims_out)]
+
         for output_idx, output_level in enumerate(global_levels_decode):
 
             input_indices = []
@@ -247,6 +254,10 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             x_levels_out.append(x_out)
             mask_levels_out.append(mask_out)
 
+        if self.concat_prev:
+            for idx_out, idx_in in self.indices_concat:
+                x_levels_out[idx_out] = torch.concat((x_levels_out[idx_out], x_levels[idx_in]),dim=-1)
+
         return x_levels_out, mask_levels_out
 
 class MGNO_StackedEncoderDecoder_Block(nn.Module):
@@ -278,11 +289,13 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                  seq_level=2,
                  n_vars_total=1,
                  rank_vars=4,
-                 factorize_vars=False
+                 factorize_vars=False,
+                 concat_prev=False
                 ) -> None: 
       
         super().__init__()
 
+        self.concat_prev = concat_prev
         self.output_levels = global_levels_decode
         self.model_dims_out = model_dims_out
         self.rcm=rcm
@@ -290,8 +303,13 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
         no_layer_type = check_get_missing_key(no_layer_settings, "no_layer_type")
         no_layers = nn.ModuleList()
 
+        self.input_levels = input_levels
+        if concat_prev:
+            self.indices_concat = [(k, int(torch.where(torch.tensor(input_levels)==global_levels_decode[k])[0])) for k in range(len(self.model_dims_out)) if global_levels_decode[k] in input_levels]
+            self.model_dims_out = [model_dim + input_dims[k] if global_levels_decode[k] in input_levels else model_dim for k,model_dim in enumerate(self.model_dims_out)]
+
         for input_level in range(int(torch.tensor(input_levels).min()), global_level_no + 1 - no_level_step, no_level_step):
-            
+
             global_level_no_k = input_level + no_level_step
 
             no_layer = get_no_layer(rcm,
@@ -371,6 +389,10 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
 
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
         
-        x_levels, mask_levels = self.layer(x_levels, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
+        x_levels_out, mask_levels = self.layer(x_levels, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
 
-        return x_levels, mask_levels
+        if self.concat_prev:
+            for idx_out, idx_in in self.indices_concat:
+                x_levels_out[idx_out] = torch.concat((x_levels_out[idx_out], x_levels[idx_in]),dim=-1)
+
+        return x_levels_out, mask_levels

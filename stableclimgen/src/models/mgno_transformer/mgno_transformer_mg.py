@@ -76,7 +76,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                                             rank=check_get(block_conf, kwargs,defaults, "rank"),
                                             n_vars_total=check_get(block_conf, kwargs,defaults, "n_vars_total"),
                                             rank_vars=check_get(block_conf, kwargs,defaults, "rank_vars"),
-                                            factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars"))  
+                                            factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars"),
+                                            concat_prev=check_get(block_conf, kwargs,defaults, "concat_prev"))  
                 
             elif isinstance(block_conf, MGStackedEncoderDecoderConfig):
                 block = MGNO_StackedEncoderDecoder_Block(
@@ -106,7 +107,8 @@ class MGNO_Transformer_MG(MGNO_base_model):
                     seq_level=check_get(block_conf, kwargs,defaults, "seq_level"),
                     n_vars_total=check_get(block_conf, kwargs,defaults, "n_vars_total"),
                     rank_vars=check_get(block_conf, kwargs,defaults, "rank_vars"),
-                    factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars")
+                    factorize_vars=check_get(block_conf, kwargs,defaults, "factorize_vars"),
+                    concat_prev=check_get(block_conf, kwargs,defaults, "concat_prev")
                 )
                 
             elif isinstance(block_conf, MGProcessingConfig):
