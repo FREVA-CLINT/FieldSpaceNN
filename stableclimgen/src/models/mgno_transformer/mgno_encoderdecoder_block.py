@@ -71,8 +71,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
                 level_diff = output_level - input_level
 
-                if rule == "<" and level_diff>0:
-                   # self.layers.append(nn.Identity())
+                if  "<" in rule and level_diff>0:
                     continue
 
                 elif ">" in rule and level_diff<0:
@@ -81,9 +80,12 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                 elif "=" in rule and level_diff!=0:
                     continue
 
-                if rule == ">max" and input_level!=max(input_levels) and level_diff!=0:
+                if rule == ">max" and input_level!=max(input_levels):
                     continue
                 
+                if rule == "<max" and input_level!=max(input_levels):
+                    continue
+
                 input_indices.append(input_idx)
 
                 model_dim_in = input_dims[input_idx]
