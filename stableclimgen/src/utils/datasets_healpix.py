@@ -113,8 +113,11 @@ class HealPixLoader(Dataset):
         self.p_drop_vars = p_drop_vars
         self.p_drop_timesteps = p_drop_timesteps
 
-        self.variables_source = variables_source or data_dict["source"]["variables"]
-        self.variables_target = variables_target or data_dict["target"]["variables"]
+        self.variables_source = data_dict["source"]["variables"]
+        self.variables_target = data_dict["target"]["variables"]
+
+        self.variables_source_train = variables_source if variables_source is not None else self.variables_source
+        self.variables_target_train = variables_target if variables_target is not None else self.variables_target
 
         if "timesteps" in data_dict.keys():
             self.sample_timesteps = []
@@ -399,7 +402,8 @@ class HealPixLoader(Dataset):
         else:
             indices_sample = {'sample': region_index.repeat(nt),
                               'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
-        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1),
+        var_indices = torch.tensor([np.where(np.array(self.variables_source_train)==var)[0][0] for var in variables_source])
+        embed_data = {'VariableEmbedder': var_indices.unsqueeze(0).repeat(nt, 1),
                       'TimeEmbedder': time_source.float()}
         return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data, dists_input.unsqueeze(0).repeat(nt, *[1] * dists_input.ndim)
 
