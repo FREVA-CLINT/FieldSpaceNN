@@ -66,7 +66,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         }
         if torch.is_tensor(condition):
             model_kwargs['condition'] = condition
-        return x, mask, emb, interp_x, model_kwargs
+        return x, mask, emb, interp_x.unsqueeze(-3), model_kwargs
 
 
     def training_step(self, batch, batch_idx):
