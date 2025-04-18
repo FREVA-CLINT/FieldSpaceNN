@@ -46,6 +46,15 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
                 lr_factors[k] = lr_factor*epoch * 1.0 / self.warmups[k]
         return lr_factors
 
+class L1_loss(nn.Module):
+    def __init__(self, **kwargs):
+        super().__init__()
+
+        self.loss_fcn = torch.nn.SmoothL1Loss()
+
+    def forward(self, output, target, **kwargs):
+        loss = self.loss_fcn(output, target.view(output.shape))
+        return loss
 
 class MSE_loss(nn.Module):
     def __init__(self, grid_layer=None):
@@ -53,7 +62,7 @@ class MSE_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None, indices_sample=None,**kwargs):
+    def forward(self, output, target, **kwargs):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
     
