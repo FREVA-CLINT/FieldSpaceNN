@@ -130,6 +130,12 @@ def get_layer(no_dims_in, input_dim, output_dim, no_dims_out=None, rank=4, no_ra
 
     elif layer_type == "CrossDense":
         layer = CrossDenseLayer
+
+    elif layer_type == "SharedDense":
+        layer = SharedDenseLayer
+
+    elif layer_type == "LinearId":
+        layer = LinearIdentityLayer
     
     elif "PathAttention" in layer_type:
         layer = PathAttentionLayer
@@ -1340,6 +1346,128 @@ class PathAttentionLayer(nn.Module):
       #  x = x + x_res
 
         return x
+
+class SharedDenseLayer(nn.Module):
+    def __init__(self, no_dims, input_dim, output_dim, no_dims_out=None, n_vars_total=1, factorize_vars=True, rank_vars=4,**kwargs):
+        """
+        Args:
+            num_levels (int): Number of hierarchical levels (e.g. 4 for l4-l1)
+            c_in (int): Input channel size
+            c_out (int): Output channel size
+            hidden_dims (list of int, optional): Intermediate dimensions between levels.
+                                                 If None, defaults to same as c_in.
+        """
+        super().__init__()
+        self.num_levels = num_levels = len(no_dims)
+        self.c_in = c_in = input_dim
+        self.c_out = c_out = output_dim
+        self.no_dims = no_dims
+
+        hidden_dims = [c_out] * (num_levels - 1)
+
+        dims = [c_in] + hidden_dims + [c_out]  # shape at each level boundary
+
+        if len(no_dims)==0:
+            no_dims = [1]
+
+        if n_vars_total==1:
+            self.weights = nn.ParameterList([
+                nn.Parameter(torch.randn(no_dim, dims[i], dims[i+1]))  # (4, in_dim, out_dim)
+                for i, no_dim in enumerate(no_dims)
+            ])
+            self.contract_fun = self.contract
+
+        else:
+            self.weights = nn.ParameterList([
+                nn.Parameter(torch.randn(n_vars_total, no_dim, dims[i], dims[i+1]))  # (4, in_dim, out_dim)
+                for i, no_dim in enumerate(no_dims)
+            ])
+            self.contract_fun = self.contract_vars
+
+        self.reduce = no_dims_out is None or int(torch.tensor(no_dims).prod())>1
+    
+    def contract(self, x, emb=None):
+         # Compose weight tensor using einsum
+        W = self.weights[0]
+        for i in range(1, len(self.weights)):
+            W = torch.einsum('...io,loj->l...ij', W, self.weights[i])  # progressive tensor build
+            # clean up dimension order
+        #    W = W.reshape(*([4] * (i+1)), self.c_in, self.c_out)
+
+        if self.reduce:
+            einsum_str = f'bnv...c,...co->bnvo'
+        else:
+            einsum_str = f'bnv...c,...co->bnv...o'
+
+        out = torch.einsum(einsum_str, x, W)  # (b, n, c_out)
+
+        return out 
+    
+    def contract_vars(self, x, emb=None):
+         # Compose weight tensor using einsum
+        W = self.weights[0][emb['VariableEmbedder']]
+        for i in range(1, len(self.weights)):
+            W = torch.einsum('bv...io,bvloj->bvl...ij', W, self.weights[i][emb['VariableEmbedder']])  # progressive tensor build
+            # clean up dimension order
+           # W = W.reshape(*([4] * (i+1)), self.c_in, self.c_out)
+
+        if self.reduce:
+            einsum_str = f'bnv...c,bv...co->bnvo'
+        else:
+            einsum_str = f'bnv...c,bv...co->bnv...o'
+
+        out = torch.einsum(einsum_str, x, W)  # (b, n, c_out)
+
+        return out 
+    
+    def forward(self, x, emb=None):
+        """
+        Args:
+            x: Tensor of shape (b, n, 4, 4, ..., 4, c_in) with `num_levels` many 4s
+        Returns:
+            Tensor of shape (b, n, c_out)
+        """
+        num_levels = self.num_levels
+
+        x = x.view(*x.shape[:3],*self.no_dims,-1)
+        
+        out = self.contract_fun(x,emb=emb)
+
+        return out
+
+class LinearIdentityLayer(nn.Module):
+    def __init__(self,
+                 no_dims,
+                 input_dim,
+                 output_dim,
+                 **kwargs
+                ) -> None: 
+         
+        super().__init__()
+
+        self.no_dims = no_dims
+        self.no_dims_tot = int(torch.tensor(no_dims).prod())
+        
+        if input_dim != output_dim:
+            self.layer = DenseLayer((1), input_dim, output_dim, **kwargs)
+        
+
+    def forward(self, x, emb=None):
+        
+        b,n,v = x.shape[:3]
+        if hasattr(self, "layer"):
+        #    x = x.view(b,n,v*self.no_dims_tot,-1)
+            x = x.view(b,n,v,self.no_dims_tot,-1)
+            x = x.transpose(2,3)
+            x = x.reshape(b,n*self.no_dims_tot,v,-1)
+            x = self.layer(x, emb=emb)
+            x = x.reshape(b,n,self.no_dims_tot,v,-1)
+            x = x.transpose(2,3)
+        x = x.reshape(b,n,v,self.no_dims_tot,-1)
+
+        return x
+
+
 
 class DenseLayer(nn.Module):
     def __init__(self,
