@@ -359,8 +359,8 @@ class LinearReductionLayer(nn.Module):
                       factorize_vars=factorize_vars)
 
     def forward(self, x_levels, mask_levels=None, emb=None):
-
-        if mask_levels is not None and mask_levels[0] is not None:
+        torch.tensor([mask is None for mask in mask_levels]).any()
+        if mask_levels is not None and bool(torch.tensor([mask is None for mask in mask_levels]).all()):
             mask_out = torch.stack(mask_levels, dim=-1).sum(dim=-1) == len(mask_levels)
         else:
             mask_out = None
