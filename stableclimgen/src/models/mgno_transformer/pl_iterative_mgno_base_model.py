@@ -67,7 +67,7 @@ class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
 
             if iteration != 0:
                 output = output.view(source.shape)
-                output[mask_update==False] = source
+                output[mask_update.view(output.shape)==False] = source
 
             source = output.view(source.shape)
 
