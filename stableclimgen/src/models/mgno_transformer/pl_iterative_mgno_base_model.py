@@ -62,14 +62,18 @@ class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
 
             if iteration % self.output_frequency == 0:
                 outputs.append(output[...,0])
-                outputs_vars.append(output[...,1].unsqueeze(dim=1) if hasattr(self.model,'predict_var') and self.model.predict_var else None)
+                outputs_vars.append(output[...,1] if hasattr(self.model,'predict_var') and self.model.predict_var else None)
                 masks.append(mask)
+
+            if iteration != 0:
+                output = output.view(source.shape)
+                output[mask_update==False] = source
+
+            source = output.view(source.shape)
 
             mask_update = get_update_mask(self.model.grid_layers["0"], indices, mask, min_nh=self.nh_step)
 
             mask = update_mask(mask, mask_update, inplace=False)
-
-            source = output.view(source.shape)
 
             perc_iter_done = 1 - mask.sum()/mask.numel()
 
@@ -77,7 +81,7 @@ class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
             iteration +=1
         
         outputs.append(output[...,0])
-        outputs_vars.append(output[...,1].unsqueeze(dim=1) if hasattr(self.model,'predict_var') and self.model.predict_var else None)
+        outputs_vars.append(output[...,1] if hasattr(self.model,'predict_var') and self.model.predict_var else None)
         masks.append(mask)
 
         output = {'output': torch.stack(outputs, dim=1),
