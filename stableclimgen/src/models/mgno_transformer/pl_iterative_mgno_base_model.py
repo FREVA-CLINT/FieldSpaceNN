@@ -60,17 +60,17 @@ class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
             emb_run = copy.deepcopy(emb)
             output = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb_run, dists_input=dists_input)
 
+            output = output.view(source.shape)
 
             if iteration != 0:
-                output = output.view(source.shape)
                 output[mask_update.view(output.shape)==False] = source[mask_update.view(output.shape)==False]
 
             if iteration % self.output_frequency == 0:
                 outputs.append(output[...,0])
                 outputs_vars.append(output[...,1] if hasattr(self.model,'predict_var') and self.model.predict_var else None)
                 masks.append(mask)
-                
-            source = output.view(source.shape)
+
+            source = output
 
             mask_update = get_update_mask(self.model.grid_layers["0"], indices, mask, min_nh=self.nh_step)
 
