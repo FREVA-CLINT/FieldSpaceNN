@@ -49,7 +49,7 @@ class InputLayer(nn.Module):
                  model_dim_in,
                  model_dim_out,
                  grid_layer_0,
-                 embed_names=None,
+                 embedder_names=None,
                  embed_confs=None,
                  embed_mode='sum',
                  n_vars_total=1,
@@ -60,11 +60,11 @@ class InputLayer(nn.Module):
 
         super().__init__()
 
-        if embed_names is not None:
-            if 'CoordinateEmbedder' in embed_names:
+        if embedder_names is not None:
+            if 'CoordinateEmbedder' in embedder_names:
                 self.grid_layer_0 = grid_layer_0
 
-            self.embedder = get_embedder(embed_names, embed_confs, embed_mode=embed_mode)
+            self.embedder = get_embedder(embedder_names, embed_confs, embed_mode=embed_mode)
 
             emb_dim = self.embedder.get_out_channels if self.embedder is not None else None
 

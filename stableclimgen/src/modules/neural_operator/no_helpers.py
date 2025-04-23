@@ -118,21 +118,21 @@ def update_mask(mask, level_diff, mask2=None):
 
 
 def get_embedder_from_dict(dict_: dict):
-    if "embed_names" in dict_.keys() and "embed_confs" in dict_.keys():
+    if "embedder_names" in dict_.keys() and "embed_confs" in dict_.keys():
         embed_mode = dict_.get("mode","sum")
-        return get_embedder(dict_["embed_names"],
+        return get_embedder(dict_["embedder_names"],
                             dict_["embed_confs"],
                             embed_mode)
     else:
         return None
 
 
-def get_embedder(embed_names:list, 
+def get_embedder(embedder_names:list, 
                  embed_confs:list, 
                  embed_mode: list):
     
     emb_dict = nn.ModuleDict()
-    for embed_name in embed_names:
+    for embed_name in embedder_names:
         emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name])
         emb_dict[emb.name] = emb     
         

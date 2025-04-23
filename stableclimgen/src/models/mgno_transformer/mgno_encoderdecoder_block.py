@@ -24,11 +24,11 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                  block_type = 'post_layer_norm',
                  mg_reduction = 'linear',
                  mg_reduction_embed_confs: Dict = None,
-                 mg_reduction_embed_names: List = None,
-                 mg_reduction_embed_names_mlp: List = None,
+                 mg_reduction_embedder_names: List = None,
+                 mg_reduction_embedder_names_mlp: List = None,
                  mg_reduction_embed_mode: str = 'sum',
                  embed_confs: Dict = None,
-                 embed_names: List = None,
+                 embedder_names: List = None,
                  embed_mode: str = 'sum',
                  with_gamma: bool = True,
                  omit_backtransform: bool = False,
@@ -118,7 +118,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                                             layer_settings=no_layer_settings,
                                             normalize_to_mask= (mask_as_embedding==False))
                     
-                    embedder = get_embedder(embed_names, embed_confs, embed_mode) if embed_names is not None and len(embed_names)>0 else None
+                    embedder = get_embedder(embedder_names, embed_confs, embed_mode) if embedder_names is not None and len(embedder_names)>0 else None
                     
                     if 'post_layer_norm' in block_type:
                         layer = NOBlock(
@@ -162,15 +162,15 @@ class MGNO_EncoderDecoder_Block(nn.Module):
                     reduction_layer = mg.SumReductionLayer()
 
                 elif mg_reduction == 'MGAttention' or 'MGDiffAttention'or 'MGDiffMAttention':
-                    if mg_reduction_embed_names is not None:
-                        embedder = get_embedder(embed_names=mg_reduction_embed_names,
+                    if mg_reduction_embedder_names is not None:
+                        embedder = get_embedder(embedder_names=mg_reduction_embedder_names,
                                                 embed_confs=mg_reduction_embed_confs,
                                                 embed_mode=mg_reduction_embed_mode)
                         
                     else:
                         embedder = None
-                    if mg_reduction_embed_names_mlp is not None:
-                        embedder_mlp = get_embedder(embed_names=mg_reduction_embed_names_mlp,
+                    if mg_reduction_embedder_names_mlp is not None:
+                        embedder_mlp = get_embedder(embedder_names=mg_reduction_embedder_names_mlp,
                                                 embed_confs=mg_reduction_embed_confs,
                                                 embed_mode=mg_reduction_embed_mode)
                     else:
@@ -279,7 +279,7 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
                  rank=4,
                  rank_cross=2,
                  no_rank_decay=0,
-                 embed_names=None,
+                 embedder_names=None,
                  embed_confs=None,
                  embed_mode='sum',
                  mask_as_embedding = False,
@@ -324,8 +324,8 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
 
             no_layers.append(no_layer)
 
-        if embed_names is not None:
-            embedder = get_embedder(embed_names=embed_names,
+        if embedder_names is not None:
+            embedder = get_embedder(embedder_names=embedder_names,
                                         embed_confs=embed_confs,
                                         embed_mode=embed_mode)
         else:

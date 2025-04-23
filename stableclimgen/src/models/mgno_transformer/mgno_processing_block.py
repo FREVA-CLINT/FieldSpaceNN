@@ -27,6 +27,7 @@ class MGNO_Processing_Block(nn.Module):
         self.mask_as_embedding = mask_as_embedding
         self.output_levels = input_levels
         self.layers = nn.ModuleList()
+        self.grid_layers = nn.ModuleList()
 
         self.model_dims_out = model_dims_out[-1]
         for level_idx, layer_settings_level in enumerate(layer_settings_levels):
@@ -152,6 +153,7 @@ class MGNO_Processing_Block(nn.Module):
                 level_layers_.append(layer)
 
             self.layers.append(level_layers_)
+            self.grid_layers.append(grid_layers[str(current_level)])
         
 
 
@@ -160,6 +162,10 @@ class MGNO_Processing_Block(nn.Module):
         for level_idx, layer_levels in enumerate(self.layers):
             x = x_levels[level_idx]
             mask = mask_levels[level_idx]
+
+            coords = self.grid_layers[level_idx].get_coordinates_from_grid_indices(
+                indices_sample['indices_layers'][self.grid_layers[level_idx].global_level] if indices_sample else None)  
+            emb['CoordinateEmbedder'] = coords
 
             for layer_idx, layer in enumerate(layer_levels):
 
