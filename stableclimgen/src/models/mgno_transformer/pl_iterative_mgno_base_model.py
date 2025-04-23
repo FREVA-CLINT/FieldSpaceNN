@@ -34,7 +34,7 @@ def update_mask(mask, update_mask, inplace=False):
 
     return mask_updated
     
-    
+
 class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
     def __init__(self, model, lr_groups, lambda_loss_dict: dict, weight_decay=0, noise_std=0.0, interpolator_settings=None, nh_step=1, finish_perc=1.,output_frequency=2):
         super().__init__(model, lr_groups, lambda_loss_dict, weight_decay=weight_decay, noise_std=noise_std, interpolator_settings=interpolator_settings)
@@ -82,6 +82,6 @@ class LightningIterMGNOBaseModel(LightningMGNOBaseModel):
 
         output = {'output': torch.stack(outputs, dim=1),
                 'output_var': torch.stack(outputs_vars, dim=1) if outputs_vars[0] is not None else None,
-                'mask': torch.stack(mask, dim=1)}
+                'mask': torch.stack(masks, dim=1)}
         
         return output
