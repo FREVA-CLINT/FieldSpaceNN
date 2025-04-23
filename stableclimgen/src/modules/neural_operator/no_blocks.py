@@ -2003,3 +2003,133 @@ class VariableAttention(nn.Module):
         x = x_res + self.attention_gamma_mlp*x
 
         return x
+    
+
+class SpatialAttention2(nn.Module):
+  
+    def __init__(self,
+                 model_dim_in, 
+                 model_dim_out,
+                 grid_layer,
+                 n_head_channels,
+                 att_dim=None,
+                 p_dropout = 0,
+                 embedder: EmbedderSequential=None,
+                 embedder_mlp: EmbedderSequential=None,
+                 mask_as_embedding=False,
+                 n_vars_total=1,
+                 rank_vars=4,
+                 factorize_vars=False,
+                 seq_level = 2,
+                 var_att = False
+                ) -> None: 
+      
+        super().__init__()
+
+        vars_settings = {'n_vars_total': n_vars_total,
+                         'rank_vars': rank_vars,
+                         'factorize_vars': factorize_vars}
+        
+        self.seq_level = seq_level
+        self.var_att = var_att
+
+        self.mask_as_embedding = mask_as_embedding
+
+        self.global_level = grid_layer.global_level
+
+        if embedder is not None and 'CoordinateEmbedder' in embedder.embedders.keys():
+            self.grid_layer = grid_layer
+
+        if model_dim_in != model_dim_out:
+            self.lin_skip_outer = get_lin_layer(model_dim_in, model_dim_out, **vars_settings)
+
+        else:
+            self.lin_skip_outer = nn.Identity()
+
+        self.attention_ada_ln = AdaptiveLayerNorm([model_dim_in], model_dim_in, embedder=embedder)
+        self.attention_ada_ln_mlp = AdaptiveLayerNorm([model_dim_out], model_dim_out, embedder=embedder_mlp)
+
+        att_dim = att_dim if att_dim is not None else model_dim_in
+
+        self.lin_proj_qkv = get_lin_layer(model_dim_in, 
+                                        model_dim_in*3, 
+                                        **vars_settings,
+                                        bias=False) 
+        
+        self.MHA = MultiHeadAttentionBlock(
+            model_dim_in, model_dim_out, model_dim_in//n_head_channels, input_dim=model_dim_in, qkv_proj=False
+            )   
+        
+
+        self.attention_gamma = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+        self.attention_gamma_mlp = nn.Parameter(torch.ones(model_dim_out)*1e-6, requires_grad=True)
+
+        self.mlp_layer = get_mlp(model_dim_out, 
+                                model_dim_out, 
+                                pre_activation_mlp=False, 
+                                **vars_settings)
+
+
+        self.attention_dropout = nn.Dropout(p_dropout) if p_dropout > 0 else nn.Identity()
+
+
+    def forward(self, x, mask=None, emb=None):
+        b,n,nv = x.shape[:3]
+
+        emb['args']['global_level'] = self.global_level
+
+        if isinstance(self.lin_skip_outer, DenseLayer):
+            x_res = self.lin_skip_outer(x, emb=emb)
+        else:
+            x_res = self.lin_skip_outer(x)
+
+        x = self.attention_ada_ln(x, emb=emb)
+
+        if isinstance(self.lin_proj_qkv, DenseLayer):
+            q,k,v = self.lin_proj_qkv(x, emb=emb).chunk(3, dim=-1)
+        else:
+            q,k,v = self.lin_proj_qkv(x).chunk(3, dim=-1)
+        
+        if not self.var_att:
+            q = q.transpose(1,2).reshape(-1,q.shape[1],1,q.shape[-1])
+            k = k.transpose(1,2).reshape(-1,k.shape[1],1,k.shape[-1])
+            v = v.transpose(1,2).reshape(-1,k.shape[1],1,k.shape[-1])
+
+        if self.seq_level != -1:
+            q = q.view(q.shape[0], -1, 4**self.seq_level, *q.shape[2:])
+            k = k.view(k.shape[0], -1, 4**self.seq_level, *k.shape[2:])
+            v = v.view(v.shape[0], -1, 4**self.seq_level, *v.shape[2:])
+        else:
+            q = q.view(q.shape[0], 1, q.shape[1], *q.shape[2:])
+            k = k.view(k.shape[0], 1, k.shape[1], *k.shape[2:])
+            v = v.view(v.shape[0], 1, v.shape[1], *v.shape[2:])
+
+        ba,na,nas,va,c = q.shape
+        q = q.reshape(ba*na, nas*va,c)
+        k = k.reshape(ba*na, nas*va,k.shape[-1])
+        v = v.reshape(ba*na, nas*va,v.shape[-1])
+
+        mask = mask.reshape(b*n, *mask.shape[2:]) if mask is not None else None
+        x = self.MHA(q=q, k=k, v=v, mask=mask if not self.mask_as_embedding else None)
+
+        if self.var_att:
+            x = x.view(b,n,nv,x.shape[-1])
+        else:
+            x = x.view(ba,na,nas,va,x.shape[-1]).view(b,nv,na*nas,x.shape[-1]).transpose(1,2).contiguous()
+ 
+        x = self.attention_dropout(x)
+        
+        x = x_res + self.attention_gamma*x
+
+        x_res = x
+
+        x = self.attention_ada_ln_mlp(x, emb=emb)
+
+        if isinstance(self.mlp_layer, MLP_fac):
+            x = self.mlp_layer(x,emb=emb)
+        else:
+            x = self.mlp_layer(x)
+
+        x = x_res + self.attention_gamma_mlp*x
+
+        return x

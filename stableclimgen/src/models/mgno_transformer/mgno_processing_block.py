@@ -4,7 +4,7 @@ import torch.nn as nn
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...utils.helpers import check_get_missing_key
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict
-from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, VariableAttention, SpatialAttention
+from ...modules.neural_operator.no_blocks import PreActivation_NOBlock, NOBlock, VariableAttention, SpatialAttention, SpatialAttention2
 
 
 class MGNO_Processing_Block(nn.Module):
@@ -107,7 +107,7 @@ class MGNO_Processing_Block(nn.Module):
                         factorize_vars=factorize_vars
                     )
                 
-                elif "spatial_att" in layer_setting["type"]:
+                elif "spatial_att" == layer_setting["type"]:
                     
                     spatial_attention_configs = check_get_missing_key(layer_setting, "spatial_attention_configs")
                     spatial_attention_configs["embedder_names"] = layer_setting.get("embedder_names",[[],[]])
@@ -123,6 +123,28 @@ class MGNO_Processing_Block(nn.Module):
                         spatial_attention_configs=spatial_attention_configs,
                         rotate_coord_system=rotate_coordinate_system,
                         mask_as_embedding=mask_as_embedding
+                    )
+                
+                elif "spatial_att2" == layer_setting["type"]:
+                    
+                    embedder_att = get_embedder_from_dict(layer_setting)
+                    embedder_mlp = get_embedder_from_dict(layer_setting)
+
+                    layer = SpatialAttention2(
+                        input_dim,
+                        model_dim_out,
+                        grid_layers[str(current_level)],
+                        layer_setting["n_head_channels"],
+                        att_dim=layer_setting.get("att_dim",None),
+                        p_dropout=layer_setting.get("p_dropout",0),
+                        embedder = embedder_att,
+                        embedder_mlp= embedder_mlp,
+                        mask_as_embedding=mask_as_embedding,
+                        n_vars_total=n_vars_total,
+                        rank_vars=rank_vars,
+                        factorize_vars=factorize_vars,
+                        seq_level = layer_setting.get('seq_level',2),
+                        var_att= layer_setting.get('var_attt',False),
                     )
                 
                 input_dim = model_dim_out
