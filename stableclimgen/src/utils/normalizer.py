@@ -250,10 +250,11 @@ class ScaledLogNormalizer(DataNormalizer):
         :param data: Standardized data tensor to be denormalized.
         :return: Data tensor in the original scale.
         """
+        data = self.quantile_normalizer.denormalize(data)
         # Rescale data to the original scale by multiplying by std and adding the mean
         data = torch.expm1(data)/self.scale
 
-        return self.quantile_normalizer.denormalize(data)
+        return data
 
     def denormalize_var(self, data_var: torch.Tensor, data=None) -> torch.Tensor:
         """
