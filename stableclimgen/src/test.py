@@ -2,6 +2,7 @@ import json
 import os
 from typing import Any
 
+import time
 import hydra
 import torch
 from hydra.utils import instantiate
@@ -39,7 +40,12 @@ def test(cfg: DictConfig) -> None:
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     # Start the training process
+    start_time = time.time()
     predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
+    end_time = time.time()
+
+    print(f"Predicted time: {end_time - start_time:.2f} seconds")
+
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ", b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset, "global_cells_input") else 1)
