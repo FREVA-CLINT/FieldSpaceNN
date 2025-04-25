@@ -58,20 +58,15 @@ class LightningVAE(pl.LightningModule):
         """
         torch.optim.swa_utils.update_bn(self.trainer.train_dataloader, self.ema_model)
 
-    def forward(self, gt_data: Tensor, embeddings: Optional[Tensor] = None, mask_data: Optional[Tensor] = None,
-                cond_data: Optional[Tensor] = None, coords: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def forward(self, source) -> Tuple[Tensor, Tensor]:
         """
         Forward pass through the VAE model.
 
-        :param gt_data: Ground truth data tensor.
-        :param embeddings: Embedding tensor, optional.
-        :param mask_data: Mask data tensor, optional.
-        :param cond_data: Conditioning data tensor, optional.
-        :param coords: Coordinates data tensor, optional.
+        :param source: input data tensor.
 
         :return: Tuple containing model output tensor and posterior distribution tensor.
         """
-        return self.model(gt_data, embeddings, mask_data, cond_data, coords)
+        return self.model(source)
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> Tensor:
         """
@@ -82,11 +77,11 @@ class LightningVAE(pl.LightningModule):
 
         :return: Total calculated loss for the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
-        reconstructions, posterior = self(gt_data)
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        reconstructions, posterior = self(source)
 
         # Compute reconstruction loss
-        rec_loss = self.loss(gt_data, reconstructions)
+        rec_loss = self.loss(target, reconstructions)
         # Compute KL divergence loss
         kl_loss = posterior.kl()
         kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
@@ -110,11 +105,11 @@ class LightningVAE(pl.LightningModule):
         :param batch: A tuple containing input tensors for validation.
         :param batch_idx: The index of the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
-        reconstructions, posterior = self(gt_data)
+        source, target, coords_input, coords_output, indices, mask, emb = batch
+        reconstructions, posterior = self(source)
 
         # Calculate reconstruction and KL losses
-        rec_loss = self.loss(gt_data, reconstructions)
+        rec_loss = self.loss(target, reconstructions)
         kl_loss = posterior.kl()
         kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
 
@@ -124,7 +119,7 @@ class LightningVAE(pl.LightningModule):
         # Plot reconstruction samples on the first batch
         if batch_idx == 0:
             try:
-                self.log_tensor_plot(gt_data, cond_data, reconstructions, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
+                self.log_tensor_plot(target, source, reconstructions, coords_output, coords_input, f"tensor_plot_{self.current_epoch}")
             except Exception as e:
                 pass
 
