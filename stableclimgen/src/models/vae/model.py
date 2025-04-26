@@ -13,6 +13,22 @@ from ...modules.transformer.transformer_base import TransformerBlock
 from ...modules.utils import EmbedBlockSequential
 
 
+class GroupNormChannelsLast(nn.Module):
+    def __init__(self, num_groups, num_channels, eps=1e-5, affine=True):
+        super().__init__()
+        self.group_norm = nn.GroupNorm(num_groups, num_channels, eps=eps, affine=affine)
+
+    def forward(self, x):
+        # x: [N, ..., C]  (channels last)
+        dims = list(range(x.ndim))
+        # move channels to second dim
+        x = x.permute(0, -1, *dims[1:-1])
+        x = self.group_norm(x)
+        # move channels back to last
+        x = x.permute(0, *dims[2:], 1)
+        return x
+
+
 class VAEBlockConfig:
     """
     Configuration class for defining the parameters of VAE blocks.
@@ -118,6 +134,9 @@ class VAE(nn.Module):
                 else:
                     dec_blocks.append(block)
 
+        self.norm_enc = GroupNormChannelsLast(num_groups=32, num_channels=bottleneck_ch, eps=1e-6, affine=True)
+        self.norm_dec = GroupNormChannelsLast(num_groups=32, num_channels=in_ch, eps=1e-6, affine=True)
+
         # Define quantization block
         self.quantization = Quantization(in_ch=bottleneck_ch, latent_ch=quant_config.latent_ch, block_type=quant_config.block_type,
                                          **quant_config.sub_confs, spatial_dim_count=spatial_dim_count, dims=self.dims)
@@ -138,6 +157,11 @@ class VAE(nn.Module):
         """
         x = self.input_patch_embedding(x)
         h = self.encoder(x)
+
+        # normalize and nonlinearity
+        h = self.norm_enc(h)
+        h = h * torch.sigmoid(h)
+
         moments = self.quantization.quantize(h)
         posterior = self.quantization.get_distribution(moments)
         return posterior
@@ -151,6 +175,11 @@ class VAE(nn.Module):
         """
         z = self.quantization.post_quantize(z)
         dec = self.decoder(z)
+
+        # normalize and nonlinearity
+        dec = self.norm_dec(dec)
+        dec = dec * torch.sigmoid(dec)
+
         return dec
 
     def forward(self, x: torch.Tensor, embeddings: Optional[torch.Tensor] = None,
