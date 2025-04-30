@@ -109,7 +109,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
                 _, posterior_unmasked, _ = self(target, coords_input=coords_input, coords_output=coords_output,
                                                 indices_sample=indices, mask=torch.zeros_like(mask).bool(), emb=emb.copy(),
                                                 dists_input=dists_input)
-            latent_loss = self.latent_loss(posterior_unmasked.parameters, posterior.parameters)
+            latent_loss = self.latent_loss(posterior_unmasked.mean, posterior.mean)
             loss = loss + self.latent_loss_weight * latent_loss
             loss_dict['train/latent_loss'] = self.latent_loss_weight * latent_loss
 
@@ -137,7 +137,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
             _, posterior_unmasked, _ = self(target, coords_input=coords_input, coords_output=coords_output,
                                             indices_sample=indices, mask=torch.zeros_like(mask).bool(), emb=emb.copy(),
                                             dists_input=dists_input)
-            latent_loss = self.latent_loss(posterior_unmasked.parameters, posterior.parameters)
+            latent_loss = self.latent_loss(posterior_unmasked.mean, posterior.mean)
             loss = loss + self.latent_loss_weight * latent_loss
             loss_dict['val/latent_loss'] = self.latent_loss_weight * latent_loss
 
