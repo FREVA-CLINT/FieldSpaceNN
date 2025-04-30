@@ -25,7 +25,7 @@ class MSE_loss(nn.Module):
 
 
 class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
-    def __init__(self, model, lr_groups, kl_weight: float = 1e-6, n_samples=1, max_batchsize=-1, residual_interpolator_settings=None, **base_model_args):
+    def __init__(self, model, lr_groups, kl_weight: float = 1e-6, latent_loss_weight=None, n_samples=1, max_batchsize=-1, residual_interpolator_settings=None, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
         # maybe create multi_grid structure here?
         self.model = model
@@ -35,6 +35,13 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
+
+        if latent_loss_weight:
+            self.latent_loss = nn.MSELoss()
+        else:
+            self.latent_loss = None
+
+        self.latent_loss_weight = latent_loss_weight
 
         if residual_interpolator_settings:
             self.residual_interpolator_down = Interpolator(self.model.grid_layers,
@@ -93,18 +100,25 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
-        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
+        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb.copy(), dists_input=dists_input)
 
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
+        loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
+
+        if self.latent_loss:
+            with torch.no_grad():
+                _, posterior_unmasked, _ = self(target, coords_input=coords_input, coords_output=coords_output,
+                                                indices_sample=indices, mask=torch.zeros_like(mask).bool(), emb=emb.copy(),
+                                                dists_input=dists_input)
+            latent_loss = self.latent_loss(posterior_unmasked.parameters, posterior.parameters)
+            loss = loss + self.latent_loss_weight * latent_loss
+            loss_dict['train/latent_loss'] = self.latent_loss_weight * latent_loss
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = rec_loss + self.kl_weight * kl_loss
+            loss = loss + self.kl_weight * kl_loss
             loss_dict['train/kl_loss'] = self.kl_weight * kl_loss
-        else:
-            loss = rec_loss
 
         loss_dict['train/total_loss'] = loss.item()
 
@@ -115,18 +129,24 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
     def validation_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
         coords_input, coords_output, indices, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices), check_empty(mask), check_empty(emb), check_empty(dists_input)
-        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
+        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb.copy(), dists_input=dists_input)
 
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='val/')
+        loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='val/')
+
+        if self.latent_loss:
+            _, posterior_unmasked, _ = self(target, coords_input=coords_input, coords_output=coords_output,
+                                            indices_sample=indices, mask=torch.zeros_like(mask).bool(), emb=emb.copy(),
+                                            dists_input=dists_input)
+            latent_loss = self.latent_loss(posterior_unmasked.parameters, posterior.parameters)
+            loss = loss + self.latent_loss_weight * latent_loss
+            loss_dict['val/latent_loss'] = self.latent_loss_weight * latent_loss
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = rec_loss + self.kl_weight * kl_loss
+            loss = loss + self.kl_weight * kl_loss
             loss_dict['val/kl_loss'] = self.kl_weight * kl_loss
-        else:
-            loss = rec_loss
 
         loss_dict['val/total_loss'] = loss.item()
 
