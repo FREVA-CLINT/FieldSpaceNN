@@ -58,7 +58,7 @@ class LightningVAE(pl.LightningModule):
         """
         torch.optim.swa_utils.update_bn(self.trainer.train_dataloader, self.ema_model)
 
-    def forward(self, source) -> Tuple[Tensor, Tensor]:
+    def forward(self, source, emb) -> Tuple[Tensor, Tensor]:
         """
         Forward pass through the VAE model.
 
@@ -66,7 +66,7 @@ class LightningVAE(pl.LightningModule):
 
         :return: Tuple containing model output tensor and posterior distribution tensor.
         """
-        return self.model(source)
+        return self.model(source, emb)
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> Tensor:
         """
@@ -78,7 +78,8 @@ class LightningVAE(pl.LightningModule):
         :return: Total calculated loss for the current batch.
         """
         source, target, coords_input, coords_output, indices, mask, emb = batch
-        reconstructions, posterior = self(source)
+        emb["CoordinateEmbedder"] = coords_input
+        reconstructions, posterior = self(source, emb)
 
         # Compute reconstruction loss
         rec_loss = self.loss(target, reconstructions)
@@ -106,7 +107,8 @@ class LightningVAE(pl.LightningModule):
         :param batch_idx: The index of the current batch.
         """
         source, target, coords_input, coords_output, indices, mask, emb = batch
-        reconstructions, posterior = self(source)
+        emb["CoordinateEmbedder"] = coords_input
+        reconstructions, posterior = self(source, emb)
 
         # Calculate reconstruction and KL losses
         rec_loss = self.loss(target, reconstructions)

@@ -148,7 +148,7 @@ class VAE(nn.Module):
         # Define output unpatchifying layer
         self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch, dims=self.dims), spatial_dim_count, dims=self.dims)
 
-    def encode(self, x: torch.Tensor) -> AbstractDistribution:
+    def encode(self, x: torch.Tensor, embeddings) -> AbstractDistribution:
         """
         Encodes input data to latent space, returning a posterior distribution.
 
@@ -156,7 +156,7 @@ class VAE(nn.Module):
         :return: AbstractDistribution posterior distribution.
         """
         x = self.input_patch_embedding(x)
-        h = self.encoder(x)
+        h = self.encoder(x, embeddings)
 
         # normalize and nonlinearity
         h = self.norm_enc(h)
@@ -166,7 +166,7 @@ class VAE(nn.Module):
         posterior = self.quantization.get_distribution(moments)
         return posterior
 
-    def decode(self, z: torch.Tensor) -> torch.Tensor:
+    def decode(self, z: torch.Tensor, embeddings) -> torch.Tensor:
         """
         Decodes latent variable z back to data space.
 
@@ -174,7 +174,7 @@ class VAE(nn.Module):
         :return: Decoded tensor in data space.
         """
         z = self.quantization.post_quantize(z)
-        dec = self.decoder(z)
+        dec = self.decoder(z, embeddings)
 
         # normalize and nonlinearity
         dec = self.norm_dec(dec)
@@ -200,7 +200,7 @@ class VAE(nn.Module):
         # Define output shape for reconstruction
         out_shape = x.shape[1:-2][-self.dims:]
 
-        posterior = self.encode(x)
+        posterior = self.encode(x, embeddings)
         z = posterior.sample() if sample_posterior else posterior.mode()
-        dec = self.decode(z)
+        dec = self.decode(z, embeddings)
         return self.out(dec, out_shape=out_shape), posterior

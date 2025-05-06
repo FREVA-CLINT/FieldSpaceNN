@@ -1,5 +1,6 @@
 defaults:
   - trainer: trainer
+  - embedding: default
   - logger: wandb
   - model: vae_cnn
   - dataloader: netcdf_regular
