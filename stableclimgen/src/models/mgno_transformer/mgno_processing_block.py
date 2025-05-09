@@ -1,6 +1,9 @@
 from typing import List
+
+import torch
 import torch.nn as nn
 
+from ...modules.cnn.time_processor import TemporalProcessor
 from ...modules.icon_grids.grid_layer import GridLayer
 from ...utils.helpers import check_get_missing_key
 from ...modules.neural_operator.no_helpers import get_no_layer,get_embedder_from_dict
@@ -28,7 +31,10 @@ class MGNO_Processing_Block(nn.Module):
         self.output_levels = input_levels
         self.layers = nn.ModuleList()
 
-        self.model_dims_out = []
+        self.model_dims_out = model_dims_out[-1]
+
+        time_seq_lvl = 0
+
         for level_idx, layer_settings_level in enumerate(layer_settings_levels):
             
             input_dim = input_dims[level_idx]
@@ -37,7 +43,7 @@ class MGNO_Processing_Block(nn.Module):
             level_layers_ = nn.ModuleList()
 
             for layer_idx, layer_setting in enumerate(layer_settings_level):
-                model_dim_out = model_dims_out[level_idx][layer_idx]
+                model_dim_out = model_dims_out[layer_idx][level_idx]
 
                 min_lvl = layer_setting.get("min_lvl",0)
                 
@@ -124,17 +130,34 @@ class MGNO_Processing_Block(nn.Module):
                         rotate_coord_system=rotate_coordinate_system,
                         mask_as_embedding=mask_as_embedding
                     )
+
+                elif "temp_operator" in layer_setting["type"]:
+
+                    temp_operator_configs = check_get_missing_key(layer_setting, "temp_operator_configs")
+                    temp_operator_configs["embedder_names"] = layer_setting.get("embedder_names", [[], []])
+                    temp_operator_configs["embed_confs"] = layer_setting.get("embed_confs", None)
+                    temp_operator_configs["embed_mode"] = layer_setting.get("embed_mode", "sum")
+                    enc = layer_setting.get("enc",False)
+
+                    layer = TemporalProcessor(
+                        input_dim,
+                        model_dim_out,
+                        enc_lvl=time_seq_lvl if enc else None,
+                        **temp_operator_configs
+                    )
+
+                    if enc:
+                        time_seq_lvl += 1
                 
                 input_dim = model_dim_out
 
                 level_layers_.append(layer)
 
             self.layers.append(level_layers_)
-            self.model_dims_out.append(model_dim_out)
 
 
     def forward(self, x_levels, coords_in=None, coords_out=None, indices_sample=None, mask_levels=None, emb=None):
-        
+        hidden_sequences = []
         for level_idx, layer_levels in enumerate(self.layers):
             x = x_levels[level_idx]
             mask = mask_levels[level_idx]
@@ -145,6 +168,14 @@ class MGNO_Processing_Block(nn.Module):
                     x, mask = layer(x, coords_encode=coords_in, coords_decode=coords_out, indices_sample=indices_sample, mask=mask, emb=emb)
                 elif isinstance(layer, SpatialAttention):
                     x = layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+                elif isinstance(layer, TemporalProcessor):
+                    if layer.enc_lvl:
+                        x = layer(x, emb=emb)
+                        hidden_sequences.append(x)
+                    elif layer.dec_lvl:
+                        x = layer(torch.cat([x, hidden_sequences[layer.dec_lvl]], dim=-1), emb=emb)
+                    else:
+                        x = layer(x, emb=emb)
                 else:
                     x = layer(x, mask=mask, emb=emb)
 

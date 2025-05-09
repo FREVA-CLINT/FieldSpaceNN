@@ -9,7 +9,6 @@ from ..mgno_transformer.mgno_base_model import InputLayer, check_get, MGNO_base_
 
 from ..mgno_transformer.mgno_block_confs import MGProcessingConfig, MGStackedEncoderDecoderConfig, \
     MGEncoderDecoderConfig, defaults
-from ...modules.icon_grids.grid_layer import Interpolator
 
 
 class QuantConfig:
@@ -203,10 +202,10 @@ class MGNO_VAE(MGNO_base_model):
         x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
 
         x_levels = [x]
-        mask_levels = [None]
         for k, block in enumerate(self.decoder_blocks):
+            mask_levels = len(x_levels)*[None]
             coords_out = coords_output if k==len(self.decoder_blocks)-1  else None
-            x_levels, _ = block(x_levels, coords_out=coords_out, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
+            x_levels, mask_levels = block(x_levels, coords_out=coords_out, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
 
         x = self.out_layer(x_levels[0])
         return x

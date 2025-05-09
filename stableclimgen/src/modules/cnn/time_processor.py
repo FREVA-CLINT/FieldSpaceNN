@@ -19,13 +19,17 @@ class TemporalProcessor(nn.Module):
     def __init__(self,
                  in_channels: int,
                  out_channels: int,
+                 batch_size: int,
                  mode = 'identity',
                  time_factor: int = 7,
                  nh: int = 0,
                  residual: bool = True,
                  embedder_names: List[List[str]] = None,
                  embed_confs: Dict = None,
-                 embed_mode: str = "sum"):
+                 embed_mode: str = "sum",
+                 enc_lvl=None,
+                 dec_lvl=None,
+                 skip_channels=None):
         """
         Initializes the TemporalProcessor module.
 
@@ -52,11 +56,14 @@ class TemporalProcessor(nn.Module):
         if time_factor < 1:
             raise ValueError("time_factor must be >= 1")
 
+        self.batch_size = batch_size
         self.mode = mode
         self.time_factor = time_factor
-        self.in_channels = in_channels
+        self.in_channels = in_channels + (skip_channels if skip_channels is not None else 0)
         self.out_channels = out_channels
         self.residual = residual
+        self.enc_lvl = enc_lvl
+        self.dec_lvl = dec_lvl
 
         # 1. Layer Normalization (Adaptive - applied before main op)
         # Normalizes over the feature dimensions (g, v, c) for each batch and time step
@@ -116,17 +123,18 @@ class TemporalProcessor(nn.Module):
         x_reshaped = x_permuted.reshape(-1, c, t)
         return x_reshaped
 
-    def _reshape_from_conv1d(self, x, t_out):
-        """ Reshapes (b, g*v*c_out, t_out) -> (b, t_out, g, v, c_out) """
-        b, _, _ = x.shape # Get batch size
+    def _reshape_from_conv1d(self, x, g, v, t_out):
+        """ Reshapes (b*g*v, c_out, t_out) -> (b, t_out, g, v, c_out) """
         # Reshape to (b, g, v, c_out, t_out)
-        x_unflattened = x.view(b, self.grid_size, self.num_vars, self.out_channels, t_out)
+        x_unflattened = x.view(self.batch_size, g, v, self.out_channels, t_out)
         # Permute back to (b, t_out, g, v, c_out)
         x_permuted = x_unflattened.permute(0, 4, 1, 2, 3)
         return x_permuted
 
 
     def forward(self, x: torch.Tensor, emb: Dict) -> torch.Tensor:
+        emb = emb.copy()
+        x, emb = self.prepare_batch(x, emb)
         b, t_in, g, v, c_in = x.shape
 
         # Store original input for skip connection
@@ -134,6 +142,9 @@ class TemporalProcessor(nn.Module):
 
         if self.embedder:
             # Apply the embedding transformation (scale and shift)
+            if x.shape[1] != emb["TimeEmbedder"].shape[1]:
+                b, t = emb["TimeEmbedder"].shape
+                emb["TimeEmbedder"] = emb["TimeEmbedder"].view(b, t_in, -1)[:, :, emb["TimeEmbedder"].shape[1] // 2]
             scale, shift = self.embedding_layer(self.embedder(emb)).chunk(2, dim=-1)
             x_norm = self.norm(x) * (scale + 1) + shift
         else:
@@ -157,8 +168,7 @@ class TemporalProcessor(nn.Module):
             processed = self.temporal_op(x_reshaped) # Shape: (b, C_out, t_in)
             t_out = t_in
 
-        output = self._reshape_from_conv1d(processed, t_out) # Shape: (b, t_out, g, v, c_out)
-
+        output = self._reshape_from_conv1d(processed, g, v, t_out) # Shape: (b, t_out, g, v, c_out)
         output = self.activation(output)
 
         if self.residual:
@@ -166,7 +176,18 @@ class TemporalProcessor(nn.Module):
                 # Project the original *unnormalized* input reshaped
                 residual_reshaped = self._reshape_to_conv1d(residual)
                 residual = self.residual_proj(residual_reshaped) # Shape: (b, C_out, t_in)
-                residual = self._reshape_from_conv1d(residual, t_in) # Shape: (b, t_in, g, v, c_out)
+                residual = self._reshape_from_conv1d(residual, g, v, t_in) # Shape: (b, t_in, g, v, c_out)
             output = output + residual
 
+        output = output.view(self.batch_size*t_out, g, v, self.out_channels)
+
         return output
+
+    def prepare_batch(self, x, emb):
+        bt, nt = x.shape[0], x.shape[0] // self.batch_size
+        x = x.view(self.batch_size, nt, *x.shape[1:])
+        if emb is not None:
+            for key, value in emb.items():
+                if not isinstance(value, tuple) and not isinstance(value, dict) and (value.shape[0] == bt) or key == "TimeEmbedder":
+                    emb[key] = value.view(self.batch_size, -1, *value.shape[1:])
+        return x, emb

@@ -1,0 +1,56 @@
+_target_: stableclimgen.src.models.mgno_transformer.pl_mgno_base_model.LightningMGNOBaseModel
+lambda_loss_dict:
+  MSE_loss: 1
+  NH_loss: 0.0
+  Grad_loss: 0
+noise_std: 0
+lr_groups:
+  - param_group: 'params'
+    lr: 2e-4
+    lr_warmup: 500
+  - param_group: 'no_params'
+    lr: 1e-4
+    lr_warmup: 500
+  - param_group: 'attention'
+    lr: 2e-4
+    lr_warmup: 500
+model:
+  _target_: stableclimgen.src.models.mgno_transformer.mgno_transformer_mg.MGNO_Transformer_MG
+  mgrids: ${mgrids}
+  input_dim: 1
+  lifting_dim: 16
+  output_dim: 1
+  n_vars_total: 1
+  n_head_channels: 32 
+  rotate_coord_system: true
+  p_dropout: 0
+  block_type: 'pre_layer_norm'
+  with_gamma: true
+  omit_backtransform: true
+  rank: 0.5
+  rank_cross: 0.5
+  layer_type: 'CrossTucker'
+  input_embed_names: ["CoordinateEmbedder"]
+  input_embed_confs: ${embedding}
+  block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.mgno_block_confs.MGProcessingConfig
+      model_dims_out: [[16, 16]]
+      layer_settings_levels:
+        - type: "temp_operator"
+          enc: true
+          embed_confs: ${embedding}
+          embedder_names: ["TimeEmbedder"]
+          temp_operator_configs:
+            mode: "down"
+            time_factor: 7
+            residual: false
+            batch_size: ${dataloader.datamodule.batch_size}
+        - type: "temp_operator"
+          dec_lvl: 0
+          embed_confs: ${embedding}
+          embedder_names: ["TimeEmbedder"]
+          temp_operator_configs:
+            mode: "up"
+            time_factor: 7
+            residual: false
+            batch_size: ${dataloader.datamodule.batch_size}
