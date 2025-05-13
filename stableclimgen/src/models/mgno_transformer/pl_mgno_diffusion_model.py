@@ -1,6 +1,7 @@
 import os
 
 import torch
+from pytorch_lightning.utilities import rank_zero_only
 
 from .pl_probabilistic import LightningProbabilisticModel
 from ..diffusion.gaussian_diffusion import GaussianDiffusion
@@ -121,7 +122,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
                     loss_dict[f'val/step_{t[ti][0].item()}_{k}'] = v[ti]
                 loss.append(v.mean())
 
-            if batch_idx == 0 and i == 0:
+            if batch_idx == 0 and i == 0 and rank_zero_only:
                 b, nt, n, nv, nc = in_source.shape[:5]
                 if self.interpolator:
                     input_inter, density = self.interpolator(in_source,

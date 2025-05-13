@@ -4,6 +4,7 @@ import torch.nn as nn
 
 import lightning.pytorch as pl
 import torch
+from pytorch_lightning.utilities import rank_zero_only
 
 from torch.optim import AdamW
 
@@ -152,7 +153,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         # Calculate total loss
 
-        if batch_idx == 0:
+        if batch_idx == 0 and rank_zero_only:
             if self.interpolator:
                 _, coords_input, _, _, _, _, dists_input = self.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
                 _, density = self.interpolator(source,
