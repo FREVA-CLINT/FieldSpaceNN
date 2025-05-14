@@ -192,17 +192,17 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
                                                                                                       indices_sample,
                                                                                                       mask, emb,
                                                                                                       input_dists)
-            output, _ = self.model.encode(x, coords_input, indices_sample, mask, emb)
+            x, _ = self.model.encode(x, coords_input, indices_sample, mask, emb)
+            posterior = self.model.quantization.get_distribution(x)
+            if hasattr(self.model, "quantization"):
+                output = posterior.sample()
+            else:
+                output = posterior
         elif self.mode == "decode":
             x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(source, coords_input,
                                                                                                       coords_output,
                                                                                                       indices_sample,
                                                                                                       mask, emb,
                                                                                                       input_dists)
-            posterior = self.model.quantization.get_distribution(x)
-            if hasattr(self.model, "quantization"):
-                z = posterior.sample()
-            else:
-                z = posterior
-            output = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
+            output = self.decode(x, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
         return output
