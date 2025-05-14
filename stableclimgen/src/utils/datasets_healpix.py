@@ -59,9 +59,9 @@ def get_stats(files, variable, norm_dict, n_sample=None):
 
 class HealPixLoader(Dataset):
     def __init__(self, data_dict,
-                 norm_dict,
                  coarsen_sample_level,
                  processing_nside,
+                 norm_dict=None,
                  in_grid = None,
                  out_grid = None,
                  in_nside = None,
@@ -129,17 +129,18 @@ class HealPixLoader(Dataset):
         else:
             self.sample_timesteps = None
 
-        with open(norm_dict) as json_file:
-            norm_dict = json.load(json_file)
+        if self.norm_dict:
+            with open(norm_dict) as json_file:
+                norm_dict = json.load(json_file)
 
-        self.var_normalizers = {}
-        for var in self.variables_source:
-            norm_class = norm_dict[var]['normalizer']['class']
-            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+            self.var_normalizers = {}
+            for var in self.variables_source:
+                norm_class = norm_dict[var]['normalizer']['class']
+                assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
 
-            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
-                norm_dict[var]['stats'],
-                norm_dict[var]['normalizer'])
+                self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
+                    norm_dict[var]['stats'],
+                    norm_dict[var]['normalizer'])
 
 
         self.files_source = data_dict["source"]["files"]
@@ -389,12 +390,13 @@ class HealPixLoader(Dataset):
         if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
             not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
             drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
-    
-        for k, var in enumerate(variables_source):
-            data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
-        
-        for k, var in enumerate(variables_target):
-            data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
+
+        if self.norm_dict:
+            for k, var in enumerate(variables_source):
+                data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
+
+            for k, var in enumerate(variables_target):
+                data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
         data_source[drop_mask] = 0
 
         if self.coarsen_sample_level == -1:

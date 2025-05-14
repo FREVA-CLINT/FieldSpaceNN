@@ -195,8 +195,7 @@ class MGNO_VAE(MGNO_base_model):
         x = x_levels[0]
 
         x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
-        posterior = self.quantization.get_distribution(x)
-        return posterior, mask_levels[0]
+        return x, mask_levels[0]
 
     def decode(self, x, coords_output=None, indices_sample=None, mask=None, emb=None):
         x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
@@ -214,7 +213,8 @@ class MGNO_VAE(MGNO_base_model):
     def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, residual=None):
         b,n,nh,nv,nc = x.shape[:5]
 
-        posterior, mask = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        x, mask = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        posterior = self.quantization.get_distribution(x)
 
         if hasattr(self, "quantization"):
             z = posterior.sample()

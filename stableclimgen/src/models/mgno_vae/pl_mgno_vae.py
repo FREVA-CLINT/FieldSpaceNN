@@ -26,7 +26,7 @@ class MSE_loss(nn.Module):
 
 
 class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
-    def __init__(self, model, lr_groups, kl_weight: float = 1e-6, latent_loss_weight=None, n_samples=1, max_batchsize=-1, residual_interpolator_settings=None, **base_model_args):
+    def __init__(self, model, lr_groups, kl_weight: float = 1e-6, latent_loss_weight=None, n_samples=1, max_batchsize=-1, residual_interpolator_settings=None, mode="encode_decode", **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
         # maybe create multi_grid structure here?
         self.model = model
@@ -43,6 +43,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
             self.latent_loss = None
 
         self.latent_loss_weight = latent_loss_weight
+        self.mode = mode
 
         if residual_interpolator_settings:
             self.residual_interpolator_down = Interpolator(self.model.grid_layers,
@@ -66,21 +67,25 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.save_hyperparameters(ignore=['model'])
 
-    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
-        b, nt, n = x.shape[:3]
-        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
-        x, coords_input, coords_output, indices_sample, mask, emb, dists_input = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
+    def prepare_inputs(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
+        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(
+            coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
+        x, coords_input, coords_output, indices_sample, mask, emb, dists_input = self.prepare_batch(x, coords_input,
+                                                                                                    coords_output,
+                                                                                                    indices_sample,
+                                                                                                    mask, emb,
+                                                                                                    dists_input)
         indices_sample, coords_input, coords_output, dists_input = self.prepare_coords_indices(coords_input,
                                                                                                coords_output=coords_output,
                                                                                                indices_sample=indices_sample,
                                                                                                input_dists=dists_input)
         if self.interpolator:
             x, density_map = self.interpolator(x,
-                                              mask=mask,
-                                              calc_density=True,
-                                              indices_sample=indices_sample,
-                                              input_coords=coords_input,
-                                              input_dists=dists_input)
+                                               mask=mask,
+                                               calc_density=True,
+                                               indices_sample=indices_sample,
+                                               input_coords=coords_input,
+                                               input_dists=dists_input)
             emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
             emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
 
@@ -95,7 +100,11 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
             interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
                                                         calc_density=False,
                                                         indices_sample=indices_sample)
+        return x, coords_input, coords_output, indices_sample, mask, emb, interp_x
 
+    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
+        b, nt, n = x.shape[:3]
+        x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
         x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, residual=interp_x)
         return x.view(b, nt, *x.shape[1:]), posterior, interp_x.view(b, nt, *interp_x.shape[1:]) if torch.is_tensor(interp_x) else None
 
@@ -175,5 +184,25 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
     def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
-        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, dists_input=input_dists)
+        if self.mode == "encode_decode":
+            output, _, _ = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, dists_input=input_dists)
+        elif self.mode == "encode":
+            x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(source, coords_input,
+                                                                                                      coords_output,
+                                                                                                      indices_sample,
+                                                                                                      mask, emb,
+                                                                                                      input_dists)
+            output, _ = self.model.encode(x, coords_input, indices_sample, mask, emb)
+        elif self.mode == "decode":
+            x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(source, coords_input,
+                                                                                                      coords_output,
+                                                                                                      indices_sample,
+                                                                                                      mask, emb,
+                                                                                                      input_dists)
+            posterior = self.model.quantization.get_distribution(x)
+            if hasattr(self.model, "quantization"):
+                z = posterior.sample()
+            else:
+                z = posterior
+            output = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
         return output
