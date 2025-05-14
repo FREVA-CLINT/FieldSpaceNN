@@ -187,6 +187,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         if self.mode == "encode_decode":
             output, _, _ = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, dists_input=input_dists)
         elif self.mode == "encode":
+            b, nt, n = source.shape[:3]
             x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(source, coords_input,
                                                                                                       coords_output,
                                                                                                       indices_sample,
@@ -198,11 +199,14 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
                 output = posterior.sample()
             else:
                 output = posterior
+            output = output.view((b, nt, *output.shape[1:]))
         elif self.mode == "decode":
+            b, nt, n = source.shape[:3]
             x, coords_input, coords_output, indices_sample, mask, emb, interp_x = self.prepare_inputs(source, coords_input,
                                                                                                       coords_output,
                                                                                                       indices_sample,
                                                                                                       mask, emb,
                                                                                                       input_dists)
             output = self.decode(x, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
+            output = output.view((b, nt, *output.shape[1:]))
         return output
