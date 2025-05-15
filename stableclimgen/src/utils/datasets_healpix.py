@@ -232,7 +232,7 @@ class HealPixLoader(Dataset):
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
             self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
-            self.data_global_cells = data_global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            self.data_global_cells = data_global_indices.reshape(self.global_cells.shape[0], -1)
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
