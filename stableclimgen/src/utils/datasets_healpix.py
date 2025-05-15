@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import xarray as xr
 from torch.utils.data import Dataset
+import healpy as hp
 
 from . import normalizer as normalizers
 from .datasets_icon import skewed_random_p
@@ -66,6 +67,7 @@ class HealPixLoader(Dataset):
                  out_grid = None,
                  in_nside = None,
                  out_nside = None,
+                 bottleneck_nside = None,
                  search_radius=2,
                  search_level_start=None,
                  search_level_stop=0,
@@ -212,15 +214,24 @@ class HealPixLoader(Dataset):
         self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
 
+        if bottleneck_nside is None:
+            self.data_input_mapping = input_mapping
+            self.data_output_mapping = output_mapping
+        else:
+            self.data_input_mapping = self.data_output_mapping = np.arange(hp.nside2npix(bottleneck_nside))[:, np.newaxis]
+
+
 
         global_indices = np.arange(coords_processing.shape[0])
-        global_input_indices = global_indices
+        data_global_indices = global_indices if bottleneck_nside is None else np.arange(hp.nside2npix(bottleneck_nside))
 
         if coarsen_sample_level == -1:
             self.global_cells = global_indices.reshape(1, -1)
+            self.data_global_cells = data_global_indices.reshape(1, -1)
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
             self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
+            self.data_global_cells = data_global_indices.reshape(-1, 4 ** coarsen_sample_level)
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
@@ -276,13 +287,13 @@ class HealPixLoader(Dataset):
         for variable in variables:
             data = torch.tensor(ds[variable].values)
             data_g.append(data)
-        data_g = torch.stack(data_g, dim=-1)
+        data_g = torch.stack(data_g, dim=2)
 
         if regular:
-            data_g = data_g.view(nt, len(variables), -1, 1)
+            data_g = data_g.view(nt, len(variables), -1, data_g.shape[-1])
             data_g = data_g[:, :, indices]
 
-        data_g = data_g.view(nt, -1, nh, len(variables), 1)
+        data_g = data_g.view(nt, -1, nh, len(variables), data_g.shape[-1] if data_g.dim() == 4 else 1)
 
         data_t = torch.tensor(ds["time"].values)
 
@@ -320,10 +331,10 @@ class HealPixLoader(Dataset):
 
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
-        data_source, time_source = self.get_data(ds_source, time_index, global_cells[region_index], variables_source, 0, input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, self.data_global_cells[region_index], variables_source, 0, self.data_input_mapping)
 
         if ds_target is not None:
-            data_target, time_target = self.get_data(ds_target, time_index, global_cells[region_index], variables_target, 0, output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, self.data_global_cells[region_index], variables_target, 0, self.data_output_mapping)
         else:
             data_target, time_target = data_source, time_source
 

@@ -8,6 +8,8 @@ from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from einops import rearrange
+import xarray as xr
+import numpy as np
 
 from stableclimgen.src.utils.pl_data_module import DataModule
 
@@ -45,30 +47,28 @@ def test(cfg: DictConfig) -> None:
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
                        b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset,
                                                                               "global_cells_input") else 1)
-    mask = torch.cat([batch["mask"] for batch in predictions], dim=0)
-    mask = rearrange(mask, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
-                     b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset, "global_cells_input") else 1)
-
-    if test_dataset.norm_dict:
+    output = rearrange(output, "b n t s ... -> (b t) n s ... ")
+    if test_dataset.norm_dict and output.dim() == 5:
         for k, var in enumerate(test_dataset.variables_target):
             output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
-    output = dict(zip(test_dataset.variables_target, output.split(1, dim=-1)))
-    torch.save(output, cfg.output_path)
-    mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-1)))
-    torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
+    output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
+    time = xr.open_dataset(test_dataset.files_source[0], decode_times=False)["time"][test_dataset.sample_timesteps]
+    if "export_to_zarr" in cfg.keys() and cfg.export_to_zarr:
+        for sample in range(output.shape[1]):
+            data_vars = {}
+            for var, data in output_dict.items():
+                xr_data = data[:, sample, :, 0].clone().detach().cpu().numpy()
+                data_vars[var] = (["time", "cell", "level"], xr_data)
 
-    if 'output_var' in predictions[0].keys() and predictions[0]['output_var'] is not None:
-        output_var = torch.cat([batch["output_var"] for batch in predictions], dim=0)
-        output_var = rearrange(output_var, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
-                               b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset,
-                                                                                      "global_cells_input") else 1)
+            coords = {
+                "time": time.values,
+                "level": range(data.shape[-1]),  # or use your actual sample indices
+                "cell": np.arange(data.shape[2]),  # Should be a 1D array of cell indices or IDs
+            }
 
-        for k, var in enumerate(test_dataset.variables_target):
-            output_var[..., k] = test_dataset.var_normalizers[var].denormalize_var(output_var[..., k])
-
-        output_var = dict(zip(test_dataset.variables_target, output_var.split(1, dim=-1)))
-        torch.save(output_var, cfg.output_path.replace(".pt", "_var.pt"))
+            ds = xr.Dataset(data_vars=data_vars, coords=coords)
+            ds.to_zarr(cfg.output_path, mode="w")
 
 if __name__ == "__main__":
     test()

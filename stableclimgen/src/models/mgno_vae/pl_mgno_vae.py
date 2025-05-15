@@ -207,6 +207,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
                                                                                                       indices_sample,
                                                                                                       mask, emb,
                                                                                                       input_dists)
-            output = self.decode(x, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
+            output = self.model.decode(x.squeeze(-3), coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (interp_x if torch.is_tensor(interp_x) else 0)
             output = output.view((b, nt, *output.shape[1:]))
         return output
