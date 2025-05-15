@@ -114,6 +114,7 @@ class HealPixLoader(Dataset):
         self.n_drop_vars = n_drop_vars
         self.p_drop_vars = p_drop_vars
         self.p_drop_timesteps = p_drop_timesteps
+        self.bottleneck_nside = bottleneck_nside
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -402,7 +403,7 @@ class HealPixLoader(Dataset):
             not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
             drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
 
-        if self.norm_dict:
+        if self.norm_dict and self.bottleneck_nside is None:
             for k, var in enumerate(variables_source):
                 data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
 
