@@ -53,7 +53,10 @@ def test(cfg: DictConfig) -> None:
             output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
-    time = xr.open_dataset(test_dataset.files_source[0], decode_times=False)["time"][test_dataset.sample_timesteps]
+    if test_dataset.sample_timesteps:
+        time = xr.open_dataset(test_dataset.files_source[0], decode_times=False)["time"][test_dataset.sample_timesteps]
+    else:
+        time = xr.open_dataset(test_dataset.files_source[0], decode_times=False)["time"][:]
     if "export_to_zarr" in cfg.keys() and cfg.export_to_zarr:
         for sample in range(output.shape[1]):
             data_vars = {}
