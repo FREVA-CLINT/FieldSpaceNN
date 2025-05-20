@@ -67,7 +67,8 @@ class HealPixLoader(Dataset):
                  out_grid = None,
                  in_nside = None,
                  out_nside = None,
-                 bottleneck_nside = None,
+                 bottleneck_in_nside = None,
+                 bottleneck_out_nside = None,
                  search_radius=2,
                  search_level_start=None,
                  search_level_stop=0,
@@ -114,7 +115,8 @@ class HealPixLoader(Dataset):
         self.n_drop_vars = n_drop_vars
         self.p_drop_vars = p_drop_vars
         self.p_drop_timesteps = p_drop_timesteps
-        self.bottleneck_nside = bottleneck_nside
+        self.bottleneck_in_nside = bottleneck_in_nside
+        self.bottleneck_out_nside = bottleneck_out_nside
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -215,24 +217,29 @@ class HealPixLoader(Dataset):
         self.input_coordinates = input_coordinates
         self.output_coordinates = output_coordinates
 
-        if bottleneck_nside is None:
+        if bottleneck_in_nside is None:
             self.data_input_mapping = input_mapping
+        else:
+            self.data_input_mapping = np.arange(hp.nside2npix(bottleneck_in_nside))[:, np.newaxis]
+        if bottleneck_out_nside is None:
             self.data_output_mapping = output_mapping
         else:
-            self.data_input_mapping = self.data_output_mapping = np.arange(hp.nside2npix(bottleneck_nside))[:, np.newaxis]
-
+            self.data_output_mapping = np.arange(hp.nside2npix(bottleneck_out_nside))[:, np.newaxis]
 
 
         global_indices = np.arange(coords_processing.shape[0])
-        data_global_indices = global_indices if bottleneck_nside is None else np.arange(hp.nside2npix(bottleneck_nside))
+        global_in_indices = global_indices if bottleneck_in_nside is None else np.arange(hp.nside2npix(bottleneck_in_nside))
+        global_out_indices = global_indices if bottleneck_out_nside is None else np.arange(hp.nside2npix(bottleneck_out_nside))
 
         if coarsen_sample_level == -1:
             self.global_cells = global_indices.reshape(1, -1)
-            self.data_global_cells = data_global_indices.reshape(1, -1)
+            self.global_in_cells = global_in_indices.reshape(1, -1)
+            self.global_out_cells = global_out_indices.reshape(1, -1)
             self.global_cells_input = np.array([1]).reshape(-1, 1)
         else:
             self.global_cells = global_indices.reshape(-1, 4 ** coarsen_sample_level)
-            self.data_global_cells = data_global_indices.reshape(self.global_cells.shape[0], -1)
+            self.global_in_cells = global_in_indices.reshape(self.global_cells.shape[0], -1)
+            self.global_out_cells = global_out_indices.reshape(self.global_cells.shape[0], -1)
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
@@ -332,10 +339,10 @@ class HealPixLoader(Dataset):
 
         variables_source = np.array([self.variables_source[i.item()] for i in sample_vars])
         variables_target = np.array([self.variables_target[i.item()] for i in sample_vars])
-        data_source, time_source = self.get_data(ds_source, time_index, self.data_global_cells[region_index], variables_source, 0, self.data_input_mapping)
+        data_source, time_source = self.get_data(ds_source, time_index, self.global_in_cells[region_index], variables_source, 0, self.data_input_mapping)
 
         if ds_target is not None:
-            data_target, time_target = self.get_data(ds_target, time_index, self.data_global_cells[region_index], variables_target, 0, self.data_output_mapping)
+            data_target, time_target = self.get_data(ds_target, time_index, self.global_out_cells[region_index], variables_target, 0, self.data_output_mapping)
         else:
             data_target, time_target = data_source, time_source
 
@@ -403,10 +410,10 @@ class HealPixLoader(Dataset):
             not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
             drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
 
-        if self.norm_dict and self.bottleneck_nside is None:
+        if self.norm_dict and self.bottleneck_in_nside is None:
             for k, var in enumerate(variables_source):
                 data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
-
+        if self.norm_dict and self.bottleneck_out_nside is None:
             for k, var in enumerate(variables_target):
                 data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
         data_source[drop_mask] = 0
