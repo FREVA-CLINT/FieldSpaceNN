@@ -50,7 +50,8 @@ def decode(timesteps, variables, region=-1, compression_factor=16) -> None:
     cfg.dataloader.dataset.coarsen_sample_level = 7
     cfg.dataloader.dataset.deterministic = True
     cfg.dataloader.dataset.n_sample_vars = 1
-    cfg.dataloader.dataset.bottleneck_nside = 32
+    cfg.dataloader.dataset.bottleneck_in_nside = 32
+    cfg.dataloader.dataset.region = region
     cfg.ckpt_path = os.path.join(config_path, 'last.ckpt')
     cfg.trainer.accelerator = 'gpu'
     cfg.trainer.precision = 32
