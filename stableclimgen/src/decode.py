@@ -54,18 +54,9 @@ def decode(timesteps, region=-1, compression_factor=16) -> None:
     cfg.model.mode = "decode"
     cfg.export_to_zarr = True
 
-    cfg.output_path = '/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike/decoded_complete_ngc4008_small.zarr'
-
     # Initialize model and trainer
     model = instantiate(cfg.model)
     trainer = instantiate(cfg.trainer)
-
-    if not os.path.exists(os.path.dirname(cfg.output_path)):
-        os.makedirs(os.path.dirname(cfg.output_path))
-
-    # Load data configuration and initialize datasets
-    with open(cfg.dataloader.dataset.data_dict) as json_file:
-        data = json.load(json_file)
 
     test_dataset = instantiate(cfg.dataloader.dataset,
                                data_dict=data["test"],
