@@ -45,8 +45,9 @@ def test(cfg: DictConfig) -> None:
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
-                       b1=test_dataset.global_cells_input.shape[0] if hasattr(test_dataset,
-                                                                              "global_cells_input") else 1)
+                       b1=test_dataset.global_cells.shape[0]
+                       if test_dataset.coarsen_lvl_single_map == -1
+                       else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0])
     output = rearrange(output, "b n t s ... -> (b t) n s ... ")
     if test_dataset.norm_dict and output.dim() == 5:
         for k, var in enumerate(test_dataset.variables_target):
