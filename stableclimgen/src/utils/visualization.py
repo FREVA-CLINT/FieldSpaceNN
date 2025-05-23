@@ -76,6 +76,8 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
             # Turn off axes for cleaner plots
             axes[i, index].set_axis_off()
             axes[i, index].set_title(title)
+            if coords.shape[0] != data.shape[0]:
+                coords = coords.reshape(data.shape[0], -1, 2)[:, 0, :]
             cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6, vmin=vmin, vmax=vmax)
 
             # Add color bar to each difference plot

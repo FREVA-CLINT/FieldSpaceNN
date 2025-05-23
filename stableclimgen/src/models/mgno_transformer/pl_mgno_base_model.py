@@ -95,11 +95,7 @@ class MultiLoss(nn.Module):
     def forward(self, output, target, mask=None, indices_sample=None, prefix=''):
         loss_dict = {}
         total_loss = 0
-        if output.shape[-1]>1:
-            output_var = output[...,1]
-            output = output[...,0]
-        else:
-            output_var = None
+        output_var = None
 
         for loss_fcn in self.loss_fcns:
             loss = loss_fcn['fcn'](output, target, mask=mask, indices_sample=indices_sample, output_var=output_var)
@@ -313,8 +309,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             else:
                 input_inter_p = None
                 input_density_p = None
-
-            scatter_plot(input[sample,:max_samples,:,:,k], output[sample,:max_samples,:,k], gt[sample,:max_samples,:,:,k], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p, input_density=input_density_p, save_path=save_path)
+            scatter_plot(input[sample,:max_samples,:,:,k,0], output[sample,:max_samples,:,k,0], gt[sample,:max_samples,:,:,k,0], coords_input[sample, :max_samples], coords_output[sample, :max_samples], mask_p, input_inter=input_inter_p, input_density=input_density_p, save_path=save_path)
 
             self.logger.log_image(f"plots/{plot_name_var}", [save_path])
 

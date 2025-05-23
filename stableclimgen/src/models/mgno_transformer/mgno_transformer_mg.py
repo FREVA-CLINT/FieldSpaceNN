@@ -189,7 +189,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         else: 
             x = self.out_layer(x_levels[0])
 
-        x = x.view(b,n,nv,-1)
+        x = x.view(b,x.shape[1],nv,-1)
 
         if self.learn_residual and not self.predict_var:
             x = x_res.view(x.shape) + x

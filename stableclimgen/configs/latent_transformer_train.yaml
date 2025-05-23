@@ -1,0 +1,15 @@
+defaults:
+  - trainer: mgno_transformer
+  - logger: wandb
+  - model: latent_transformer
+  - mgrids: healpix
+  - dataloader: zarr_healpix_ngc8_latent
+  - hydra: default
+  - embedding: default
+  - _self_
+
+ckpt_path: null
+
+project_name: latent_transformer
+run_name: default
+run_dir: ../..

@@ -1,0 +1,25 @@
+dataset:
+  _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
+  data_dict: ../../input/data_healpix_ngc8_tas_latent.json
+  norm_dict: ../../input/norm_dict.json
+  processing_nside: 256
+  in_nside: 256
+  out_nside: 256
+  bottleneck_out_nside: 32
+  coarsen_sample_level: -1
+  search_radius: 2
+  nh_input: 1
+  sample_for_norm: 2
+  lazy_load: true
+  p_dropout: 0.99
+  random_p: true
+  p_average: 0
+  p_average_dropout: 0.5
+  max_average_lvl: 3
+  n_sample_vars: 1
+
+datamodule:
+  _target_: stableclimgen.src.utils.pl_data_module.DataModule
+  batch_size: 1
+  num_workers: 1
+  use_costum_ddp_sampler: false
