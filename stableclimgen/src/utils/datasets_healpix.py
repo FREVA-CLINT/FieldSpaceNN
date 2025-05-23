@@ -12,6 +12,8 @@ from .datasets_icon import skewed_random_p
 from .grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid, get_coords_as_tensor
 
 
+
+
 def get_moments(data, type, level=0.9):
 
     if type == 'quantile':
@@ -92,7 +94,9 @@ class HealPixLoader(Dataset):
                  one_to_one=False,
                  p_drop_vars=0,
                  n_drop_vars=-1,
-                 p_drop_timesteps=-1
+                 p_drop_timesteps=-1,
+                 region=-1,
+                 coarsen_lvl_single_map=-1
                  ):
         
         super(HealPixLoader, self).__init__()
@@ -117,6 +121,8 @@ class HealPixLoader(Dataset):
         self.p_drop_timesteps = p_drop_timesteps
         self.bottleneck_in_nside = bottleneck_in_nside
         self.bottleneck_out_nside = bottleneck_out_nside
+        self.region = region
+        self.coarsen_lvl_single_map = -1 if self.coarsen_sample_level != -1 else coarsen_lvl_single_map
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -135,8 +141,9 @@ class HealPixLoader(Dataset):
             self.sample_timesteps = None
 
         if self.norm_dict:
-            with open(norm_dict) as json_file:
-                norm_dict = json.load(json_file)
+            if not isinstance(norm_dict, dict):
+                with open(norm_dict) as json_file:
+                    norm_dict = json.load(json_file)
 
             self.var_normalizers = {}
             for var in self.variables_source:
@@ -244,7 +251,8 @@ class HealPixLoader(Dataset):
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         nt = self.n_sample_timesteps
-        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.global_cells.shape[0] if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.global_cells.shape[0]
+        nc = self.global_cells.shape[0] if region == -1 else 1
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*nc if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * nc
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -328,7 +336,9 @@ class HealPixLoader(Dataset):
         global_cells = self.global_cells
         output_mapping = self.output_mapping
 
-        if self.deterministic:
+        if self.region != -1:
+            region_index = self.region
+        elif self.deterministic:
             region_index = torch.tensor(index % global_cells_input.shape[0])
         else:
             region_index = torch.randint(global_cells_input.shape[0],(1,))[0]
