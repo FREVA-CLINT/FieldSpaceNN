@@ -294,7 +294,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         sample = 0
         for k in range(input.shape[-2]):
-            var_idx = emb['VariableEmbedder'][sample, k].item()
+            var_idx = emb['VariableEmbedder'][sample, :, k].item()
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
             
