@@ -7,15 +7,18 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 
 
-def decode(timesteps, region=-1, compression_factor=16) -> None:
+def decode(timesteps, variables, region=-1, compression_factor=16) -> None:
     config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
     with initialize_config_dir(config_dir=config_path, job_name="your_job"):
         cfg = compose(config_name="composed_config", strict=False)
 
     data_dict = {
         "test": {
-            "source": "/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/latent_complete_ngc4008_small.zarr".format(compression_factor),
-            "target": [None],
+            "source":
+                {"files": ["/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/latent_complete_ngc4008_small.zarr".format(compression_factor)],
+                 "variables": variables},
+            "target": {"files": [None],
+                       "variables": variables},
             "timesteps": timesteps
         }
     }
@@ -59,9 +62,9 @@ def decode(timesteps, region=-1, compression_factor=16) -> None:
     trainer = instantiate(cfg.trainer)
 
     test_dataset = instantiate(cfg.dataloader.dataset,
-                               data_dict=data["test"],
-                               variables_source=data["test"]["source"]["variables"],
-                               variables_target=data["test"]["target"]["variables"])
+                               data_dict=data_dict["test"],
+                               variables_source=data_dict["test"]["source"]["variables"],
+                               variables_target=data_dict["test"]["target"]["variables"])
     data_module = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
