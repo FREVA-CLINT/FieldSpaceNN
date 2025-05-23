@@ -141,7 +141,7 @@ class HealPixLoader(Dataset):
             self.sample_timesteps = None
 
         if self.norm_dict:
-            if not isinstance(norm_dict, dict):
+            if isinstance(norm_dict, str):
                 with open(norm_dict) as json_file:
                     norm_dict = json.load(json_file)
 
