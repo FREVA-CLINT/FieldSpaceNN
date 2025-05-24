@@ -49,7 +49,7 @@ def test(cfg: DictConfig) -> None:
                        if test_dataset.coarsen_lvl_single_map == -1
                        else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0])
     output = rearrange(output, "b n t s ... -> (b t) n s ... ")
-    if test_dataset.norm_dict and output.dim() == 5:
+    if test_dataset.norm_dict and (not "mode" in cfg.model.keys() or cfg.model.mode != "encode"):
         for k, var in enumerate(test_dataset.variables_target):
             output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
