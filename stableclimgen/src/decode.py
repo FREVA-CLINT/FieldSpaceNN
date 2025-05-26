@@ -1,13 +1,16 @@
 import json
 import os
-
+import sys
 import torch
 from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-
+import logging
+logging.getLogger("lightning").setLevel(logging.ERROR)
 
 def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
+    save_stdout = sys.stdout
+    sys.stdout = open('trash', 'w')
     config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
     with initialize_config_dir(config_dir=config_path, job_name="your_job"):
         cfg = compose(config_name="composed_config", strict=False)
@@ -79,5 +82,5 @@ def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/w
         output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
-
+    sys.stdout = save_stdout
     return output_dict
