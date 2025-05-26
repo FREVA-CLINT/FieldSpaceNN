@@ -354,7 +354,7 @@ class HealPixLoader(Dataset):
         if ds_target is not None:
             data_target, time_target = self.get_data(ds_target, time_index, self.global_out_cells[region_index], variables_target, 0, self.data_output_mapping)
         else:
-            data_target, time_target = data_source, time_source
+            data_target, time_target = data_source.clone(), time_source.clone()
 
         if self.input_coordinates is not None:
             coords_input = self.input_coordinates[input_mapping[global_cells[region_index]]]
