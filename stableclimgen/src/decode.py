@@ -7,7 +7,7 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 
 
-def decode(timesteps, variables, region=-1, compression_factor=16) -> None:
+def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
     config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
     with initialize_config_dir(config_dir=config_path, job_name="your_job"):
         cfg = compose(config_name="composed_config", strict=False)
@@ -15,7 +15,7 @@ def decode(timesteps, variables, region=-1, compression_factor=16) -> None:
     data_dict = {
         "test": {
             "source":
-                {"files": ["/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/latent_complete_ngc4008_small.zarr".format(compression_factor)],
+                {"files": [data_file.format(compression_factor)],
                  "variables": variables},
             "target": {"files": [None],
                        "variables": variables},
