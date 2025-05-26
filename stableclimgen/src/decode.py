@@ -6,7 +6,10 @@ from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 import logging
+import warnings
+
 logging.getLogger("lightning").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore")
 
 def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
     save_stdout = sys.stdout
