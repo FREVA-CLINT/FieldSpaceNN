@@ -27,7 +27,7 @@ MAX_INDEX = (END_DATE - START_DATE).days
 
 
 def decode(timesteps, variables, region=-1, compression_factor=16,
-           data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
+           data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/tas_1940-2050_merged.zarr") -> None:
     save_stdout = sys.stdout
     sys.stdout = open('trash', 'w')
 
