@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import sys
@@ -5,15 +6,33 @@ import torch
 from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-import logging
 import warnings
+import logging
 
-logging.getLogger("lightning").setLevel(logging.ERROR)
+logging.getLogger('lightning').setLevel(0)
 warnings.filterwarnings("ignore")
 
-def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
+START_DATE_STR = "2020-01-02"
+END_DATE_STR = "2050-01-01"
+
+try:
+    START_DATE = datetime.datetime.strptime(START_DATE_STR, "%Y-%m-%d").date()
+    END_DATE = datetime.datetime.strptime(END_DATE_STR, "%Y-%m-%d").date()
+except ValueError as e:
+    print(f"Error: Invalid date format in configuration: {e}")
+    # Fallback dates or raise an error, depending on desired handling
+    # For this script, we'll raise it to stop execution if config is bad.
+    raise
+MAX_INDEX = (END_DATE - START_DATE).days
+
+
+def decode(timesteps, variables, region=-1, compression_factor=16,
+           data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_{}compress_vonmises_crosstucker_unetlike/local_singlemap.zarr") -> None:
     save_stdout = sys.stdout
     sys.stdout = open('trash', 'w')
+
+    timesteps = [date_to_index(ts) for ts in timesteps]
+
     config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
     with initialize_config_dir(config_dir=config_path, job_name="your_job"):
         cfg = compose(config_name="composed_config", strict=False)
@@ -30,19 +49,19 @@ def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/w
     }
 
     norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                  "stats": {"quantiles": {"0.01": 234.30984497,
-                    "0.99": 305.74804688}}},
+                         "stats": {"quantiles": {"0.01": 234.30984497,
+                                                 "0.99": 305.74804688}}},
                  "pr": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                  "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
+                        "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
                  "pres_sfc": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                  "stats": {"quantiles": {"0.01": 64049.64453125,
-                    "0.99": 103337.53125}}},
+                              "stats": {"quantiles": {"0.01": 64049.64453125,
+                                                      "0.99": 103337.53125}}},
                  "uas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                  "stats": {"quantiles": {"0.01": -12.04504204,
-                    "0.99": 17.22920036}}},
-                "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                "stats": {"quantiles": {"0.01": -12.20680428,
-                  "0.99": 11.26358509}}}}
+                         "stats": {"quantiles": {"0.01": -12.04504204,
+                                                 "0.99": 17.22920036}}},
+                 "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": -12.20680428,
+                                                 "0.99": 11.26358509}}}}
 
     cfg.dataloader.dataset.data_dict = data_dict
     cfg.dataloader.dataset.norm_dict = norm_dict
@@ -87,3 +106,28 @@ def decode(timesteps, variables, region=-1, compression_factor=16, data_file="/w
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
     sys.stdout = save_stdout
     return output_dict
+
+
+def date_to_index(date_str: str) -> int | None:
+    """
+    Converts a date string (YYYY-MM-DD) to its corresponding zero-based index.
+
+    Args:
+        date_str: The date string to convert.
+
+    Returns:
+        The integer index if the date is within the valid range, otherwise None.
+    """
+    try:
+        current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        print(f"Error: Invalid date format for '{date_str}'. Please use YYYY-MM-DD.")
+        return None
+
+    if not (START_DATE <= current_date <= END_DATE):
+        print(f"Error: Date '{date_str}' is outside the valid range ({START_DATE_STR} to {END_DATE_STR}).")
+        return None
+
+    # Calculate the difference in days from the start date
+    index = (current_date - START_DATE).days
+    return index
