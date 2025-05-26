@@ -263,7 +263,7 @@ class HealPixLoader(Dataset):
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
         if file_path_target is None:
-            ds_target = copy.deepcopy(ds_source)
+            ds_target = None
 
         elif file_path_target==file_path_source:
             ds_target = ds_source
