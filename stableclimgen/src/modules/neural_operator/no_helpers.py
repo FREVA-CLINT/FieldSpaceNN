@@ -2,20 +2,20 @@ from ...utils.helpers import check_get_missing_key
 from .polar_normal import polNormal_NoLayer
 from .von_mises import VonMises_NoLayer
 from typing import List
-from ...modules.icon_grids.grid_layer import GridLayer
+from ...modules.grids.grid_layer import GridLayer
 import torch
 import torch.nn as nn
 from ...modules.embedding.embedder import EmbedderSequential, EmbedderManager, BaseEmbedder
 
 def get_no_layer(rcm,
                  type,
-                 input_level: int,
-                 global_level_no: int,
-                 output_level: int,
+                 in_zoom: int,
+                 no_zoom: int,
+                 out_zoom: int,
                  precompute_encode, 
                  precompute_decode,
                  layer_settings,
-                 normalize_to_mask=None
+                 normalize_to_mask=True
                  ):
     
     n_params = check_get_missing_key(layer_settings, "n_params", ref=type)
@@ -28,9 +28,9 @@ def get_no_layer(rcm,
 
         no_layer = polNormal_NoLayer(
                 rcm,
-                input_level,
-                global_level_no,
-                output_level,
+                in_zoom,
+                no_zoom,
+                out_zoom,
                 n_phi=n_params[0],
                 n_dist=n_params[1],
                 n_sigma=n_params[2],
@@ -53,9 +53,9 @@ def get_no_layer(rcm,
 
         no_layer = VonMises_NoLayer(
                 rcm,
-                input_level,
-                global_level_no,
-                output_level,
+                in_zoom,
+                no_zoom,
+                out_zoom,
                 n_phi=n_params[0],
                 kappa=kappa,
                 sigma=sigma,
@@ -69,73 +69,3 @@ def get_no_layer(rcm,
                 normalize_to_mask=normalize_to_mask
             )
     return no_layer
-
-
-def add_mask_to_emb_dict(emb_dict: dict, mask: torch.tensor):
-    if mask.dim()==6:
-        mask = mask.squeeze(dim=3).squeeze(-1)
-
-    if mask.dim()==5:
-        mask = mask.squeeze(dim=3)
-
-    if mask.dim()==3:
-        mask = mask.unsqueeze(dim=1)
-
-    emb_dict['MaskEmbedder'] = mask.int()
-
-    return emb_dict
-
-
-def add_coordinates_to_emb_dict(grid_layer: GridLayer, indices_layers, emb):
-
-    coords = grid_layer.get_coordinates_from_grid_indices(
-        indices_layers[int(grid_layer.global_level)] if indices_layers else None)
-    
-    if emb is None:
-        emb = {}
-
-    emb['CoordinateEmbedder'] = coords
-
-    return emb
-
-
-
-def update_mask(mask, level_diff, mask2=None):
-    if mask is None:
-        return None
-    
-    if level_diff > 0:
-        mask = mask.view(mask.shape[0], -1, 4**level_diff, *mask.shape[2:])
-        mask = mask.sum(dim=2) == 4**level_diff
-    elif level_diff < 0:
-        mask = mask.unsqueeze(dim=2).repeat_interleave(4**(-1*level_diff), dim=2)
-        mask = mask.view(mask.shape[0],-1, *mask.shape[3:])
-
-    if mask2 is not None:
-        mask = torch.logical_and(mask.view(mask2.shape) ,mask2)
-        pass
-    return mask
-
-
-def get_embedder_from_dict(dict_: dict):
-    if "embedder_names" in dict_.keys() and "embed_confs" in dict_.keys():
-        embed_mode = dict_.get("mode","sum")
-        return get_embedder(dict_["embedder_names"],
-                            dict_["embed_confs"],
-                            embed_mode)
-    else:
-        return None
-
-
-def get_embedder(embedder_names:list, 
-                 embed_confs:list, 
-                 embed_mode: list):
-    
-    emb_dict = nn.ModuleDict()
-    for embed_name in embedder_names:
-        emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name])
-        emb_dict[emb.name] = emb     
-        
-    embedder = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1)
-
-    return embedder

@@ -9,9 +9,9 @@ import xarray as xr
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
+from stableclimgen.src.modules.grids.grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
 from stableclimgen.src.utils import normalizer as normalizers
-from stableclimgen.src.utils.grid_utils_icon import get_coords_as_tensor
+from stableclimgen.src.modules.grids.grid_utils_icon import get_coords_as_tensor
 
 torch.manual_seed(42)
 

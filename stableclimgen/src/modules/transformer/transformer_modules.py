@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 
 import scipy.interpolate as inter
-from ...utils import grid_utils_icon as gu
+from ..grids import grid_utils as gu
 
 radius_earth = 6371
 
@@ -897,65 +897,6 @@ def get_nh_of_batch_indices(cell_indices, adjc):
     
     return cells_nh, out_of_fov
 
-def coarsen_global_cells(cells, eoc, acoe, global_level=1, coarsen_level=None, nh=1):
-    if coarsen_level is None:
-        coarsen_level = global_level
-    
-    coarsen_level = global_level
-
-    n_cells = cells.shape[-1]
-    n_cells_coarse = n_cells // 4**coarsen_level
-
-    if len(cells.shape)>1:
-        batched=True
-        cells = cells.reshape(cells.shape[0],-1,4**coarsen_level)
-        adjc = acoe.T[eoc.T[cells]]
-        for _ in range(nh-1):
-            adjc = acoe.T[eoc.T[adjc]]
-
-        adjc = adjc.reshape(cells.shape[0],n_cells_coarse,-1) // 4**global_level
-    else:
-        batched=False
-        cells = cells.reshape(-1,4**global_level)
-        adjc = acoe.T[eoc.T[cells]].reshape(n_cells_coarse,-1) // 4**global_level
-        for _ in range(nh-1):
-            adjc = acoe.T[eoc.T[adjc]]
-        
-        adjc = adjc.reshape(n_cells_coarse,-1) // 4**global_level
-
-    local_cells = cells // 4**global_level
-
-    out_of_fov = None
-
-    adjc_unique = (adjc).long().unique(dim=-1)
-
-    if batched:
-        self_indices = local_cells[:,:,[0]]
-    else:
-        self_indices = local_cells[:,[0]]
-    
-    is_self = adjc_unique - self_indices == 0
-
-    is_self_count = is_self.sum(axis=-1)
-
-    if torch.all(is_self_count==is_self_count[0]):
-
-        cells_nh = adjc_unique[~is_self]
-
-        if batched:
-            cells_nh = cells_nh.reshape(cells.shape[0], n_cells_coarse,-1)
-            
-            out_of_fov = torch.logical_or(cells_nh > local_cells.amax(dim=(-2,-1)).reshape(-1,1,1),
-                            cells_nh < local_cells.amin(dim=(-2,-1)).reshape(-1,1,1))
-            ind = torch.where(out_of_fov)
-            cells_nh[ind] = local_cells[ind[0],ind[1],0]
-        else:
-            cells_nh = cells_nh.reshape(cells.shape[0],3)
-
-    else:
-        cells_nh = None
-
-    return cells, local_cells, cells_nh, out_of_fov
 
 
 def get_nh_values(values, indices_nh=None, sample_indices=None, coarsest_level=4, global_level=0, nh=1):

@@ -12,7 +12,7 @@ class EmbedBlock(nn.Module):
 
     @abstractmethod
     def forward(self, x: torch.Tensor, emb: Optional[Dict], mask: Optional[torch.Tensor],
-                cond: Optional[torch.Tensor], *args, **kwargs) -> torch.Tensor:
+                *args, **kwargs) -> torch.Tensor:
         """
         Apply the module to `x` given `emb`, `mask`, `cond`, `coords`.
 
@@ -33,7 +33,7 @@ class EmbedBlockSequential(nn.Sequential, EmbedBlock):
     """
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None,
-                mask: Optional[torch.Tensor] = None, cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+                mask: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
         """
         Forward pass for the EmbedBlockSequential.
 
@@ -46,7 +46,7 @@ class EmbedBlockSequential(nn.Sequential, EmbedBlock):
         """
         for layer in self:
             if isinstance(layer, EmbedBlock):
-                x = layer(x, emb, mask, cond, *args)
+                x = layer(x, emb, mask, *args)
             else:
                 x = layer(x)
         return x

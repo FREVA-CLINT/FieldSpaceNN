@@ -12,7 +12,9 @@ from omegaconf import DictConfig, OmegaConf
 from .utils.pl_data_module import DataModule
 import torch
 from .utils import normalizer as normalizers
-from .utils.grid_utils_icon import get_coords_as_tensor, get_nh_variable_mapping_icon
+from .modules.grids.grid_utils_icon import get_nh_variable_mapping_icon
+from .modules.grids.grid_utils import get_coords_as_tensor
+
 import xarray as xr
 
 torch.manual_seed(42)

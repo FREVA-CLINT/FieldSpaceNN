@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Optional, Union, List, Tuple
 
 from stableclimgen.src.utils.helpers import check_value
-from stableclimgen.src.modules.utils import EmbedBlockSequential
+from stableclimgen.src.utils.utils import EmbedBlockSequential
 
 
 def conv_nd(in_channels: int,

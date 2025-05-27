@@ -7,9 +7,9 @@ class polNormal_NoLayer(NoLayer):
 
     def __init__(self,
                  rcm,
-                 global_level_encode,
-                 global_level_no,
-                 global_level_decode,
+                 zoom_encode,
+                 zoom_no,
+                 zoom_decode,
                  n_phi=4,
                  n_dist=4,
                  n_sigma=1,
@@ -24,9 +24,9 @@ class polNormal_NoLayer(NoLayer):
     
         super().__init__(
             rcm,
-            global_level_encode, 
-            global_level_no,
-            global_level_decode,
+            zoom_encode, 
+            zoom_no,
+            zoom_decode,
             nh_in_encode=nh_in_encode, 
             nh_in_decode=nh_in_decode,
             precompute_encode=precompute_encode,
@@ -97,12 +97,6 @@ class polNormal_NoLayer(NoLayer):
             if self.normalize_to_mask:
                 norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
                 weights = weights*norm
-
-            mask = mask.view(*c_shape,nv)
-            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
-            
-            if n_out>n_in:
-                mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
         
         if n_out>n_in:
             weights = weights/(weights.sum(dim=[3], keepdim=True)+1e-20)
@@ -115,7 +109,7 @@ class polNormal_NoLayer(NoLayer):
             x = x * weights.unsqueeze(dim=-1)
             x = x.sum(dim=[2,3]).unsqueeze(dim=3)
 
-        return x, mask
+        return x
 
 
     def mult_weights_invt(self, x, weights, mask=None):
@@ -135,18 +129,11 @@ class polNormal_NoLayer(NoLayer):
                 norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
                 weights = weights*norm
 
-            mask = mask.view(*c_shape,nv)
-
-            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
-           
-            mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
- 
-
         weights = weights/(weights.sum(dim=[3,-1,-2,-3], keepdim=True)+1e-20)
 
         x = x.unsqueeze(dim=2) * weights.unsqueeze(dim=-1)
 
-        return x.sum(dim=[3,-2,-3,-4]), mask
+        return x.sum(dim=[3,-2,-3,-4])
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
         _, n_out, seq_out, seq_in = coordinates_rel[0].shape
@@ -155,17 +142,11 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
-        x, mask = self.mult_weights_t(x, weights, mask=mask)
-
-        if mask is not None and self.normalize_to_mask:
-            x = x.masked_fill_(mask.view(*x.shape[:4],*(1,)*(x.dim()-4)), 0.0)
+        x = self.mult_weights_t(x, weights, mask=mask)
 
         x = x.view(b, n_out, nv, *self.n_params_no, nc)
 
-        if mask is not None:
-            mask = mask.view(b,n_out,-1)
-
-        return x, mask
+        return x
     
     def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
         
@@ -175,15 +156,8 @@ class polNormal_NoLayer(NoLayer):
 
         weights = self.get_spatial_weights(coordinates_rel, self.sigma)
 
-        x, mask = self.mult_weights_invt(x, weights, mask=mask)
+        x = self.mult_weights_invt(x, weights, mask=mask)
 
         x = x.view(b,-1,nv,nc)
 
-        if mask is not None and self.normalize_to_mask:
-            mask = mask.view(x.shape[:-1])
-            x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
-
-        if mask is not None:
-            mask = mask.view(x.shape[:-1])
-
-        return x, mask
+        return x

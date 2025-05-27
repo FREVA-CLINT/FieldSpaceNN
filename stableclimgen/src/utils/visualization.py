@@ -8,7 +8,7 @@ import cartopy.crs as ccrs
 import numpy as np
 import torch
 
-def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None):
+def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None, has_var=False):
 
     input = input.cpu().numpy()
     output = output.cpu().to(dtype=torch.float32).numpy()
@@ -30,16 +30,19 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     else:
         mask = np.zeros_like(input, dtype=bool).squeeze(-1)
 
-    coords_output = coords_output.reshape(gt.shape[0], -1, 2)
-
     # Define image size and calculate differences between ground truth and output
     img_size = 3
 
-    plot_var = False
-    if output.ndim>2 and output.shape[-1]>1:
-        output_var = output[...,1]
-        output = output[...,0]
+    if has_var:
+        output, output_var = output.split(2, axis=-1)
         plot_var = True
+    else:
+        output_var = None
+        plot_var = False
+    
+    if output.ndim > 3:
+        output = output[...,0]
+        output_var = output_var[...,0] if output_var is not None else output_var
 
     # Set up the figure layout
     fig, axes = plt.subplots(
@@ -54,20 +57,20 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
         gt_min = np.min(gt[i])
         gt_max = np.max(gt[i])
         plot_samples = [
-            (input[i][mask[i] == False], coords_input[i][mask[i] == False].reshape(-1, 2), "Input", None, None),
-            (gt[i], coords_output[i], "Ground Truth", gt_min, gt_max),
-            (output[i], coords_output[i], "Output", gt_min, gt_max),
-            (gt[i].squeeze() - output[i].squeeze(), coords_output[i], "Error", None, None)
+            (input[i][mask[i] == False], coords_input[mask[i].reshape(-1) == False].reshape(-1, 2), "Input", None, None),
+            (gt[i], coords_output, "Ground Truth", gt_min, gt_max),
+            (output[i], coords_output, "Output", gt_min, gt_max),
+            (gt[i].squeeze() - output[i].squeeze(), coords_output, "Error", None, None)
         ] 
         
         if plot_input_inter:
-          plot_samples.insert(1, (input_inter[i], coords_output[i], "Input Interpolated", None, None))
+          plot_samples.insert(1, (input_inter[i], coords_output, "Input Interpolated", None, None))
           
         if plot_input_density:
-          plot_samples.insert(1, (input_density[i], coords_output[i], "Input Density", None, None))
+          plot_samples.insert(1, (input_density[i], coords_output, "Input Density", None, None))
 
         if plot_var:
-          plot_samples.insert(-2, (output_var[i], coords_output[i], "Output variance", None, None))
+          plot_samples.insert(-2, (output_var[i], coords_output, "Output variance", None, None))
 
         # Loop over samples
         for index, plot_sample in enumerate(plot_samples):

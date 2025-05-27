@@ -9,7 +9,7 @@ from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
 from ...modules.transformer.transformer_base import TransformerBlock
-from ...modules.utils import EmbedBlockSequential
+from ...utils.utils import EmbedBlockSequential
 from ...utils.helpers import check_value
 
 

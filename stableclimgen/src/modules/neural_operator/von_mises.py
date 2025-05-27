@@ -7,9 +7,9 @@ class VonMises_NoLayer(NoLayer):
 
     def __init__(self,
                  rcm,
-                 global_level_encode,
-                 global_level_no,
-                 global_level_decode,
+                 zoom_encode,
+                 zoom_no,
+                 zoom_decode,
                  n_phi=4,
                  kappa=0.5,
                  sigma=0.2,
@@ -24,9 +24,9 @@ class VonMises_NoLayer(NoLayer):
                 ) -> None: 
     
         super().__init__(rcm,
-            global_level_encode, 
-            global_level_no,
-            global_level_decode,
+            zoom_encode, 
+            zoom_no,
+            zoom_decode,
             nh_in_encode=nh_in_encode, 
             nh_in_decode=nh_in_decode,
             precompute_encode=precompute_encode,
@@ -75,48 +75,44 @@ class VonMises_NoLayer(NoLayer):
         weights = torch.concat((alpha, weights), dim=-1)
 
         _, n_out, seq_in, seq_in_nh, _, n_p = weights.shape
-        b, n_in, nh_in, nv, nc = x.shape
+        b, nt, n_in, nh_in, nv, nc = x.shape
 
         if n_out > n_in:
-            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:])
+            weights = weights.view(weights.shape[0], 1, n_in,-1,*weights.shape[3:])
             _, _, seq_in, seq_in_nh = weights.shape[:4]
-            c_shape = (-1, n_in, 1, seq_in_nh)
+            c_shape = (-1, nt, n_in, 1, nh_in)
         else:
-            c_shape = (-1, n_out, seq_in, seq_in_nh)
+            weights = weights.unsqueeze(dim=1)
+            c_shape = (-1, nt, n_out, seq_in, nh_in)
 
         if mask is not None:
             if self.normalize_to_mask:
-                norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
+                norm = (mask.view(-1, mask.shape[1], n_in, 1, nh_in, nv, *(1,)*(weights.dim()-6)) == False)
                 weights = weights*norm
 
-            mask = mask.view(*c_shape,nv)
-            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
-            
-            if n_out>n_in:
-                mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
         
         if n_out>n_in:
-            weights = weights/(weights.sum(dim=[3], keepdim=True)+1e-20)
-            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-5),nc)
+            weights = weights/(weights.sum(dim=[4], keepdim=True)+1e-20)
+            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-6),nc)
             x = x * weights.unsqueeze(dim=-1)
-            x = x.sum(dim=[3])
+            x = x.sum(dim=[4])
         else:
-            weights = weights/(weights.sum(dim=[2,3], keepdim=True)+1e-20)
-            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-5),nc)
+            weights = weights/(weights.sum(dim=[3,4], keepdim=True)+1e-20)
+            x = x.view(*c_shape, nv, *(1,)*(weights.dim()-6),nc)
             x = x * weights.unsqueeze(dim=-1)
-            x = x.sum(dim=[2,3]).unsqueeze(dim=3)
+            x = x.sum(dim=[3,4]).unsqueeze(dim=3)
 
         if self.diff_mode:
             x = torch.concat((x[...,[0],:], x[...,[0],:] - x[...,1:,:]), dim=-2)
         
-        return x, mask
+        return x
 
 
 
     def mult_weights_invt(self, x, weights, alpha, mask=None):
         _, n_out, seq_out, seq_in = weights.shape[:4]
-        nv = x.shape[3]
-        n_in = x.shape[1]
+
+        b, nt, n_in, _, nv, n_p, nc = x.shape
 
         weights = weights/weights.sum(dim=[-1], keepdim=True)
 
@@ -124,67 +120,51 @@ class VonMises_NoLayer(NoLayer):
         weights = torch.concat((alpha, weights), dim=-1)
 
         if n_out >= n_in:
-            weights = weights.view(weights.shape[0],n_in,-1,*weights.shape[3:],1)
+            weights = weights.view(weights.shape[0],1,n_in,-1,*weights.shape[3:],1)
             _, _, seq_in, seq_in_nh = weights.shape[:4]
-            c_shape = (-1, n_in, 1, seq_in_nh)
+            c_shape = (-1, nt, n_in, 1, seq_in_nh)
         else:
-            c_shape = (-1, n_out, seq_out, seq_in)
+            weights = weights.unsqueeze(dim=1)
+            c_shape = (-1, nt, n_out, seq_out, seq_in)
 
         if mask is not None:
             if self.normalize_to_mask:
                 norm = (mask.view(*c_shape, nv, *(1,)*(weights.dim()-5)) == False)
                 weights = weights*norm
 
-            mask = mask.view(*c_shape,nv)
-
-            mask = mask.sum(dim=[-2,-3])==(mask.shape[-2]*mask.shape[-3])
-           
-            mask = mask.unsqueeze(dim=-2).repeat_interleave(n_out//n_in, dim=-2)
-
-        weights = weights/(weights.sum(dim=[3,-2], keepdim=True)+1e-20)
+        weights = weights/(weights.sum(dim=[4,-2], keepdim=True)+1e-20)
 
         if self.diff_mode:
             x = torch.concat((x[...,[0],:], x[...,[0],:] + x[...,1:,:]), dim=-2)
 
-        x = x.unsqueeze(dim=2)
+        x = x.unsqueeze(dim=3)
 
-        x = (weights * x).sum(dim=[3,-2])
+        x = (weights * x).sum(dim=[4,-2])
 
-        return x, mask
+        return x
 
     def transform_(self, x, coordinates_rel, mask=None, emb=None):
         _, n_out, seq_out, seq_in = coordinates_rel[0].shape
         nv, nc = x.shape[-2:]
-        b = x.shape[0]
+        b, nt = x.shape[:2]
 
         weights, alpha = self.get_vm_dist_weights(coordinates_rel)
 
-        x, mask = self.mult_weights_t(x, weights, alpha, mask=mask)
+        x = self.mult_weights_t(x, weights, alpha, mask=mask)
 
-        if mask is not None:
-            x = x.masked_fill_(mask.view(*x.shape[:4],*(1,)*(x.dim()-4)), 0.0)
+        x = x.view(b, nt, n_out, nv, *self.n_params_no, nc)
 
-        x = x.view(b, n_out, nv, *self.n_params_no, nc)
-
-        if mask is not None:
-            mask = mask.view(b,n_out,-1)
-
-        return x, mask
+        return x
     
     def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
         
         _, n_out, seq_out, seq_in = coordinates_rel[0].shape
-        b, n, seq_in, nv, n_p, nc = x.shape
-        c_shape = (-1, n, seq_in, nv)
+        b, nt, n, seq_in, nv, n_p, nc = x.shape
 
         weights, alpha = self.get_vm_dist_weights(coordinates_rel)
 
-        x, mask = self.mult_weights_invt(x, weights, alpha, mask=mask)
+        x = self.mult_weights_invt(x, weights, alpha, mask=mask)
 
-        x = x.view(b,-1,nv,nc)
+        x = x.view(b,nt,-1,nv,nc)
 
-        if mask is not None:
-            mask = mask.view(x.shape[:-1])
-            x = x.masked_fill_(mask.unsqueeze(dim=-1), 0.0)
-
-        return x, mask
+        return x

@@ -1,11 +1,11 @@
 dataset:
-  _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
-  data_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/data_healpix.json
-  zoom_patch_sample: -1
+  _target_: stableclimgen.src.utils.datasets_icon.ICONLoader
+  data_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/data.json
   norm_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/norm_dict.json
+  zoom_patch_sample: 2
   p_dropout: 0.95
   p_drop_vars: 1
-  n_sample_timesteps: 1
+
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule

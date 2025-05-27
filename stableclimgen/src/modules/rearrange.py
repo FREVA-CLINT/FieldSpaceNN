@@ -3,8 +3,8 @@ from typing import Optional, Dict
 from einops import rearrange
 import torch
 
-from stableclimgen.src.modules.utils import EmbedBlock
-
+from stableclimgen.src.utils.utils import EmbedBlock
+from stableclimgen.src.modules.base import IdentityLayer
 
 class RearrangeBlock(EmbedBlock):
     """
@@ -16,12 +16,22 @@ class RearrangeBlock(EmbedBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, pattern: str, reverse_pattern: str, spatial_dim_count: int = 1, seq_len: int = None):
+    def __init__(self, fn, 
+                 pattern: str, 
+                 reverse_pattern: str, 
+                 spatial_dim_count: int = 1, 
+                 seq_len: int = None, 
+                 proj_layer: torch.nn.Module = None,
+                 out_layer: torch.nn.Module = None):
+        
         super().__init__()
         self.fn = fn
         self.pattern = pattern
         self.reverse_pattern = reverse_pattern
         self.seq_len = seq_len
+        self.proj_layer = proj_layer if proj_layer else IdentityLayer()
+        self.out_layer = out_layer if out_layer else IdentityLayer()
+
         if spatial_dim_count == 2:
             # Replace the variable dimension 'g' with height and width dimensions for 2D spatial arrangements
             self.pattern = self.pattern.replace('g', 'h w')
@@ -39,11 +49,15 @@ class RearrangeBlock(EmbedBlock):
         :return: Tensor after rearrangement, function application, and reverse rearrangement.
         """
         # Determine the input dimensionality and extract batch, time, and variable dimensions
+
+        x = self.proj_layer(x, emb=emb)
+
         dim = x.dim()
         if dim == 6:
             b, t, h, w, v, c = x.shape
         else:
             b, t, g, v, c = x.shape
+
 
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [
@@ -76,6 +90,8 @@ class RearrangeBlock(EmbedBlock):
             x = rearrange(x, self.reverse_pattern, b=b, t=t, h=h, w=w, v=v)
         else:
             x = rearrange(x, self.reverse_pattern, b=b, t=t, g=g, v=v)
+
+        x = self.out_layer(x, emb=emb)
         return x
 
 
@@ -87,13 +103,15 @@ class RearrangeTimeCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b g v) t c',
             reverse_pattern='(b g v) t c -> b t g v c',
             spatial_dim_count=spatial_dim_count,
-            seq_len=seq_len
+            seq_len=seq_len,
+            proj_layer=proj_layer,
+            out_layer=out_layer
         )
 
 
@@ -105,13 +123,15 @@ class RearrangeSpaceCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b t v) (g) c',
             reverse_pattern='(b t v) (g) c -> b t g v c',
             spatial_dim_count=spatial_dim_count,
-            seq_len=seq_len
+            seq_len=seq_len,
+            proj_layer=proj_layer,
+            out_layer=out_layer
         )
 
 
@@ -123,13 +143,15 @@ class RearrangeVarCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None):
         super().__init__(
             fn,
             pattern='b t g v c -> (b t g) v c',
             reverse_pattern='(b t g) v c -> b t g v c',
             spatial_dim_count=spatial_dim_count,
-            seq_len=seq_len
+            seq_len=seq_len,
+            proj_layer=proj_layer,
+            out_layer=out_layer
         )
 
 

@@ -2,15 +2,15 @@ import torch
 import torch.nn as nn
 from typing import List
 
-from ..icon_grids.grid_layer import GridLayer, MultiRelativeCoordinateManager
+from ...modules.grids.grid_layer import MultiRelativeCoordinateManager
 
 class NoLayer(nn.Module):
 
     def __init__(self,
                  rcm: MultiRelativeCoordinateManager,
-                 global_level_encode: int, 
-                 global_level_no: int,
-                 global_level_decode: int,
+                 in_zoom: int, 
+                 no_zoom: int,
+                 out_zoom: int,
                  nh_in_encode: bool=False,
                  nh_in_decode: bool=False,
                  precompute_encode: bool=True,
@@ -20,15 +20,15 @@ class NoLayer(nn.Module):
         super().__init__()
         
         rcm.register_rcm(
-            global_level_encode, 
-            global_level_no, 
+            in_zoom, 
+            no_zoom, 
             nh_in_encode,
             precompute_encode,
             coord_system=coord_system)
 
         rcm.register_rcm(
-            global_level_no, 
-            global_level_decode, 
+            no_zoom, 
+            out_zoom, 
             nh_in_decode,
             precompute_decode,
             ref='in',
@@ -36,22 +36,22 @@ class NoLayer(nn.Module):
         
         self.rcm = rcm
 
-        self.global_level_encode = global_level_encode
-        self.global_level_decode = global_level_decode
-        self.global_level_no = global_level_no
+        self.in_zoom = in_zoom
+        self.out_zoom = out_zoom
+        self.no_zoom = no_zoom
     
-        self.no_nh_dist = rcm.nh_dists[global_level_no]
+        self.no_nh_dist = rcm.nh_dists[no_zoom]
 
-    def transform(self, x, coords_encode=None, coords_no=None, indices_sample=None, mask=None, emb=None):
+    def transform(self, x, sample_dict=None, mask=None, emb=None, **kwargs):
         
-        coordinates_rel, x, mask = self.rcm(self.global_level_encode, self.global_level_no, indices_sample=indices_sample, x=x, mask=mask)
+        coordinates_rel, x, mask = self.rcm(self.in_zoom, self.no_zoom, sample_dict=sample_dict, x=x, mask=mask)
             
         return self.transform_(x, coordinates_rel, mask=mask, emb=emb)
         
 
-    def inverse_transform(self, x, coords_no=None, coords_decode=None, indices_sample=None,  mask=None, emb=None):
+    def inverse_transform(self, x, sample_dict=None,  mask=None, emb=None, **kwargs):
         
-        coordinates_rel, x, mask = self.rcm(self.global_level_no, self.global_level_decode, indices_sample=indices_sample, x=x, mask=mask)
+        coordinates_rel, x, mask = self.rcm(self.no_zoom, self.out_zoom, sample_dict=sample_dict, x=x, mask=mask)
 
         return self.inverse_transform_(x, coordinates_rel, mask=mask, emb=emb)
 
@@ -60,17 +60,3 @@ class NoLayer(nn.Module):
     
     def inverse_transform_(self, x, coordinates_rel, mask=None, emb=None):
         raise NotImplementedError("This method should be implemented by subclasses.")
-
-
-
-def add_coordinates_to_emb_dict(grid_layer: GridLayer, indices_layers, emb):
-
-    coords = grid_layer.get_coordinates_from_grid_indices(
-        indices_layers[int(grid_layer.global_level)] if indices_layers is not None else None)
-    
-    if emb is None:
-        emb = {}
-
-    emb['CoordinateEmbedder'] = coords
-
-    return emb

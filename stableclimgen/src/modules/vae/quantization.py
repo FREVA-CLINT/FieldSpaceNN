@@ -11,7 +11,7 @@ from ..cnn.conv import ConvBlockSequential
 from ..cnn.resnet import ResBlockSequential
 from ...modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
 from ..transformer.transformer_base import TransformerBlock
-from ..utils import EmbedBlockSequential
+from ...utils.utils import EmbedBlockSequential
 
 
 class Quantization(nn.Module):

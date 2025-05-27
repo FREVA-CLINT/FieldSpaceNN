@@ -6,6 +6,26 @@ def check_value(value, n_repeat):
         value = [value]*n_repeat
     return value
 
+"""
+def check_value(value, n_repeat):
+    if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig):
+        value = [value]*n_repeat
+    elif (isinstance(value, list) or isinstance(value, omegaconf.listconfig.ListConfig)) and len(value)<=1 and len(value)< n_repeat:
+        value = [list(value) for _ in range(n_repeat)] if len(value)==0 else list(value)*n_repeat
+    return value
+"""
+
+def check_get(confs, key):
+
+    for conf in confs:
+        if isinstance(conf, dict):
+            if key in conf:
+                return conf[key]
+        elif hasattr(conf, key):
+            return getattr(conf, key)
+        
+    raise KeyError(f"Key '{key}' not found block_conf, model arguments and defaults")
+
 def check_get_missing_key(dict_: dict, key: str, ref=None):
     if key not in dict_.keys():
         if ref is None and 'type' in dict_.keys():

@@ -1,5 +1,6 @@
 import sys
 from typing import Dict
+from omegaconf import ListConfig
 
 import torch
 import torch.nn as nn
@@ -66,11 +67,13 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "t", "s", "v", "c"]
+        self.keep_dims = ["b", "s", "c"]
+
+        self.zoom = zoom
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -80,6 +83,12 @@ class CoordinateEmbedder(BaseEmbedder):
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
 
+    def forward(self, coordinates, **kwargs):
+        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
+        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
+
+        coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
+        return self.embedding_fn(coordinates)
 
 class DensityEmbedder(BaseEmbedder):
     """
@@ -89,11 +98,13 @@ class DensityEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "t", "s", "v", "c"]
+
+        self.zoom = zoom
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -102,6 +113,13 @@ class DensityEmbedder(BaseEmbedder):
             torch.nn.GELU(),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
+    
+    def forward(self, density, **kwargs):
+        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
+        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
+
+        density = density.view(*density.shape[:1],-1, 4**zoom_diff, *density.shape[3:]).mean(dim=2)
+        return self.embedding_fn(density)
 
 class UncertaintyEmbedder(BaseEmbedder):
     """
@@ -111,11 +129,13 @@ class UncertaintyEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "t", "s", "v", "c"]
+
+        self.zoom = zoom
 
         self.betas = nn.Parameter(torch.ones(in_channels_var), requires_grad=True)
 
@@ -128,18 +148,19 @@ class UncertaintyEmbedder(BaseEmbedder):
         )
     
     def forward(self, density_var, **kwargs):
-        global_level = kwargs.get('global_level', 0)
+        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
+        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
 
         density, var_indices = density_var
         
-        if global_level > 0:
-            density = density.view(density.shape[0],-1, 4**global_level, density.shape[-2], density.shape[-1]).mean(dim=2)
+        density = density.view(*density.shape[:2],-1, 4**zoom_diff, density.shape[-2], density.shape[-1]).mean(dim=3)
 
-        betas = self.betas[var_indices].view(var_indices.shape[0],1,var_indices.shape[-1],1)
+        betas = self.betas[var_indices].view(var_indices.shape[0],var_indices.shape[1],1,var_indices.shape[-1],1)
 
         uncertainty =  1 - density**betas
 
         return self.embedding_fn(uncertainty)
+    
 class VariableEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
@@ -248,7 +269,7 @@ class EmbedderSequential(nn.Module):
         self.spatial_dim_count = spatial_dim_count
         self.activation = nn.SiLU()
 
-    def forward(self, inputs: Dict[str, torch.Tensor]):
+    def forward(self, inputs: Dict[str, torch.Tensor], sample_dict: Dict=None):
         """
         Args:
             inputs (dict): A dictionary of input tensors where each key corresponds to an embedder.
@@ -264,10 +285,8 @@ class EmbedderSequential(nn.Module):
             if embedder_name not in inputs:
                 raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
 
-            args_ = inputs.get("args", {})
-
             input_tensor = inputs[embedder_name]
-            embed_output = embedder(input_tensor, **args_)
+            embed_output = embedder(input_tensor, sample_dict=sample_dict)
 
             # Add time dimension
             if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):
@@ -302,3 +321,46 @@ class EmbedderSequential(nn.Module):
             return sum([emb.embed_dim for _, emb in self.embedders.items()])
         else:
             return [emb.embed_dim for _, emb in self.embedders.items()][-1]
+        
+
+def get_embedder_from_dict(dict_: dict):
+    if "embedder_names" in dict_.keys() and "embed_confs" in dict_.keys():
+        embed_mode = dict_.get("mode","sum")
+        return get_embedder(dict_["embed_names"],
+                            dict_["embed_confs"],
+                            embed_mode)
+    else:
+        return None
+
+
+def get_embedder(embed_names: list=[], 
+                 embed_confs: dict={}, 
+                 embed_mode: str='sum',
+                 **kwargs):
+    
+    if len(embed_names) >0:
+        
+        if not isinstance(embed_names[0], list) and not isinstance(embed_names[0], ListConfig):
+            embed_names = [embed_names]
+            return_list = False
+        else:
+            return_list = True
+
+        embed_confs.update(**kwargs)
+
+        embedders = []
+        for embed_names_ in embed_names:
+            emb_dict = nn.ModuleDict()
+            for embed_name in embed_names_:
+                emb: BaseEmbedder = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name], **kwargs)
+                emb_dict[emb.name] = emb     
+            
+            embedders.append(EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1))
+
+        if return_list:
+            return embedders
+        else:
+            return embedders[0]
+
+    else: 
+        return None

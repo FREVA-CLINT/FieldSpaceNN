@@ -10,7 +10,7 @@ from ...modules.distributions.distributions import DiagonalGaussianDistribution,
 from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.transformer.transformer_base import TransformerBlock
-from ...modules.utils import EmbedBlockSequential
+from ...utils.utils import EmbedBlockSequential
 
 
 class VAEBlockConfig:

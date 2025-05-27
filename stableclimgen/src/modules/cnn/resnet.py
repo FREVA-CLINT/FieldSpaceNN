@@ -6,7 +6,7 @@ from einops import rearrange
 
 from stableclimgen.src.modules.cnn.conv import Upsample, Downsample, conv_nd
 from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
-from stableclimgen.src.modules.utils import EmbedBlock, EmbedBlockSequential
+from stableclimgen.src.utils.utils import EmbedBlock, EmbedBlockSequential
 from stableclimgen.src.utils.helpers import check_value
 
 
@@ -31,9 +31,7 @@ class ResBlock(EmbedBlock):
                  block_type: str,
                  kernel_size: int | Tuple,
                  padding: int | Tuple,
-                 embedder_names: List[str] = None,
-                 embed_confs: Dict = None,
-                 embed_mode: str = "sum",
+                 embedder: EmbedBlockSequential,
                  dropout: float = 0.0,
                  use_conv: bool = False,
                  use_scale_shift_norm: bool = False,
@@ -62,13 +60,9 @@ class ResBlock(EmbedBlock):
         else:
             self.h_upd = self.x_upd = nn.Identity()
 
-        # Define embedding layers if embedding channels are provided
-        if embedder_names:
-            emb_dict = nn.ModuleDict()
-            for emb_name in embedder_names:
-                emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
-                emb_dict[emb.name] = emb
-            self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=2)
+
+        if embedder is not None:
+            self.embedder_seq = embedder
             self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, out_ch * (2 ** use_scale_shift_norm))
 
         # Define the output layers including dropout and convolution

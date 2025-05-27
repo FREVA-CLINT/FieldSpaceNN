@@ -2,55 +2,10 @@ import math
 
 import healpy as hp
 import torch
-import xarray as xr
 
-from stableclimgen.src.utils.grid_utils_icon import get_coords_as_tensor, scale_coordinates
+from .grid_utils import get_distance_angle
 
-
-def get_coords_as_tensor(ds: xr.Dataset, lon: str = 'vlon', lat: str = 'vlat', grid_type: str = None, target='torch'):
-    """
-    :param ds: Input Xarray Dataset to read data from
-    :param lon: Input longitude variable to read
-    :param lat: Input latitude variable to read
-    :param grid_type: Either cell,edge or vertex to read different coordinates
-
-    :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
-    """
-    if grid_type == 'cell':
-        lon, lat = 'clon', 'clat'
-
-    elif grid_type == 'regular':
-        lon, lat = 'lon', 'lat'
-
-    elif grid_type == 'vertex':
-        lon, lat = 'vlon', 'vlat'
-
-    elif grid_type == 'edge':
-        lon, lat = 'elon', 'elat'
-
-    if target == 'torch':
-        lons = torch.tensor(ds[lon].values)
-        lats = torch.tensor(ds[lat].values)
-        if grid_type == "regular":
-            lons, lats = torch.meshgrid(lons, lats, indexing="xy")
-            lat_rad_tensor = torch.deg2rad(lats)
-            theta_tensor = -lat_rad_tensor
-
-            lon_rad_tensor = torch.deg2rad(lons)
-            phi_tensor = lon_rad_tensor - torch.pi
-
-            coords = torch.stack([phi_tensor.flatten(), theta_tensor.flatten()], dim=-1).float()
-        else:
-            coords = torch.stack((lons, lats), dim=-1).float()
-    else:
-        lons = np.array(ds[lon].values)
-        lats = np.array(ds[lat].values)
-        coords = np.stack((lons, lats), axis=-1).astype(np.float32)
-
-    return coords
-
-
-def healpix_get_adjacent_cell_indices(nside: int, nh: int = 5):
+def healpix_get_adjacent_cell_indices(zoom: int, nh: int = 5):
     """
     Function to get neighbored cell indices for Healpix grid.
 
@@ -59,7 +14,9 @@ def healpix_get_adjacent_cell_indices(nside: int, nh: int = 5):
 
     :returns: adjacent cell indices, duplicates mask
     """
+    nside = 2**zoom
     npix = hp.nside2npix(nside)
+
     global_indices = torch.arange(npix)
 
     # The first level of neighbors
@@ -149,13 +106,15 @@ def healpix_get_adjacent_cell_indices(nside: int, nh: int = 5):
     return adjc, duplicates
 
 
-def healpix_pixel_lonlat_torch(nside):
+def healpix_pixel_lonlat_torch(zoom):
     """
     Get the longitude and latitude coordinates of each pixel in a Healpix grid using PyTorch tensors.
 
     :param nside: Healpix resolution parameter
     :return: A tuple of PyTorch tensors (lon, lat) with the longitude and latitude of each pixel.
     """
+    nside = 2**zoom
+
     npix = hp.nside2npix(nside)  # Total number of pixels
 
     # Get pixel indices as a PyTorch tensor
@@ -169,73 +128,6 @@ def healpix_pixel_lonlat_torch(nside):
     phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
 
     return torch.stack([phi_tensor, theta_tensor], dim=-1).float()
-
-
-def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor,
-                       base: str = 'polar', periodic_fov: list = None, rotate_coords=True) -> torch.tensor:
-    """
-    :param lon1: target longitude
-    :param lat1: target latitude
-    :param lon2: source longitude
-    :param lat2: source latitude
-    :param base: Optional: Returns relative coordinates in either polat coordinates (distance, angle) or cartesian coordiantes (distance longitude, distance latitude)
-    :param periodic_fov: Optinal if data is defined on a local patch with periodic boundary conditions
-
-    :returns: distances on the sphere between lon1,lat1 and lon2,lat2
-    """
-    # does not produce proper results for now
-    # lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
-    # lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
-
-    if rotate_coords:
-        theta = lat1
-        phi = lon1
-
-        x = (torch.cos(lon2) * torch.cos(lat2))
-        y = (torch.sin(lon2) * torch.cos(lat2))
-        z = (torch.sin(lat2))
-
-        rotated_x = torch.cos(theta) * torch.cos(phi) * x + torch.cos(theta) * torch.sin(phi) * y + torch.sin(theta) * z
-        rotated_y = -torch.sin(phi) * x + torch.cos(phi) * y
-        rotated_z = -torch.sin(theta) * torch.cos(phi) * x - torch.sin(theta) * torch.sin(phi) * y + torch.cos(
-            theta) * z
-
-        lon2 = torch.atan2(rotated_y, rotated_x)
-        lat2 = torch.arcsin(rotated_z)
-
-        lat1 = lon1 = 0
-
-        d_lons = (lon2).abs()
-        d_lats = (lat2).abs()
-
-        sgn_lat = torch.sign(lat2)
-        sgn_lon = torch.sign(lon2)
-
-    else:
-        d_lons = 2 * torch.arcsin(torch.cos(lat1) * torch.sin(torch.abs(lon2 - lon1) / 2))
-        d_lats = (lat2 - lat1).abs()
-        sgn_lat = torch.sign(lat1 - lat2)
-        sgn_lon = torch.sign(lon1 - lon2)
-
-    sgn_lat[(d_lats).abs() / torch.pi > 1] = sgn_lat[(d_lats).abs() / torch.pi > 1] * -1
-    d_lats = d_lats * sgn_lat
-
-    sgn_lon[(d_lons).abs() / torch.pi > 1] = sgn_lon[(d_lons).abs() / torch.pi > 1] * -1
-    d_lons = d_lons * sgn_lon
-
-    if periodic_fov is not None:
-        rng_lon = (periodic_fov[1] - periodic_fov[0])
-        d_lons[d_lons > rng_lon] = d_lons[d_lons > rng_lon] - rng_lon
-        d_lons[d_lons < -rng_lon] = d_lons[d_lons < -rng_lon] + rng_lon
-
-    if base == "polar":
-        distance = torch.sqrt(d_lats ** 2 + d_lons ** 2)
-        phi = torch.atan2(d_lats, d_lons)
-
-        return distance.float(), phi.float()
-
-    else:
-        return d_lons.float(), d_lats.float()
 
 
 def get_nearest_to_healpix_recursive(c_t_global: torch.tensor, c_i: torch.tensor, level: int = 7,
@@ -363,55 +255,21 @@ def get_mapping_to_healpix_grid(coords_healpix: torch.tensor, coords_input: torc
     return grid_mapping
 
 
-def healpix_grid_to_mgrid(reference_grid_level:int, n_grid_levels:int, nh:int=0)->list:
-    """
-    Convert an ICON grid to a multi-level grid by calculating coordinates and adjacency
-    information at each grid level.
-
-    Parameters:
-    ----------
-    grid : xarray.Dataset
-        The ICON grid dataset containing coordinates and adjacency information.
-    n_grid_levels : int
-        The number of grid levels to generate in the multi-level grid.
-    clon_fov : tuple of float, optional
-        Longitude range (min, max) for the field of view to subset the grid.
-    clat_fov : tuple of float, optional
-        Latitude range (min, max) for the field of view to subset the grid.
-    nh : int, optional
-        Number of halo (neighbor) cells to include in adjacency calculations (default is 0).
-    extension : float, optional
-        Proportion to extend the field of view boundaries, used when subset coordinates are specified.
-
-    Returns:
-    -------
-    grids : list of dict
-        A list of dictionaries, each representing a grid level with coordinates, adjacency
-        information, and masking details for each cell at that level.
-    """
-    level_nside_npix = {}
-
-    for i in range(10):
-        nside = 2 ** (9 - i)
-        npix = hp.nside2npix(nside)
-        level_nside_npix[str(i)] = (nside, npix)
-
-    global_levels = []
+def healpix_grid_to_mgrid(zoom_max:int=10, nh:int=1)->list:
+    
+    zooms = []
     grids = []
 
-    for level in range(n_grid_levels):
-        global_levels.append(level)
+    for zoom in range(zoom_max + 1):
+        zooms.append(zoom)
 
-        nside, npix = level_nside_npix[str(level + reference_grid_level)]
-
-        adjc, adjc_mask = healpix_get_adjacent_cell_indices(nside, nh)
+        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom, nh)
 
         grid_lvl = {
-            "coords": healpix_pixel_lonlat_torch(nside),
+            "coords": healpix_pixel_lonlat_torch(zoom),
             "adjc": adjc,
-            "adjc_lvl": adjc,
             "adjc_mask": adjc_mask,
-            "global_level": level
+            "zoom": zoom
         }
         grids.append(grid_lvl)
 

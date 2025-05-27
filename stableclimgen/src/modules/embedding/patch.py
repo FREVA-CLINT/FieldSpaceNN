@@ -9,7 +9,7 @@ from stableclimgen.src.modules.embedding.embedder import BaseEmbedder, EmbedderM
 
 from stableclimgen.src.modules.cnn.conv import conv_nd
 
-from ..utils import EmbedBlock
+from ...utils.utils import EmbedBlock
 from ...utils.helpers import check_value
 
 
@@ -96,7 +96,7 @@ class LinearUnpatchify(EmbedBlock):
     def __init__(self, in_channels: int,
                  out_channels: int,
                  patch_size: Tuple[int, int, int],
-                 embedder_names: List[str] = None,
+                 embedder: EmbedderSequential = None,
                  embed_confs: Dict = None,
                  embed_mode: str = "sum",
                  spatial_dim_count: int = 1):
@@ -109,12 +109,8 @@ class LinearUnpatchify(EmbedBlock):
         self.out_channels = out_channels
         self.spatial_dim_count = spatial_dim_count
         # Optional embedding layer
-        if embedder_names:
-            emb_dict = nn.ModuleDict()
-            for emb_name in embedder_names:
-                emb: BaseEmbedder = EmbedderManager().get_embedder(emb_name, **embed_confs[emb_name])
-                emb_dict[emb.name] = emb
-            self.embedder_seq = EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count=spatial_dim_count)
+        if embedder:
+            self.embedder_seq = embedder
             self.embedding_layer = torch.nn.Linear(self.embedder_seq.get_out_channels, 2 * in_channels)
 
 
