@@ -3,7 +3,7 @@ from typing import List,Dict
 import torch
 import torch.nn as nn
 
-from ..base import get_layer
+from ..base import get_layer, IdentityLayer
 from ...modules.grids.grid_layer import GridLayer, Interpolator
 
 class LinearReductionLayer(nn.Module):
@@ -14,35 +14,33 @@ class LinearReductionLayer(nn.Module):
                  layer_confs: Dict) -> None: 
         super().__init__()
         
-        in_features =  torch.tensor(in_features)
+        if len(in_features)>1:
 
-        if ((in_features - in_features[0])>0).any():
-            self.layer = get_layer(
-                (1,),
-                in_features,
-                out_features,
-                sum_feat_dims=True,
-                layer_confs=layer_confs
-            )
- #           self.fwd_fcn = self.fwd_fac
+            in_features =  torch.tensor(in_features)
+
+            if ((in_features - in_features[0])>0).any():
+                self.layer = get_layer(
+                    (1,),
+                    in_features,
+                    out_features,
+                    sum_feat_dims=True,
+                    layer_confs=layer_confs
+                )
+            else:
+                self.layer = get_layer(
+                    (len(in_features),),
+                    in_features[0],
+                    out_features,
+                    sum_feat_dims=True,
+                    layer_confs=layer_confs
+                )
         else:
-            self.layer = get_layer(
-                (len(in_features),),
-                in_features[0],
-                out_features,
-                sum_feat_dims=True,
-                layer_confs=layer_confs
-            )
-
- #   def fwd_fac(self, x_levels, emb=None):
- #       return self.layer(torch.stack(x_levels, dim=-2), emb=emb)
-    
- #   def fwd(self, x_levels, emb=None):
- #       return self.layer(torch.stack(x_levels, dim=-1), emb=emb)
+            self.layer = IdentityLayer()
 
     def forward(self, x_levels, emb=None):
 
         x_out = self.layer(torch.stack(x_levels, dim=-2), emb=emb)
+        x_out = x_out.view(*x_out.shape[:4],-1)
 
         return x_out
 

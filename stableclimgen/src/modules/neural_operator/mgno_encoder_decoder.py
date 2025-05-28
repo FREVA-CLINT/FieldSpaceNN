@@ -77,7 +77,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
 
                 in_features = in_features_list[in_idx]
                 out_features = out_features_list[out_idx]
-                mg_in_features.append(in_features)
+                mg_in_features.append(out_features)
 
                 no_zoom = no_zooms[out_idx]
 

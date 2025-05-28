@@ -443,8 +443,8 @@ class ConcatLayer(nn.Module):
        
         x_c = self.layer(x_c, emb=emb)
 
-        x_c = x_c.view(*x.shape[:3],*self.no_dims,-1)
-        x = x.view(*x.shape[:3],*self.no_dims,-1)
+        x_c = x_c.view(*x.shape[:4],*self.no_dims,-1)
+        x = x.view(*x.shape[:4],*self.no_dims,-1)
         x = torch.concat((x, x_c), dim=-1)
 
         return x
@@ -566,7 +566,7 @@ class Stacked_NOConv(nn.Module):
         x = x_zooms[self.max_zoom_in]
         mask = mask_zooms[self.max_zoom_in] if mask_zooms is not None else None
 
-        x_zooms = dict(zip(self.in_zooms, x_zooms))
+        #x_zooms = dict(zip(self.in_zooms, x_zooms))
 
         for k, no_layer in enumerate(self.no_layers):
 

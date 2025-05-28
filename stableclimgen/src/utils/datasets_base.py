@@ -91,11 +91,11 @@ class BaseDataset(Dataset):
         time_idx_global = 0
         for file_idx, num_timesteps in enumerate(self.time_steps_files):
             for time_idx in range(num_timesteps):
+                if self.sample_timesteps is None or time_idx_global in self.sample_timesteps:
+                    for region_idx in range(self.n_sample_patches):
+                        self.index_map.append((file_idx, time_idx, region_idx))
+                
                 time_idx_global += 1
-                if self.sample_timesteps is not None and time_idx_global not in self.sample_timesteps:
-                    continue
-                for region_idx in range(self.n_sample_patches):
-                    self.index_map.append((file_idx, time_idx, region_idx))
 
         self.index_map = np.array(self.index_map)
 
@@ -111,7 +111,7 @@ class BaseDataset(Dataset):
                 norm_dict[var]['stats'],
                 norm_dict[var]['normalizer'])
 
-        self.len_dataset = self.index_map.shape[0] - self.n_sample_timesteps
+        self.len_dataset = self.index_map.shape[0] - (self.n_sample_timesteps - 1)
     
     def get_indices_from_patch_idx(self, patch_idx):
         raise NotImplementedError

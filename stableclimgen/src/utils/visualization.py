@@ -40,9 +40,12 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
         output_var = None
         plot_var = False
     
-    if output.ndim > 3:
+    if output.shape[-1] > 1:
         output = output[...,0]
         output_var = output_var[...,0] if output_var is not None else output_var
+        gt = gt[...,0]
+        input = input[...,0]
+        input_inter = input_inter[...,0]
 
     # Set up the figure layout
     fig, axes = plt.subplots(
