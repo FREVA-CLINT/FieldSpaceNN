@@ -65,9 +65,9 @@ def test(cfg: DictConfig) -> None:
     for k, var in enumerate(test_dataset.variables_target):
         output[..., k , :] = test_dataset.var_normalizers[var].denormalize(output[..., k, :])
 
-    output = dict(zip(test_dataset.variables_target, output.split(1, dim=-1)))
+    output = dict(zip(test_dataset.variables_target, output.split(1, dim=-2)))
     torch.save(output, cfg.output_path)
-    mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-1)))
+    mask = dict(zip(test_dataset.variables_target, mask.split(1, dim=-2)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
 
