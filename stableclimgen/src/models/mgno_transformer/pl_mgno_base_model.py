@@ -97,7 +97,7 @@ class MultiLoss(nn.Module):
 
         self.loss_fcns = []
         for target, lambda_ in lambda_dict.items():
-            if lambda_ > 0:
+            if float(lambda_) > 0:
                 self.loss_fcns.append({'lambda': float(lambda_), 
                                         'fcn': globals()[target](grid_layer=grid_layer)})
     
@@ -233,8 +233,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
     
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=indices, mask=mask, emb=emb, dists_input=dists_input)
+        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
         if hasattr(self.model,'predict_var') and self.model.predict_var:
             output, output_var = output.chunk(2, dim=-1)

@@ -63,12 +63,6 @@ class BaseDataset(Dataset):
             self.files_source = np.loadtxt(data_dict["source"]["files"], dtype='str', ndmin=1)
             self.files_target = np.loadtxt(data_dict["target"]["files"], dtype='str', ndmin=1)
 
-        if isinstance(data_dict["source"]["files"], list):
-            data_source = data_dict["source"]["files"]
-        else:
-            data_source = np.loadtxt(data_dict["source"]["files"], dtype='str', ndmin=1)
-
-
         if "timesteps" in data_dict.keys():
             self.sample_timesteps = []
             for t in data_dict["timesteps"]:
