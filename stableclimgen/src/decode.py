@@ -12,7 +12,7 @@ import logging
 logging.getLogger('lightning').setLevel(0)
 warnings.filterwarnings("ignore")
 
-START_DATE_STR = "2020-01-02"
+START_DATE_STR = "1940-01-01"
 END_DATE_STR = "2050-01-01"
 
 try:
