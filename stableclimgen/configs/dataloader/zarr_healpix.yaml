@@ -1,8 +1,8 @@
 dataset:
   _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
-  data_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/data_healpix.json
-  zoom_patch_sample: -1
-  norm_dict: /Users/maxwitte/work/crai_sr/ICON_atmo/norm_dict.json
+  data_dict: ${run_dir}/input/data_healpix.json
+  zoom_patch_sample: 2
+  norm_dict: ${run_dir}/input/norm_dict.json
   p_dropout: 0.95
   p_drop_vars: 1
   n_sample_timesteps: 1
@@ -10,5 +10,5 @@ dataset:
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule
   batch_size: 2
-  num_workers: 0
+  num_workers: 1
   use_costum_ddp_sampler: false
