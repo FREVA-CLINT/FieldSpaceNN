@@ -1,14 +1,13 @@
 from typing import List, Dict
 import copy
 
-
 defaults = {
+    "embed_confs": {},
     "latent_ch": [4, 4],
-    "block_type": "",
-    'sub_confs': {
+    "block_type": "TransformerBlock",
+    'layer_settings': {
         "blocks": ["s", "s", "mlp"],
-        "nh": False,
-        ""
+        "nh": False
     },
     'n_head_channels': 16
 }

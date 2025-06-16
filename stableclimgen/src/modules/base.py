@@ -206,7 +206,7 @@ class LinearLayer(nn.Module):
 
         self.layer = nn.Linear(in_features, out_features, bias=bias)
 
-    def forward(self, x, emb):
+    def forward(self, x, emb=None):
         
         x = x.view(*x.shape[:4],-1)
         x = self.layer(x)

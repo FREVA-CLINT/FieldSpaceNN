@@ -1,150 +1,180 @@
-import torch
+from typing import List
+
 import torch.nn as nn
-from typing import List, Dict
+from omegaconf import ListConfig
 
 from stableclimgen.src.modules.vae.quantization import Quantization
-from ..mgno_transformer.mgno_encoderdecoder_block import MGNO_StackedEncoderDecoder_Block, MGNO_EncoderDecoder_Block
-from ..mgno_transformer.mgno_processing_block import MGNO_Processing_Block
-from ..mgno_transformer.mgno_base_model import InputLayer, check_get, MGNO_base_model
-
-from ..mgno_transformer.mgno_block_confs import MGProcessingConfig, MGStackedEncoderDecoderConfig, \
-    MGEncoderDecoderConfig
-from ...modules.icon_grids.grid_layer import Interpolator
-
-
-class QuantConfig:
-    """
-    Configuration class for defining quantization parameters in the VAE model.
-
-    :param z_ch: Number of latent channels in the quantized representation.
-    :param latent_ch: Number of latent channels in the bottleneck.
-    :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
-    """
-
-    def __init__(self, latent_ch: List[int], n_head_channels: List[int], block_type: str, sub_confs: dict):
-        self.latent_ch = latent_ch
-        self.block_type = block_type
-        self.sub_confs = sub_confs
-        self.n_head_channels = n_head_channels
+from .confs import MGNOQuantConfig
+from ..mgno_transformer.confs import MGNOEncoderDecoderConfig, MGNOStackedEncoderDecoderConfig, defaults
+from ..mgno_transformer.mgno_base_model import MGNO_base_model
+from ...modules.base import LinEmbLayer
+from ...modules.embedding.embedder import get_embedder
+from ...modules.multi_grid.confs import MGProcessingConfig
+from ...modules.multi_grid.processing import MG_Block
+from ...modules.neural_operator import mgno_encoder_decoder as enc_dec
+from ...utils.helpers import check_get
 
 
 class MGNO_VAE(MGNO_base_model):
-    def __init__(self, 
+    def __init__(self,
                  mgrids,
                  encoder_block_configs: List,
                  decoder_block_configs: List,
-                 quant_config: QuantConfig,
-                 input_dim: int=1,
-                 lifting_dim: int=1,
-                 output_dim: int=1,
-                 n_vars_total:int=1,
-                 rotate_coord_system: bool=True,
-                 mask_as_embedding=False,
-                 input_embed_names=None,
-                 input_embed_confs=None,
-                 input_embed_mode='sum',
+                 quant_config: MGNOQuantConfig,
+                 in_features: int=1,
+                 lift_features: int=1,
+                 out_features: int=1,
                  **kwargs
                  ) -> None:
 
-        super().__init__(mgrids,rotate_coord_system=rotate_coord_system)
+        self.max_zoom = kwargs.get("max_zoom", mgrids[-1]['zoom'])
+        self.in_features = in_features
+        self.out_features = out_features
 
-        self.input_dim = input_dim
+        super().__init__(mgrids,
+                         rotate_coord_system=kwargs.get("rotate_coord_system", False))
 
         # Construct blocks based on configurations
         self.encoder_blocks = nn.ModuleList()
         self.decoder_blocks = nn.ModuleList()
-        
-        self.input_layer = InputLayer(self.input_dim,
-                                      lifting_dim,
-                                      self.grid_layer_0,
-                                      embed_names=input_embed_names,
-                                      embed_confs=input_embed_confs,
-                                      embed_mode=input_embed_mode)
 
-        input_levels = [0]
-        input_dims = [lifting_dim]
+        embedder_input = get_embedder(**check_get([kwargs, defaults], "input_embed_confs"), zoom=self.max_zoom)
+        self.in_layer = LinEmbLayer(in_features,
+                                    lift_features,
+                                    layer_confs=check_get([kwargs, defaults], "input_layer_confs"),
+                                    embedder=embedder_input)
+
+        in_zooms = [self.max_zoom]
+        in_features = [lift_features]
 
         for block_idx, block_conf in enumerate(encoder_block_configs):
-            block = create_encoder_decoder_block(
-                self.rcm,
-                input_levels,
-                input_dims,
-                mask_as_embedding,
-                block_conf,
-                self.grid_layers,
-                **kwargs
-            )
-            input_dims = block.model_dims_out
-            input_levels = block.output_levels
+            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, defaults, **kwargs)
+            in_features = block.out_features
+            in_zooms = block.out_zooms
             
             self.encoder_blocks.append(block)
 
-        bottleneck_level = input_levels[-1]
+        self.bottleneck_zoom = in_zooms[-1]
 
-        self.quantization = Quantization(input_dims[-1], quant_config.latent_ch, quant_config.block_type, 1,
-                                        **quant_config.sub_confs,
-                                        grid_layer=self.grid_layers[str(bottleneck_level)],
-                                        rotate_coord_system=rotate_coord_system,
-                                        n_head_channels=quant_config.n_head_channels)
+        quant_embedders = get_embedder(**quant_config.embed_confs, zoom=self.bottleneck_zoom)
+        self.quantization = Quantization(in_features[-1],
+                                         quant_config.latent_ch,
+                                         quant_config.block_type,
+                                         1,
+                                         **quant_config.layer_settings,
+                                         embedders=quant_embedders,
+                                         layer_confs=check_get([quant_config,kwargs,defaults], "layer_confs"))
 
         for block_idx, block_conf in enumerate(decoder_block_configs):
-            block = create_encoder_decoder_block(
-                self.rcm,
-                input_levels,
-                input_dims,
-                mask_as_embedding,
-                block_conf,
-                self.grid_layers,
-                **kwargs
-            )
-            input_dims = block.model_dims_out
-            input_levels = block.output_levels
+            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, defaults, **kwargs)
+            in_features = block.out_features
+            in_zooms = block.out_zooms
 
             self.decoder_blocks.append(block)
 
-        self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
+        embedder_output = get_embedder(**check_get([kwargs, defaults], "output_embed_confs"), zoom=self.max_zoom)
+
+        self.out_layer = LinEmbLayer(
+            in_features[0] if isinstance(in_features, list) or isinstance(in_features, ListConfig) else in_features,
+            out_features,
+            layer_confs=check_get([kwargs, defaults], "input_layer_confs"),
+            embedder=embedder_output)
 
 
-    def encode(self, x, coords_input=None, indices_sample=None, mask=None, emb=None):
-        b,n,nh,nv,nc = x.shape[:5]
-        x = x.view(b,n,-1,self.input_dim)
+    def encode(self, x, coords_input, sample_dict={}, mask=None, emb=None):
+        b, nt, n, nv, nc = x.shape[:5]
+        x = x.view(b, nt, n, -1, self.in_features)
 
-        x = self.input_layer(x, indices_sample=indices_sample, mask=mask, emb=emb)
+        x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
 
-        x_levels = [x]
-        mask_levels = [mask]
+        x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
+        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
+
         for k, block in enumerate(self.encoder_blocks):
-            coords_input = coords_input if k==0 else None
-            x_levels, mask_levels = block(x_levels, coords_in=coords_input, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
+            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
-        x = x_levels[0]
+        x = x_zooms[self.bottleneck_zoom]
 
-        x = self.quantization.quantize(x, indices_sample=indices_sample, emb=emb)
+        x = self.quantization.quantize(x, sample_dict=sample_dict, emb=emb)
         posterior = self.quantization.get_distribution(x)
-        return posterior, mask_levels[0]
+        return posterior
 
-    def decode(self, x, coords_output=None, indices_sample=None, mask=None, emb=None):
-        x = self.quantization.post_quantize(x, indices_sample=indices_sample, emb=emb)
+    def decode(self, x, coords_output, sample_dict={}, mask=None, emb=None):
+        x = self.quantization.post_quantize(x, sample_dict=sample_dict, emb=emb)
 
-        x_levels = [x]
-        mask_levels = [None]
+        x_zooms = {self.bottleneck_zoom: x}
+        mask_zooms = {self.bottleneck_zoom: mask}
+
         for k, block in enumerate(self.decoder_blocks):
-            coords_out = coords_output if k==len(self.decoder_blocks)-1  else None
-            x_levels, _ = block(x_levels, coords_out=coords_out, indices_sample=indices_sample, mask_levels=mask_levels, emb=emb)
+            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
-        x = self.out_layer(x_levels[0])
+        x = x_zooms[int(sample_dict['zoom'][0]) if sample_dict else self.max_zoom]
+
+        x = self.out_layer(x, emb=emb, sample_dict=sample_dict)
         return x
 
 
-    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, residual=None):
-        b,n,nh,nv,nc = x.shape[:5]
+    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, residual=0):
+        b, nt, n, nv, nc = x.shape[:5]
 
-        posterior, mask = self.encode(x, coords_input, indices_sample=indices_sample, mask=mask, emb=emb)
+        assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
+        assert nc == self.out_features, f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        if hasattr(self, "quantization"):
-            z = posterior.sample()
-        else:
-            z = posterior
-        dec = self.decode(z, coords_output, indices_sample=indices_sample, mask=mask, emb=emb) + (residual if torch.is_tensor(residual) else 0)
-        dec = dec.view(b,n,-1)
+        posterior = self.encode(x, coords_input, sample_dict=sample_dict, mask=mask, emb=emb)
+
+        z = posterior.sample()
+
+        dec = self.decode(z, coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+        dec = dec + residual
+
+        dec = dec.view(b,nt,n,nv,-1)
         return dec, posterior
+
+    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, defaults, **kwargs):
+        if isinstance(block_conf, MGNOEncoderDecoderConfig):
+
+            block = enc_dec.MGNO_EncoderDecoder_Block(
+                self.rcm,
+                in_zooms,
+                in_features,
+                block_conf.out_zooms,
+                block_conf.no_zooms,
+                block_conf.out_features,
+                rule=block_conf.rule,
+                no_layer_settings=check_get([block_conf, kwargs, defaults], 'no_layer_settings'),
+                block_type=check_get([block_conf, kwargs, defaults], 'block_type'),
+                with_gamma=check_get([block_conf, kwargs, defaults], "with_gamma"),
+                embed_confs=check_get([block_conf, kwargs, defaults], "embed_confs"),
+                omit_backtransform=check_get([block_conf, kwargs, defaults], "omit_backtransform"),
+                layer_confs=check_get([block_conf, kwargs, defaults], "layer_confs"),
+                concat_prev=check_get([block_conf, kwargs, defaults], "concat_prev"))
+
+
+        elif isinstance(block_conf, MGNOStackedEncoderDecoderConfig):
+            block = enc_dec.MGNO_StackedEncoderDecoder_Block(
+                self.rcm,
+                in_zooms,
+                in_features,
+                block_conf.out_zooms,
+                block_conf.no_zooms,
+                block_conf.out_features,
+                no_zoom_step=check_get([block_conf, kwargs, defaults], 'no_zoom_step'),
+                no_layer_settings=check_get([block_conf, kwargs, defaults], 'no_layer_settings'),
+                block_type=check_get([block_conf, kwargs, defaults], 'block_type'),
+                with_gamma=check_get([block_conf, kwargs, defaults], "with_gamma"),
+                embed_confs=check_get([block_conf, kwargs, defaults], "embed_confs"),
+                layer_confs=check_get([block_conf, kwargs, defaults], "layer_confs"),
+                concat_prev=check_get([block_conf, kwargs, defaults], "concat_prev"))
+
+        elif isinstance(block_conf, MGProcessingConfig):
+            layer_settings = block_conf.layer_settings
+            layer_settings['layer_confs'] = check_get([block_conf, kwargs, defaults], "layer_confs")
+
+            block = MG_Block(
+                self.rcm.grid_layers,
+                in_zooms,
+                layer_settings,
+                in_features,
+                block_conf.out_features)
+
+        return block
