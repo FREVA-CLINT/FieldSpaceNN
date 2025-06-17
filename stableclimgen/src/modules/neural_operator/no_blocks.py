@@ -357,9 +357,6 @@ class PreActivation_NOBlock(nn.Module):
         
         self.zoom_diff = (out_zoom - no_layer.in_zoom)
 
-        self.lin_skip_outer = nn.Linear(in_features, out_features, bias=True)
-        self.lin_skip_inner = nn.Linear(in_features, out_features, bias=True)
-
         embedder = get_embedder(**embed_confs, zoom=no_layer.in_zoom)
 
         self.layer_norm1 = LinEmbLayer(in_features, 
@@ -385,20 +382,19 @@ class PreActivation_NOBlock(nn.Module):
             self.register_buffer('gamma2', torch.ones(out_features))
 
         self.mlp_layer = MLP_fac(
-            in_features,
+            out_features,
             out_features,
             layer_confs=layer_confs)   
         
         self.activation = nn.SiLU()
         
-        self.residual_layer = ProjLayer(in_features, out_features, self.zoom_diff)
+        self.lin_skip_outer = ProjLayer(in_features, out_features, self.zoom_diff)
+        self.lin_skip_inner = ProjLayer(in_features, out_features, self.zoom_diff)
 
     def forward(self, x, sample_dict=None, mask=None, emb=None):
         
         x_res = x
         
-        x_res = self.residual_layer(x, emb=emb)
-
         x = self.layer_norm1(x, emb=emb, sample_dict=sample_dict)
 
         x_conv = self.no_conv(x, 
