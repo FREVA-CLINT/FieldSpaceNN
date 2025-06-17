@@ -257,7 +257,8 @@ class NOBlock(nn.Module):
 
         zoom_diff_no_out = (no_layer.no_zoom - out_zoom)
 
-        self.residual_layer = ProjLayer(in_features, out_features, self.zoom_diff)
+        self.lin_skip_inner = ProjLayer(in_features, out_features, self.zoom_diff)
+        self.lin_skip_outer = ProjLayer(in_features, out_features, self.zoom_diff)
 
         if zoom_diff_no_out == 0 and OW_zero:
             self.no_conv = O_NOConv(in_features, 
@@ -270,9 +271,6 @@ class NOBlock(nn.Module):
                                 no_layer, 
                                 layer_confs=layer_confs)
         
-        self.lin_skip_outer = nn.Linear(in_features, out_features, bias=True)
-        self.lin_skip_inner = nn.Linear(in_features, out_features, bias=True)
-
         embedder = get_embedder(**embed_confs, zoom=no_layer.out_zoom)
         self.layer_norm1 = LinEmbLayer(out_features, 
                                         out_features, 
@@ -297,7 +295,7 @@ class NOBlock(nn.Module):
             self.register_buffer('gamma2', torch.ones(out_features))
 
         self.mlp_layer = MLP_fac(
-            in_features,
+            out_features,
             out_features,
             layer_confs=layer_confs)        
 
@@ -308,8 +306,6 @@ class NOBlock(nn.Module):
         
         x_res = x
         
-        x_res = self.residual_layer(x)
-
         x_conv = self.no_conv(x, 
                         sample_dict=sample_dict, 
                         mask=mask, 
@@ -437,7 +433,7 @@ class ConcatLayer(nn.Module):
 
         out_features = no_dims_tot*out_features
 
-        self.layer = get_layer((1,), in_features, out_features, sum_feat_dims=False, layer_confs=layer_confs)
+        self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
 
     def forward(self, x, x_c, emb=None):
        
@@ -544,20 +540,20 @@ class Stacked_NOConv(nn.Module):
 
             out_zoom = int(out_zoom)
 
-            no_dims = self.no_dims[out_zoom]
+            in_features = [*self.no_dims[out_zoom], max_features]
+            out_features = [out_features_dict[out_zoom]]
 
-            layer = get_layer(no_dims, 
-                            max_features, 
-                            out_features_dict[out_zoom], 
+            layer = get_layer(in_features, 
+                            out_features,
                             layer_confs=layer_confs)
 
             self.zoom_reduction_layers[str(out_zoom)] = layer
 
-               
-        self.layer = get_layer(self.no_dims[min_zoom],
-                               in_features_no_max,
-                               max_features, 
-                               sum_feat_dims=False,
+        in_features = [*self.no_dims[min_zoom], in_features_no_max]
+        out_features = [*self.no_dims[min_zoom], max_features]    
+
+        self.layer = get_layer(in_features,
+                               out_features,
                                layer_confs=layer_confs)
 
 
@@ -617,11 +613,12 @@ class NOConv(nn.Module):
         self.in_zoom = self.no_layer.in_zoom
         self.out_zoom = int(self.no_layer.out_zoom)
 
-        self.layer = get_layer(self.no_dims, 
-                                in_features, 
+        in_features = [*self.no_dims, in_features]
+        out_features = [*self.no_dims, out_features]
+
+        self.layer = get_layer(in_features, 
                                 out_features, 
-                                layer_confs=layer_confs,
-                                sum_feat_dims=False)
+                                layer_confs=layer_confs)
         
     def forward(self, x, sample_dict=None, mask=None, emb=None):
         x = self.no_layer.transform(x, sample_dict=sample_dict, mask=mask, emb=emb)
@@ -655,11 +652,12 @@ class O_NOConv(nn.Module):
         self.in_zoom = self.no_layer.in_zoom
         self.out_zoom = int(self.no_layer.out_zoom)
 
-        self.layer = get_layer(self.no_dims, 
-                                in_features, 
+        in_features = [*self.no_dims, in_features]
+        out_features = [out_features]
+
+        self.layer = get_layer(in_features, 
                                 out_features, 
-                                layer_confs=layer_confs,
-                                sum_feat_dims=True)
+                                layer_confs=layer_confs)
 
     def forward(self, x, sample_dict=None, mask=None, emb=None):
         x = self.no_layer.transform(x, sample_dict=sample_dict, mask=mask, emb=emb)

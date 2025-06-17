@@ -165,10 +165,10 @@ class BaseDataset(Dataset):
         for variable in variables:
             data = torch.tensor(ds[variable].values)
             data = data.view(nt, -1,n,nh)
-            data_g.append(data.permute(0,2,3,1))
+            data_g.append(data.transpose(0,1))
 
-        data_g = torch.stack(data_g, dim=-2)
-        data_g = data_g.view(nt,n,nh,len(variables),-1)
+        data_g = torch.stack(data_g, dim=0)
+        data_g = data_g.view(len(variables),nt,n,nh,-1)
 
         data_t = torch.tensor(ds["time"].values)
 
@@ -200,11 +200,11 @@ class BaseDataset(Dataset):
         else:
             data_target, time_target = data_source, time_source
 
-        nt, n, nh, nv, f = data_source.shape
+        nv, nt, n, nh, f = data_source.shape
 
         drop_vars = torch.rand(1) < self.p_drop_vars
         drop_timesteps = torch.rand(1) < self.p_drop_timesteps
-        drop_mask = torch.zeros((nt, n, nh, nv), dtype=bool)
+        drop_mask = torch.zeros((nv, nt, n, nh), dtype=bool)
 
         if self.random_p and drop_vars:
             p_dropout = skewed_random_p(nv, exponent=self.skewness_exp, max_p=self.p_dropout)
@@ -215,25 +215,25 @@ class BaseDataset(Dataset):
 
         if self.p_dropout > 0 and not drop_vars and not drop_timesteps:
             drop_mask_p = (torch.rand((nt, n, nh)) < p_dropout).bool()
-            drop_mask[drop_mask_p] = True
+            drop_mask[:,drop_mask_p] = True
 
         elif self.p_dropout > 0 and drop_vars:
-            drop_mask_p = (torch.rand((nt, n, nh, nv)) < p_dropout).bool()
+            drop_mask_p = (torch.rand((nv, nt, n, nh)) < p_dropout).bool()
             drop_mask[drop_mask_p] = True
 
         elif self.p_dropout > 0 and drop_timesteps:
             drop_mask_p = (torch.rand(nt)<self.p_dropout).bool()
-            drop_mask[drop_mask_p]=True
+            drop_mask[:,drop_mask_p]=True
 
         if self.n_drop_vars!=-1 and self.n_drop_vars < nv:
             not_drop_vars = torch.randperm(nv)[:(nv-self.n_drop_vars)]
-            drop_mask[:,:,not_drop_vars] = (drop_mask[:,:,not_drop_vars]*0).bool()
+            drop_mask[not_drop_vars] = (drop_mask[not_drop_vars]*0).bool()
     
         for k, var in enumerate(variables_source):
-            data_source[:,:,:,k,:] = self.var_normalizers[var].normalize(data_source[:,:,:,k,:])
+            data_source[k] = self.var_normalizers[var].normalize(data_source[k])
         
         for k, var in enumerate(variables_target):
-            data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
+            data_target[k] = self.var_normalizers[var].normalize(data_target[k])
 
         data_source[drop_mask] = 0
 
@@ -248,7 +248,7 @@ class BaseDataset(Dataset):
                 'zoom': self.zoom
                 }
 
-        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(0).repeat(nt, 1),
+        embed_data = {'VariableEmbedder': sample_vars.unsqueeze(-1).repeat(1,nt),
                       'TimeEmbedder': time_source.float()}
         
         coords_input = torch.tensor([])

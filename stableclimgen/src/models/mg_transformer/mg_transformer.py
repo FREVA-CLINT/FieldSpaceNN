@@ -6,16 +6,18 @@ from typing import List
 
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer
-from ...modules.neural_operator import mgno_encoder_decoder as enc_dec
-from ...modules.multi_grid.processing import MG_Block
+
+from ...modules.multi_grid.processing import MG_Block,MG_CrossBlock
+from ...modules.multi_grid.confs import MGProcessingConfig,MGCrossProcessingConfig
+from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder
+
 from ...modules.embedding.embedder import get_embedder
 
-from .confs import defaults, MGNOEncoderDecoderConfig, MGNOStackedEncoderDecoderConfig
-from ...modules.multi_grid.confs import MGProcessingConfig
+from .confs import defaults,MGDecoderConfig,MGEncoderConfig
 
-from .mgno_base_model import MGNO_base_model
+from .mg_base_model import MG_base_model
 
-class MGNO_Transformer_MG(MGNO_base_model):
+class MG_Transformer(MG_base_model):
     def __init__(self, 
                  mgrids,
                  block_configs: List,
@@ -30,8 +32,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         
         predict_var = kwargs.get("predict_var", defaults['predict_var'])
         
-        super().__init__(mgrids,
-                         rotate_coord_system=kwargs.get("rotate_coord_system", False))
+        super().__init__(mgrids)
 
         if predict_var:
             out_features = out_features * 2
@@ -45,6 +46,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
             in_features,
             lift_features,
             layer_confs = check_get([kwargs,defaults], "input_layer_confs"),
+            layer_norm=False,
             embedder = embedder_input)
         
         self.Blocks = nn.ModuleList()
@@ -54,52 +56,47 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         for block_idx, block_conf in enumerate(block_configs):
             
-            if isinstance(block_conf, MGNOEncoderDecoderConfig):
-
-                block = enc_dec.MGNO_EncoderDecoder_Block(
-                                            self.rcm,
-                                            in_zooms,
-                                            in_features,
-                                            block_conf.out_zooms,
-                                            block_conf.no_zooms,
-                                            block_conf.out_features,
-                                            rule=block_conf.rule,
-                                            no_layer_settings=check_get([block_conf,kwargs,defaults],'no_layer_settings'),
-                                            block_type=check_get([block_conf,kwargs,defaults],'block_type'),
-                                            with_gamma=check_get([block_conf,kwargs,defaults], "with_gamma"),
-                                            embed_confs=check_get([block_conf,kwargs,defaults], "embed_confs"),
-                                            omit_backtransform=check_get([block_conf,kwargs,defaults], "omit_backtransform"),
-                                            layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"),
-                                            concat_prev=check_get([block_conf,kwargs,defaults], "concat_prev"))  
+            if isinstance(block_conf, MGEncoderConfig):
                 
+                if block_conf.type=='diff':
 
-            elif isinstance(block_conf, MGNOStackedEncoderDecoderConfig):
-                block = enc_dec.MGNO_StackedEncoderDecoder_Block(
-                                            self.rcm,
-                                            in_zooms,
-                                            in_features,
-                                            block_conf.out_zooms,
-                                            block_conf.no_zooms,
-                                            block_conf.out_features,
-                                            no_zoom_step=check_get([block_conf,kwargs,defaults],'no_zoom_step'),
-                                            no_layer_settings=check_get([block_conf,kwargs,defaults],'no_layer_settings'),
-                                            block_type=check_get([block_conf,kwargs,defaults],'block_type'),
-                                            with_gamma=check_get([block_conf,kwargs,defaults], "with_gamma"),
-                                            embed_confs=check_get([block_conf,kwargs,defaults], "embed_confs"),
-                                            layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"),
-                                            concat_prev=check_get([block_conf,kwargs,defaults], "concat_prev"))  
+                    block = MG_Difference_Encoder(
+                        out_zooms=block_conf.out_zooms
+                    )  
+                    block.out_features = in_features*len(block_conf.out_zooms)
                 
             elif isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
                 layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
 
                 block = MG_Block(
-                     self.rcm.grid_layers,
+                     self.grid_layers,
                      in_zooms,
                      layer_settings,
                      in_features,
                      block_conf.out_features)
-                     
+            
+            elif isinstance(block_conf, MGCrossProcessingConfig):
+                layer_settings = block_conf.layer_settings
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MG_CrossBlock(
+                     self.grid_layers,
+                     in_zooms,
+                     layer_settings,
+                     in_features)
+                
+            elif isinstance(block_conf, MGDecoderConfig):
+                
+                if block_conf.type=='sum':
+
+                    block = MG_Sum_Decoder(
+                        self.grid_layers,
+                        in_zooms=in_zooms,
+                        out_zoom=self.max_zoom,
+                        interpolator_confs=check_get([block_conf,kwargs,defaults], "interpolator_confs")
+                    )  
+                    block.out_features = [in_features[0]]
                 
             self.Blocks.append(block)     
 
@@ -136,7 +133,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == self.out_features, f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        #x = x.view(b, nt, n, -1, self.in_features)
+       # x = x.view(b, nv, nt, n, self.in_features)
         #b,n,nv,nc = x.shape[:4]
 
         if self.learn_residual:

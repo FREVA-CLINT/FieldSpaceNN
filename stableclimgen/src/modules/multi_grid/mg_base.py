@@ -15,25 +15,11 @@ class LinearReductionLayer(nn.Module):
         super().__init__()
         
         if len(in_features)>1:
+            self.layer = get_layer(
+                [len(in_features), in_features[0]],
+                [out_features],
+                layer_confs=layer_confs)
 
-            in_features =  torch.tensor(in_features)
-
-            if ((in_features - in_features[0])>0).any():
-                self.layer = get_layer(
-                    (1,),
-                    in_features,
-                    out_features,
-                    sum_feat_dims=True,
-                    layer_confs=layer_confs
-                )
-            else:
-                self.layer = get_layer(
-                    (len(in_features),),
-                    in_features[0],
-                    out_features,
-                    sum_feat_dims=True,
-                    layer_confs=layer_confs
-                )
         else:
             self.layer = IdentityLayer()
 
@@ -79,20 +65,20 @@ class ProjLayer(nn.Module):
 
     def get_sum_residual(self, x, mask=None):
         if self.zoom_diff < 0:
-            x = x.view(x.shape[0],x.shape[1], -1, 4**(-1*self.zoom_diff), x.shape[-2], x.shape[-1])
+            x = x.view(*x.shape[:3], -1, 4**(-1*self.zoom_diff), x.shape[-1])
 
             if mask is not None:
-                weights = mask.view(x.shape[0], x.shape[1],-1, 4**self.zoom_diff, x.shape[-2],1)==False
+                weights = mask.view(*x.shape[:3],-1, 4**self.zoom_diff, 1)==False
                 weights = weights.sum(dim=-3, keepdim=True)
                 x = (x/(weights+1e-10)).sum(dim=-3) 
                 x = x * (weights.sum(dim=-3)!=0)
 
             else:
-                x = x.mean(dim=-3)
+                x = x.mean(dim=-2)
 
         elif self.zoom_diff > 0:
-            x = x.unsqueeze(dim=3).repeat_interleave(4**(self.zoom_diff), dim=3)
-            x = x.view(x.shape[0],x.shape[1],-1,x.shape[-2],x.shape[-1])
+            x = x.unsqueeze(dim=-2).repeat_interleave(4**(self.zoom_diff), dim=-2)
+            x = x.view(*x.shape[:3],-1,x.shape[-1])
             
         return x
 
@@ -123,8 +109,8 @@ class IWD_ProjLayer(nn.Module):
                                         **interpolator_confs)
 
 
-    def forward(self, x, emb=None, sample_dict=None):
+    def forward(self, x, sample_dict=None):
       
-        x,_ = self.interpolator(x.unsqueeze(dim=3), calc_density=False, sample_dict=sample_dict)
+        x,_ = self.interpolator(x.unsqueeze(dim=-2), calc_density=False, sample_dict=sample_dict)
 
         return x

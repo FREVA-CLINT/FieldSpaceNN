@@ -1,6 +1,7 @@
 import torch
 import xarray as xr
 import numpy as np
+import math
 
 radius_earth= 6371
 
@@ -236,3 +237,43 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
 
     else:
         return d_lons.float(), d_lats.float()
+    
+
+
+
+def global_indices_to_paths_dict(global_indices, zoom=None, sizes=None):
+    """
+    global_indices: 1D torch.Tensor of int64, shape [n]
+    zoom: int, optional. If provided and sizes is None, sets the number of zoom levels (len(sizes)=zoom+1).
+    sizes: list or 1D tensor of int, optional. If provided, gives the number of children per zoom level.
+           If both are None, raises an error.
+    Returns: dict {z: tensor of shape [n]} with z in [0, ..., num_levels-1], each tensor is the index at that zoom.
+    """
+   # global_indices = torch.as_tensor(global_indices, dtype=torch.long)
+
+    if sizes is not None:
+    #    sizes = torch.as_tensor(sizes, dtype=torch.long, device=global_indices.device)
+        num_levels = len(sizes)
+    elif zoom is not None:
+        num_levels = zoom + 1
+        sizes = torch.full((num_levels,), 4, dtype=torch.long, device=global_indices.device)
+    else:
+        raise ValueError("At least one of 'sizes' or 'zoom' must be provided.")
+
+    # Compute strides: product of later sizes
+    rev_sizes = sizes.flip(0)
+    rev_cumprod = torch.cumprod(rev_sizes, 0)
+    strides = torch.ones_like(sizes)
+    strides[:-1] = rev_cumprod.flip(0)[1:]
+
+    # Compute indices for all levels at once
+    indices_matrix = (global_indices.unsqueeze(1) // strides) % sizes
+
+    # Return as dict {zoom_level: 1D tensor}
+    out = {z: indices_matrix[:, z] for z in range(num_levels)}
+    return out
+
+def get_zoom_x(x, zoom_patch_sample=None, **kwargs):
+    s = x.shape[2]
+    zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample else int(math.log(s/5) / math.log(4))
+    return zoom_x

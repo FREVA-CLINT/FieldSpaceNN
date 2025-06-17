@@ -6,14 +6,45 @@ import torch.nn as nn
 from einops import rearrange
 from torch.nn.functional import scaled_dot_product_attention
 
+from ...modules.grids.grid_layer import GridLayer
 from ...modules.embedding.embedder import EmbedderSequential
 from stableclimgen.src.modules.rearrange import (RearrangeTimeCentric, RearrangeSpaceCentric,
-                                                 RearrangeVarCentric)
+                                                 RearrangeVarCentric, RearrangeNHCentric, RearrangeVarNHCentric)
 from stableclimgen.src.utils.utils import EmbedBlock
 
 from ...utils.helpers import check_value
 
 from ..base import get_layer, LinEmbLayer, IdentityLayer, MLP_fac
+
+
+def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk_size=2**16):
+    """
+    Applies scaled dot-product attention with batch chunking to avoid CUDA issues.
+
+    Args:
+        q: (B, H, L_q, D)
+        k: (B, H, L_k, D)
+        v: (B, H, L_k, D)
+        mask: Optional (B, H, L_q, L_k)
+        is_causal: Boolean
+        chunk_size: Chunk size for batch splitting
+
+    Returns:
+        Tensor of shape (B, H, L_q, D)
+    """
+    B = q.shape[0]
+    chunks = [
+        scaled_dot_product_attention(
+            q[i:i+chunk_size],
+            k[i:i+chunk_size],
+            v[i:i+chunk_size],
+            attn_mask=None if mask is None else mask[i:i+chunk_size],
+            is_causal=is_causal
+        )
+        for i in range(0, B, chunk_size)
+    ]
+    return torch.cat(chunks, dim=0)
+
 
 class SelfAttention(nn.Module):
     """
@@ -37,16 +68,22 @@ class SelfAttention(nn.Module):
             dropout: float = 0.,
             is_causal: bool = False,
             layer_confs = {},
-            qkv_proj = False
+            qkv_proj = False,
+            cross = False
     ):
         super().__init__()
 
+
         if qkv_proj:
-            self.qkv_proj = get_layer((1,), in_features, in_features*3, layer_confs=layer_confs, sum_feat_dims=True, bias=False)
-            self.out_layer = get_layer((1,), in_features, out_features, layer_confs=layer_confs, sum_feat_dims=True, bias=True)
+            self.x_proj = get_layer(in_features, in_features * (1 + 2 * (1-cross)), layer_confs=layer_confs, bias=False)
+            self.kv_proj = get_layer(in_features, in_features*2, layer_confs=layer_confs, bias=False) if cross else IdentityLayer()
+            self.out_layer = get_layer(in_features, out_features, layer_confs=layer_confs, bias=True)
         else:
-            self.qkv_proj = IdentityLayer()
+            self.x_proj = IdentityLayer()
+            self.kv_proj = IdentityLayer()
             self.out_layer = IdentityLayer()
+
+        self.proj_fcn = self.proj_xkv if cross else self.proj_x
 
         # Learnable scaling parameter to control the output's magnitude
         self.gamma = torch.nn.Parameter(torch.ones(out_features) * 1E-6)
@@ -56,7 +93,13 @@ class SelfAttention(nn.Module):
 
         self.is_causal = is_causal  # Flag for causal masking (used in time-series tasks)
 
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def proj_x(self, x, kv: torch.Tensor=None):
+        return self.x_proj(x).chunk(3,dim=-1)
+    
+    def proj_xkv(self, x, kv: torch.Tensor):
+        return self.x_proj(x), *self.kv_proj(kv).chunk(2,dim=-1)
+
+    def forward(self, x: torch.Tensor, kv: torch.Tensor=None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Forward pass for the SelfAttention layer.
 
@@ -67,11 +110,10 @@ class SelfAttention(nn.Module):
         :param mask: Optional mask tensor (used for causal or attention masking).
         :return: Output tensor after applying self-attention and projection.
         """
-        b, t_g_v, c = x.shape
+        q, k, v = self.proj_fcn(x, kv=kv)
 
-        # Compute query, key, and value projections
-        q, k, v = self.qkv_proj(x).chunk(3, dim=-1)
- 
+        b, t_g_v, c = x.shape
+         
         # Rearrange tensors for multi-head attention: [batch, time, (n_heads * d_head)] -> [batch, n_heads, time, d_head]
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.n_heads), (q, k, v))
 
@@ -84,8 +126,9 @@ class SelfAttention(nn.Module):
         # Apply skip connection and scaling to the output
         return self.gamma * self.out_layer(attn_out)
 
+
     def scaled_dot_product_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                                     mask: Optional[torch.Tensor]) -> torch.Tensor:
+                                     mask: Optional[torch.Tensor], **kwargs) -> torch.Tensor:
         """
         Scaled dot-product attention mechanism, with optional causal masking.
 
@@ -95,7 +138,61 @@ class SelfAttention(nn.Module):
         :param mask: Optional mask tensor for attention.
         :return: Output tensor after applying attention mechanism.
         """
-        return scaled_dot_product_attention(q, k, v, mask, is_causal=self.is_causal)
+        return safe_scaled_dot_product_attention(q, k, v, mask, is_causal=self.is_causal)
+
+
+class NHAttention(nn.Module):
+
+    def __init__(
+            self,
+            grid_layer: GridLayer,
+            in_features: int,
+            out_features: int,
+            num_heads: int,
+            dropout: float = 0.,
+            is_causal: bool = False,
+            layer_confs = {},
+            with_variable_attention = False
+    ):
+        super().__init__()
+
+        self.attention = SelfAttention(
+            in_features, 
+            out_features, 
+            num_heads,
+            layer_confs=layer_confs,
+            dropout=dropout,
+            is_causal=is_causal,
+            qkv_proj=True,
+            cross=True
+            )
+        
+        self.grid_layer = grid_layer
+
+        if with_variable_attention:
+            self.nh_pattern = 'b t s nh v c -> (b t s) (nh v) c'
+            self.pattern = 'b t s v c -> (b t s) v c'
+            self.reverse_pattern = '(b t s) v c -> b t s v c'
+        else:
+            self.nh_pattern = 'b t s nh v c -> (b t s v) (nh) c'
+            self.pattern = 'b t s v c -> (b t s v) 1 c'
+            self.reverse_pattern = '(b t s v) 1 c -> b t s v c'
+
+
+    def forward(self, x: torch.Tensor, emb, mask=None, sample_dict: Dict={}) -> torch.Tensor:
+        b, t, s, v, c = x.shape
+
+        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_dict, with_nh=True, mask=mask)
+
+        x = rearrange(x, self.pattern)
+        x_nh = rearrange(x_nh, self.nh_pattern)
+        mask_nh = rearrange(mask_nh == False, self.nh_pattern)
+        
+        x = self.attention(x, x_nh, emb=emb, mask=mask_nh)
+
+        x = rearrange(x, self.reverse_pattern, b=b, t=t, s=s, v=v, c=c)
+
+        return x
 
 
 class MLPLayer(nn.Module):
@@ -122,8 +219,8 @@ class MLPLayer(nn.Module):
         super().__init__()
 
         # Define MLP with a hidden layer, GELU activation, and optional dropout
-        self.branch_layer1 = get_layer((1,), in_features, in_features * mult, layer_confs=layer_confs, sum_feat_dims=True, bias=True)
-        self.branch_layer2 = get_layer((1,), in_features * mult, out_features_list, layer_confs=layer_confs, sum_feat_dims=True, bias=True)
+        self.branch_layer1 = get_layer(in_features, in_features * mult, layer_confs=layer_confs, bias=True)
+        self.branch_layer2 = get_layer(in_features * mult, out_features_list, layer_confs=layer_confs, bias=True)
 
         self.activation = torch.nn.GELU()
         self.dropout = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
@@ -178,7 +275,8 @@ class TransformerBlock(EmbedBlock):
             dropout: List[float] = 0.,
             spatial_dim_count: int = 1,
             embedders: List[EmbedderSequential] = None,
-            layer_confs: Dict = {}
+            layer_confs: Dict = {},
+            **kwargs
     ):
         super().__init__()
 
@@ -196,36 +294,46 @@ class TransformerBlock(EmbedBlock):
 
         trans_blocks, lin_emb_layers, norms, residuals = [], [], [], []
         for i, block in enumerate(blocks):
-
+            
+            n_heads = num_heads[i] if not n_head_channels[i] else in_features // n_head_channels[i]
             seq_length = seq_lengths[i]
-            # Add MLP layer if specified
+     
             if block == "mlp":
                 trans_block = MLP_fac(in_features, out_features_list[i], mlp_mult[i], dropout[i], layer_confs=layer_confs, gamma=True)
+
             else:
                 qkv_proj = len(layer_confs) == 0
-                qkv_layer = get_layer((1,), in_features, in_features*3, layer_confs=layer_confs) if not qkv_proj else None
-                out_layer = get_layer((1,), in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if not qkv_proj else None
+                qkv_layer = get_layer(in_features, in_features*3, layer_confs=layer_confs) if not qkv_proj else None
+                out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if not qkv_proj else None
                 out_features_att = out_features_list[i] if qkv_proj else in_features
 
+                cross = False
                 # Select rearrangement function based on block type
                 if block == "t":
                     rearrange_fn = RearrangeTimeCentric
                 elif block == "s":
                     seq_length = 4**seq_length
                     rearrange_fn = RearrangeSpaceCentric
+                elif block == "snh":
+                    seq_length = 1
+                    cross = True
+                    rearrange_fn = RearrangeNHCentric
+                elif block == "vsnh":
+                    seq_length = 1
+                    cross = True
+                    rearrange_fn = RearrangeVarNHCentric
                 else:
                     assert block == "v"
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                n_heads = num_heads[i] if not n_head_channels[i] else in_features // n_head_channels[i]
-                trans_block = rearrange_fn(SelfAttention(in_features, out_features_att, n_heads, layer_confs=layer_confs, qkv_proj=qkv_proj), spatial_dim_count, seq_length, proj_layer=qkv_layer, out_layer=out_layer)
+                trans_block = rearrange_fn(SelfAttention(in_features, out_features_att, n_heads, layer_confs=layer_confs, qkv_proj=qkv_proj, cross=cross), spatial_dim_count, seq_length, proj_layer=qkv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'])
      
             lin_emb_layers.append(LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True))
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection
             if in_features != out_features_list[i]:
-                residual = get_layer((1,), in_features, out_features_list[i], layer_confs=layer_confs, bias=False)
+                residual = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=False)
             else:
                 residual = IdentityLayer()
 
@@ -239,7 +347,7 @@ class TransformerBlock(EmbedBlock):
         self.blocks = nn.ModuleList(trans_blocks)
         self.residuals = nn.ModuleList(residuals)
 
-    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
+    def forward(self, x: torch.Tensor, kv: torch.Tensor=None, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
                 sample_dict: Optional[Dict] = None, *args) -> torch.Tensor:
         """
         Forward pass for the TransformerBlock.
@@ -256,6 +364,8 @@ class TransformerBlock(EmbedBlock):
         for block, lin_emb_layer, residual in zip(self.blocks, self.lin_emb_layers, self.residuals):
 
             out = lin_emb_layer(x, emb=emb, sample_dict=sample_dict)
-            x = block(out, emb=emb) + residual(x, emb=emb)
+            x = block(out, emb=emb, sample_dict=sample_dict) + residual(x, emb=emb)
 
         return x
+
+
