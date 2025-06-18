@@ -170,11 +170,14 @@ class SpatiaFacLayer(nn.Module):
                 scale /= in_features_
                 core_dims.append(in_features_)
 
+        self.feat_dims_in = in_features
+        
         if len(in_features)==len(out_features) and len(in_features)>1:
             self.subscripts['x']['features_out'] = self.subscripts['x']['features_in'][:-1]
             self.feat_dims_out = [int(torch.tensor(in_features[:-1]).prod()), out_features[-1]]
         else:
             self.feat_dims_out = out_features
+        
 
         if factorize_features:    
             m = get_fac_matrix(out_features[-1], rank_feat, init_ones=False)
@@ -278,17 +281,11 @@ class SpatiaFacLayer(nn.Module):
 
         core = self.get_core_fcn(emb=emb)
                 
-        factors_x_in = f_s + f_f_in
-        sub_x_in = self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_in']
-        x_dims_in = [-1] + [factors_x_in[k].shape[0] for k in range(len(sub_x_in))] #+ [x.shape[-1]]
+        x_dims_in = [-1] + [f_s[k].shape[0] for k in range(len(self.subscripts['x']['space'][N_out_of_sample:]))] + self.feat_dims_in 
 
-       # factors_x_out = f_s + f_f_in[:-1] + f_f_out
-       # sub_x_out = self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_out']
         x_dims_out = [-1] + self.feat_dims_out 
 
-        #x_dims_in += [factors[k].shape[0] for k,subscript in enumerate(self.subscripts['x']['features_in']) ]
-
-        x_subscripts_in = self.subscripts['x']['base'] + sub_x_in
+        x_subscripts_in = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_in']
         x_subscripts_out = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:self.sum_n_zooms] + self.subscripts['x']['features_out']
 
         x = x.view(*x.shape[:3], *x_dims_in)
@@ -297,7 +294,7 @@ class SpatiaFacLayer(nn.Module):
         
         eq_parts_in = [x_subscripts_in] + [self.subscripts['core']] + factor_subscripts
 
-        factors = f_v + factors_x_in + f_f_out 
+        factors = f_v + f_s + f_f_in + f_f_out 
         
         einsum_eq = (
             f"{','.join(eq_parts_in)}"
