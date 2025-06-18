@@ -53,17 +53,17 @@ def expand_tensor(tensor, dims=5, keep_dims=None):
     if dims == 5:
         dim_dict = {
             "b": 0,
-            "t": 1,
-            "s": 2,
-            "v": 3,
+            "v": 1,
+            "t": 2,
+            "s": 3,
             "c": 4
         }
     else:
         dim_dict = {
             "b": 0,
-            "t": 1,
-            "s": [2, 3],
-            "v": 4,
+            "v": 1,
+            "t": 2,
+            "s": [3, 4],
             "c": 5
         }
 

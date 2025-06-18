@@ -2,30 +2,16 @@ import math
 import copy
 from typing import List,Dict
 
+from ..utils.helpers import check_get
+
 import torch
 import torch.nn as nn
 
+from ..modules.grids.grid_layer import GridLayer
+from .factorization import SpatiaFacLayer
+
+
 from ..modules.embedding.embedder import EmbedderSequential
-
-
-def get_ranks(shape, rank, rank_decay=0):
-    rank_ = []
-    for k in range(len(shape)):
-        r = rank * (1 - rank_decay*k/(max([1,len(shape)-1]))) 
-        if k < len(shape)-1:
-            rank_.append(r)
-        else:
-            if len(rank_)>0:
-                rank_.append(float(torch.tensor(rank_).mean()))
-            else:
-                rank_.append(float(rank))
-
-    if rank > 1:
-        ranks = [min([dim, int(rank_[k])]) for k, dim in enumerate(shape)]
-    else:
-        ranks = [max([1,int(dim * rank_[k])]) for k, dim in enumerate(shape)]
-    
-    return ranks
 
 
 class IdentityLayer(nn.Module):
@@ -63,12 +49,11 @@ class LinEmbLayer(nn.Module):
         if identity_if_equal and in_features==out_features:
             self.layer = IdentityLayer()
         else:
-            self.layer = get_layer((), in_features, out_features, **layer_confs)
+            self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
 
-
-    def forward_w_embedding(self, x, emb=None, sample_dict=None):
+    def forward_w_embedding(self, x, emb=None, sample_dict={}):
         
-        x = self.forward_wo_embedding(x, emb=emb)
+        x = self.forward_wo_embedding(x, emb=emb, sample_dict=sample_dict)
 
         x_shape = x.shape
 
@@ -83,11 +68,11 @@ class LinEmbLayer(nn.Module):
 
         return x
 
-    def forward_wo_embedding(self, x, emb=None, **kwargs):
+    def forward_wo_embedding(self, x, emb=None, sample_dict=None):
+
+        x = self.layer(x, emb=emb, sample_dict=sample_dict)
 
         x = self.layer_norm(x)
-
-        x = self.layer(x, emb=emb)
 
         x = x.view(*(x.shape[:4]), x.shape[-1])
 
@@ -97,6 +82,7 @@ class LinEmbLayer(nn.Module):
         return self.forward_fcn(x, emb=emb, sample_dict=sample_dict)
 
 
+    
 class MLP_fac(nn.Module):
   
     def __init__(self,
@@ -110,8 +96,8 @@ class MLP_fac(nn.Module):
       
         super().__init__() 
         
-        self.layer1 = get_layer((1,), in_features, int(in_features * mult), layer_confs=layer_confs, bias=True)
-        self.layer2 = get_layer((1,), int(in_features * mult), out_features, layer_confs=layer_confs, bias=True)
+        self.layer1 = get_layer(in_features, int(in_features * mult), layer_confs=layer_confs, bias=True)
+        self.layer2 = get_layer(int(in_features * mult), out_features, layer_confs=layer_confs, bias=True)
         self.dropout = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.activation = nn.SiLU()
 
@@ -122,12 +108,12 @@ class MLP_fac(nn.Module):
             self.rtn_fcn = self.rtn
 
     def rtn_w_gamma(self, x):
-        return x + self.gamma
+        return x * self.gamma
     
     def rtn(self, x):
         return x
 
-    def forward(self, x, emb=None):
+    def forward(self, x, emb=None, **kwargs):
         
         x = self.layer1(x, emb=emb)
         x = self.activation(x)
@@ -138,544 +124,126 @@ class MLP_fac(nn.Module):
 
 
 def get_layer(
-        feat_dims,
-        in_features, 
+        in_features,
         out_features,
-        sum_feat_dims=True,
         layer_confs: Dict={},
         **kwargs
-        ):
-    
+        ):  
+
     layer_confs = copy.deepcopy(layer_confs)
+        
+    rank_feat = check_get([layer_confs, kwargs, {'rank_feat': None}], 'rank_feat')
+    rank_vars = check_get([layer_confs, kwargs, {'rank_vars': None}], 'rank_vars')
+    n_vars_total = check_get([layer_confs, kwargs, {'n_vars_total': 1}], 'n_vars_total')
+    bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
 
-    for arg in kwargs.keys():
-        if arg in layer_confs:
-            layer_confs.pop(arg)
-
-    factorize = layer_confs.get('factorize', False)
-    cross = layer_confs.get('cross', False)
-    n_vars_total = layer_confs.get('n_vars_total', 1)
-
-    if factorize and cross:
-        layer = CrossFacLayer
-
-    elif factorize:
-        layer = FacLayer
-
-    elif cross and n_vars_total>1:
-        layer = CrossDenseLayer
-
-    elif n_vars_total==1 and sum_feat_dims:
-        layer = LinearLayer
-
+    if not rank_feat and not rank_vars and n_vars_total==1:
+        layer = LinearLayer(
+                in_features,
+                out_features,
+                bias=bias
+                )
     else:
-        layer = DenseLayer
     
-
-    layer = layer(
-            feat_dims,
+        sum_n_zooms = check_get([layer_confs, kwargs, {'sum_n_dims': 0}], 'sum_n_dims')
+        base = check_get([layer_confs, kwargs, {'base': 12}], 'base')
+        ranks_spatial = check_get([layer_confs, kwargs, {'ranks_spatial': {}}], 'ranks_spatial')
+        dims_spatial = check_get([layer_confs, kwargs, {'dims_spatial': {}}], 'dims_spatial')
+        
+        layer = SpatiaFacLayer(
             in_features,
             out_features,
-            sum_feat_dims=sum_feat_dims,
-            **layer_confs,
-            **kwargs
-            )
+            ranks_spatial=ranks_spatial,
+            dims_spatial=dims_spatial,
+            rank_feat=rank_feat,
+            rank_vars=rank_vars,
+            base=base,
+            n_vars_total=n_vars_total,
+            sum_n_zooms=sum_n_zooms,
+            bias=bias)
 
     return layer
 
 
 class LinearLayer(nn.Module):
     def __init__(self, 
-                 feat_dims,
-                 in_features, 
-                 out_features,
+                 in_features: int|List, 
+                 out_features: int|List,
                  bias=False,
-                 sum_feat_dims=False,
                  **kwargs):
 
         super().__init__()
 
-        self.feat_dim = int(torch.tensor(feat_dims).prod())
-        in_features *= self.feat_dim
-        
-        if not sum_feat_dims:
-            self.x_shape_out = (self.feat_dim, out_features)
-            out_features *= self.feat_dim
-        else:
-            self.x_shape_out = (out_features,)
+        if isinstance(in_features,int):
+            in_features = [in_features]
 
-        self.layer = nn.Linear(in_features, out_features, bias=bias)
+        if isinstance(out_features,int):
+            out_features = [out_features]
 
-    def forward(self, x, emb=None):
+        self.in_features = in_features
+        self.out_features = out_features
+
+        self.layer = nn.Linear(int(torch.tensor(in_features).prod()), int(torch.tensor(out_features).prod()), bias=bias)
+
+    def forward(self, x, **kwargs):
         
-        x = x.view(*x.shape[:4],-1)
+        x = x.view(*x.shape[:4], *self.in_features)
         x = self.layer(x)
-        x = x.view(*x.shape[:4], *self.x_shape_out)
+        x = x.view(*x.shape[:4], *self.out_features)
         
         return x
-    
-
-class FacLayer(nn.Module):
-    def __init__(self, 
-                 feat_dims,
-                 in_features, 
-                 out_features, 
-                 rank=0.5, 
-                 const_str="btnv",
-                 rank_decay=0,
-                 n_vars_total=1,
-                 factorize_vars=True,
-                 rank_vars=4,
-                 sum_feat_dims=False,
-                 bias=False,
-                 **kwargs):
-
-        super().__init__()
-        # Number of dimensions to transform.
-
-        self.in_shape = (*feat_dims, in_features)
-
-        fac_shapes = (*feat_dims, in_features, out_features)
-        ranks = get_ranks(fac_shapes, rank, rank_decay=rank_decay)
 
 
-        d = len(fac_shapes)
-
-        if n_vars_total > 1 and factorize_vars:
-            scale = math.sqrt(2.0 / torch.tensor((rank_vars, *ranks)).prod())
-            self.core = nn.Parameter(torch.randn(rank_vars, *ranks) * scale, requires_grad=True)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars), requires_grad=True)
-            self.contract_fun = self.contract_vars_fac
-
-        elif n_vars_total > 1 and not factorize_vars:
-            scale = math.sqrt(2.0 / torch.tensor(ranks).prod())
-            self.core = nn.Parameter(torch.randn(n_vars_total, *ranks) * scale, requires_grad=True)
-            self.contract_fun = self.contract_vars
-
-        else:
-            scale = math.sqrt(2.0 / torch.tensor(ranks).prod())
-            self.core = nn.Parameter(torch.randn(ranks) * scale, requires_grad=True)
-            self.contract_fun = self.contract
-
-        self.factors = nn.ParameterList()
-        for i, rank in enumerate(ranks):
-            param = torch.empty(fac_shapes[i], rank)
-            nn.init.xavier_uniform_(param)
-            self.factors.append(nn.Parameter(param, requires_grad=True))
-
-        factor_letters = "adefghijklmopqrsuwxyz" 
-
-        core_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 
-
-        x_subscript = const_str + factor_letters[:(d-1)]
-
-        core_subscript = core_letters[:d]
-
-        factor_subscripts = [factor_letters[i] + core_letters[i] for i in range(d)]
-
-        if n_vars_total>1 and factorize_vars:
-            factor_subscripts.insert(0,'btvY')
-            core_subscript = 'Y' + core_letters[:d] 
-
-        elif n_vars_total > 1 and not factorize_vars:
-            core_subscript = 'btv' +core_letters[:d] 
-
-        else:
-            core_subscript = core_letters[:d] 
-
-        if sum_feat_dims:
-            output_subscript = const_str + factor_letters[d-1]
-            self.out_shape = (out_features,)
-        else:
-            output_subscript = const_str + factor_letters[:(d-2)] + factor_letters[d-1]
-            self.out_shape = (*feat_dims, out_features)
-
-        if bias:
-            self.bias = nn.Parameter(torch.empty(*self.out_shape))
-            bound_bias = 1 / math.sqrt(in_features)
-            nn.init.uniform_(self.bias, -bound_bias, bound_bias)
-            self.forward_fun = self.forward_with_bias
-        else:
-            self.bias = None
-            self.forward_fun = self.forward_wo_bias
-            
-        self.einsum_eq = (
-            f"{x_subscript},"
-            f"{core_subscript},"
-            f"{','.join(factor_subscripts)}"
-            f"->{output_subscript}"
-        )
-
-    def contract_vars(self, x, emb=None):
-
-        x = torch.einsum(self.einsum_eq,
-                x,
-                self.core[emb['VariableEmbedder']],
-                *self.factors)
-        return x
-    
-    def contract_vars_fac(self, x, emb=None):
-
-        x = torch.einsum(
-            self.einsum_eq,
-            x,
-            self.core,
-            self.factors_vars[emb['VariableEmbedder']],
-            *self.factors,
-        )
-        return x
-    
-    def contract(self, x, emb=None):
-
-        x = torch.einsum(
-            self.einsum_eq,
-            x,
-            self.core,
-            *self.factors,
-        )
-        return x
-    
-    def forward_with_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb) + self.bias.view(*self.out_shape)
-    
-    def forward_wo_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb)
-
-    def forward(self, x: torch.Tensor, emb: Dict=None):
-
-        x = x.view(*x.shape[:4],*self.in_shape)
-        x = self.forward_fun(x, emb=emb)
-        x = x.reshape(*x.shape[:4],*self.out_shape)
-
-        return x
-
-
-class CrossFacLayer(nn.Module):
-    def __init__(self, 
-                 feat_dims, 
-                 in_features, 
-                 out_features, 
-                 rank=0.5, 
-                 const_str="btnv",
-                 bias=False,
-                 rank_decay=0, 
-                 n_vars_total=1,
-                 rank_vars=4,
-                 factorize_vars=False,
-                 sum_feat_dims=False,
-                 **kwargs):
-
-        super().__init__()
-  
-        in_shape = (*feat_dims, in_features)
-        out_shape = (*feat_dims, out_features)
-
-        in_shape = [in_sh for in_sh in in_shape if in_sh>1]
-        out_shape = [out_sh for out_sh in out_shape if out_sh>1]
-
-        d_in = len(in_shape)  
-        d_out = len(out_shape)
-        self.in_shape = in_shape
-
-        ranks_in = get_ranks(in_shape, rank, no_rank_decay=rank_decay)
-        ranks_out = get_ranks(out_shape, rank, no_rank_decay=rank_decay)
-
-        fan_in = torch.tensor(ranks_in).prod()
-        fan_out = torch.tensor(ranks_out).prod()
-
-        scale = math.sqrt(2.0 / (fan_in + fan_out))
-        scale_vars = 1.0 / (rank_vars)
-
-        if n_vars_total > 1 and factorize_vars:           
-            self.core = nn.Parameter(torch.randn(*ranks_out, rank_vars, *ranks_in) * scale, requires_grad=True)
-            self.in_factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars) * scale_vars, requires_grad=True)
-            self.contract_fun = self.contract_vars_fac
-
-        elif n_vars_total > 1 and not factorize_vars:
-            self.core = nn.Parameter(torch.randn(n_vars_total, *ranks_out, *ranks_in) * scale, requires_grad=True)
-            self.contract_fun = self.contract_vars
-
-        else:
-            self.core = nn.Parameter(torch.randn(*ranks_out, *ranks_in) * scale, requires_grad=True)
-            self.contract_fun = self.contract
-
-        out_factors = []
-        for i, dim_out in enumerate(out_shape):
-            param = torch.empty(dim_out, ranks_out[i])
-            nn.init.xavier_uniform_(param)
-            out_factors.append(nn.Parameter(param, requires_grad=True))
-        
-        in_factors = []
-        for i, dim_in in enumerate(in_shape):
-            param = torch.empty(dim_in, ranks_in[i])
-            nn.init.xavier_uniform_(param)
-            in_factors.append(nn.Parameter(param, requires_grad=True))
-
-
-        self.in_factors = nn.ParameterList(in_factors)
-        self.out_factors = nn.ParameterList(out_factors)
-
-        in_letters = "adefghijklmß$§%"   
-        out_letters = "opqrsuwxyz§%"        
-        core_letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ12345678" 
-
-        in_letters_fac = in_letters
-        out_letters_fac = out_letters
-
-        if d_in > len(in_letters) or d_out > len(out_letters) or d_in+d_out > len(core_letters):
-            raise ValueError("Not enough letters to label all dimensions. Increase the letter set strings.")
-      
-        self.x_subscript = const_str + in_letters[:d_in]
+"""
+class SpatialSumLayer(nn.Module):
    
-        out_factor_subscripts = [out_letters_fac[i] + core_letters[i] for i in range(d_out)]
 
-        in_factor_subscripts = [in_letters_fac[i] + core_letters[d_out+ i] for i in range(d_in)]
-
-        if n_vars_total>1 and factorize_vars:
-            in_factor_subscripts.insert(0,'bvY')
-            core_subscript = core_letters[:d_out] + 'Y' + core_letters[d_out:d_out+d_in]
-
-        elif n_vars_total > 1 and not factorize_vars:
-            core_subscript = 'bv' +core_letters[:d_out] + core_letters[d_out:d_out+d_in]
-
-        else:
-            core_subscript = core_letters[:d_out] + core_letters[d_out:d_out+d_in]
-
-        if sum_feat_dims:
-            output_subscript = const_str + out_letters[d_out-1]
-        else:
-            output_subscript = const_str + out_letters[:d_out]
-
-        self.einsum_eq = (
-            f"{self.x_subscript},"
-            f"{core_subscript},"
-            f"{','.join(out_factor_subscripts)},{','.join(in_factor_subscripts)}"
-            f"->{output_subscript}"
-        )
-
-        if bias:
-            self.bias = nn.Parameter(torch.empty(*out_shape))
-            bound_bias = 1 / math.sqrt(in_features)
-            nn.init.uniform_(self.bias, -bound_bias, bound_bias)
-            self.forward_fun = self.forward_with_bias
-        else:
-            self.bias = None
-            self.forward_fun = self.forward_wo_bias
-
-    def contract_vars(self, x, emb=None):
-
-        x = torch.einsum(self.einsum_eq,
-                x,
-                self.core[emb['VariableEmbedder']],
-                *self.out_factors,
-                *self.in_factors)
-        return x
-    
-    def contract_vars_fac(self, x, emb=None):
-
-        x = torch.einsum(self.einsum_eq,
-                x,
-                self.core,
-                *self.out_factors,
-                self.in_factors_vars[emb['VariableEmbedder']],
-                *self.in_factors)
-        return x
-    
-    def contract(self, x, emb=None):
-
-        x = torch.einsum(self.einsum_eq,
-                x,
-                self.core,
-                *self.out_factors,
-                *self.in_factors)
-        return x
-    
-    def forward_with_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb) + self.bias.view(self.feat_dim, -1)
-    
-    def forward_wo_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb)
-
-    def forward(self, x, emb=None):
-
-        x = x.view(*x.shape[:3],*self.in_shape)
-
-        x = self.contract_fun(x, emb=emb)
-        
-        x = x.reshape(*x.shape[:3],-1,x.shape[-1])
-        return x
-    
-
-class DenseLayer(nn.Module):
-    def __init__(self,
-                 feat_dims,
-                 in_features,
-                 out_features,
-                 rank_vars = 4,
-                 n_vars_total = 1,
-                 factorize_vars = False,
-                 bias=False,
-                 sum_feat_dims=False,
-                 **kwargs
-                ) -> None: 
-
+    def __init__(self, grid_layers: Dict[str, GridLayer], in_zoom, in_features, out_features, seq_len: int = None, out_zoom = None, with_nh=False, layer_confs={}):
         super().__init__()
 
-        if sum_feat_dims:
-            self.eq_out = 'btnvj'
-            self.x_shape_out = (out_features) 
+        if out_zoom is not None:
+            self.grid_layer_nh = grid_layers[str(out_zoom)]
+            self.sum_dims = [-2,-3]
+
+        elif seq_len is not None:
+            out_zoom = in_zoom - seq_len
+            self.grid_layer_nh = grid_layers[str(out_zoom)]
+            self.sum_dims = [-2]
+
+        if with_nh:
+            nh_dim = self.grid_layer_nh.adjc.shape[1]
         else:
-            self.eq_out = 'btnvmj'
-            self.x_shape_out = (*feat_dims, out_features)
-            
-        feat_dim = int(torch.tensor(feat_dims).prod())
-        self.feat_dim = feat_dim
+            nh_dim = 1
 
-        bound = 1 / math.sqrt(feat_dim * in_features)
-
-        scale_vars = (1.0 / (rank_vars))
-
-        if n_vars_total>1 and factorize_vars:
-            weights = torch.empty(rank_vars, feat_dim, in_features, out_features)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
-            self.contract_fun = self.contract_vars_fac
+        in_features = [4**(out_zoom - in_zoom), nh_dim, in_features]
         
-        elif n_vars_total>1 and not factorize_vars:
-            weights = torch.empty(n_vars_total, feat_dim, in_features, out_features)
-            self.contract_fun = self.contract_vars
-
-        else:
-            weights = torch.empty(feat_dim, in_features, out_features)
-            self.contract_fun = self.contract
-
-        nn.init.uniform_(weights, -bound, bound)
-
-        self.weights = nn.Parameter(weights, requires_grad=True)
-
-        if bias:
-            self.bias = nn.Parameter(torch.empty(*self.x_shape_out))
-            bound_bias = 1 / math.sqrt(in_features)
-            nn.init.uniform_(self.bias, -bound_bias, bound_bias)
-            self.forward_fun = self.forward_with_bias
-        else:
-            self.bias = None
-            self.forward_fun = self.forward_wo_bias
-
-    def contract_vars_fac(self, x, emb=None):
-        
-        x = torch.einsum(f"btnvmi,bvf,fmij->{self.eq_out}", 
-                         x, 
-                         self.factors_vars[emb['VariableEmbedder']], 
-                         self.weights)
-        return x
-
-    def contract_vars(self, x, emb=None):
-
-        x = torch.einsum(f"btnvmi,bvmij->{self.eq_out}", 
-                         x, 
-                         self.weights[emb['VariableEmbedder']])
-        return x
-
-    def contract(self, x, emb=None):
-
-        x = torch.einsum(f"btnvmi,mij->{self.eq_out}", 
-                         x, 
-                         self.weights)
-        return x
+        layer = get_layer(in_features, out_features, layer_confs=layer_confs)
     
-    def forward_with_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb) + self.bias.view(self.feat_dim, -1)
-    
-    def forward_wo_bias(self, x, emb=None):
-        return self.contract_fun(x, emb=emb)
-
-    def forward(self, x, emb=None):
-
-        x = x.view(*x.shape[:4],self.feat_dim,-1)
-
-        x = self.forward_fun(x,emb=emb)
-
-        x = x.view(*x.shape[:4],*self.x_shape_out)
-
-        return x
-    
-
-class CrossDenseLayer(nn.Module):
-    def __init__(self,
-                 feat_dims,
-                 in_features,
-                 out_features,
-                 sum_feat_dims=False,
-                 rank_vars = 4,
-                 n_vars_total = 1,
-                 factorize_vars = False,
-                 **kwargs
-                ) -> None: 
-         
-        super().__init__()
-
-        if sum_feat_dims:
-            self.eq_out = 'btnvj'
-            self.x_shape_out = (out_features) 
-        else:
-            self.eq_out = 'btnvmj'
-            self.x_shape_out = (*feat_dims, out_features)
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None, sample_dict: Dict = None) -> torch.Tensor:
         
-        self.x_shape_in = feat_dim * in_features
 
-        feat_dim = int(torch.tensor(feat_dims).prod())
-        self.feat_dim = feat_dim
-
-        bound = 1 / math.sqrt(feat_dim * in_features)
-
-        scale_vars = (1.0 / (rank_vars))
-
-        if n_vars_total>1 and factorize_vars:
-            weights = torch.empty(rank_vars, feat_dim * in_features, feat_dim, out_features)
-            self.factors_vars = nn.Parameter(torch.ones(n_vars_total, rank_vars)*scale_vars, requires_grad=True)
-            self.contract_fun = self.contract_vars_fac
+        x = self.proj_layer(x, emb=emb)
         
-        elif n_vars_total>1 and not factorize_vars:
-            weights = torch.empty(n_vars_total, feat_dim * in_features, feat_dim, out_features)
-            self.contract_fun = self.contract_vars
+        x, x_nh = x.split([x.shape[-1]//3, 2*x.shape[-1]//3],dim=-1)
 
-        else:
-            weights = torch.empty(feat_dim * in_features, feat_dim, out_features)
-            self.contract_fun = self.contract
+        x_nh, mask_nh = self.grid_layer.get_nh(x_nh, **sample_dict, with_nh=True, mask=mask)
 
-        nn.init.uniform_(weights, -bound, bound)
-
-        self.weights = nn.Parameter(weights, requires_grad=True)
-
-
-    def contract_vars_fac(self, x, emb=None):
+        mask_nh = mask_nh.unsqueeze(dim=-1).expand(-1,-1,-1, -1, x_nh.shape[-2]) == False
         
-        x = torch.einsum(f"btnvmi,bvf,fimj->{self.eq_out}", 
-                         x, 
-                         self.factors_vars[emb['VariableEmbedder']], 
-                         self.weights)
-        return x
+        x = x.view(*x_nh.shape[:3],-1,*x.shape[-2:])
 
-    def contract_vars(self, x, emb=None):
+        b, t, s, n, v, c = x.shape
 
-        x = torch.einsum(f"btnvmi,bvimj->{self.eq_out}", 
-                         x, 
-                         self.weights[emb['VariableEmbedder']])
-        return x
+        x = rearrange(x, self.pattern)
+        x_nh = rearrange(x_nh, self.pattern)
+        mask_nh = rearrange(mask_nh, self.nh_mask_pattern)
 
-    def contract(self, x, emb=None):
+        x = self.fn(x, x_nh, mask=mask_nh)
 
-        x = torch.einsum(f"btnvmi,imj->{self.eq_out}", 
-                         x, 
-                         self.weights)
-        return x
+        x = rearrange(x, self.reverse_pattern, b=b, t=t, s=s, n=n, v=v, c=c)
 
-    def forward(self, x, emb=None):
-
-        x = x.view(*x.shape[:4],self.x_shape_in)
-
-        x = self.contract_fun(x,emb=emb)
-
-        x = x.view(*x.shape[:4],*self.x_shape_out)
+        x = self.out_layer(x, emb=emb)
 
         return x
+
+"""

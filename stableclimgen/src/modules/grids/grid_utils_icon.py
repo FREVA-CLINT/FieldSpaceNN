@@ -20,7 +20,7 @@ def icon_get_adjacent_cell_indices(acoe:torch.tensor, eoc:torch.tensor, nh:int=5
     b = eoc.shape[-1]
     global_indices = torch.arange(b)
 
-    nh1 = acoe.T[eoc.T].reshape(-1,4**zoom_rel,6)
+    nh1 = acoe.T[eoc.T].reshape(-1,4**zoom_rel,eoc.shape[0]*acoe.shape[0])
     self_indices = global_indices.view(-1,4**zoom_rel)[:,0]
     self_indices = self_indices // 4**zoom_rel
 
@@ -339,8 +339,10 @@ def icon_grid_to_mgrid(grid_file:str, clon_fov:list=None, clat_fov:list=None, nh
     clon =  torch.tensor(grid.clon.values)
     clat =  torch.tensor(grid.clat.values)
 
-    eoc = torch.tensor(grid.edge_of_cell.values - 1)
-    acoe = torch.tensor(grid.adjacent_cell_of_edge.values - 1)
+    #eoc = torch.tensor(grid.edge_of_cell.values - 1)
+    #acoe = torch.tensor(grid.adjacent_cell_of_edge.values - 1)
+    voc = torch.tensor(grid.vertex_of_cell.values - 1)
+    cov = torch.tensor(grid.cells_of_vertex.values - 1)
 
     indices = torch.arange(len(grid.clon))
     cell_coords_global = get_coords_as_tensor(grid, lon='clon', lat='clat')
@@ -358,7 +360,7 @@ def icon_grid_to_mgrid(grid_file:str, clon_fov:list=None, clat_fov:list=None, nh
         if zoom==0:
             adjc, adjc_mask = get_nh_zoom_0(clon,clat,nh=nh)
         else:
-            adjc, adjc_mask = icon_get_adjacent_cell_indices(acoe, eoc, nh=nh, zoom_rel = zoom_max - zoom)
+            adjc, adjc_mask = icon_get_adjacent_cell_indices(cov, voc, nh=nh, zoom_rel = zoom_max - zoom)
             adjc_mask = adjc_mask == 1
 
         adjc_mask[adjc>(adjc.shape[0]-1)]=True

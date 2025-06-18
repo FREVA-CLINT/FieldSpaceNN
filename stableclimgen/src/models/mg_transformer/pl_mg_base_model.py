@@ -213,8 +213,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
                                   sample_dict=sample_dict,
                                   input_coords=coords_input,
                                   input_dists=dists_input)
-            emb["DensityEmbedder"] = 1 - density_map
-            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
+            emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
+            emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
 
             mask = None
         
@@ -302,26 +302,26 @@ class LightningMGNOBaseModel(pl.LightningModule):
             coords_output = self.get_coords_from_model(sample_dict)
 
         sample = 0
-        for k in range(input.shape[1]):
-            var_idx = emb['VariableEmbedder'][sample,k]
+        for k in range(input.shape[-2]):
+            var_idx = emb['VariableEmbedder'][sample, :,k]
             plot_name_var = f"{plot_name}_{var_idx}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
             
             if mask is not None:
-                mask_p = mask[sample, k, :max_samples]
+                mask_p = mask[sample, :max_samples, :, :, k]
             else:
                 mask_p = None
 
             if input_inter is not None:
-                input_inter_p = input_inter[sample,k,:max_samples]
-                input_density_p = input_density[sample,k,:max_samples]
+                input_inter_p = input_inter[sample,:max_samples,:,k]
+                input_density_p = input_density[sample,:max_samples,:,:,k]
             else:
                 input_inter_p = None
                 input_density_p = None
 
-            scatter_plot(input[sample,k,:max_samples], 
-                         output[sample,k,:max_samples], 
-                         gt[sample,k,:max_samples], 
+            scatter_plot(input[sample,:max_samples,:,:,k], 
+                         output[sample,:max_samples,:,k], 
+                         gt[sample,:max_samples,:,:,k], 
                          coords_input[sample] if coords_input.shape[0]>1 else coords_input[0], 
                          coords_output[sample] if coords_output.shape[0]>1 else coords_output[0], 
                          mask_p, 

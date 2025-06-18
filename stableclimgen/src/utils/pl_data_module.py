@@ -19,7 +19,7 @@ class DataModule(LightningDataModule):
             sampler = DistributedSampler(dataset=self.dataset_train, shuffle=False)
         else:
             sampler = None
-        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers) 
+        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers)
 
         return dataloader
     

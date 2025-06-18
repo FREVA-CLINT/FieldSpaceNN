@@ -102,7 +102,7 @@ class DensityEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "t", "s", "v", "c"]
+        self.keep_dims = ["b", "v" ,"t", "s", "c"]
 
         self.zoom = zoom
 
@@ -133,7 +133,7 @@ class UncertaintyEmbedder(BaseEmbedder):
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "t", "s", "v", "c"]
+        self.keep_dims = ["b", "v" ,"t", "s", "c"]
 
         self.zoom = zoom
 
@@ -153,11 +153,11 @@ class UncertaintyEmbedder(BaseEmbedder):
 
         density, var_indices = density_var
         
-        density = density.view(*density.shape[:2],-1, 4**zoom_diff, density.shape[-2], density.shape[-1]).mean(dim=3)
+        density = density.view(*density.shape[:3],-1, 4**zoom_diff, density.shape[-1]).mean(dim=-2)
 
-        betas = self.betas[var_indices].view(var_indices.shape[0],var_indices.shape[1],1,var_indices.shape[-1],1)
+        betas = self.betas[var_indices].view(*density.shape[:3],1,1)
 
-        uncertainty =  1 - density**betas
+        uncertainty =  1 - density** betas
 
         return self.embedding_fn(uncertainty)
     
@@ -166,7 +166,7 @@ class VariableEmbedder(BaseEmbedder):
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "t", "v", "c"]
+        self.keep_dims = ["b", "v" ,"t", "c"]
 
         self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
 
@@ -178,7 +178,7 @@ class MaskEmbedder(BaseEmbedder):
     def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "t", "s", "v", "c"]
+        self.keep_dims = ["b", "v", "t", "s", "c"]
 
         self.embedding_fn = nn.Embedding(2, self.embed_dim)
 

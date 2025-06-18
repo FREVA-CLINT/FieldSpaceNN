@@ -51,20 +51,21 @@ def get_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True):
 
 def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
     
-    x_dims = x.shape
-    
-    x = x.reshape(*x_dims[:3],-1)
+    bvt,s,f = x.shape
+    b = adjc_patch.shape[0]
+
+    x = x.view(b, -1, s, f)
 
     nh = adjc_patch.shape[-1]
     
     #unsqueeze time and feature dim
     adjc_patch = adjc_patch.view(adjc_patch.shape[0], 1, adjc_patch.shape[1]*adjc_patch.shape[2], 1)
 
-    adjc_patch = adjc_patch.expand(-1, x_dims[1], -1, x.shape[-1])
+    adjc_patch = adjc_patch.expand(-1, x.shape[1], -1, x.shape[-1])
 
-    x = torch.gather(x, 2, index=adjc_patch)
+    x = torch.gather(x, -2, index=adjc_patch)
     
-    x = x.view(*x_dims[:3], nh, *x_dims[3:])
+    x = x.view(bvt, s, nh, f)
 
     return x
 
@@ -161,7 +162,6 @@ class GridLayer(nn.Module):
         # Get neighborhood indices and adjacency mask
         adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
         
-        adjc_mask = adjc_mask.unsqueeze(dim=1)
        # x_shape = x.shape
        # x = x.reshape(*x_shape[:3],-1)
         # Gather neighborhood data
@@ -170,27 +170,44 @@ class GridLayer(nn.Module):
         if mask is not None:
             # Combine provided mask with adjacency mask
             mask = gather_nh_data(mask, adjc_patch)
-            mask = torch.logical_or(mask.view(*x.shape[:4], mask.shape[-1]), adjc_mask.unsqueeze(dim=-1))
+            mask = mask.view(adjc_mask.shape[0], -1, *mask.shape[1:])
+            mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
         else:
             # Use adjacency mask if no mask is provided
-            mask = adjc_mask.unsqueeze(dim=-1).repeat_interleave(x.shape[-2], dim=-1)
+            mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)#.repeat_interleave(x.shape[-1], dim=-1)
         
         return x, mask
 
     def get_nh(self, x, patch_index=None, zoom_patch_sample=None, with_nh: bool=True, mask=None, **kwargs):
+        
+        s, f = x.shape[-2:]
+        zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample else int(math.log(s/5) / math.log(4))
+
+        zoom_diff = zoom_x - self.zoom
+
+
+        x_feat_dims = x.shape[:-2]
+        #if zoom_x != self.zoom:
+       # x = x.view(*x.shape[:2], -1, x.shape[3] * (4**(zoom_x - self.zoom)), *x.shape[4:])
+        #x = x.reshape(*x.shape[:2], x.shape[2]//4**zoom_diff, -1)
+
+        x = x.reshape(-1, s//4**zoom_diff, f*4**zoom_diff)
+
+        mask_dims = mask.shape[:-2] if mask is not None else None
+        mask = mask.reshape(-1, mask.shape[-2]//4**zoom_diff, 4**zoom_diff) if mask is not None else None
+
 
         if zoom_patch_sample is None or patch_index is None:
             
             adjc = self.adjc if with_nh else self.adjc[:,0]
             
-            x = x[:,:,adjc]
+            x = x[:,adjc]
             if mask is not None:
-                mask = mask[:,:,adjc]
+                mask = mask[:,adjc]
 
-            return x, mask
 
         elif with_nh:
-            return self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
+            x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
         
         else:
             indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
@@ -198,7 +215,22 @@ class GridLayer(nn.Module):
             if mask is not None:
                 mask = mask[:,indices]
 
-            return x[:,:,indices], mask
+            x = x[:,indices]
+        
+
+
+        if mask_dims is not None:
+            mask = mask.view(*mask_dims, s//4**zoom_diff, -1)
+
+        elif mask is not None:
+            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
+
+ 
+        x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)
+
+        mask = mask.reshape(*x_feat_dims, s//4**zoom_diff,-1) if mask is not None else None
+    
+        return x, mask
 
 
     def get_idx_of_patch(self, patch_index=None, zoom_patch_sample=None, return_local=True,**kwargs):
@@ -208,19 +240,16 @@ class GridLayer(nn.Module):
             return get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=return_local)
 
 
-    def get_coordinates(self, patch_index=None, zoom_patch_sample=None, with_nh:bool=False, **kwargs):
+    def get_coordinates(self, patch_index=None, zoom_patch_sample=None, **kwargs):
         
         if patch_index is not None:
-            indices = self.get_idx_of_patch(patch_index, 
-                                            zoom_patch_sample, 
-                                            with_nh=with_nh,
-                                            return_local=False)
-
-        elif with_nh:
-            indices = self.adjc.unsqueeze(dim=0)
-
+            indices = get_idx_of_patch(
+                                    self.adjc,
+                                    patch_index, 
+                                    zoom_patch_sample,
+                                    return_local=False)
         else:
-            indices = self.adjc[:,[0]].unsqueeze(dim=0)
+            indices = self.adjc[:,0].unsqueeze(dim=0)
 
         return self.coordinates[indices]
 
@@ -284,9 +313,9 @@ class MultiRelativeCoordinateManager(nn.Module):
             if rcm.nh_in:
                 x, mask = self.grid_layers[str(in_zoom)].get_nh(x, **sample_dict, mask=mask)
             else:
-                x = x.unsqueeze(dim=3)
+                x = x.unsqueeze(dim=4)
                 if mask is not None:
-                    mask = mask.unsqueeze(dim=2)
+                    mask = mask.unsqueeze(dim=-1)
             
             return coordinates_rel, x, mask
     
@@ -325,12 +354,14 @@ class RelativeCoordinateManager(nn.Module):
 
         if coordinates_in is None:
             coordinates_in = self.grid_layer_in.get_coordinates(patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, with_nh=nh_in)
+            coordinates_in = coordinates_in.unsqueeze(dim=-2)
 
         elif coordinates_in is not None and nh_in:
             coordinates_in,_ = self.grid_layer_in.get_nh(coordinates_in, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample)
 
         if coordinates_out is None:
             coordinates_out = self.grid_layer_out.get_coordinates(patch_index=patch_index, zoom_patch_sample=zoom_patch_sample)
+            coordinates_out = coordinates_out.unsqueeze(dim=-2)
 
         seq_dim_out_total = coordinates_out.shape[1]
         if coordinates_out.shape[1] > coordinates_in.shape[1]:
@@ -411,11 +442,11 @@ def get_density_map(grid_dist_output, dists, mask_value=1e6, power=2):
 
     area_ref = grid_dist_output**power
     
-    dists_weights = 1/((dists < mask_value).sum(dim=-2, keepdim=True)+1e-10)
+    dists_weights = 1/((dists < mask_value).sum(dim=-1, keepdim=True)+1e-10)
 
     dists[dists >= mask_value] = 0
 
-    area_m = ((dists*dists_weights).sum(dim=-2,keepdim=True))**power
+    area_m = ((dists*dists_weights).sum(dim=-1,keepdim=True))**power
 
     area_m[area_m==0] = mask_value
 
@@ -435,75 +466,62 @@ def get_interpolation(x: torch.tensor,
                       grid_layer_search: GridLayer = None, 
                       sample_dict: dict=None):
     
-    return_time_dim = False
+  
 
-    b, nt, n, nh, nv, f = x.shape
+    b, nv, nt, n, nh, f = x.shape
    
     x = x.clone()
    
     n_l = dist.shape[1]
     l = n // n_l
     
-    x = x.view(b,nt,n_l,-1)
-    mask = mask.view(b,nt,n_l,-1) if mask is not None else None
-
+    x = x.view(*x.shape[:-2],-1)
+   
     if grid_layer_search is not None:
 
-        x_nh, mask_nh = grid_layer_search.get_nh(
+        x, mask = grid_layer_search.get_nh(
             x, 
             **sample_dict,
             mask=mask
             )
-        
-        x_nh = x_nh.view(b, nt, n_l, -1, nv, f)
-        mask_nh = mask_nh.view(b, nt, n_l, -1, nv) if mask_nh is not None else None
     
-    else:
-        x_nh = x.view(b, nt, n_l, -1, nv, f)
-        mask_nh = mask.view(b, nt, n_l, -1, nv) if mask is not None else None
+    x = x.view(b, nv, nt, n_l, -1, f)
 
     n = dist.shape[1]
 
-    if mask_nh is not None:
-        dist_ = dist.unsqueeze(dim=-1).unsqueeze(dim=1) + (mask_nh.unsqueeze(dim=3) * mask_value)
+    if mask is not None:
+        mask = mask.view(*x.shape[:4], -1) if mask is not None else None
+        dist_ = dist.unsqueeze(dim=1).unsqueeze(dim=1) + (mask.unsqueeze(dim=-2) * mask_value)
     else:
-        dist_ = dist.unsqueeze(dim=-1).repeat(*(1,)*dist.dim(),nv)
-        if dist_.shape[0] < b:
-            dist_ = dist_.repeat(b,*(1,)*(dist_.dim()-1))
+        dist_ = dist.unsqueeze(dim=1).unsqueeze(dim=1).expand(b,nv,nt,-1,-1,-1)
 
-    dist_vals, indices = torch.topk(dist_, n_nh, dim=-2, largest=False)
+    dist_vals, indices = torch.topk(dist_, n_nh, dim=-1, largest=False)
 
-    indices_offset = torch.arange(indices.shape[2], device=indices.device)
-    offset = dist_.shape[-2]
+    indices_offset = torch.arange(indices.shape[3], device=indices.device)
+    offset = dist_.shape[-1]
 
-    indices = indices + (indices_offset * offset).view(1, indices.shape[2], 1, 1, 1)
+    indices = indices + (indices_offset * offset).view(1, 1, 1, indices.shape[-3], 1, 1)
 
-    indices = indices.view(b, nt, -1, n_nh, nv)
+    x = x.view(b, nv, nt, -1, f)
+    
+    indices = indices.reshape(b, nv, nt, -1, 1).expand(-1, -1, -1, -1, f)
 
-    x_nh = x_nh.view(b, nt, n_l, -1, nv, f)
+    x = torch.gather(x, -2, indices)
 
-    x_2 = x_nh.reshape(b, nt, -1, nv, f)
-    indices = indices.reshape(b, nt, -1, nv, 1).expand(-1, -1, -1, -1, f)
-
-    x_gath = torch.gather(x_2, 2, indices)
-
-    x_gath = x_gath.view(b, nt, -1, n_nh, nv, f)
-
+    x = x.view(b, nv, nt, -1, n_nh, f)
+    
+    dist_vals = dist_vals.view(*dist_vals.shape[:3], -1, n_nh, 1)
     dist_vals[dist_vals <= cutoff_dist] = cutoff_dist
 
-    weights = 1 / (dist_vals.view(*x_gath.shape[:-1], 1)) ** power
+    weights = 1 / (dist_vals) ** power
 
-    weights = weights / weights.sum(dim=-3, keepdim=True)
+    weights = weights / weights.sum(dim=-2, keepdim=True)
 
-    x_inter = (x_gath * weights).sum(dim=-3)
+    x = (x * weights).sum(dim=-2)
 
-    x_inter = x_inter.view(b, nt, n, -1, nv, f)
+    dist_vals = dist_vals.squeeze(dim=-1).expand(-1, nv,-1,-1, -1)
 
-    x_inter = x_inter.view(b, nt, -1, nv, f)
-
-    dist_vals = dist_vals.view(b, nt, -1, n_nh, nv)
-
-    return x_inter, dist_vals
+    return x, dist_vals
 
 
 def get_dists_interpolation(grid_layers: Dict,
@@ -523,19 +541,17 @@ def get_dists_interpolation(grid_layers: Dict,
     else:
         coords = input_coords
 
-    nh = coords.shape[2]
-    l = 4**(search_zoom_rel)
-    coords = coords.view(coords.shape[0], -1, l*nh, 2)
+    nh = coords.shape[-2]
+    coords = coords.view(coords.shape[0], -1, nh*2)
 
     search_zoom = max([input_zoom - search_zoom_rel, 0])
 
     coords_nh, _ = grid_layers[str(search_zoom)].get_nh(
-        coords.unsqueeze(dim=1), 
+        coords, 
         patch_index = sample_dict['patch_index'],
         zoom_patch_sample = sample_dict['zoom_patch_sample']
         )
-    coords_nh = coords_nh.squeeze(dim=1)
-
+    
     target_coords = grid_layers[str(target_zoom)].get_coordinates(
             patch_index = sample_dict['patch_index'],
             zoom_patch_sample = sample_dict['zoom_patch_sample']
@@ -561,7 +577,7 @@ class Interpolator(nn.Module):
                 input_zoom: int=0, 
                 target_zoom: int=0, 
                 precompute = True,
-                nh_inter=2,
+                nh_inter=3,
                 power=2,
                 cutoff_dist_zoom=None,
                 cutoff_dist=None,
