@@ -4,6 +4,7 @@ import json
 import numpy as np
 import torch
 import xarray as xr
+from omegaconf import ListConfig
 from torch.utils.data import Dataset
 
 from . import normalizer as normalizers
@@ -56,7 +57,7 @@ class BaseDataset(Dataset):
         self.variables_source_train = variables_source_train if variables_source_train is not None else self.variables_source
         self.variables_target_train = variables_target_train if variables_target_train is not None else self.variables_target
 
-        if isinstance(data_dict["source"]["files"], list):
+        if isinstance(data_dict["source"]["files"], list) or isinstance(data_dict["source"]["files"], ListConfig):
             self.files_source = np.array(data_dict["source"]["files"])
             self.files_target = np.array(data_dict["target"]["files"])
         else:

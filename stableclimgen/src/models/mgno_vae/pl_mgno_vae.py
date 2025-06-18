@@ -1,17 +1,11 @@
-import os
-import math
+import torch
 import torch.nn as nn
 
-import lightning.pytorch as pl
-import torch
-
-from torch.optim import AdamW
-
-from ..mgno_transformer.pl_probabilistic import LightningProbabilisticModel
-from ...modules.icon_grids.grid_layer import Interpolator
-from ...utils.visualization import scatter_plot
-from ..mgno_transformer.pl_mgno_base_model import CosineWarmupScheduler, check_empty
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
+from ..mgno_transformer.pl_mgno_base_model import check_empty
+from ..mgno_transformer.pl_probabilistic import LightningProbabilisticModel
+from ...modules.grids.grid_layer import Interpolator
+from pytorch_lightning.utilities import rank_zero_only
 
 class MSE_loss(nn.Module):
     def __init__(self):
@@ -38,39 +32,42 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         if residual_interpolator_settings:
             self.residual_interpolator_down = Interpolator(self.model.grid_layers,
-                             residual_interpolator_settings.get("search_level", 3),
+                             residual_interpolator_settings.get("search_zoom_rel", 3),
                              0,
                              residual_interpolator_settings.get("bottleneck_level", 3),
                              residual_interpolator_settings.get("precompute", True),
                              residual_interpolator_settings.get("nh_inter", 3),
-                             residual_interpolator_settings.get("power", 1)
+                             residual_interpolator_settings.get("power", 1),
+                             residual_interpolator_settings.get("cutoff_dist_zoom", None),
+                             residual_interpolator_settings.get("cutoff_dist", None),
+                             residual_interpolator_settings.get("search_zoom_compute", None)
                              )
             self.residual_interpolator_up = Interpolator(self.model.grid_layers,
-                             residual_interpolator_settings.get("search_level", 3),
+                             residual_interpolator_settings.get("search_zoom_rel", 3),
                              residual_interpolator_settings.get("bottleneck_level", 3),
                              0,
                              residual_interpolator_settings.get("precompute", True),
                              residual_interpolator_settings.get("nh_inter", 3),
-                             residual_interpolator_settings.get("power", 1)
+                             residual_interpolator_settings.get("power", 1),
+                             residual_interpolator_settings.get("cutoff_dist_zoom", None),
+                             residual_interpolator_settings.get("cutoff_dist", None),
+                             residual_interpolator_settings.get("search_zoom_compute", None)
                              )
         else:
             self.residual_interpolator_up = self.residual_interpolator_down = None
 
         self.save_hyperparameters(ignore=['model'])
 
-    def forward(self, x, coords_input, coords_output, indices_sample=None, mask=None, emb=None, dists_input=None):
+    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
         b, nt, n = x.shape[:3]
-        coords_input, coords_output, indices_sample, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices_sample), check_empty(mask), check_empty(emb), check_empty(dists_input)
-        x, coords_input, coords_output, indices_sample, mask, emb, dists_input = self.prepare_batch(x, coords_input, coords_output, indices_sample, mask, emb, dists_input)
-        indices_sample, coords_input, coords_output, dists_input = self.prepare_coords_indices(coords_input,
-                                                                                               coords_output=coords_output,
-                                                                                               indices_sample=indices_sample,
-                                                                                               input_dists=dists_input)
+        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(dists_input)
+        sample_dict = self.prepare_sample_dict(sample_dict)
+
         if self.interpolator:
             x, density_map = self.interpolator(x,
                                               mask=mask,
                                               calc_density=True,
-                                              indices_sample=indices_sample,
+                                              sample_dict=sample_dict,
                                               input_coords=coords_input,
                                               input_dists=dists_input)
             emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
@@ -79,23 +76,22 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
             x = x.unsqueeze(-3)
             mask = None
 
-        interp_x = None
+        interp_x = 0
         if self.residual_interpolator_up and self.residual_interpolator_down:
             interp_x, _ = self.residual_interpolator_down(x,
                                                           calc_density=False,
-                                                          indices_sample=indices_sample)
+                                                          sample_dict=sample_dict)
             interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
                                                         calc_density=False,
-                                                        indices_sample=indices_sample)
-
-        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, residual=interp_x)
-        return x.view(b, nt, *x.shape[1:]), posterior, interp_x.view(b, nt, *interp_x.shape[1:]) if torch.is_tensor(interp_x) else None
+                                                        sample_dict=sample_dict)
+        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
+        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, residual=interp_x)
+        return x, posterior
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
-        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
-
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='train/')
+        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -113,11 +109,13 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, indices, mask, emb, dists_input = batch
-        coords_input, coords_output, indices, mask, emb, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(indices), check_empty(mask), check_empty(emb), check_empty(dists_input)
-        output, posterior, interp_x = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices, mask=mask, emb=emb, dists_input=dists_input)
+        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
+        sample_dict = self.prepare_sample_dict(sample_dict)
 
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, indices_sample=indices, prefix='val/')
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+
+        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='val/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -132,17 +130,16 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         # Calculate total loss
 
-        if batch_idx == 0:
-            if self.interpolator:
-                _, coords_input, _, _, _, _, dists_input = self.prepare_batch(source, coords_input=coords_input, input_dists=dists_input)
-                _, density = self.interpolator(source,
-                                               mask=mask,
-                                               indices_sample=indices,
-                                               calc_density=True,
-                                               input_dists=dists_input)
+        if batch_idx == 0 and rank_zero_only:
+            if hasattr(self, "interpolator") and self.interpolator is not None:
+                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, sample_dict=sample_dict, calc_density=True, input_dists=rel_dists_input)
             else:
-                density = None
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, indices,f"tensor_plot_{self.current_epoch}", emb, input_inter=interp_x, input_density=density)
+                input_inter = None
+                input_density = None
+            has_var = hasattr(self.model, 'predict_var') and self.model.predict_var
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,
+                                 f"tensor_plot_{int(self.current_epoch)}", emb, input_inter=input_inter,
+                                 input_density=input_density, has_var=has_var)
 
         self.log_dict(loss_dict, prog_bar=False, sync_dist=True)
 
@@ -153,6 +150,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, indices_sample, input_dists):
-        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, indices_sample=indices_sample, mask=mask, emb=emb, dists_input=input_dists)
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, input_dists):
+        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=input_dists)
         return output
