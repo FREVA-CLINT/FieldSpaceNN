@@ -43,7 +43,7 @@ class MGNO_Processing_Block(nn.Module):
             level_layers_ = nn.ModuleList()
 
             for layer_idx, layer_setting in enumerate(layer_settings_level):
-                model_dim_out = model_dims_out[layer_idx][level_idx]
+                model_dim_out = model_dims_out[level_idx][layer_idx]
 
                 min_lvl = layer_setting.get("min_lvl",0)
                 
