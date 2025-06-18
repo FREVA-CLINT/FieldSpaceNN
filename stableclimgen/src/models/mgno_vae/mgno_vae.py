@@ -63,7 +63,8 @@ class MGNO_VAE(MGNO_base_model):
                                          1,
                                          **quant_config.layer_settings,
                                          embedders=quant_embedders,
-                                         layer_confs=check_get([quant_config,kwargs,defaults], "layer_confs"))
+                                         layer_confs=check_get([quant_config,kwargs,defaults], "layer_confs"),
+                                         grid_layer=self.rcm.grid_layers[str(self.bottleneck_zoom)])
 
         for block_idx, block_conf in enumerate(decoder_block_configs):
             block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, defaults, **kwargs)
@@ -82,9 +83,6 @@ class MGNO_VAE(MGNO_base_model):
 
 
     def encode(self, x, coords_input, sample_dict={}, mask=None, emb=None):
-        b, nt, n, nv, nc = x.shape[:5]
-        x = x.view(b, nt, n, -1, self.in_features)
-
         x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
@@ -115,7 +113,7 @@ class MGNO_VAE(MGNO_base_model):
 
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, residual=0):
-        b, nt, n, nv, nc = x.shape[:5]
+        b, nv, nt, n, nc = x.shape[:5]
 
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == self.out_features, f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
@@ -127,7 +125,7 @@ class MGNO_VAE(MGNO_base_model):
         dec = self.decode(z, coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
         dec = dec + residual
 
-        dec = dec.view(b,nt,n,nv,-1)
+        dec = dec.view(b,nv,nt,n,-1)
         return dec, posterior
 
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, defaults, **kwargs):
