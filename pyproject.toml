@@ -48,7 +48,7 @@ cartopy = ">=0.20.2"
 numba = ">=0.55.1"
 scipy = "==1.15.3"
 healpy = "==1.18.1"
-einops = "==0.8.0"
+opt-einsum = "==3.4.0"
 
 [tool.poetry.dev-dependencies]
 
