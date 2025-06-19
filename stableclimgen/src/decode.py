@@ -77,7 +77,7 @@ def decode(timesteps, variables, region=-1) -> None:
     data_dict = {
         "test": {
             "source":
-                {"files": data_file,
+                {"files": [data_file],
                  "variables": variables},
             "target": {"files": [None],
                        "variables": variables},
