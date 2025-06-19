@@ -303,7 +303,7 @@ class TransformerBlock(EmbedBlock):
 
             else:
                 qkv_proj = len(layer_confs) == 0
-                qkv_layer = get_layer(in_features, in_features*3, layer_confs=layer_confs) if not qkv_proj else None
+                qkv_layer = get_layer(in_features, [3, in_features], layer_confs=layer_confs) if not qkv_proj else None
                 out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if not qkv_proj else None
                 out_features_att = out_features_list[i] if qkv_proj else in_features
 

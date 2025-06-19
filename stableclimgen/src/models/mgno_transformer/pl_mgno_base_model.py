@@ -146,7 +146,7 @@ class NH_loss(nn.Module):
         output_nh, _ = self.grid_layer.get_nh(output, **sample_dict)
 
 
-        loss = ((output_nh[:,:,[0]] - output_nh[:,:,1:])).abs().mean().sqrt()
+        loss = (((output_nh[...,[0],:] - output_nh[...,1:,:]))**2).mean().sqrt()
         return loss
 
 class NH_loss_rel(nn.Module):
@@ -155,10 +155,9 @@ class NH_loss_rel(nn.Module):
         self.grid_layer: GridLayer = grid_layer
 
     def forward(self, output, target=None, sample_dict=None, mask=None,**kwargs):
-        indices_in  = sample_dict["indices_layers"][int(self.grid_layer.global_zoom)] if sample_dict is not None and isinstance(sample_dict, dict) else None
-        output_nh, _ = self.grid_layer.get_nh(output, indices_in, sample_dict)
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_dict)
         
-        nh_rel = ((output_nh[:,:,[0]] - output_nh[:,:,1:])/output_nh[:,:,[0]]).abs()
+        nh_rel = ((output_nh[...,[0],:] - output_nh[...,1:,:])/output_nh[...,[0],:]).abs()
         nh_rel = nh_rel[nh_rel>=torch.quantile(nh_rel, 0.98)]
 
         nh_rel = nh_rel.clamp(max=1)

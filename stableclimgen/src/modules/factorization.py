@@ -6,6 +6,9 @@ import math
 import torch
 import torch.nn as nn
 
+#import tensorly as tl
+#from tensorly.decomposition import tucker,parafac
+
 def get_ranks(shape, rank, rank_decay=0):
     rank_ = []
     for k in range(len(shape)):
@@ -37,9 +40,9 @@ def get_fac_matrix(dim, rank, init_ones=True):
       #  m = torch.ones(dim, rank)/(dim)
         m = torch.empty(dim, rank)
        # nn.init.kaiming_uniform_(m)
-        nn.init.normal_(m)/math.sqrt(rank)
+        nn.init.normal_(m)
         #m = m/(dim*100)
-    return nn.Parameter(m, requires_grad=True)
+    return nn.Parameter(m*math.sqrt(2/(rank+dim)), requires_grad=True)
 
 
 class SpatiaFacLayer(nn.Module):
@@ -48,11 +51,13 @@ class SpatiaFacLayer(nn.Module):
                  out_features: List|int, 
                  rank_feat = None,
                  rank_vars = None,
+                 rank_channel = None,
                  n_vars_total = 1,
                  bias = False,
                  ranks_spatial: Dict={},
                  dims_spatial: Dict= {},
                  sum_n_zooms: int=0,
+                 fc = False,
                  base=12,
                  **kwargs):
 
@@ -65,6 +70,8 @@ class SpatiaFacLayer(nn.Module):
         
         factorize_vars = rank_vars is not None
         factorize_features = rank_feat is not None
+        factorize_channels = rank_channel is not None
+        
 
         self.subscripts = {
             'factors': {
@@ -85,7 +92,7 @@ class SpatiaFacLayer(nn.Module):
         core_dims = []
 
         # variables -----
-        scale = 1   
+        scale = 0
         if factorize_vars and n_vars_total>1:
             self.factor_vars = get_fac_matrix(n_vars_total, rank_vars)
             core_dims.append(rank_vars)
@@ -147,65 +154,93 @@ class SpatiaFacLayer(nn.Module):
         if isinstance(out_features, int):
             out_features = [out_features]
 
+        omit_channel = (rank_channel == 0) and (in_features[-1] == out_features[-1]) 
+
+        #if omit_channel and (len(in_features)==1 and len(in_features)==1):
+        #    raise Warning here that in this case channels will not be fac
+        
+        if rank_channel == 0 and in_features[-1] != out_features[-1]:
+            raise ValueError(
+                f"When rank_channel is 0, the last dimensions of in_features ({in_features[-1]}) "
+                f"and out_features ({out_features[-1]}) must be equal."
+            )
+
         self.factors_feats_in = nn.ParameterList() 
         
-        for in_features_ in in_features:
+        for k, in_features_ in enumerate(in_features):
             
-            if factorize_features:
-                m = get_fac_matrix(in_features_, rank_feat, init_ones=False)
+            if (factorize_features and k< (len(in_features) -1))  or (factorize_channels and k==(len(in_features) -1) and not omit_channel):
+                rank = rank_feat if (factorize_features and k< (len(in_features) -1)) else rank_channel
+                m = get_fac_matrix(in_features_, rank, init_ones=False)
                 self.factors_feats_in.append(m)
                 core_dims.append(m.shape[1])
-                scale /= m.shape[1]
+                scale += m.shape[1]
 
                 sub_c = next(core_letters)
                 sub_f = next(factor_letters)
                 self.subscripts['core'] += sub_c
                 self.subscripts['factors']['features'].append(sub_f + sub_c)
                 self.subscripts['x']['features_in'] += sub_f
+
+            elif k==(len(in_features) -1) and omit_channel:
+                self.subscripts['x']['features_in'] += next(core_letters)
             else:
                 sub_c = next(core_letters)
                 self.subscripts['core'] += sub_c
                 self.subscripts['x']['features_in'] += sub_c
 
-                scale /= in_features_
+                scale += in_features_
                 core_dims.append(in_features_)
+        
+
+        self.factors_feats_out = nn.ParameterList() 
+        for k, out_features_ in enumerate(out_features):
+            
+            if (factorize_features and (fc or len(out_features)>len(in_features)) and k< (len(out_features) -1)) or (factorize_channels and k==(len(out_features) -1) and not omit_channel):
+                rank = rank_feat if (factorize_features and k< (len(out_features) -1)) else rank_channel
+                m = get_fac_matrix(out_features_, rank, init_ones=False)
+                self.factors_feats_out.append(m)
+                core_dims.append(m.shape[1])
+                scale += m.shape[1]
+
+                sub_c = next(core_letters)
+                sub_f = next(factor_letters)
+                self.subscripts['core'] += sub_c
+                self.subscripts['factors']['features'].append(sub_f + sub_c)
+                self.subscripts['x']['features_out'] += sub_f
+
+
+            elif (not factorize_features and (fc or len(out_features)>len(in_features))) or not (factorize_channels and k==(len(out_features) -1)):
+
+                sub_c = next(core_letters)
+                self.subscripts['core'] += sub_c
+                self.subscripts['x']['features_out'] += sub_c
+                core_dims.append(out_features_)
+                scale += out_features_
+
+            elif  k==(len(out_features) -1) and omit_channel:
+                self.subscripts['x']['features_out'] += self.subscripts['x']['features_in'][-1]
+
+            elif not fc and len(out_features)==len(in_features):
+                self.subscripts['x']['features_out'] += self.subscripts['x']['features_in'][k]
+            
+            else:
+                print('why here??')
+
 
         self.feat_dims_in = in_features
+        self.feat_dims_out = out_features
         
-        if len(in_features)==len(out_features) and len(in_features)>1:
-            self.subscripts['x']['features_out'] = self.subscripts['x']['features_in'][:-1]
-            self.feat_dims_out = [int(torch.tensor(in_features[:-1]).prod()), out_features[-1]]
-        else:
-            self.feat_dims_out = out_features
         
-
-        if factorize_features:    
-            m = get_fac_matrix(out_features[-1], rank_feat, init_ones=False)
-            self.factors_feats_out = m
-            core_dims.append(m.shape[1])
-
-            sub_c = next(core_letters)
-            sub_f = next(factor_letters)
-            self.subscripts['core'] += sub_c
-            self.subscripts['factors']['features'].append(sub_f + sub_c)
-            self.subscripts['x']['features_out'] += sub_f
-
-            scale /= m.shape[1]
-        else:
-            sub_c = next(core_letters)
-            self.subscripts['core'] += sub_c
-            self.subscripts['x']['features_out'] += sub_c
-            core_dims.append(out_features[-1])
-            scale /= out_features[-1]
-
-            
         core = torch.empty(core_dims)
-        #nn.init.kaiming_uniform_(core)
-        nn.init.normal_(core)
-        self.core = nn.Parameter(core * scale, requires_grad=True)
+        nn.init.kaiming_uniform_(core)
+    #nn.init.normal_(core)
+    # core = torch.ones(core_dims)# * scale
+        self.core = nn.Parameter(core * (2 / scale)**0.5, requires_grad=True)
         
-        self.get_in_feat_fac_fcn = self.get_in_feat_factors if factorize_features else self.get_empty1
-        self.get_out_feat_fac_fcn = self.get_out_feat_factors if factorize_features else self.get_empty1
+        #t = tl.tensor(core)
+        self.get_in_feat_fac_fcn = self.get_in_feat_factors #if factorize_features else self.get_empty1
+        self.get_out_feat_fac_fcn = self.get_out_feat_factors #if factorize_features else self.get_empty1
         self.get_space_fac_fcn = self.get_spatial_factors if factorize_space else self.get_empty_space
 
         if bias:
@@ -261,7 +296,7 @@ class SpatiaFacLayer(nn.Module):
         return list(self.factors_feats_in) 
     
     def get_out_feat_factors(self):
-        return [self.factors_feats_out]
+        return list(self.factors_feats_out)
     
     def return_w_bias(self, x):
         return x + self.bias
@@ -306,3 +341,39 @@ class SpatiaFacLayer(nn.Module):
         x = x.reshape(*x.shape[:3], *x_dims_out)
 
         return self.return_fcn(x)
+    
+
+def init_core_from_matrix_chain(core_dims, rank_ratio=0.5, device=None, dtype=torch.float32, method='xavier'):
+    """
+    Initialize a tensor by multiplying a chain of 2D matrices with dimensions
+    defined by core_dims (e.g., [d1, d2, d3] -> M1: d1xd2, M2: d2xd3, core = M1 @ M2).
+
+    Args:
+        core_dims (list or tuple): Sequence of dimensions.
+        device (torch.device or str, optional): Device to place the tensor on.
+        dtype (torch.dtype): Data type for the matrices.
+        method (str): Scaling method ('xavier' or 'he').
+
+    Returns:
+        torch.Tensor: A 2D tensor of shape (core_dims[0], core_dims[-1]).
+    """
+    vectors = []
+
+    for dim in core_dims:
+        # Determine fan_in/out for scaling
+        if method == 'xavier':
+            std = (2.0 / (dim + 1)) ** 0.5
+        elif method == 'he':
+            std = (2.0 / dim) ** 0.5
+        else:
+            raise ValueError(f"Unknown method '{method}'")
+
+        vec = torch.randn(dim, device=device, dtype=dtype) * std
+        vectors.append(vec)
+
+    # Perform outer products to build rank-1 tensor
+    core = vectors[0]
+    for vec in vectors[1:]:
+        core = torch.einsum('...i,j->...ij', core, vec).reshape(*core.shape[:-1], -1)
+
+    return core.reshape(*core_dims)

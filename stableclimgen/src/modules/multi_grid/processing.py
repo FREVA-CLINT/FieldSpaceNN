@@ -93,6 +93,7 @@ class MG_CrossBlock(nn.Module):
         super().__init__()
         
         max_zoom_diff = layer_settings.get("max_zoom_diff", max(in_zooms)-min(in_zooms))
+        asc = layer_settings['type'] == 'ascending'
 
         self.out_features = in_features_list
         self.out_zooms = in_zooms
@@ -106,7 +107,11 @@ class MG_CrossBlock(nn.Module):
             for in_zoom_cross in in_zooms:
                 
                 zoom_diff = in_zoom - in_zoom_cross
-                if (zoom_diff > 0) & (zoom_diff <= max_zoom_diff):
+                if asc & (zoom_diff > 0) & (abs(zoom_diff) <= max_zoom_diff):
+                    grid_layer_cross = grid_layers[str(in_zoom_cross)] if grid_layers[str(in_zoom_cross)].zoom < grid_layer_cross.zoom else grid_layer_cross
+                    embedders_kv[str(in_zoom_cross)] = get_embedder(**layer_settings.get('embed_confs', {}), zoom=in_zoom_cross)
+
+                elif not asc & (zoom_diff < 0) & (abs(zoom_diff) <= max_zoom_diff):
                     grid_layer_cross = grid_layers[str(in_zoom_cross)] if grid_layers[str(in_zoom_cross)].zoom < grid_layer_cross.zoom else grid_layer_cross
                     embedders_kv[str(in_zoom_cross)] = get_embedder(**layer_settings.get('embed_confs', {}), zoom=in_zoom_cross)
 

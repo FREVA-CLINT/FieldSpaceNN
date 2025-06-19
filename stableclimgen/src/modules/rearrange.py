@@ -33,6 +33,8 @@ class RearrangeBlock(EmbedBlock):
         self.proj_layer = proj_layer if proj_layer else IdentityLayer()
         self.out_layer = out_layer if out_layer else IdentityLayer()
 
+
+
         if spatial_dim_count == 2:
             # Replace the variable dimension 'g' with height and width dimensions for 2D spatial arrangements
             self.pattern = self.pattern.replace('g', 'h w')
@@ -52,15 +54,16 @@ class RearrangeBlock(EmbedBlock):
         """
         # Determine the input dimensionality and extract batch, time, and variable dimensions
 
-        x = self.proj_layer(x, emb=emb)
-
         dim = x.dim()
         if dim == 6:
             b, v, t, h, w, c = x.shape
         else:
             b, v, t, g, c = x.shape
 
-
+        x = self.proj_layer(x, emb=emb)
+        
+        x = x.view(*x.shape[:4],-1)
+        
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [
             rearrange(tensor, self.pattern) if torch.is_tensor(tensor) else tensor
@@ -187,6 +190,8 @@ class RearrangeNHCentric(RearrangeBlock):
         
 
         x = self.proj_layer(x, emb=emb)
+        
+        x = x.view(*x.shape[:4],-1)
         
         x, x_nh = x.split([x.shape[-1]//3, 2*x.shape[-1]//3],dim=-1)
 

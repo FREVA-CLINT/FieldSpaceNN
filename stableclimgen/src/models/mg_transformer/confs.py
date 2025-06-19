@@ -19,7 +19,9 @@ defaults = {
     'p_dropout': 0,
     'layer_type': 'Dense',
     'interpolate_input': True,
-    'learn_residual': True
+    'learn_residual': True,
+    'with_residual': False,
+    'aggregation': 'linear'
 }
 
 class MGEncoderConfig:

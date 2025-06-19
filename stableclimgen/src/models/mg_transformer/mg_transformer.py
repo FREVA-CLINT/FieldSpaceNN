@@ -5,11 +5,11 @@ from omegaconf import ListConfig
 from typing import List
 
 from ...utils.helpers import check_get
-from ...modules.base import LinEmbLayer
+from ...modules.base import LinEmbLayer,MLP_fac
 
 from ...modules.multi_grid.processing import MG_Block,MG_CrossBlock
 from ...modules.multi_grid.confs import MGProcessingConfig,MGCrossProcessingConfig
-from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder
+from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder, MG_Decoder, MG_Encoder
 
 from ...modules.embedding.embedder import get_embedder
 
@@ -65,6 +65,15 @@ class MG_Transformer(MG_base_model):
                     )  
                     block.out_features = in_features*len(block_conf.out_zooms)
                 
+                elif block_conf.type=='nh_conv':
+                    block = MG_Encoder(
+                        self.grid_layers,
+                        in_zooms[0],
+                        in_features,
+                        block_conf.out_features,
+                        out_zooms=block_conf.out_zooms,
+                        layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"))
+                
             elif isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
                 layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
@@ -98,6 +107,17 @@ class MG_Transformer(MG_base_model):
                     )  
                     block.out_features = [in_features[0]]
                 
+                elif block_conf.type=='nh_conv':
+                    block = MG_Decoder(
+                        self.grid_layers,
+                        in_zooms=in_zooms,
+                        in_features_list=in_features,
+                        out_features=block_conf.out_features,
+                        out_zoom=self.max_zoom,
+                        with_residual=check_get([block_conf,kwargs,defaults], "with_residual"),
+                        layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"),
+                        aggregation=check_get([block_conf,kwargs,defaults], "aggregation"),
+                    )
             self.Blocks.append(block)     
 
             in_features = block.out_features
@@ -105,6 +125,7 @@ class MG_Transformer(MG_base_model):
 
        # self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
         
+        """
         embedder_output = get_embedder(**check_get([kwargs, defaults], "output_embed_confs"), zoom=self.max_zoom)
 
         self.out_layer = LinEmbLayer(
@@ -112,7 +133,9 @@ class MG_Transformer(MG_base_model):
             out_features,
             layer_confs = check_get([kwargs,defaults], "input_layer_confs"),
             embedder = embedder_output)
-
+        """
+        self.out_layer = MLP_fac(in_features[0], out_features, layer_confs=check_get([kwargs,defaults], "input_layer_confs"))
+        
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None):
