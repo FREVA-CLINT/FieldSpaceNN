@@ -62,7 +62,7 @@ class RearrangeBlock(EmbedBlock):
 
         x = self.proj_layer(x, emb=emb)
         
-        x = x.view(*x.shape[:4],-1)
+        x = x.reshape(*x.shape[:4],-1)
         
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [
@@ -191,8 +191,8 @@ class RearrangeNHCentric(RearrangeBlock):
 
         x = self.proj_layer(x, emb=emb)
         
-        x = x.view(*x.shape[:4],-1)
-        
+        x = x.reshape(*x.shape[:4],-1)
+
         x, x_nh = x.split([x.shape[-1]//3, 2*x.shape[-1]//3],dim=-1)
 
         x_nh, mask_nh = self.grid_layer.get_nh(x_nh, **sample_dict, with_nh=True, mask=mask)

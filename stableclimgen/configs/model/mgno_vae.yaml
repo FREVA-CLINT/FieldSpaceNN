@@ -30,13 +30,11 @@ model:
   with_gamma: false
   omit_backtransform: true
   layer_confs:
-    cross: false
     bias: false
-    factorize: true
-    factorize_vars: true
     n_vars_total: 6
-    rank: 0.5
     rank_vars: 4
+    rank_feat: null
+    rank_channel: 128
   block_type: 'pre_layer_norm'
   learn_residual: true
   concat_prev: false
@@ -78,7 +76,7 @@ model:
     - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
       out_zooms: [ 3 ]
       no_zooms: [ 3 ]
-      out_features: [ 64 ]
+      out_features: [ 256 ]
       rule: "fc"
       embed_confs:
         embed_names: [ "CoordinateEmbedder" ]
@@ -114,8 +112,8 @@ model:
       out_features: [64]
       layer_settings:
         type: "TransformerBlock"
-        blocks: ["s","mlp"]
-        seq_lengths: 3
+        blocks: ["vsnh","mlp"]
+        seq_lengths: 1
         n_head_channels: 32
         mlp_mult: 1
         embed_confs:
@@ -187,7 +185,7 @@ model:
       embed_mode: "sum"
     layer_settings:
       blocks: [ "s","mlp" ]
-      seq_lengths: 0
+      seq_lengths: 1
       n_head_channels: [1, 1]
       mlp_mult: 1
       distribution: gaussian
