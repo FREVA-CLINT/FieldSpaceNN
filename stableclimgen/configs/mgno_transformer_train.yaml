@@ -2,8 +2,8 @@ defaults:
   - trainer: mgno_transformer
   - logger: wandb
   - model: mgno_transformer_mg
-  - mgrids: icon
-  - dataloader: netcdf_mgno
+  - mgrids: healpix
+  - dataloader: zarr_healpix
   - embedding: default
   - hydra: default
   - _self_
@@ -13,4 +13,4 @@ ckpt_path: null
 run_name: mgno_transformer
 config_name: default
 project_name: test
-run_dir: /Users/maxwitte/work/climgen_out
+run_dir: ../..

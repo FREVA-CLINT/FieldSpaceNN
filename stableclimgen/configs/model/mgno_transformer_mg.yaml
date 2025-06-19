@@ -1,14 +1,14 @@
 _target_: stableclimgen.src.models.mgno_transformer.pl_mgno_base_model.LightningMGNOBaseModel
 lambda_loss_dict:
   MSE_loss: 1
-  NH_loss: 0
+  NH_loss: 0.0
   Grad_loss: 0
   GNLL_loss: 0
 noise_std: 0
 weight_decay: 0.01
 interpolator_settings:
-  search_level: 2
-  nh_inter: 2
+  search_zoom_rel: 4
+  nh_inter: 3
   power: 2
 lr_groups:
   - param_group: 'params'
@@ -26,25 +26,25 @@ model:
   in_features: 1
   out_features: 1
   lift_features: 128
+  n_head_channels: 16
+  with_gamma: false
+  omit_backtransform: true
   layer_confs:
     cross: false
     bias: false
     factorize: true
     factorize_vars: true
-    n_vars_total: 3
+    n_vars_total: 6
     rank: 0.5
     rank_vars: 4
-  n_head_channels: 16
-  with_gamma: false
-  omit_backtransform: true
-  block_type: 'post_layer_norm'
+  block_type: 'pre_layer_norm'
   learn_residual: true
   concat_prev: false
   block_configs:
     - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOStackedEncoderDecoderConfig
-      out_zooms: [6,4]
-      no_zooms: 4
-      out_features: [128,128]
+      out_zooms: [6,4,2]
+      no_zooms: 2
+      out_features: [128,128,128]
       embed_confs:
         embed_names: ["UncertaintyEmbedder"]
         embed_confs: ${embedding}
@@ -58,26 +58,79 @@ model:
         sigma: 1e-3
         kappa: 8.0
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128]
+      out_features: [128,128,128]
       layer_settings:
         type: "TransformerBlock"
-        blocks: ["s","mlp","v","mlp"]
-        seq_lengths: 2
-        n_head_channels: 16
+        blocks: ["v","mlp","s","mlp","s","mlp"]
+        seq_lengths: 3
+        n_head_channels: 32
         mlp_mult: 1
         embed_confs:
-          embed_names: [["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"],["CoordinateEmbedder"]]
+          embed_names:
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOStackedEncoderDecoderConfig
+      out_zooms: [6,4,2]
+      no_zooms: 2
+      out_features: [128,128,128]
+      embed_confs:
+        embed_names: ["UncertaintyEmbedder"]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [3]
+        nh_in_encode: false
+        nh_in_decode: false
+        global_params_learnable: [false, false]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [6,4,2]
+      no_zooms: [6,4,2]
+      out_features: [128,128,128]
+      rule: "="
+      embed_confs:
+        embed_names: ["UncertaintyEmbedder"]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [3]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [false, false]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [128,128,128]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["v","mlp","s","mlp","s","mlp"]
+        seq_lengths: 3
+        n_head_channels: 32
+        mlp_mult: 1
+        embed_confs:
+          embed_names:
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
       out_zooms: [6]
       no_zooms: [6]
       out_features: [128]
-      rule: ">"
-      embed_confs:
-        embed_names: ["UncertaintyEmbedder"]
-        embed_confs: ${embedding}
-        embed_mode: "sum"
+      rule: "fc"
       no_layer_settings:
         no_layer_type: 'VonMises'
         n_params: [3]
