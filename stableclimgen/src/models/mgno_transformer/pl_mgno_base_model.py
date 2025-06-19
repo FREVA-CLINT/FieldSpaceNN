@@ -200,27 +200,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_max if hasattr(self.model,'grid_layer_max') else None)
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        b, nt, n = x.shape[:3]
-
-        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-        if self.interpolator:
-            x, density_map = self.interpolator(x,
-                                  mask=mask,
-                                  calc_density=True,
-                                  sample_dict=sample_dict,
-                                  input_coords=coords_input,
-                                  input_dists=dists_input)
-            emb["DensityEmbedder"] = 1 - density_map
-            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
-
-            mask = None
-        
-        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
-
+        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
         x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
-
         return x
 
     def on_after_backward(self):
@@ -377,11 +358,28 @@ class LightningMGNOBaseModel(pl.LightningModule):
           #      print(f"Parameter with no gradient: {name}")
 
     def prepare_sample_dict(self, sample_dict={}):
-
         if sample_dict is None:
             sample_dict = {}
-    
         if 'zoom_patch_sample' in sample_dict.keys():
-            sample_dict['zoom_patch_sample'] = sample_dict['zoom_patch_sample'][0] if sample_dict['zoom_patch_sample'].numel()>1 else sample_dict['zoom_patch_sample'] 
-
+            sample_dict['zoom_patch_sample'] = sample_dict['zoom_patch_sample'][0] if sample_dict['zoom_patch_sample'].numel()>1 else sample_dict['zoom_patch_sample']
         return sample_dict
+
+    def prepare_inputs(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
+        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(
+            coords_output), check_empty(mask), check_empty(dists_input)
+        sample_dict = self.prepare_sample_dict(sample_dict)
+
+        if self.interpolator:
+            x, density_map = self.interpolator(x,
+                                               mask=mask,
+                                               calc_density=True,
+                                               sample_dict=sample_dict,
+                                               input_coords=coords_input,
+                                               input_dists=dists_input)
+            emb["DensityEmbedder"] = 1 - density_map
+            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
+
+            mask = None
+
+        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
+        return x, coords_input, coords_output, sample_dict, mask, emb, dists_input

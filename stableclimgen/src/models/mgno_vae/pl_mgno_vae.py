@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel
 from ..mgno_transformer.pl_mgno_base_model import check_empty
@@ -7,21 +6,10 @@ from ..mgno_transformer.pl_probabilistic import LightningProbabilisticModel
 from ...modules.grids.grid_layer import Interpolator
 from pytorch_lightning.utilities import rank_zero_only
 
-class MSE_loss(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.loss_fcn = torch.nn.MSELoss() 
-
-    def forward(self, output, target):
-        loss = self.loss_fcn(output, target.view(output.shape))
-        return loss
-
 
 class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self, model, lr_groups, kl_weight: float = 1e-6, n_samples=1, max_batchsize=-1, residual_interpolator_settings=None, **base_model_args):
         super().__init__(model, lr_groups, **base_model_args)
-        # maybe create multi_grid structure here?
         self.model = model
 
         self.lr_groups = lr_groups
@@ -59,22 +47,7 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.save_hyperparameters(ignore=['model'])
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        b, nt, n = x.shape[:3]
-        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-        if self.interpolator:
-            x, density_map = self.interpolator(x,
-                                              mask=mask,
-                                              calc_density=True,
-                                              sample_dict=sample_dict,
-                                              input_coords=coords_input,
-                                              input_dists=dists_input)
-            emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
-            emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
-
-            x = x.unsqueeze(-3)
-            mask = None
+        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
 
         interp_x = 0
         if self.residual_interpolator_up and self.residual_interpolator_down:
@@ -84,7 +57,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
             interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
                                                         calc_density=False,
                                                         sample_dict=sample_dict)
-        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
         x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, residual=interp_x)
         return x, posterior
 

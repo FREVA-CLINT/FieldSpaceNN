@@ -25,7 +25,7 @@ model:
   mgrids: ${mgrids}
   in_features: 1
   out_features: 1
-  lift_features: 128
+  lift_features: 64
   n_head_channels: 16
   with_gamma: false
   omit_backtransform: true
@@ -41,83 +41,13 @@ model:
   learn_residual: true
   concat_prev: false
   encoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOStackedEncoderDecoderConfig
-      out_zooms: [3]
-      no_zooms: 2
-      out_features: [128]
-      embed_confs:
-        embed_names: ["UncertaintyEmbedder"]
-        embed_confs: ${embedding}
-        embed_mode: "sum"
-      no_layer_settings:
-        no_layer_type: 'VonMises'
-        n_params: [3]
-        nh_in_encode: false
-        nh_in_decode: false
-        global_params_learnable: [false, false]
-        sigma: 1e-3
-        kappa: 8.0
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128 ]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: [ "v","mlp","s","mlp","s","mlp" ]
-        seq_lengths: 3
-        n_head_channels: 32
-        mlp_mult: 1
-        embed_confs:
-          embed_names:
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-  decoder_block_configs:
-    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
-      out_zooms: [ 4 ]
-      no_zooms: [ 4 ]
-      out_features: [ 128 ]
-      rule: "fc"
-      embed_confs:
-        embed_names: [ "UncertaintyEmbedder" ]
-        embed_confs: ${embedding}
-        embed_mode: "sum"
-      no_layer_settings:
-        no_layer_type: 'VonMises'
-        n_params: [ 3 ]
-        nh_in_encode: true
-        nh_in_decode: false
-        global_params_learnable: [ false, false ]
-        sigma: 1e-3
-        kappa: 8.0
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: ["v","mlp","s","mlp","s","mlp"]
-        seq_lengths: 3
-        n_head_channels: 32
-        mlp_mult: 1
-        embed_confs:
-          embed_names:
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
     - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
       out_zooms: [ 5 ]
       no_zooms: [ 5 ]
-      out_features: [ 128 ]
+      out_features: [ 64 ]
       rule: "fc"
       embed_confs:
-        embed_names: [ "UncertaintyEmbedder" ]
+        embed_names: [ "CoordinateEmbedder" ]
         embed_confs: ${embedding}
         embed_mode: "sum"
       no_layer_settings:
@@ -129,12 +59,95 @@ model:
         sigma: 1e-3
         kappa: 8.0
     - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
-      out_zooms: [6]
-      no_zooms: [6]
-      out_features: [128]
+      out_zooms: [ 4 ]
+      no_zooms: [ 4 ]
+      out_features: [ 64 ]
       rule: "fc"
       embed_confs:
-        embed_names: ["UncertaintyEmbedder"]
+        embed_names: [ "CoordinateEmbedder" ]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [ 3 ]
+      no_zooms: [ 3 ]
+      out_features: [ 64 ]
+      rule: "fc"
+      embed_confs:
+        embed_names: [ "CoordinateEmbedder" ]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+  decoder_block_configs:
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [ 3 ]
+      no_zooms: [ 3 ]
+      out_features: [ 64 ]
+      rule: "fc"
+      embed_confs:
+        embed_names: [ "CoordinateEmbedder" ]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [64]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["s","mlp"]
+        seq_lengths: 3
+        n_head_channels: 32
+        mlp_mult: 1
+        embed_confs:
+          embed_names:
+            - [ "CoordinateEmbedder" ]
+            - [ "CoordinateEmbedder" ]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [ 4 ]
+      no_zooms: [ 4 ]
+      out_features: [ 64 ]
+      rule: "fc"
+      embed_confs:
+        embed_names: [ "CoordinateEmbedder" ]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [5]
+      no_zooms: [5]
+      out_features: [64]
+      rule: "fc"
+      embed_confs:
+        embed_names: ["CoordinateEmbedder"]
         embed_confs: ${embedding}
         embed_mode: "sum"
       no_layer_settings:
@@ -143,25 +156,38 @@ model:
         nh_in_encode: true
         nh_in_decode: false
         global_params_learnable: [false, false]
+        sigma: 1e-3
+        kappa: 8.0
+    - _target_: stableclimgen.src.models.mgno_transformer.confs.MGNOEncoderDecoderConfig
+      out_zooms: [ 6 ]
+      no_zooms: [ 6 ]
+      out_features: [ 64 ]
+      rule: "fc"
+      embed_confs:
+        embed_names: [ "CoordinateEmbedder" ]
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+      no_layer_settings:
+        no_layer_type: 'VonMises'
+        n_params: [ 3 ]
+        nh_in_encode: true
+        nh_in_decode: false
+        global_params_learnable: [ false, false ]
         sigma: 1e-3
         kappa: 8.0
   quant_config:
     _target_: stableclimgen.src.models.mgno_vae.confs.MGNOQuantConfig
     block_type: "TransformerBlock"
-    latent_ch: [8, 8, 8, 8, 8, 8]
+    latent_ch: [8, 8]
     embed_confs:
       embed_names:
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-        - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+        - [ "CoordinateEmbedder" ]
+        - [ "CoordinateEmbedder" ]
       embed_confs: ${embedding}
       embed_mode: "sum"
     layer_settings:
-      blocks: [ "v","mlp","s","mlp","s","mlp" ]
+      blocks: [ "s","mlp" ]
       seq_lengths: 0
-      n_head_channels: [1, 1, 1, 1, 1, 1]
+      n_head_channels: [1, 1]
       mlp_mult: 1
       distribution: gaussian

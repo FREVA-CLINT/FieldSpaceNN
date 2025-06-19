@@ -33,31 +33,14 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         return l_dict, output
 
     def prepare_inputs(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(
-            coords_output), check_empty(mask), check_empty(dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-        if self.interpolator:
-            interp_x, density_map = self.interpolator(x,
-                                               mask=mask,
-                                               calc_density=True,
-                                               sample_dict=sample_dict,
-                                               input_coords=coords_input,
-                                               input_dists=dists_input)
-            emb["DensityEmbedder"] = 1 - density_map.transpose(-2, -1)
-            emb["UncertaintyEmbedder"] = (density_map.transpose(-2, -1), emb['VariableEmbedder'])
-
-            mask = None
-            condition = interp_x.unsqueeze(-3)
-        else:
-            condition = None
+        interp_x, coords_input, coords_output, sample_dict, mask, emb, dists_input = super().prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
             'sample_dict': sample_dict
         }
-        if torch.is_tensor(condition):
-            model_kwargs['condition'] = condition
+        if self.interpolator:
+            model_kwargs['condition'] = interp_x
         emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
 
         return x, mask, emb, model_kwargs
@@ -68,7 +51,7 @@ class Lightning_MGNO_diffusion_transformer(LightningMGNOBaseModel, LightningProb
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
         diffusion_steps = diffusion_steps.unsqueeze(-1).repeat(1, target.shape[1])
 
-        l_dict, _ = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask.unsqueeze(-1), emb, rel_dists_input)
+        l_dict, _ = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input)
 
         loss = (l_dict["loss"] * weights).mean()
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
