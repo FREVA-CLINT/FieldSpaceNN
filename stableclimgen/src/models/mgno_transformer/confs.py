@@ -5,12 +5,7 @@ import copy
 defaults = {
     "predict_var":False,
     'n_head_channels': 32,
-    'layer_confs': {'factorize': False, 
-                  'n_vars_total': 1, 
-                  'factorize_vars': False, 
-                  'rank_vars': 4,
-                  'rank': 0.5,
-                  'rank_decay': 0},
+    'layer_confs': {},
     'input_layer_confs': {},
     'embed_confs': {},
     'input_embed_confs': {},
