@@ -29,7 +29,7 @@ classifiers = [
 
 [[tool.poetry.source]]
 name = "pytorch"
-index_url = "https://download.pytorch.org/whl/cu118"
+index_url = "https://download.pytorch.org/whl/cu121"
 priority = "explicit"
 
 [tool.poetry.dependencies]
