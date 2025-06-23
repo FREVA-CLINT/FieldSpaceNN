@@ -1,3 +1,4 @@
+
 import datetime
 import json
 import os
@@ -8,9 +9,6 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 import warnings
 import logging
-
-logging.getLogger('lightning').setLevel(0)
-warnings.filterwarnings("ignore")
 
 START_DATE_STR = "1940-01-01"
 END_DATE_STR = "2050-01-01"
@@ -69,9 +67,6 @@ trainer = instantiate(cfg.trainer)
 
 
 def decode(timesteps, variables, region=-1) -> None:
-    save_stdout = sys.stdout
-    sys.stdout = open('trash', 'w')
-
     timesteps = [date_to_index(ts) for ts in timesteps]
 
     data_dict = {
