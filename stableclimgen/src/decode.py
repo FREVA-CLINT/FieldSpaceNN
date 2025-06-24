@@ -8,7 +8,7 @@ from hydra.utils import instantiate
 
 config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc_multivar/vae_16compress_vonmises_crosstucker_unetlike'
 with initialize_config_dir(config_dir=config_path, job_name="your_job"):
-    cfg = compose(config_name="composed_config", strict=False)
+    cfg = compose(config_name="config_frevagpt", strict=False)
 
 norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
                      "stats": {"quantiles": {"0.01": 234.30984497,
