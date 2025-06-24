@@ -85,7 +85,12 @@ class Stacked_NOBlock(nn.Module):
             self.mlp_layers[str(out_zoom)] = MLP_fac(
                 in_features,
                 out_features,
-                layer_confs=layer_confs)
+                layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                             'rank_vars':None,
+                             'rank_feats':None,
+                             'rank_channel':None,
+                             'fc':False,
+                             'bias':True})   
 
         self.activation = nn.SiLU()
               
@@ -190,7 +195,12 @@ class Stacked_PreActivationNOBlock(nn.Module):
             self.mlp_layers[str(out_zoom)] =  MLP_fac(
                                             in_features,
                                             out_features,
-                                            layer_confs=layer_confs)
+                                            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                                                        'rank_vars':None,
+                                                        'rank_feats':None,
+                                                        'rank_channel':None,
+                                                        'fc':False,
+                                                        'bias':True})
 
         self.activation = nn.SiLU()
               
@@ -297,7 +307,12 @@ class NOBlock(nn.Module):
         self.mlp_layer = MLP_fac(
             out_features,
             out_features,
-            layer_confs=layer_confs)        
+            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                        'rank_vars':None,
+                        'rank_feats':None,
+                        'rank_channel':None,
+                        'fc':False,
+                        'bias':True})       
 
         self.activation = nn.SiLU()
               
@@ -384,7 +399,12 @@ class PreActivation_NOBlock(nn.Module):
         self.mlp_layer = MLP_fac(
             out_features,
             out_features,
-            layer_confs=layer_confs)   
+            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                        'rank_vars':None,
+                        'rank_feats':None,
+                        'rank_channel':None,
+                        'fc':False,
+                        'bias':True})   
         
         self.activation = nn.SiLU()
         

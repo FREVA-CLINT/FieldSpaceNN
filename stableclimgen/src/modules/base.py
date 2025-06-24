@@ -93,7 +93,7 @@ class MLP_fac(nn.Module):
     def __init__(self,
                  in_features, 
                  out_features,
-                 mult=2,
+                 mult=1,
                  dropout=0,
                  layer_confs: Dict={},
                  gamma=False

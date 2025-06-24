@@ -22,7 +22,8 @@ class RearrangeBlock(EmbedBlock):
                  reverse_pattern: str, 
                  spatial_dim_count: int = 1, 
                  seq_len: int = None, 
-                 proj_layer: torch.nn.Module = None,
+                 proj_layer_q: torch.nn.Module = None,
+                 proj_layer_kv: torch.nn.Module = None,
                  out_layer: torch.nn.Module = None):
         
         super().__init__()
@@ -30,7 +31,8 @@ class RearrangeBlock(EmbedBlock):
         self.pattern = pattern
         self.reverse_pattern = reverse_pattern
         self.seq_len = seq_len
-        self.proj_layer = proj_layer if proj_layer else IdentityLayer()
+        self.proj_layer_q = proj_layer_q if proj_layer_q else IdentityLayer()
+        self.proj_layer_kv = proj_layer_kv if proj_layer_kv else IdentityLayer()
         self.out_layer = out_layer if out_layer else IdentityLayer()
 
 
@@ -60,7 +62,9 @@ class RearrangeBlock(EmbedBlock):
         else:
             b, v, t, g, c = x.shape
 
-        x = self.proj_layer(x, emb=emb)
+        q = self.proj_layer_q(x, emb=emb)
+        kv = self.proj_layer_kv(x, emb=emb).view(*x.shape[:4],-1)
+        x = torch.concat((q,kv), dim=-1)
         
         x = x.reshape(*x.shape[:4],-1)
         
@@ -108,14 +112,15 @@ class RearrangeTimeCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
         super().__init__(
             fn,
             pattern='b v t g c -> (b v g) t c',
             reverse_pattern='(b v g) t c -> b v t g c',
             spatial_dim_count=spatial_dim_count,
             seq_len=seq_len,
-            proj_layer=proj_layer,
+            proj_layer_q=proj_layer_q,
+            proj_layer_kv=proj_layer_kv,
             out_layer=out_layer
         )
 
@@ -128,14 +133,15 @@ class RearrangeSpaceCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
         super().__init__(
             fn,
             pattern='b v t g c  -> (b v t) g c',
             reverse_pattern='(b v t) g c -> b v t g c',
             spatial_dim_count=spatial_dim_count,
             seq_len=seq_len,
-            proj_layer=proj_layer,
+            proj_layer_q=proj_layer_q,
+            proj_layer_kv=proj_layer_kv,
             out_layer=out_layer
         )
 
@@ -148,14 +154,15 @@ class RearrangeVarCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
         super().__init__(
             fn,
             pattern='b v t g c -> (b t g) v c',
             reverse_pattern='(b t g) v c -> b v t g c',
             spatial_dim_count=spatial_dim_count,
             seq_len=seq_len,
-            proj_layer=proj_layer,
+            proj_layer_q=proj_layer_q,
+            proj_layer_kv=proj_layer_kv,
             out_layer=out_layer
         )
 
@@ -168,14 +175,15 @@ class RearrangeNHCentric(RearrangeBlock):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None, grid_layer: GridLayer = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, grid_layer: GridLayer = None):
         super().__init__(
             fn,
             pattern='b v t g c  -> (b v t) g c',
             reverse_pattern='(b v t) g c -> b v t g c',
             spatial_dim_count=1,
             seq_len=None,
-            proj_layer=proj_layer,
+            proj_layer_q=proj_layer_q,
+            proj_layer_kv=proj_layer_kv,
             out_layer=out_layer
         )
         self.grid_layer = grid_layer
@@ -225,10 +233,11 @@ class RearrangeVarNHCentric(RearrangeNHCentric):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer: torch.nn.Module = None, out_layer: torch.nn.Module = None, grid_layer: GridLayer = None):
+    def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, grid_layer: GridLayer = None):
         super().__init__(
             fn,
-            proj_layer=proj_layer,
+            proj_layer_q=proj_layer_q,
+            proj_layer_kv=proj_layer_kv,
             out_layer=out_layer,
             grid_layer=grid_layer
         )

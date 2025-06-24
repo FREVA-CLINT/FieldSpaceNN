@@ -75,8 +75,8 @@ class SelfAttention(nn.Module):
 
 
         if qkv_proj:
-            self.x_proj = get_layer(in_features, in_features * (1 + 2 * (1-cross)), layer_confs=layer_confs, bias=False)
-            self.kv_proj = get_layer(in_features, in_features*2, layer_confs=layer_confs, bias=False) if cross else IdentityLayer()
+            self.x_proj = get_layer(in_features, in_features, layer_confs=layer_confs, bias=False)
+            self.kv_proj = get_layer(in_features, in_features*2, layer_confs=layer_confs, bias=True)
             self.out_layer = get_layer(in_features, out_features, layer_confs=layer_confs, bias=True)
         else:
             self.x_proj = IdentityLayer()
@@ -303,7 +303,8 @@ class TransformerBlock(EmbedBlock):
 
             else:
                 qkv_proj = len(layer_confs) == 0
-                qkv_layer = get_layer(in_features, [3, in_features], layer_confs=layer_confs) if not qkv_proj else None
+                q_layer = get_layer(in_features, [in_features], layer_confs=layer_confs) if not qkv_proj else None
+                kv_layer = get_layer(in_features, [2, in_features], layer_confs=layer_confs, bias=True) if not qkv_proj else None
                 out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if not qkv_proj else None
                 out_features_att = out_features_list[i] if qkv_proj else in_features
 
@@ -327,7 +328,7 @@ class TransformerBlock(EmbedBlock):
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                trans_block = rearrange_fn(SelfAttention(in_features, out_features_att, n_heads, layer_confs=layer_confs, qkv_proj=qkv_proj, cross=cross), spatial_dim_count, seq_length, proj_layer=qkv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'])
+                trans_block = rearrange_fn(SelfAttention(in_features, out_features_att, n_heads, layer_confs=layer_confs, qkv_proj=qkv_proj, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'])
      
             lin_emb_layers.append(LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True))
 
