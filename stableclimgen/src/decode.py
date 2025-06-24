@@ -1,30 +1,12 @@
 
 import datetime
-import json
-import os
-import sys
+
 import torch
 from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-import warnings
-import logging
 
-START_DATE_STR = "1940-01-01"
-END_DATE_STR = "2050-01-01"
-
-try:
-    START_DATE = datetime.datetime.strptime(START_DATE_STR, "%Y-%m-%d").date()
-    END_DATE = datetime.datetime.strptime(END_DATE_STR, "%Y-%m-%d").date()
-except ValueError as e:
-    print(f"Error: Invalid date format in configuration: {e}")
-    # Fallback dates or raise an error, depending on desired handling
-    # For this script, we'll raise it to stop execution if config is bad.
-    raise
-MAX_INDEX = (END_DATE - START_DATE).days
-
-data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike/tas_1940-2050_merged.zarr"
-config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
+config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc_multivar/vae_16compress_vonmises_crosstucker_unetlike'
 with initialize_config_dir(config_dir=config_path, job_name="your_job"):
     cfg = compose(config_name="composed_config", strict=False)
 
@@ -44,38 +26,27 @@ norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0
                                              "0.99": 11.26358509}}}}
 
 cfg.dataloader.dataset.norm_dict = norm_dict
-cfg.dataloader.datamodule.num_workers = 1
-cfg.dataloader.datamodule.batch_size = 1
-cfg.dataloader.dataset.p_dropout = 0
-cfg.dataloader.dataset.random_p = False
-cfg.dataloader.dataset.in_nside = 256
-cfg.dataloader.dataset.search_radius = 4
-cfg.dataloader.dataset.nh_input = 3
-cfg.dataloader.dataset.coarsen_sample_level = 7
-cfg.dataloader.dataset.deterministic = True
-cfg.dataloader.dataset.n_sample_vars = 1
-cfg.dataloader.dataset.bottleneck_in_nside = 32
-cfg.ckpt_path = os.path.join(config_path, 'last.ckpt')
-cfg.trainer.accelerator = 'gpu'
-cfg.trainer.precision = 32
 cfg.model.mode = "decode"
-cfg.export_to_zarr = True
 
 # Initialize model and trainer
 model = instantiate(cfg.model)
 trainer = instantiate(cfg.trainer)
 
+START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
+END_DATE = datetime.datetime.strptime(cfg.end_date_str, "%Y-%m-%d").date()
+MAX_INDEX = (END_DATE - START_DATE).days
 
-def decode(timesteps, variables, region=-1) -> None:
+
+def decode(timesteps, variables, region=-1):
     timesteps = [date_to_index(ts) for ts in timesteps]
 
     data_dict = {
         "test": {
             "source":
-                {"files": [data_file],
-                 "variables": variables},
+                {"files": [cfg.data_file],
+                 "variables": cfg.variables},
             "target": {"files": [None],
-                       "variables": variables},
+                       "variables": cfg.variables},
             "timesteps": timesteps
         }
     }
@@ -101,8 +72,10 @@ def decode(timesteps, variables, region=-1) -> None:
         output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
 
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
-    sys.stdout = save_stdout
-    return output_dict
+    final_output_dict = {}
+    for var in variables:
+        final_output_dict[var] = output_dict[var]
+    return final_output_dict
 
 
 def date_to_index(date_str: str) -> int | None:
@@ -122,7 +95,7 @@ def date_to_index(date_str: str) -> int | None:
         return None
 
     if not (START_DATE <= current_date <= END_DATE):
-        print(f"Error: Date '{date_str}' is outside the valid range ({START_DATE_STR} to {END_DATE_STR}).")
+        print(f"Error: Date '{date_str}' is outside the valid range ({cfg.start_date_str} to {cfg.end_date_str}).")
         return None
 
     # Calculate the difference in days from the start date
