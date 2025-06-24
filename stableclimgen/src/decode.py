@@ -69,7 +69,7 @@ def decode(timesteps, variables, region=-1):
                        else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0])
     output = rearrange(output, "b n t s ... -> (b t) n s ... ")
     for k, var in enumerate(test_dataset.variables_target):
-        output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
+        output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
 
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
     final_output_dict = {}
