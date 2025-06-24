@@ -10,6 +10,7 @@ from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
 from .mg_attention import Asc_GridCrossAttention
+from .mg_base import NHConv,ResNHConv
 
 class MG_Block(nn.Module):
   
@@ -18,7 +19,8 @@ class MG_Block(nn.Module):
                  in_zooms: List[int],
                  layer_settings: Dict,
                  in_features_list: List[int],
-                 out_features_list: List[int]
+                 out_features_list: List[int],
+                 layer_confs = {}
                 ) -> None: 
       
         super().__init__()
@@ -42,7 +44,7 @@ class MG_Block(nn.Module):
                     out_features, 
                     layer_norm=False, 
                     identity_if_equal=True,
-                    layer_confs=layer_settings.get('layer_confs', {}))
+                    layer_confs=layer_confs)
             
             else:
                 embedders = get_embedder(**layer_settings.get('embed_confs', {}), zoom=zoom)
@@ -62,9 +64,31 @@ class MG_Block(nn.Module):
                                 dropout=layer_settings.get('dropout', 1),
                                 spatial_dim_count=layer_settings.get('spatial_dim_count', 1),
                                 embedders=embedders,
-                                layer_confs=layer_settings.get('layer_confs', {}),
+                                layer_confs=layer_confs,
                                 grid_layer=grid_layers[str(zoom_block)]
                             )
+                    
+                elif type == 'nh_conv':
+                    ranks_spatial = layer_settings.get('ranks_spatial', [])
+
+                    block = NHConv(
+                        grid_layers[str(zoom)],
+                        in_features,
+                        out_features,
+                        ranks_spatial=ranks_spatial,
+                        layer_confs=layer_confs
+                    )
+                
+                elif type == 'res_nh_conv':
+                    ranks_spatial = layer_settings.get('ranks_spatial', [])
+
+                    block = ResNHConv(
+                        grid_layers[str(zoom)],
+                        in_features,
+                        out_features,
+                        ranks_spatial=ranks_spatial,
+                        layer_confs=layer_confs
+                    )
         
             self.blocks[str(zoom)] = block
         
@@ -88,7 +112,8 @@ class MG_CrossBlock(nn.Module):
                  grid_layers: Dict[str, GridLayer],
                  in_zooms: List[int],
                  layer_settings: Dict,
-                 in_features_list: List[int]
+                 in_features_list: List[int],
+                 layer_confs={}
                  ) -> None:
         super().__init__()
         
@@ -125,7 +150,7 @@ class MG_CrossBlock(nn.Module):
                                         n_head_channels = layer_settings.get("n_head_channels",None),
                                         embedder_q=embedder_q,
                                         embedders_kv=embedders_kv,
-                                        layer_confs=layer_settings.get("layer_confs",{}),
+                                        layer_confs=layer_confs,
                                         )
                 self.blocks[str(in_zoom)] = block
 

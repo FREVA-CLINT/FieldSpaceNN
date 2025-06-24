@@ -135,7 +135,7 @@ class SpatiaFacLayer(nn.Module):
             sub_c = next(core_letters)
             sub_f = next(factor_letters)
             self.subscripts['core'] += sub_c
-            self.subscripts['features']['space'].append(sub_f + sub_c)
+            self.subscripts['factors']['space'].append(sub_f + sub_c)
             self.subscripts['x']['space']+=sub_f
             core_dims.append(rank)
 
@@ -321,7 +321,7 @@ class SpatiaFacLayer(nn.Module):
         x_dims_out = [-1] + self.feat_dims_out 
 
         x_subscripts_in = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_in']
-        x_subscripts_out = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:self.sum_n_zooms] + self.subscripts['x']['features_out']
+        x_subscripts_out = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_out']
 
         x = x.view(*x.shape[:3], *x_dims_in)
 

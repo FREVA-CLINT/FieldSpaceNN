@@ -55,7 +55,8 @@ class MG_Transformer(MG_base_model):
         in_features = [lift_features]
 
         for block_idx, block_conf in enumerate(block_configs):
-            
+            layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
+
             if isinstance(block_conf, MGEncoderConfig):
                 
                 if block_conf.type=='diff':
@@ -72,18 +73,18 @@ class MG_Transformer(MG_base_model):
                         in_features,
                         block_conf.out_features,
                         out_zooms=block_conf.out_zooms,
-                        layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"))
+                        layer_confs=layer_confs)
                 
             elif isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
-                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
 
                 block = MG_Block(
                      self.grid_layers,
                      in_zooms,
                      layer_settings,
                      in_features,
-                     block_conf.out_features)
+                     block_conf.out_features,
+                    layer_confs=layer_confs)
             
             elif isinstance(block_conf, MGCrossProcessingConfig):
                 layer_settings = block_conf.layer_settings
@@ -93,7 +94,8 @@ class MG_Transformer(MG_base_model):
                      self.grid_layers,
                      in_zooms,
                      layer_settings,
-                     in_features)
+                     in_features,
+                     layer_confs=layer_confs)
                 
             elif isinstance(block_conf, MGDecoderConfig):
                 
@@ -115,7 +117,7 @@ class MG_Transformer(MG_base_model):
                         out_features=block_conf.out_features,
                         out_zoom=self.max_zoom,
                         with_residual=check_get([block_conf,kwargs,defaults], "with_residual"),
-                        layer_confs=check_get([block_conf,kwargs,defaults], "layer_confs"),
+                        layer_confs=layer_confs,
                         aggregation=check_get([block_conf,kwargs,defaults], "aggregation"),
                     )
             self.Blocks.append(block)     

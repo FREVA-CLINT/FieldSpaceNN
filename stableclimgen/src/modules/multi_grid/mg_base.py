@@ -3,7 +3,7 @@ from typing import List,Dict
 import torch
 import torch.nn as nn
 
-from ..base import get_layer, IdentityLayer
+from ..base import get_layer, IdentityLayer, LinEmbLayer
 from ...modules.grids.grid_layer import GridLayer, Interpolator
 
 class LinearReductionLayer(nn.Module):
@@ -112,5 +112,78 @@ class IWD_ProjLayer(nn.Module):
     def forward(self, x, sample_dict=None):
       
         x,_ = self.interpolator(x.unsqueeze(dim=-2), calc_density=False, sample_dict=sample_dict)
+
+        return x
+    
+
+class NHConv(nn.Module):
+    """
+    Rearranges input to make the variable dimension centric before applying a function, then reverses it.
+
+    :param fn: The function to apply to the rearranged input.
+    :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
+    """
+
+    def __init__(self, grid_layer: GridLayer, in_features, out_features, ranks_spatial=[], layer_confs={}):
+        super().__init__()
+        self.grid_layer = grid_layer
+        
+        rank_spatial_dict = {}
+        if len(ranks_spatial)>0:
+            for k,rank in enumerate(ranks_spatial):
+                rank_spatial_dict[grid_layer.zoom-k] = rank
+     
+        layer_confs['ranks_spatial'] = rank_spatial_dict
+
+        self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], out_features, layer_confs=layer_confs)
+
+    
+    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_dict: Dict = {}) -> torch.Tensor:
+
+        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_dict, with_nh=True, mask=mask)
+
+        x = self.layer(x_nh, emb=emb, sample_dict=sample_dict)
+
+        return x
+    
+
+class ResNHConv(nn.Module):
+    """
+    Rearranges input to make the variable dimension centric before applying a function, then reverses it.
+
+    :param fn: The function to apply to the rearranged input.
+    :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
+    """
+
+    def __init__(self, grid_layer: GridLayer, in_features, out_features, ranks_spatial=[], layer_confs={}):
+        super().__init__()
+
+        self.layer1 = NHConv(grid_layer, in_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
+        self.layer2 = NHConv(grid_layer, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
+        
+        self.norm1 = nn.LayerNorm(in_features)
+        self.norm2 = nn.LayerNorm(out_features)
+
+        self.activation = nn.SiLU()
+        
+        self.skip_layer = LinEmbLayer(in_features, out_features, identity_if_equal=True)
+    
+    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_dict: Dict = {}) -> torch.Tensor:
+        
+        x_res = self.skip_layer(x)
+
+        x = self.norm1(x)
+
+        x = self.activation(x)
+
+        x = self.layer1(x, emb=emb, sample_dict=sample_dict)
+
+        x = self.norm2(x)
+
+        x = self.activation(x)
+
+        x = self.layer2(x, emb=emb, sample_dict=sample_dict)
+
+        x = x + x_res
 
         return x
