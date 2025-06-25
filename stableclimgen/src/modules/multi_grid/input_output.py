@@ -4,8 +4,8 @@ import copy
 import torch.nn as nn
 import torch
 
-from .mg_base import IWD_ProjLayer
-from ..base import IdentityLayer,SpatiaFacLayer,UpDownLayer,get_layer
+from .mg_base import IWD_ProjLayer,UpDownLayer,Res_UpDownLayer
+from ..base import IdentityLayer,get_layer,LinEmbLayer
 class MG_Difference_Encoder(nn.Module):
   
     def __init__(self,
@@ -76,9 +76,9 @@ class MG_Sum_Decoder(nn.Module):
     def forward(self, x_zooms, sample_dict=None, **kwargs):
 
         k = 0
-        for in_zoom, x_in in x_zooms.items():
+        for in_zoom, layer in self.proj_layers.items():
 
-            x_out = self.proj_layers[str(in_zoom)](x_in, sample_dict=sample_dict)
+            x_out = layer(x_zooms[int(in_zoom)], sample_dict=sample_dict)
 
             if k == 0:
                 x = x_out
@@ -108,11 +108,18 @@ class MG_Encoder(nn.Module):
         
         for k, out_zoom in enumerate(out_zooms):
             if out_zoom != in_zoom:
-                self.layers[str(out_zoom)] = UpDownLayer(grid_layers[str(out_zoom)],
+               # self.layers[str(out_zoom)] = UpDownLayer(grid_layers[str(out_zoom)],
+                #                                           in_features,
+                #                                           out_features_list[k],
+                #                                           out_zoom=out_zoom,
+                #                                           in_zoom=in_zoom,
+                #                                           with_nh=True,
+                #                                           layer_confs=layer_confs)
+                self.layers[str(out_zoom)] = Res_UpDownLayer(grid_layers,
                                                            in_features,
                                                            out_features_list[k],
-                                                           out_zoom=out_zoom,
-                                                           in_zoom=in_zoom,
+                                                           in_zoom,
+                                                           out_zoom,
                                                            with_nh=True,
                                                            layer_confs=layer_confs)
             elif in_features==out_features_list[k]:
@@ -155,10 +162,17 @@ class MG_Decoder(nn.Module):
         
         for k, input_zoom in enumerate(in_zooms):
             if input_zoom != out_zoom:
-                self.layers[str(input_zoom)] = UpDownLayer(grid_layers[str(input_zoom)],
+               # self.layers[str(input_zoom)] = UpDownLayer(grid_layers[str(input_zoom)],
+               #                                            in_features_list[k],
+                #                                           out_features,
+                #                                           out_zoom=out_zoom,
+                #                                           with_nh=True,
+                #                                           layer_confs=layer_confs)
+                self.layers[str(input_zoom)] = Res_UpDownLayer(grid_layers,
                                                            in_features_list[k],
                                                            out_features,
-                                                           out_zoom=out_zoom,
+                                                           input_zoom,
+                                                           out_zoom,
                                                            with_nh=True,
                                                            layer_confs=layer_confs)
             else:
@@ -168,7 +182,7 @@ class MG_Decoder(nn.Module):
             layer_confs_ = copy.deepcopy(layer_confs)
             layer_confs_['rank_feat']=None
             layer_confs_['rank_channel']=None
-            self.aggregation_layer = get_layer([len(self.layers), out_features], out_features, layer_confs=layer_confs_)
+            self.aggregation_layer = LinEmbLayer([len(self.layers), out_features], out_features,identity_if_equal=True, layer_confs=layer_confs_)
 
         else:
             self.aggregation_layer = IdentityLayer()

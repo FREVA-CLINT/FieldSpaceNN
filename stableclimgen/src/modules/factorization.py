@@ -284,7 +284,7 @@ class SpatiaFacLayer(nn.Module):
             if int(zoom) in indices_zooms.keys():
                 N_out_of_sample += 1
                # subscript = 'b'
-               # factors.append(factor_m[indices_zooms[int(zoom)]])
+                factors.append(factor_m[indices_zooms[int(zoom)]])
             else:
                # subscript = self.subscripts['features']['space'][idx_f]
                 factors.append(factor_m)
@@ -317,12 +317,9 @@ class SpatiaFacLayer(nn.Module):
     
 
     def forward(self, x: torch.Tensor, emb: Dict=None, sample_dict={}):
-
-        if self.fc:
-            pass
         
         f_s, N_out_of_sample = self.get_space_fac_fcn(sample_dict=sample_dict)
-        sub_space = ['b' + sub[1] if k<=N_out_of_sample else sub for k, sub in enumerate(self.subscripts['factors']['space'])]
+        sub_space = ['b' + sub[1] if k<N_out_of_sample else sub for k, sub in enumerate(self.subscripts['factors']['space'])]
 
         f_v = self.get_var_fac_fcn(emb=emb)
         f_f_in = self.get_in_feat_fac_fcn()
@@ -330,7 +327,7 @@ class SpatiaFacLayer(nn.Module):
 
         core = self.get_core_fcn(emb=emb)
                 
-        x_dims_in = [-1] + [f_s[k].shape[0] for k in range(len(self.subscripts['x']['space'][N_out_of_sample:]))] + self.feat_dims_in 
+        x_dims_in = [-1] + [f_s[k].shape[0] for k in range(N_out_of_sample, len(self.subscripts['x']['space']))] + self.feat_dims_in 
 
         x_dims_out = [-1] + self.feat_dims_out 
 

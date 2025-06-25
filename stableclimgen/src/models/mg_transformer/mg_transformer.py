@@ -115,7 +115,7 @@ class MG_Transformer(MG_base_model):
                         in_zooms=in_zooms,
                         in_features_list=in_features,
                         out_features=block_conf.out_features,
-                        out_zoom=self.max_zoom,
+                        out_zoom=check_get([block_conf, {"out_zoom": self.max_zoom}], "out_zoom"),
                         with_residual=check_get([block_conf,kwargs,defaults], "with_residual"),
                         layer_confs=layer_confs,
                         aggregation=check_get([block_conf,kwargs,defaults], "aggregation"),
@@ -127,7 +127,7 @@ class MG_Transformer(MG_base_model):
 
        # self.out_layer = nn.Linear(input_dims[0], output_dim, bias=False)
         
-        """
+        
         embedder_output = get_embedder(**check_get([kwargs, defaults], "output_embed_confs"), zoom=self.max_zoom)
 
         self.out_layer = LinEmbLayer(
@@ -135,8 +135,8 @@ class MG_Transformer(MG_base_model):
             out_features,
             layer_confs = check_get([kwargs,defaults], "input_layer_confs"),
             embedder = embedder_output)
-        """
-        self.out_layer = MLP_fac(in_features[0], out_features, layer_confs=check_get([kwargs,defaults], "input_layer_confs"))
+        
+        #self.out_layer = MLP_fac(in_features[0], out_features, layer_confs=check_get([kwargs,defaults], "input_layer_confs"))
         
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 

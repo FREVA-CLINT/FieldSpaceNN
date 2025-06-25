@@ -204,46 +204,4 @@ class LinearLayer(nn.Module):
 
 
 
-class UpDownLayer(nn.Module):
-   
-
-    def __init__(self, grid_layer: GridLayer, in_features, out_features, in_zoom = None, out_zoom = None, with_nh=False, layer_confs={}):
-        super().__init__()
-
-        in_zoom = grid_layer.zoom if in_zoom is None else in_zoom
-
-        self.grid_layer = grid_layer
-
-        self.out_features = out_features
-
-        if not isinstance(out_features, list):
-            out_features = [out_features]
-
-        if not isinstance(in_features, list):
-            in_features = [in_features]
-        
-        if with_nh: 
-            in_features = [self.grid_layer.adjc.shape[1]] + in_features
-
-        if out_zoom is not None:
-            zoom_diff = out_zoom - in_zoom
-
-            if zoom_diff > 0:
-                out_features = [4]*zoom_diff + out_features 
-
-            elif zoom_diff < 0:
-                in_features = [4] * abs(zoom_diff) + in_features
-
-        self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
-    
-
-    def forward(self, x: torch.Tensor, emb= None, sample_dict: Dict = {}) -> torch.Tensor:
-        
-        x, mask_nh = self.grid_layer.get_nh(x, **sample_dict)
-        
-        x = self.layer(x, emb=emb, sample_dict=sample_dict)
-
-        x = x.reshape(*x.shape[:3],-1,self.out_features)
-
-        return x
 
