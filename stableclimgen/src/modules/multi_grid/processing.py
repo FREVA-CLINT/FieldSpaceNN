@@ -9,7 +9,7 @@ from ..base import LinEmbLayer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import Asc_GridCrossAttention
+from .mg_attention import Asc_GridCrossAttention,Dsc_GridCrossAttention
 from .mg_base import NHConv,ResNHConv
 
 class MG_Block(nn.Module):
@@ -38,7 +38,7 @@ class MG_Block(nn.Module):
             
             type = layer_settings.get('type','TransformerBlock')
 
-            if zoom < min_zoom:
+            if zoom > min_zoom:
                 block = LinEmbLayer(
                     in_features,
                     out_features, 
@@ -132,15 +132,11 @@ class MG_CrossBlock(nn.Module):
             for in_zoom_cross in in_zooms:
                 
                 zoom_diff = in_zoom - in_zoom_cross
-                if asc & (zoom_diff > 0) & (abs(zoom_diff) <= max_zoom_diff):
+                if (abs(zoom_diff) <= max_zoom_diff):
                     grid_layer_cross = grid_layers[str(in_zoom_cross)] if grid_layers[str(in_zoom_cross)].zoom < grid_layer_cross.zoom else grid_layer_cross
                     embedders_kv[str(in_zoom_cross)] = get_embedder(**layer_settings.get('embed_confs', {}), zoom=in_zoom_cross)
 
-                elif not asc & (zoom_diff < 0) & (abs(zoom_diff) <= max_zoom_diff):
-                    grid_layer_cross = grid_layers[str(in_zoom_cross)] if grid_layers[str(in_zoom_cross)].zoom < grid_layer_cross.zoom else grid_layer_cross
-                    embedders_kv[str(in_zoom_cross)] = get_embedder(**layer_settings.get('embed_confs', {}), zoom=in_zoom_cross)
-
-            if len(embedders_kv)>0:
+            if len(embedders_kv)>0 and asc:
                 block = Asc_GridCrossAttention(grid_layers[str(in_zoom)],
                                         grid_layer_cross,
                                         in_features_list[k],
@@ -152,6 +148,21 @@ class MG_CrossBlock(nn.Module):
                                         embedders_kv=embedders_kv,
                                         layer_confs=layer_confs,
                                         )
+                self.blocks[str(in_zoom)] = block
+
+            elif len(embedders_kv)>0:
+                block = Dsc_GridCrossAttention(grid_layers[str(in_zoom)],
+                                        grid_layer_cross,
+                                        in_features_list[k],
+                                        in_features_list[k],
+                                        mult = layer_settings.get("mlp_mult",1),
+                                        num_heads = layer_settings.get("num_heads",1),
+                                        n_head_channels = layer_settings.get("n_head_channels",None),
+                                        embedder_q=embedder_q,
+                                        embedders_kv=embedders_kv,
+                                        layer_confs=layer_confs,
+                                        )
+                
                 self.blocks[str(in_zoom)] = block
 
     def forward(self, x_zooms, emb=None, mask_zooms=None, sample_dict={}):
