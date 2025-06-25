@@ -55,6 +55,7 @@ scipy = "==1.15.3"
 healpy = "==1.18.1"
 opt-einsum = "==3.4.0"
 zarr = "==2.18.3"
+numcodecs = "==0.13.0"
 
 [tool.poetry.dev-dependencies]
 
