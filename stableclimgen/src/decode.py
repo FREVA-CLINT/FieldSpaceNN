@@ -87,7 +87,9 @@ def decode(timesteps, variables, lon=None, lat=None):
     final_output_dict = {}
     for var in variables:
         final_output_dict[var] = output_dict[var]
-    return final_output_dict
+
+    coords = None if not lon or not lat else test_dataset.__getitem__(0)[3].squeeze()
+    return final_output_dict, coords
 
 
 def date_to_index(date_str: str) -> int | None:
