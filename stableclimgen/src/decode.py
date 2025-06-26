@@ -76,10 +76,9 @@ def decode(timesteps, variables, lon=None, lat=None):
     predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
-                       b1=test_dataset.global_cells.shape[0]
+                       b1=1 if test_dataset.region == -1 else (test_dataset.global_cells.shape[0]
                        if test_dataset.coarsen_lvl_single_map == -1
-                       else (test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0])
-                       if test_dataset.region == -1 else 1)
+                       else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0]))
     output = rearrange(output, "b n t s ... -> (b t) n s ... ")
     for k, var in enumerate(test_dataset.variables_target):
         output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
