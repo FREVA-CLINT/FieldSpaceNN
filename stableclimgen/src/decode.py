@@ -62,7 +62,7 @@ def decode(timesteps, variables, lon=None, lat=None):
         theta = np.radians(90.0 - lat)
         phi = np.radians(lon)
 
-        region = hp.ang2pix(nside, theta, phi, nest=True)
+        region = int(hp.ang2pix(nside, theta, phi, nest=True))
     else:
         region = -1
 
