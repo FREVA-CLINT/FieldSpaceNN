@@ -75,13 +75,13 @@ class SelfAttention(nn.Module):
 
 
         if qkv_proj:
-            self.x_proj = get_layer(in_features, in_features, layer_confs=layer_confs, bias=False)
-            self.kv_proj = get_layer(in_features, in_features*2, layer_confs=layer_confs, bias=True)
-            self.out_layer = get_layer(in_features, out_features, layer_confs=layer_confs, bias=True)
+            self.q_proj = nn.Linear(in_features, in_features, bias=False)
+            self.kv_proj = nn.Linear(in_features, in_features, bias=False)
+            self.out_layer = nn.Linear(in_features, out_features, bias=True) if in_features!=out_features else nn.Identity()
         else:
-            self.x_proj = IdentityLayer()
-            self.kv_proj = IdentityLayer()
-            self.out_layer = IdentityLayer()
+            self.q_proj = nn.Identity()
+            self.kv_proj = nn.Identity()
+            self.out_layer = nn.Identity()
 
         self.proj_fcn = self.proj_xkv if cross else self.proj_x
 
@@ -94,10 +94,10 @@ class SelfAttention(nn.Module):
         self.is_causal = is_causal  # Flag for causal masking (used in time-series tasks)
 
     def proj_x(self, x, kv: torch.Tensor=None):
-        return self.x_proj(x).chunk(3,dim=-1)
+        return self.q_proj(x).chunk(3,dim=-1)
     
     def proj_xkv(self, x, kv: torch.Tensor):
-        return self.x_proj(x), *self.kv_proj(kv).chunk(2,dim=-1)
+        return self.q_proj(x), *self.kv_proj(kv).chunk(2,dim=-1)
 
     def forward(self, x: torch.Tensor, kv: torch.Tensor=None, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
