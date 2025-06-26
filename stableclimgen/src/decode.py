@@ -8,6 +8,8 @@ from hydra.utils import instantiate
 import healpy as hp
 import numpy as np
 
+from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
+
 config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
 with initialize_config_dir(config_dir=config_path, job_name="your_job"):
     cfg = compose(config_name="config_frevagpt", strict=False)
@@ -58,10 +60,8 @@ def decode(timesteps, variables, lon=None, lat=None):
     if lon and lat:
         zoom_level = 1
         nside = 2 ** zoom_level
-
         theta = np.radians(90.0 - lat)
         phi = np.radians(lon)
-
         region = int(hp.ang2pix(nside, theta, phi, nest=True))
     else:
         region = -1
@@ -88,8 +88,28 @@ def decode(timesteps, variables, lon=None, lat=None):
     for var in variables:
         final_output_dict[var] = output_dict[var]
 
-    coords = None if not lon or not lat else test_dataset.__getitem__(0)[3].squeeze()
+    if lon and lat:
+        coords = healpix_pixel_lonlat_torch(cfg.dataloader.dataset.out_nside).reshape(-1, 4 ** cfg.dataloader.dataset.coarsen_sample_level, 2)
+        coords = healpix_coords_to_lonlat_deg(coords[region])
+    else:
+        coords = None
+
     return final_output_dict, coords
+
+
+def healpix_coords_to_lonlat_deg(coords: torch.Tensor) -> torch.Tensor:
+    phi_shifted = coords[:, 0]
+    theta_shifted = coords[:, 1]
+
+    theta = theta_shifted + 0.5 * torch.pi
+
+    lat_rad = 0.5 * torch.pi - theta
+    lon_rad = torch.pi + phi_shifted
+
+    lat_deg = lat_rad * 180.0 / torch.pi
+    lon_deg = lon_rad * 180.0 / torch.pi
+
+    return torch.stack([lon_deg, lat_deg], dim=-1)
 
 
 def date_to_index(date_str: str) -> int | None:
