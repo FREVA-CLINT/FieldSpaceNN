@@ -337,7 +337,7 @@ class HealPixLoader(Dataset):
         output_mapping = self.output_mapping
 
         if self.region != -1:
-            region_index = self.region
+            region_index = torch.tensor(self.region)
         elif self.deterministic:
             region_index = torch.tensor(index % global_cells_input.shape[0])
         else:

@@ -5,6 +5,9 @@ import torch
 from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
+import healpy as hp
+import numpy as np
+from geopy.geocoders import Nominatim
 
 config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc_multivar/vae_16compress_vonmises_crosstucker_unetlike'
 with initialize_config_dir(config_dir=config_path, job_name="your_job"):
@@ -37,7 +40,7 @@ END_DATE = datetime.datetime.strptime(cfg.end_date_str, "%Y-%m-%d").date()
 MAX_INDEX = (END_DATE - START_DATE).days
 
 
-def decode(timesteps, variables, region=-1):
+def decode(timesteps, variables, lon=None, lat=None):
     timesteps = [date_to_index(ts) for ts in timesteps]
 
     data_dict = {
@@ -51,10 +54,20 @@ def decode(timesteps, variables, region=-1):
         }
     }
 
-
     cfg.dataloader.dataset.data_dict = data_dict
-    cfg.dataloader.dataset.region = region
 
+    if lon and lat:
+        zoom_level = 1
+        nside = 2 ** zoom_level
+
+        theta = np.radians(90.0 - lat)
+        phi = np.radians(lon)
+
+        region = hp.ang2pix(nside, theta, phi, nest=True)
+    else:
+        region = -1
+
+    cfg.dataloader.dataset.region = region
     test_dataset = instantiate(cfg.dataloader.dataset,
                                data_dict=data_dict["test"],
                                variables_source=data_dict["test"]["source"]["variables"],
