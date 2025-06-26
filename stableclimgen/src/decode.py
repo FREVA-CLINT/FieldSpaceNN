@@ -8,7 +8,7 @@ from hydra.utils import instantiate
 import healpy as hp
 import numpy as np
 
-config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc_multivar/vae_16compress_vonmises_crosstucker_unetlike'
+config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
 with initialize_config_dir(config_dir=config_path, job_name="your_job"):
     cfg = compose(config_name="config_frevagpt", strict=False)
 
