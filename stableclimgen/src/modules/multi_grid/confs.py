@@ -29,3 +29,17 @@ class MGCrossProcessingConfig:
                     setattr(self, input_kw, value_kw)
             else:
                 setattr(self, input, value)
+
+class MGSelfProcessingConfig:
+    def __init__(self, 
+                 layer_settings: List,
+                 out_features: int,
+                 **kwargs):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
+                setattr(self, input, value)

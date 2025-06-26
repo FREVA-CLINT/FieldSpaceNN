@@ -7,8 +7,8 @@ from typing import List
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.processing import MG_Block,MG_CrossBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGCrossProcessingConfig
+from ...modules.multi_grid.processing import MG_Block,MG_CrossBlock,MG_SelfBlock
+from ...modules.multi_grid.confs import MGProcessingConfig,MGCrossProcessingConfig,MGSelfProcessingConfig
 from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder, MG_Decoder, MG_Encoder
 
 from ...modules.embedding.embedder import get_embedder
@@ -96,6 +96,18 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      layer_confs=layer_confs)
+
+            elif isinstance(block_conf, MGSelfProcessingConfig):
+                layer_settings = block_conf.layer_settings
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MG_SelfBlock(
+                     self.grid_layers,
+                     in_zooms,
+                     layer_settings,
+                     in_features,
+                     out_features,
+                     layer_confs=layer_confs)
                 
             elif isinstance(block_conf, MGDecoderConfig):
                 
@@ -105,6 +117,7 @@ class MG_Transformer(MG_base_model):
                         self.grid_layers,
                         in_zooms=in_zooms,
                         out_zoom=self.max_zoom,
+                        conservative = check_get([block_conf,kwargs,{"conservative": False}], "conservative"),
                         interpolator_confs=check_get([block_conf,kwargs,defaults], "interpolator_confs")
                     )  
                     block.out_features = [in_features[0]]
@@ -134,6 +147,7 @@ class MG_Transformer(MG_base_model):
             in_features[0] if isinstance(in_features, list) or isinstance(in_features, ListConfig) else in_features,
             out_features,
             layer_confs = check_get([kwargs,defaults], "input_layer_confs"),
+            identity_if_equal=True,
             embedder = embedder_output)
         
         #self.out_layer = MLP_fac(in_features[0], out_features, layer_confs=check_get([kwargs,defaults], "input_layer_confs"))
@@ -165,6 +179,7 @@ class MG_Transformer(MG_base_model):
             x_res = x
 
         x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
+        x = x.view(*x.shape[:4],-1)
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
         mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}

@@ -18,31 +18,28 @@ class MG_Difference_Encoder(nn.Module):
 
         self.out_zooms = copy.deepcopy(out_zooms)
 
-        self.out_zooms.sort(reverse = True)
+        self.out_zooms.sort(reverse = False)
 
 
 
     def forward(self, x_zoom: Dict[str, torch.tensor],**kwargs):
         
         in_zoom = list(x_zoom.keys())[0]
-        x = x_zoom[in_zoom]
+        x_in = x_zoom[in_zoom]
 
-        b,v,t,s,c = x.shape
+        x_zooms_out = {}
+        b,v,t,s,c = x_in.shape
         for out_zoom in self.out_zooms:
-        
-            x = x.view(b, v, t, -1, 4**(in_zoom - out_zoom), c)
-            x_coarse = x.mean(dim=-2)
+            
+            x_in = x_in.view(b, v, t, -1, 4**(in_zoom - out_zoom), c)
 
-            x = (x - x_coarse.unsqueeze(dim=-2)).view(b,v,t,-1,c)
-          
-            x_zoom[in_zoom] = x
-            in_zoom = out_zoom
+            x = x_in.mean(dim=-2, keepdim=True)
 
-            x = x_coarse
+            x_zooms_out[out_zoom] = x.view(b,v,t,-1,c)
 
-        x_zoom[out_zoom] = x_coarse
+            x_in = (x_in - x).view(b,v,t,-1,c)
 
-        return x_zoom
+        return x_zooms_out
     
     
 
@@ -53,11 +50,13 @@ class MG_Sum_Decoder(nn.Module):
                  grid_layers,
                  in_zooms: List[int],
                  out_zoom: int,
+                 conservative: bool=False,
                  interpolator_confs: dict={},
                 ) -> None: 
       
         super().__init__()
 
+        self.conservative = conservative
         self.proj_layers = nn.ModuleDict()
         self.out_zooms = [out_zoom]
         
@@ -69,7 +68,13 @@ class MG_Sum_Decoder(nn.Module):
                             interpolator_confs=interpolator_confs)
             else:
                 self.proj_layers[str(input_zoom)] = IdentityLayer()
-                
+        
+        zooms_sorted = [int(t) for t in torch.tensor(in_zooms).sort(descending=True).values]
+        if conservative:
+            self.cons_dict = dict(zip(zooms_sorted[:-1],zooms_sorted[1:]))
+            self.cons_dict[zooms_sorted[-1]] = zooms_sorted[-1]
+        else:
+            self.cons_dict = dict(zip(zooms_sorted,zooms_sorted))
         self.in_zooms = in_zooms
 
 
@@ -77,8 +82,14 @@ class MG_Sum_Decoder(nn.Module):
 
         k = 0
         for in_zoom, layer in self.proj_layers.items():
+            x_out = x_zooms[int(in_zoom)]
 
-            x_out = layer(x_zooms[int(in_zoom)], sample_dict=sample_dict)
+            zoom_level_cons = int(in_zoom) - self.cons_dict[int(in_zoom)]
+            if zoom_level_cons>0:
+                x_out = x_out.view(*x_out.shape[:3],-1,4**zoom_level_cons, x_out.shape[-1]) - x_out.view(*x_out.shape[:3],-1,4**zoom_level_cons,x_out.shape[-1]).mean(dim=-2, keepdim=True)
+                x_out = x_out.view(*x_out.shape[:3],-1,x_out.shape[-1])
+            
+            x_out = layer(x_out, sample_dict=sample_dict)
 
             if k == 0:
                 x = x_out

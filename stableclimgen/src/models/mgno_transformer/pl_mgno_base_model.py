@@ -23,27 +23,35 @@ def check_empty(x):
         return x
 
 class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
-
-    def __init__(self, optimizer, lr_groups, max_iters, iter_start=0):
+    def __init__(self, optimizer, max_iters, iter_start=0):
         self.max_num_iters = max_iters
         self.iter_start = iter_start
-        self.warmups = [lr_group["lr_warmup"] for lr_group in lr_groups]
-        self.zero_iters = [lr_group.get("zero_iters",0) for lr_group in lr_groups]
+
+        # Fetch per-group warmup and zero_iters from optimizer.param_groups
+        self.warmups = [group.get("warmup", 1) for group in optimizer.param_groups]
+        self.zero_iters = [group.get("zero_iters", 0) for group in optimizer.param_groups]
+
         super().__init__(optimizer)
 
     def get_lr(self):
-        lr_factors = self.get_lr_factor(epoch=self.last_epoch)
-        return [base_lr * lr_factors[k] for k,base_lr in enumerate(self.base_lrs)]
+        factor = self.get_lr_factors(self.last_epoch)
+        return [base_lr * f for base_lr, f in zip(self.base_lrs, factor)]
 
-    def get_lr_factor(self, epoch):
+    def get_lr_factors(self, epoch):
         epoch += self.iter_start
-        lr_factors = [0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters)) for _ in range(len(self.warmups))]
-        
-        for k, lr_factor in enumerate(lr_factors):
-            if epoch < self.zero_iters[k]:
-                lr_factors[k] = 0
-            elif epoch <= self.warmups[k]:
-                lr_factors[k] = lr_factor*epoch * 1.0 / self.warmups[k]
+        lr_factors = [
+            0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters))
+            for _ in self.optimizer.param_groups
+        ]
+
+        for i in range(len(lr_factors)):
+            if epoch < self.zero_iters[i]:
+                lr_factors[i] = 0.0
+            elif epoch <= self.warmups[i] and self.warmups[i]>0:
+                lr_factors[i] *= epoch / (self.warmups[i])
+            elif epoch <= self.warmups[i] and self.warmups[i]==0:
+                lr_factors[i] *= epoch
+
         return lr_factors
 
 class L1_loss(nn.Module):
@@ -314,37 +322,39 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
 
     def configure_optimizers(self):
-        no_params = []
-        emb_params = []
-        att_params = []
-        att_params_names = []
-        params = []
+        grouped_params = {group_name: [] for group_name in self.lr_groups}
+        grouped_params["default"] = []  # fallback for unmatched
+
+
         for n, p in self.named_parameters():
-            if 'sigma' in n or 'dist' in n:
-                no_params.append(p)
-            elif "attention" in n:
-                att_params.append(p)
-                att_params_names.append(n)
-            else:
-                params.append(p)
-                    
+            matched = False
+            for group_name, group_cfg in self.lr_groups.items():
+                match_keys = group_cfg.get("matches", [group_name])
+                if any(mk in n for mk in match_keys):
+                    grouped_params[group_name].append(p)
+                    matched = True
+                    break
+            if not matched:
+                grouped_params["default"].append(p)
+
+        # Now build the param groups for optimizer
         param_groups = []
-        for lr_group in self.lr_groups:
-            if lr_group['param_group']=='no_params':
-                p = no_params
-            elif lr_group['param_group']=='attention':
-                p = att_params
-            else:
-                p = params
-            param_groups.append({"params":p, "lr": lr_group["lr"], "name": lr_group['param_group']})
+        for group_name, group_cfg in self.lr_groups.items():
+            param_groups.append({
+                "params": grouped_params[group_name],
+                "lr": group_cfg["lr"],
+                "name": group_name,
+                **{k: v for k, v in group_cfg.items() if k not in {"matches", "lr"}}
+            })
 
 
-        optimizer = AdamW(param_groups, weight_decay=self.weight_decay)
+        optimizer = torch.optim.Adam(param_groups, weight_decay=self.weight_decay)
+
         scheduler = CosineWarmupScheduler(
-                        optimizer=optimizer,
-                        lr_groups=self.lr_groups,
-                        max_iters=self.trainer.max_steps,
-                        iter_start=0)
+            optimizer=optimizer,
+            max_iters=self.trainer.max_steps,
+            iter_start=0
+        )
         
         return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
     

@@ -106,7 +106,7 @@ class SpatiaFacLayer(nn.Module):
 
         elif n_vars_total>1:
             core_dims.append(n_vars_total)
-
+            #scale += n_vars_total
             self.get_core_fcn = self.get_core_from_var_idx
             self.get_var_fac_fcn = self.get_empty1
 
@@ -244,7 +244,7 @@ class SpatiaFacLayer(nn.Module):
         
         
         core = torch.empty(core_dims)
-        nn.init.kaiming_uniform_(core)
+        nn.init.normal_(core)
     #nn.init.normal_(core)
     # core = torch.ones(core_dims)# * scale
         self.core = nn.Parameter(core * (2 / scale)**0.5, requires_grad=True)
