@@ -323,21 +323,44 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
     def configure_optimizers(self):
         grouped_params = {group_name: [] for group_name in self.lr_groups}
-        grouped_params["default"] = []  # fallback for unmatched
-
-
-        for n, p in self.named_parameters():
+        grouped_params["default"] = []  # fallback group
+        seen_params = set()
+        
+        class_names = []
+        def visit_module(module):
+            # Match this module by class name
+            module_class_name = module.__class__.__name__
+            class_names.append(module_class_name)
             matched = False
             for group_name, group_cfg in self.lr_groups.items():
                 match_keys = group_cfg.get("matches", [group_name])
-                if any(mk in n for mk in match_keys):
-                    grouped_params[group_name].append(p)
+                if any(mk in module_class_name for mk in match_keys):
                     matched = True
                     break
-            if not matched:
-                grouped_params["default"].append(p)
 
-        # Now build the param groups for optimizer
+            if matched:
+                for p in module.parameters():
+                    if id(p) not in seen_params:
+                        grouped_params[group_name].append(p)
+                        seen_params.add(id(p))
+
+            # Recurse into submodules (including inside ModuleList/Dict)
+            for name, child in module._modules.items():
+                if isinstance(child, (nn.ModuleList, nn.ModuleDict)):
+                    for sub_child in child.values() if isinstance(child, nn.ModuleDict) else child:
+                        visit_module(sub_child)
+                elif isinstance(child, nn.Module):
+                     visit_module(child)
+
+        # Start recursive traversal from self (i.e. the whole model)
+        visit_module(self)
+
+        # Assign leftover parameters to default group
+        for p in self.parameters():
+            if id(p) not in seen_params:
+                grouped_params["default"].append(p)
+                seen_params.add(id(p))
+
         param_groups = []
         for group_name, group_cfg in self.lr_groups.items():
             param_groups.append({
@@ -346,7 +369,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
                 "name": group_name,
                 **{k: v for k, v in group_cfg.items() if k not in {"matches", "lr"}}
             })
-
 
         optimizer = torch.optim.Adam(param_groups, weight_decay=self.weight_decay)
 
