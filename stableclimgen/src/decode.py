@@ -7,42 +7,47 @@ from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 import healpy as hp
 import numpy as np
-
 from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
+from joblib import Memory
 
-config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
-with initialize_config_dir(config_dir=config_path, job_name="your_job"):
-    cfg = compose(config_name="config_frevagpt", strict=False)
+mem = Memory("/tmp/joblib_cache", verbose=0)
 
-norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": 234.30984497,
-                                             "0.99": 305.74804688}}},
-             "pr": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                    "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
-             "pres_sfc": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                          "stats": {"quantiles": {"0.01": 64049.64453125,
-                                                  "0.99": 103337.53125}}},
-             "uas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": -12.04504204,
-                                             "0.99": 17.22920036}}},
-             "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": -12.20680428,
-                                             "0.99": 11.26358509}}}}
+@mem.cache
+def init_model():
+    config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
+    with initialize_config_dir(config_dir=config_path, job_name="your_job"):
+        cfg = compose(config_name="config_frevagpt", strict=False)
 
-cfg.dataloader.dataset.norm_dict = norm_dict
-cfg.model.mode = "decode"
+    norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": 234.30984497,
+                                                 "0.99": 305.74804688}}},
+                 "pr": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                        "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
+                 "pres_sfc": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                              "stats": {"quantiles": {"0.01": 64049.64453125,
+                                                      "0.99": 103337.53125}}},
+                 "uas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": -12.04504204,
+                                                 "0.99": 17.22920036}}},
+                 "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": -12.20680428,
+                                                 "0.99": 11.26358509}}}}
 
-# Initialize model and trainer
-model = instantiate(cfg.model)
-trainer = instantiate(cfg.trainer)
+    cfg.dataloader.dataset.norm_dict = norm_dict
+    cfg.model.mode = "decode"
 
-START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
-END_DATE = datetime.datetime.strptime(cfg.end_date_str, "%Y-%m-%d").date()
-MAX_INDEX = (END_DATE - START_DATE).days
+    # Initialize model and trainer
+    model = instantiate(cfg.model)
+    trainer = instantiate(cfg.trainer)
+
+    return model, trainer, cfg
 
 
 def decode(timesteps, variables, lon=None, lat=None):
-    timesteps = [date_to_index(ts) for ts in timesteps]
+    model, trainer, cfg = init_model()
+
+    START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
+    timesteps = [date_to_index(ts, START_DATE) for ts in timesteps]
 
     data_dict = {
         "test": {
@@ -112,7 +117,7 @@ def healpix_coords_to_lonlat_deg(coords: torch.Tensor) -> torch.Tensor:
     return torch.stack([lon_deg, lat_deg], dim=-1)
 
 
-def date_to_index(date_str: str) -> int | None:
+def date_to_index(date_str: str, START_DATE) -> int | None:
     """
     Converts a date string (YYYY-MM-DD) to its corresponding zero-based index.
 
@@ -122,15 +127,7 @@ def date_to_index(date_str: str) -> int | None:
     Returns:
         The integer index if the date is within the valid range, otherwise None.
     """
-    try:
-        current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        print(f"Error: Invalid date format for '{date_str}'. Please use YYYY-MM-DD.")
-        return None
-
-    if not (START_DATE <= current_date <= END_DATE):
-        print(f"Error: Date '{date_str}' is outside the valid range ({cfg.start_date_str} to {cfg.end_date_str}).")
-        return None
+    current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
 
     # Calculate the difference in days from the start date
     index = (current_date - START_DATE).days
