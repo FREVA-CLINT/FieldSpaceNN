@@ -1,19 +1,17 @@
+import datetime
+import torch
+from einops import rearrange
+from hydra import compose, initialize_config_dir
+from hydra.utils import instantiate
+import healpy as hp
+import numpy as np
+from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
 from joblib import Memory
 
 mem = Memory("/tmp/joblib_cache", verbose=0)
 
 @mem.cache
 def init_model():
-    from hydra import compose, initialize_config_dir
-    from hydra.utils import instantiate
-
-    import datetime
-    import torch
-    from einops import rearrange
-    import healpy as hp
-    import numpy as np
-    from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
-
     config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
     with initialize_config_dir(config_dir=config_path, job_name="your_job"):
         cfg = compose(config_name="config_frevagpt", strict=False)
@@ -40,29 +38,14 @@ def init_model():
     model = instantiate(cfg.model)
     trainer = instantiate(cfg.trainer)
 
-    return model, trainer, cfg, torch, datetime, rearrange, hp, np, healpix_pixel_lonlat_torch, instantiate
+    return model, trainer, cfg
 
 
 def decode(timesteps, variables, lon=None, lat=None):
-    model, trainer, cfg, torch, datetime, rearrange, hp, np, healpix_pixel_lonlat_torch, instantiate = init_model()
+    model, trainer, cfg = init_model()
 
     START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
-    def date_to_index(date_str: str) -> int | None:
-        """
-        Converts a date string (YYYY-MM-DD) to its corresponding zero-based index.
-
-        Args:
-            date_str: The date string to convert.
-
-        Returns:
-            The integer index if the date is within the valid range, otherwise None.
-        """
-        current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-
-        # Calculate the difference in days from the start date
-        index = (current_date - START_DATE).days
-        return index
-    timesteps = [date_to_index(ts) for ts in timesteps]
+    timesteps = [date_to_index(ts, START_DATE) for ts in timesteps]
 
     data_dict = {
         "test": {
@@ -109,22 +92,41 @@ def decode(timesteps, variables, lon=None, lat=None):
         final_output_dict[var] = output_dict[var]
 
     if lon and lat:
-        def healpix_coords_to_lonlat_deg(coords: torch.Tensor) -> torch.Tensor:
-            phi_shifted = coords[:, 0]
-            theta_shifted = coords[:, 1]
-
-            theta = theta_shifted + 0.5 * torch.pi
-
-            lat_rad = 0.5 * torch.pi - theta
-            lon_rad = torch.pi + phi_shifted
-
-            lat_deg = lat_rad * 180.0 / torch.pi
-            lon_deg = lon_rad * 180.0 / torch.pi
-
-            return torch.stack([lon_deg, lat_deg], dim=-1)
         coords = healpix_pixel_lonlat_torch(cfg.dataloader.dataset.out_nside).reshape(-1, 4 ** cfg.dataloader.dataset.coarsen_sample_level, 2)
         coords = healpix_coords_to_lonlat_deg(coords[region])
     else:
         coords = None
 
     return final_output_dict, coords
+
+
+def healpix_coords_to_lonlat_deg(coords: torch.Tensor) -> torch.Tensor:
+    phi_shifted = coords[:, 0]
+    theta_shifted = coords[:, 1]
+
+    theta = theta_shifted + 0.5 * torch.pi
+
+    lat_rad = 0.5 * torch.pi - theta
+    lon_rad = torch.pi + phi_shifted
+
+    lat_deg = lat_rad * 180.0 / torch.pi
+    lon_deg = lon_rad * 180.0 / torch.pi
+
+    return torch.stack([lon_deg, lat_deg], dim=-1)
+
+
+def date_to_index(date_str: str, START_DATE) -> int | None:
+    """
+    Converts a date string (YYYY-MM-DD) to its corresponding zero-based index.
+
+    Args:
+        date_str: The date string to convert.
+
+    Returns:
+        The integer index if the date is within the valid range, otherwise None.
+    """
+    current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    # Calculate the difference in days from the start date
+    index = (current_date - START_DATE).days
+    return index
