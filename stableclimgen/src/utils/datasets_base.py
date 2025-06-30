@@ -7,6 +7,9 @@ import xarray as xr
 from omegaconf import ListConfig
 from torch.utils.data import Dataset
 
+import warnings
+warnings.filterwarnings("ignore", message=".*fails while guessing")
+
 from . import normalizer as normalizers
 
 def skewed_random_p(size, exponent=2, max_p=0.9):
@@ -219,7 +222,7 @@ class BaseDataset(Dataset):
             drop_mask[:,drop_mask_p] = True
 
         elif self.p_dropout > 0 and drop_vars:
-            drop_mask_p = (torch.rand((nv, nt, n, nh)) < p_dropout).bool()
+            drop_mask_p = (torch.rand((nv, nt, n, nh)) < p_dropout.view(-1,1,1,1)).bool()
             drop_mask[drop_mask_p] = True
 
         elif self.p_dropout > 0 and drop_timesteps:
