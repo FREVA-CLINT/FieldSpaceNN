@@ -50,6 +50,68 @@ class SumReductionLayer(nn.Module):
         return x_out, mask_out
 
 
+class ConservativeLayer(nn.Module):
+  
+    def __init__(self,
+                 in_zooms: List[int],
+                 first_feature_only=False
+                ) -> None: 
+      
+        super().__init__()
+
+        self.ffo = first_feature_only
+        if first_feature_only:
+            self.fwd_fcn = self.forward_ffo
+        else:
+            self.fwd_fcn = self.forward_all
+
+        self.proj_layers = nn.ModuleDict()
+        self.out_zooms = in_zooms
+        
+        zooms_sorted = [int(t) for t in torch.tensor(in_zooms).sort(descending=True).values]
+        
+        self.cons_dict = dict(zip(zooms_sorted[:-1],zooms_sorted[1:]))
+        self.cons_dict[zooms_sorted[-1]] = zooms_sorted[-1]
+
+        self.in_zooms = in_zooms
+
+
+    def forward_all(self, x_zooms, sample_dict=None, **kwargs):
+
+        for zoom, x in x_zooms.items():
+ 
+            zoom_level_cons = zoom - self.cons_dict[zoom]
+
+            if zoom_level_cons > 0:
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) - x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]).mean(dim=-2, keepdim=True)
+                x = x.view(*x.shape[:3], -1, x.shape[-1])
+            
+            x_zooms[zoom] = x
+
+        return x_zooms
+
+    def forward_ffo(self, x_zooms, sample_dict=None, **kwargs):
+
+        for zoom, x in x_zooms.items():
+ 
+            zoom_level_cons = zoom - self.cons_dict[zoom]
+
+            x = x[...,0]
+            if zoom_level_cons > 0:
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons) - x.view(*x.shape[:3], -1, 4**zoom_level_cons).mean(dim=-1, keepdim=True)
+                x = x.view(*x.shape[:3], -1)
+            
+            x_zooms[zoom][...,0] = x
+
+        return x_zooms
+    
+
+    def forward(self, x_zooms, sample_dict=None, **kwargs):
+
+        x_zooms = self.fwd_fcn(x_zooms)
+
+        return x_zooms
+
 
 class ProjLayer(nn.Module):
   

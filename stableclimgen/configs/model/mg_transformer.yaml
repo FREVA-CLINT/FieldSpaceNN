@@ -1,0 +1,103 @@
+_target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
+composed_loss: false
+lambda_loss_dict:
+  6:
+    GNLL_loss: 0.1
+  4:
+    GNLL_loss: 0.5
+  2: 
+    GNLL_loss: 1
+noise_std: 0
+weight_decay: 0
+interpolator_settings:
+  search_zoom_rel: 3
+  nh_inter: 2
+  power: 1
+lr_groups:
+  default:
+    lr: 1e-4
+    warmup: 1
+  attention:
+    matches: ['TransformerBlock','GridSelfAttention']
+    lr: 1e-4
+    warmup: 1000
+model:
+  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  predict_var: true
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 16
+  input_layer_confs:
+    n_vars_total: 2
+    rank_vars: 4
+    rank_feat: null
+    bias: false
+    fc: false
+  learn_residual: false
+  mg_encoder_config:
+    type: diff
+    out_zooms: [6,4,2]
+  mg_decoder_config:
+    type: sum
+    out_zoom: [6]
+    conservative: true
+    interpolator_confs:
+      nh_inter: 1
+      power: 1
+  block_configs:
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [128,128,128]
+      layer_settings:
+        type: 'linear'
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [128,128,128]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["vsnh","mlp","vsnh","mlp"]
+        seq_lengths: 1
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names:
+            - ["UncertaintyEmbedder","CoordinateEmbedder"] 
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"] 
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+      out_features: 128
+      q_zooms: [2, 4, 6]
+      kv_zooms: [2, 4, 6]
+      layer_settings:
+        with_nh: true
+        common_kv: true
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names: ["UncertaintyEmbedder","CoordinateEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [128,128,128]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["vsnh","mlp","vsnh","mlp"]
+        seq_lengths: 1
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names:
+            - ["UncertaintyEmbedder","CoordinateEmbedder"] 
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["UncertaintyEmbedder","CoordinateEmbedder"] 
+            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [2,2,2]
+      layer_settings:
+        type: 'linear'
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig

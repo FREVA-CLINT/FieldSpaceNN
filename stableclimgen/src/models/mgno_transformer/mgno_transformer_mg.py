@@ -7,7 +7,7 @@ from typing import List
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer
 from ...modules.neural_operator import mgno_encoder_decoder as enc_dec
-from ...modules.multi_grid.processing import MG_Block
+from ...modules.multi_grid.processing import MG_SingleBlock
 from ...modules.embedding.embedder import get_embedder
 
 from .confs import defaults, MGNOEncoderDecoderConfig, MGNOStackedEncoderDecoderConfig
@@ -16,7 +16,7 @@ from ...modules.multi_grid.confs import MGProcessingConfig
 from .mgno_base_model import MGNO_base_model
 
 class MGNO_Transformer_MG(MGNO_base_model):
-    def __init__(self, 
+    def __init__(self,
                  mgrids,
                  block_configs: List,
                  in_features: int=1,
@@ -93,7 +93,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
                 layer_settings = block_conf.layer_settings
                 layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
 
-                block = MG_Block(
+                block = MG_SingleBlock(
                      self.rcm.grid_layers,
                      in_zooms,
                      layer_settings,

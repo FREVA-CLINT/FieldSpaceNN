@@ -10,7 +10,7 @@ from ..mgno_transformer.mgno_base_model import MGNO_base_model
 from ...modules.base import LinEmbLayer
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig
-from ...modules.multi_grid.processing import MG_Block
+from ...modules.multi_grid.processing import MG_SingleBlock
 from ...modules.neural_operator import mgno_encoder_decoder as enc_dec
 from ...utils.helpers import check_get
 
@@ -168,7 +168,7 @@ class MGNO_VAE(MGNO_base_model):
             layer_settings = block_conf.layer_settings
             layer_settings['layer_confs'] = check_get([block_conf, kwargs, defaults], "layer_confs")
 
-            block = MG_Block(
+            block = MG_SingleBlock(
                 self.rcm.grid_layers,
                 in_zooms,
                 layer_settings,

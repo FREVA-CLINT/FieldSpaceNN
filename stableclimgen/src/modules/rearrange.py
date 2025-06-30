@@ -197,7 +197,9 @@ class RearrangeNHCentric(RearrangeBlock):
     def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None, sample_dict: Dict = None) -> torch.Tensor:
         
 
-        x = self.proj_layer(x, emb=emb)
+        q = self.proj_layer_q(x, emb=emb)
+        kv = self.proj_layer_kv(x, emb=emb).view(*x.shape[:4],-1)
+        x = torch.concat((q,kv), dim=-1)
         
         x = x.reshape(*x.shape[:4],-1)
 

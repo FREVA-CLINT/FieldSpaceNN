@@ -34,7 +34,8 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
     img_size = 3
 
     if has_var:
-        output, output_var = output.split(2, axis=-1)
+        output, output_var = np.split(output,2, axis=-1)
+        output_var = output_var**0.5
         plot_var = True
     else:
         output_var = None
@@ -73,7 +74,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
           plot_samples.insert(1, (input_density[i], coords_output, "Input Density", None, None))
 
         if plot_var:
-          plot_samples.insert(-2, (output_var[i], coords_output, "Output variance", None, None))
+          plot_samples.insert(-2, (output_var[i], coords_output, "Output std", None, None))
 
         # Loop over samples
         for index, plot_sample in enumerate(plot_samples):

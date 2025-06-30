@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch import ModuleDict
 
 from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
+from ...modules.grids.grid_layer import GridLayer
 from ...utils.helpers import expand_tensor
 
 
@@ -120,6 +121,38 @@ class DensityEmbedder(BaseEmbedder):
 
         density = density.view(*density.shape[:1],-1, 4**zoom_diff, *density.shape[3:]).mean(dim=2)
         return self.embedding_fn(density)
+
+class MGPosEmbedder(BaseEmbedder):
+    """
+    A neural network module to embed longitude and latitude coordinates.
+
+    :param embed_dim: Dimensionality of the embedding output.
+    :param in_channels: Number of input coordinate features (default is 2).
+    """
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int, grid_layers: Dict[str, GridLayer], zooms:list, emb_zoom: int) -> None:
+        super().__init__(name, in_channels, embed_dim)
+
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "v" ,"t", "s", "c"]
+
+        self.zoom = zoom
+
+        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
+        self.embedding_fn = torch.nn.Sequential(
+            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(self.embed_dim, self.embed_dim),
+        )
+    
+    def forward(self, density, **kwargs):
+        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
+        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
+
+        density = density.view(*density.shape[:1],-1, 4**zoom_diff, *density.shape[3:]).mean(dim=2)
+        return self.embedding_fn(density)
+
 
 class UncertaintyEmbedder(BaseEmbedder):
     """

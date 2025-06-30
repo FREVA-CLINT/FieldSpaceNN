@@ -6,6 +6,8 @@ import torch
 
 from .mg_base import IWD_ProjLayer,UpDownLayer,Res_UpDownLayer
 from ..base import IdentityLayer,get_layer,LinEmbLayer
+
+
 class MG_Difference_Encoder(nn.Module):
   
     def __init__(self,
