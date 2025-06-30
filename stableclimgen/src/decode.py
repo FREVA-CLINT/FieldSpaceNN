@@ -1,94 +1,75 @@
 import datetime
-import json
-import os
-import sys
 import torch
 from einops import rearrange
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
-import warnings
-import logging
+import healpy as hp
+import numpy as np
+from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
+from joblib import Memory
 
-logging.getLogger('lightning').setLevel(0)
-warnings.filterwarnings("ignore")
+mem = Memory("/tmp/joblib_cache", verbose=0)
 
-START_DATE_STR = "1940-01-01"
-END_DATE_STR = "2050-01-01"
+@mem.cache
+def init_model():
+    config_path = '/container/da/genai_data/models/vae_16compress_vonmises_crosstucker_unetlike'
+    with initialize_config_dir(config_dir=config_path, job_name="your_job"):
+        cfg = compose(config_name="config_frevagpt", strict=False)
 
-try:
-    START_DATE = datetime.datetime.strptime(START_DATE_STR, "%Y-%m-%d").date()
-    END_DATE = datetime.datetime.strptime(END_DATE_STR, "%Y-%m-%d").date()
-except ValueError as e:
-    print(f"Error: Invalid date format in configuration: {e}")
-    # Fallback dates or raise an error, depending on desired handling
-    # For this script, we'll raise it to stop execution if config is bad.
-    raise
-MAX_INDEX = (END_DATE - START_DATE).days
+    norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": 234.30984497,
+                                                 "0.99": 305.74804688}}},
+                 "pr": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                        "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
+                 "pres_sfc": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                              "stats": {"quantiles": {"0.01": 64049.64453125,
+                                                      "0.99": 103337.53125}}},
+                 "uas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": -12.04504204,
+                                                 "0.99": 17.22920036}}},
+                 "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+                         "stats": {"quantiles": {"0.01": -12.20680428,
+                                                 "0.99": 11.26358509}}}}
 
-data_file="/work/bk1318/k204233/stableclimgen/evaluations/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike/tas_1940-2050_merged.zarr"
-config_path = '/work/bk1318/k204233/stableclimgen/snapshots/mgno_ngc/vae_16compress_vonmises_crosstucker_unetlike'
-with initialize_config_dir(config_dir=config_path, job_name="your_job"):
-    cfg = compose(config_name="composed_config", strict=False)
+    cfg.dataloader.dataset.norm_dict = norm_dict
+    cfg.model.mode = "decode"
 
-norm_dict = {"tas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": 234.30984497,
-                                             "0.99": 305.74804688}}},
-             "pr": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                    "stats": {"quantiles": {"0.01": 0.0, "0.99": 0.00055823}}},
-             "pres_sfc": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                          "stats": {"quantiles": {"0.01": 64049.64453125,
-                                                  "0.99": 103337.53125}}},
-             "uas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": -12.04504204,
-                                             "0.99": 17.22920036}}},
-             "vas": {"normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
-                     "stats": {"quantiles": {"0.01": -12.20680428,
-                                             "0.99": 11.26358509}}}}
+    # Initialize model and trainer
+    model = instantiate(cfg.model)
+    trainer = instantiate(cfg.trainer)
 
-cfg.dataloader.dataset.norm_dict = norm_dict
-cfg.dataloader.datamodule.num_workers = 1
-cfg.dataloader.datamodule.batch_size = 1
-cfg.dataloader.dataset.p_dropout = 0
-cfg.dataloader.dataset.random_p = False
-cfg.dataloader.dataset.in_nside = 256
-cfg.dataloader.dataset.search_radius = 4
-cfg.dataloader.dataset.nh_input = 3
-cfg.dataloader.dataset.coarsen_sample_level = 7
-cfg.dataloader.dataset.deterministic = True
-cfg.dataloader.dataset.n_sample_vars = 1
-cfg.dataloader.dataset.bottleneck_in_nside = 32
-cfg.ckpt_path = os.path.join(config_path, 'last.ckpt')
-cfg.trainer.accelerator = 'gpu'
-cfg.trainer.precision = 32
-cfg.model.mode = "decode"
-cfg.export_to_zarr = True
-
-# Initialize model and trainer
-model = instantiate(cfg.model)
-trainer = instantiate(cfg.trainer)
+    return model, trainer, cfg
 
 
-def decode(timesteps, variables, region=-1) -> None:
-    save_stdout = sys.stdout
-    sys.stdout = open('trash', 'w')
+def decode(timesteps, variables, lon=None, lat=None):
+    model, trainer, cfg = init_model()
 
-    timesteps = [date_to_index(ts) for ts in timesteps]
+    START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
+    timesteps = [date_to_index(ts, START_DATE) for ts in timesteps]
 
     data_dict = {
         "test": {
             "source":
-                {"files": [data_file],
-                 "variables": variables},
+                {"files": [cfg.data_file],
+                 "variables": cfg.variables},
             "target": {"files": [None],
-                       "variables": variables},
+                       "variables": cfg.variables},
             "timesteps": timesteps
         }
     }
 
-
     cfg.dataloader.dataset.data_dict = data_dict
-    cfg.dataloader.dataset.region = region
 
+    if lon and lat:
+        zoom_level = 1
+        nside = 2 ** zoom_level
+        theta = np.radians(90.0 - lat)
+        phi = np.radians(lon)
+        region = int(hp.ang2pix(nside, theta, phi, nest=True))
+    else:
+        region = -1
+
+    cfg.dataloader.dataset.region = region
     test_dataset = instantiate(cfg.dataloader.dataset,
                                data_dict=data_dict["test"],
                                variables_source=data_dict["test"]["source"]["variables"],
@@ -98,19 +79,43 @@ def decode(timesteps, variables, region=-1) -> None:
     predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
-                       b1=test_dataset.global_cells.shape[0]
+                       b1=1 if test_dataset.region != -1 else (test_dataset.global_cells.shape[0]
                        if test_dataset.coarsen_lvl_single_map == -1
-                       else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0])
+                       else test_dataset.global_cells.reshape(-1, 4 ** test_dataset.coarsen_lvl_single_map).shape[0]))
     output = rearrange(output, "b n t s ... -> (b t) n s ... ")
     for k, var in enumerate(test_dataset.variables_target):
-        output[..., k] = test_dataset.var_normalizers[var].denormalize(output[..., k])
+        output[:, :, :, k] = test_dataset.var_normalizers[var].denormalize(output[:, :, :, k])
 
     output_dict = dict(zip(test_dataset.variables_target, output.split(1, dim=3)))
-    sys.stdout = save_stdout
-    return output_dict
+    final_output_dict = {}
+    for var in variables:
+        final_output_dict[var] = output_dict[var]
+
+    if lon and lat:
+        coords = healpix_pixel_lonlat_torch(cfg.dataloader.dataset.out_nside).reshape(-1, 4 ** cfg.dataloader.dataset.coarsen_sample_level, 2)
+        coords = healpix_coords_to_lonlat_deg(coords[region])
+    else:
+        coords = None
+
+    return final_output_dict, coords
 
 
-def date_to_index(date_str: str) -> int | None:
+def healpix_coords_to_lonlat_deg(coords: torch.Tensor) -> torch.Tensor:
+    phi_shifted = coords[:, 0]
+    theta_shifted = coords[:, 1]
+
+    theta = theta_shifted + 0.5 * torch.pi
+
+    lat_rad = 0.5 * torch.pi - theta
+    lon_rad = torch.pi + phi_shifted
+
+    lat_deg = lat_rad * 180.0 / torch.pi
+    lon_deg = lon_rad * 180.0 / torch.pi
+
+    return torch.stack([lon_deg, lat_deg], dim=-1)
+
+
+def date_to_index(date_str: str, START_DATE) -> int | None:
     """
     Converts a date string (YYYY-MM-DD) to its corresponding zero-based index.
 
@@ -120,15 +125,7 @@ def date_to_index(date_str: str) -> int | None:
     Returns:
         The integer index if the date is within the valid range, otherwise None.
     """
-    try:
-        current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
-    except ValueError:
-        print(f"Error: Invalid date format for '{date_str}'. Please use YYYY-MM-DD.")
-        return None
-
-    if not (START_DATE <= current_date <= END_DATE):
-        print(f"Error: Date '{date_str}' is outside the valid range ({START_DATE_STR} to {END_DATE_STR}).")
-        return None
+    current_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
 
     # Calculate the difference in days from the start date
     index = (current_date - START_DATE).days
