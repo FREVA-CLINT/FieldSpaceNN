@@ -251,8 +251,8 @@ class HealPixLoader(Dataset):
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
         nt = self.n_sample_timesteps
-        nc = self.global_cells.shape[0] if region == -1 else 1
-        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*nc if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * nc
+        self.nc = self.global_cells.shape[0] if region == -1 else 1
+        self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.nc if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.nc
 
     def get_files(self, file_path_source, file_path_target=None):
       
@@ -329,7 +329,7 @@ class HealPixLoader(Dataset):
         if self.random_time_idx and not self.sample_timesteps:
             time_index = int(torch.randint(0, len(ds_source.time.values) - self.n_sample_timesteps + 1, (1, 1)))
         elif self.sample_timesteps:
-            time_index = self.sample_timesteps[index // self.global_cells_input.shape[0]]
+            time_index = self.sample_timesteps[index // self.nc]
 
         global_cells_input = self.global_cells_input
         input_mapping = self.input_mapping
