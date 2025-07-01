@@ -290,7 +290,7 @@ class TransformerBlock(EmbedBlock):
         dropout = check_value(dropout, len(blocks))
         seq_lengths = check_value(seq_lengths, len(blocks))
 
-        embedders = embedders
+        embedders = check_value(embedders, len(blocks))
 
         trans_blocks, lin_emb_layers, norms, residuals = [], [], [], []
         for i, block in enumerate(blocks):

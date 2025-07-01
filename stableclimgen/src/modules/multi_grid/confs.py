@@ -57,6 +57,19 @@ class MGConservativeConfig:
     pass
 
 
+class MGCoordinateEmbeddingConfig:
+    def __init__(self, 
+                 emb_zoom,
+                 features,
+                 **kwargs):
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            elif input != 'self':
+                setattr(self, input, value)
+
 class MGSelfProcessingConfig:
     def __init__(self, 
                  layer_settings: List,

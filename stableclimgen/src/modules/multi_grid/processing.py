@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from ..transformer.transformer_base import TransformerBlock
-from ..base import LinEmbLayer
+from ..base import LinEmbLayer, MLP_fac
 
 from ..grids.grid_layer import GridLayer
 
@@ -100,6 +100,16 @@ class MG_SingleBlock(nn.Module):
                         out_features, 
                         layer_norm=False, 
                         identity_if_equal=False,
+                        embedder=embedders,
+                        layer_confs=layer_confs)
+                    
+                elif type == 'mlp':
+
+                    block = MLP_fac(
+                        in_features,
+                        out_features, 
+                        mult=layer_settings.get('mlp_mult', 1), 
+                        dropout=layer_settings.get('dropout', 0), 
                         layer_confs=layer_confs)
 
             self.blocks[str(zoom)] = block

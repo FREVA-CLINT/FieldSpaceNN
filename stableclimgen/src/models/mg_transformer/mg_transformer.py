@@ -8,9 +8,9 @@ from typing import List
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig
 from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder, MG_Decoder, MG_Encoder
 
 from ...modules.embedding.embedder import get_embedder
@@ -89,6 +89,14 @@ class MG_Transformer(MG_base_model):
                 block = ConservativeLayer(in_zooms,
                                           first_feature_only=self.predict_var)
                 block.out_features = in_features
+            
+            elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
+                block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
+                                    block_conf.features,
+                                    n_vars_total=check_get([block_conf,kwargs,{'n_vars_total': 1}], "n_vars_total"),
+                                    zooms = in_zooms,
+                                    layer_confs=layer_confs)
+                block.out_zooms = in_zooms
 
             elif isinstance(block_conf, MGSelfProcessingConfig):
                 layer_settings = block_conf.layer_settings
@@ -141,6 +149,9 @@ class MG_Transformer(MG_base_model):
         
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
+        if self.learn_residual:
+            self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
 
         """
@@ -182,7 +193,7 @@ class MG_Transformer(MG_base_model):
 
         if self.learn_residual:
             for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
+                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma*x_zooms[zoom]
 
         elif self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():

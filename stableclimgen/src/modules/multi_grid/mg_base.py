@@ -5,7 +5,8 @@ import torch.nn as nn
 
 import copy
 from ..base import get_layer, IdentityLayer, LinEmbLayer
-from ...modules.grids.grid_layer import GridLayer, Interpolator
+from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
+from ...modules.embedding.embedding_layers import RandomFourierLayer
 
 class LinearReductionLayer(nn.Module):
   
@@ -49,6 +50,143 @@ class SumReductionLayer(nn.Module):
 
         return x_out, mask_out
 
+
+class MGEmbedding(nn.Module):
+  
+    def __init__(self,
+                 grid_layer_emb: GridLayer,
+                 features: int,
+                 zooms: List,
+                 n_vars_total: int =1,
+                 layer_confs={}
+                ) -> None: 
+      
+        super().__init__()
+        self.grid_layer_emb = grid_layer_emb
+        self.out_features = [features]*len(zooms)
+
+        emb_zoom = grid_layer_emb.zoom
+
+        coords = grid_layer_emb.get_coordinates()
+    
+        
+        fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features)
+        if n_vars_total > 1:
+            emb_features = fourier_layer(coords).repeat_interleave(n_vars_total, dim=0)
+            self.get_embedding_fcn = self.get_embeddings_from_var_idx
+        else:
+            emb_features = fourier_layer(coords)
+            self.get_embedding_fcn = self.get_embeddings
+
+        self.embeddings = nn.Parameter(emb_features, requires_grad=True)
+
+        layer_confs_ = copy.deepcopy(layer_confs)
+
+        self.layer_dict = nn.ModuleDict()
+        self.fcn_dict = {}
+
+        nh_dim = grid_layer_emb.adjc.shape[1]
+
+
+        for k,zoom in enumerate(zooms):
+            if zoom == emb_zoom:
+                self.layer_dict[str(zoom)] = get_layer(features, [2, features], layer_confs=layer_confs_)
+                self.fcn_dict[zoom] = self.downsample_embs
+
+            elif zoom > emb_zoom:
+                self.layer_dict[str(zoom)] = get_layer([nh_dim, features], [4**(zoom - emb_zoom), 2, features], layer_confs=layer_confs_)
+                self.fcn_dict[zoom] = self.upsample_embs
+
+            else:
+                self.layer_dict[str(zoom)] = get_layer([4**(emb_zoom - zoom), features], [2, features], layer_confs=layer_confs_)
+                self.fcn_dict[zoom] = self.downsample_embs
+    
+    def donothing(self, x, **kwargs):
+        return x
+
+    def get_embeddings(self, emb=None):
+        return self.embeddings[torch.zeros_like(emb['VariableEmbedder'],device=self.embeddings.device, dtype=int)]
+    
+    def get_embeddings_from_var_idx(self, emb=None):
+        return self.embeddings[emb['VariableEmbedder']]
+    
+    def get_embs(self, sample_dict={}, emb=None):
+        embs = self.get_embedding_fcn(emb=emb)
+
+        if 'patch_index' in sample_dict:
+            idx = get_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
+        else:
+            idx = self.grid_layer_emb.adjc.unsqueeze(dim=0)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+
+        return embs
+    
+    def get_embs_with_nh(self, sample_dict={}, emb=None):
+        embs = self.get_embedding_fcn(emb=emb)
+
+        if 'patch_index' in sample_dict:
+            idx, mask = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
+        else:
+            idx = self.grid_layer_emb.adjc.unsqueeze(dim=0)
+            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+        mask = mask.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+
+        return embs
+
+    def sample_embs(self, layer, sample_dict=None, emb=None):
+        embs = self.get_embs(sample_dict=sample_dict, emb=emb)
+        
+        emb = layer(embs, sample_dict=sample_dict, emb=emb)
+
+        return emb
+    
+    def downsample_embs(self, layer, sample_dict=None, emb=None):
+        embs = self.get_embs(sample_dict=sample_dict, emb=emb)
+        
+        embs = layer(embs, sample_dict=sample_dict, emb=emb)
+
+        return embs
+    
+    def upsample_embs(self, layer, sample_dict=None, emb=None):
+        embs = self.get_embedding_fcn(emb=emb)
+
+        if 'patch_index' in sample_dict:
+            idx, mask = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
+        else:
+            idx = self.grid_layer_emb.adjc
+            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+        mask = mask.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+       
+        embs = layer(embs, sample_dict=sample_dict, emb=emb)
+
+    
+        return embs
+
+
+    def forward(self, x_zooms, sample_dict={}, emb=None,**kwargs):
+        
+        for zoom in x_zooms.keys():
+            embs = self.fcn_dict[zoom](self.layer_dict[str(zoom)],sample_dict=sample_dict, emb=emb)
+
+            embs = embs.view(*embs.shape[:3],-1, 2*embs.shape[-1])
+
+            scale, shift = embs.chunk(2,dim=-1)
+
+            x_zooms[zoom] = x_zooms[zoom]*scale + shift
+
+
+        return x_zooms
 
 class ConservativeLayer(nn.Module):
   
