@@ -378,7 +378,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             iter_start=0
         )
         
-        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+        return [optimizer], [{"scheduler": scheduler, "interval": "step", "frequency": 1}]
     
     def on_before_optimizer_step(self, optimizer):
         #for debug only

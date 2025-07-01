@@ -52,13 +52,11 @@ class MG_Sum_Decoder(nn.Module):
                  grid_layers,
                  in_zooms: List[int],
                  out_zoom: int,
-                 conservative: bool=False,
                  interpolator_confs: dict={},
                 ) -> None: 
       
         super().__init__()
 
-        self.conservative = conservative
         self.proj_layers = nn.ModuleDict()
         self.out_zooms = [out_zoom]
         
@@ -71,12 +69,6 @@ class MG_Sum_Decoder(nn.Module):
             else:
                 self.proj_layers[str(input_zoom)] = IdentityLayer()
         
-        zooms_sorted = [int(t) for t in torch.tensor(in_zooms).sort(descending=True).values]
-        if conservative:
-            self.cons_dict = dict(zip(zooms_sorted[:-1],zooms_sorted[1:]))
-            self.cons_dict[zooms_sorted[-1]] = zooms_sorted[-1]
-        else:
-            self.cons_dict = dict(zip(zooms_sorted,zooms_sorted))
         self.in_zooms = in_zooms
 
 
@@ -85,11 +77,6 @@ class MG_Sum_Decoder(nn.Module):
         k = 0
         for in_zoom, layer in self.proj_layers.items():
             x_out = x_zooms[int(in_zoom)]
-
-            zoom_level_cons = int(in_zoom) - self.cons_dict[int(in_zoom)]
-            if zoom_level_cons>0:
-                x_out = x_out.view(*x_out.shape[:3],-1,4**zoom_level_cons, x_out.shape[-1]) - x_out.view(*x_out.shape[:3],-1,4**zoom_level_cons,x_out.shape[-1]).mean(dim=-2, keepdim=True)
-                x_out = x_out.view(*x_out.shape[:3],-1,x_out.shape[-1])
             
             x_out = layer(x_out, sample_dict=sample_dict)
 

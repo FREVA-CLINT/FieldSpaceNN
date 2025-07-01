@@ -115,7 +115,6 @@ class MG_Transformer(MG_base_model):
                         self.grid_layers,
                         in_zooms=in_zooms,
                         out_zoom=self.max_zoom,
-                        conservative = check_get([mg_decoder_config,kwargs,{"conservative": False}], "conservative"),
                         interpolator_confs=check_get([mg_decoder_config,kwargs,defaults], "interpolator_confs")
                     )  
             
@@ -172,9 +171,9 @@ class MG_Transformer(MG_base_model):
         mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
         
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
-
+       
         if self.learn_residual:
-            x_zooms_res = x_zooms
+            x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
 
         for k, block in enumerate(self.Blocks):
                         

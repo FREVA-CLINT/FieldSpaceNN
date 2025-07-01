@@ -118,8 +118,8 @@ class DensityEmbedder(BaseEmbedder):
     def forward(self, density, **kwargs):
         sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
         zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
-
-        density = density.view(*density.shape[:1],-1, 4**zoom_diff, *density.shape[3:]).mean(dim=2)
+                    
+        density = density.view(*density.shape[:3],-1, 4**zoom_diff, density.shape[-1]).mean(dim=-2)
         return self.embedding_fn(density)
 
 class MGPosEmbedder(BaseEmbedder):
