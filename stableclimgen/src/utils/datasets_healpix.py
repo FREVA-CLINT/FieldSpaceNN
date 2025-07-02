@@ -96,7 +96,8 @@ class HealPixLoader(Dataset):
                  n_drop_vars=-1,
                  p_drop_timesteps=-1,
                  region=-1,
-                 coarsen_lvl_single_map=-1
+                 coarsen_lvl_single_map=-1,
+                 avg_times=False
                  ):
         
         super(HealPixLoader, self).__init__()
@@ -123,6 +124,7 @@ class HealPixLoader(Dataset):
         self.bottleneck_out_nside = bottleneck_out_nside
         self.region = region
         self.coarsen_lvl_single_map = -1 if self.coarsen_sample_level != -1 else coarsen_lvl_single_map
+        self.avg_times = avg_times
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -137,6 +139,7 @@ class HealPixLoader(Dataset):
                     self.sample_timesteps.append(int(t))
                 else:
                     self.sample_timesteps += list(range(int(t.split("-")[0]), int(t.split("-")[1])))
+
         else:
             self.sample_timesteps = None
 
@@ -250,7 +253,7 @@ class HealPixLoader(Dataset):
             self.global_cells_input = self.global_cells[:, 0]
 
         ds_source = xr.open_dataset(self.files_source[0], decode_times=False)
-        nt = self.n_sample_timesteps
+        nt = self.n_sample_timesteps if not avg_times else 1
         self.nc = self.global_cells.shape[0] if region == -1 else 1
         self.len_dataset = (len(self.sample_timesteps) - nt + 1)*self.nc if self.sample_timesteps else (ds_source["time"].shape[0] - nt + 1) * self.nc
 
@@ -428,14 +431,26 @@ class HealPixLoader(Dataset):
                 data_target[:,:,:,k,:] = self.var_normalizers[var].normalize(data_target[:,:,:,k,:])
         data_source[drop_mask] = 0
 
+        var_indices = torch.tensor([np.where(np.array(self.variables_source_train)==var)[0][0] for var in variables_source])
+        embed_data = {'VariableEmbedder': var_indices.unsqueeze(0).repeat(nt, 1),
+                    'TimeEmbedder': time_source.float()}
+        
         if self.coarsen_sample_level == -1:
             indices_sample = torch.tensor([])
         else:
             indices_sample = {'sample': region_index.repeat(nt),
                               'sample_level': torch.tensor(self.coarsen_sample_level).repeat(nt)}
-        var_indices = torch.tensor([np.where(np.array(self.variables_source_train)==var)[0][0] for var in variables_source])
-        embed_data = {'VariableEmbedder': var_indices.unsqueeze(0).repeat(nt, 1),
-                      'TimeEmbedder': time_source.float()}
+        
+        if self.avg_times:
+            data_source = data_source.mean(dim=0,keepdim=True)
+            drop_mask = drop_mask[[0]]
+            data_target = data_target.mean(dim=0,keepdim=True)
+            embed_data['VariableEmbedder'] = embed_data['VariableEmbedder'][[0]]
+            embed_data['TimeEmbedder'] = embed_data['TimeEmbedder'][[0]]
+
+            indices_sample['sample'] = indices_sample['sample'][[0]]
+            indices_sample['sample_level'] = indices_sample['sample_level'][[0]]
+
         return data_source.float(), data_target.float(), coords_input.unsqueeze(0).repeat(nt, *[1] * coords_input.ndim).float(), coords_output.unsqueeze(0).repeat(nt, *[1] * coords_output.ndim).float(), indices_sample, drop_mask, embed_data, dists_input.unsqueeze(0).repeat(nt, *[1] * dists_input.ndim)
 
     def __len__(self):

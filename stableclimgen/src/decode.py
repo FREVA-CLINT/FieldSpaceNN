@@ -41,10 +41,11 @@ def init_model():
     return model, trainer, cfg
 
 
-def decode(timesteps, variables, lon=None, lat=None):
+def decode(timesteps, variables, lon=None, lat=None, n_avg_timesteps=1):
     model, trainer, cfg = init_model()
 
     START_DATE = datetime.datetime.strptime(cfg.start_date_str, "%Y-%m-%d").date()
+
     timesteps = [date_to_index(ts, START_DATE) for ts in timesteps]
 
     data_dict = {
@@ -57,7 +58,8 @@ def decode(timesteps, variables, lon=None, lat=None):
             "timesteps": timesteps
         }
     }
-
+    cfg.dataloader.dataset.n_sample_timesteps = n_avg_timesteps
+    cfg.dataloader.dataset.avg_times = n_avg_timesteps >0
     cfg.dataloader.dataset.data_dict = data_dict
 
     if lon and lat:
