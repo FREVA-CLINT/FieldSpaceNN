@@ -105,7 +105,7 @@ class MGEmbedding(nn.Module):
         return x
 
     def get_embeddings(self, emb=None):
-        return self.embeddings[torch.zeros_like(emb['VariableEmbedder'],device=self.embeddings.weight.device, dtype=torch.long)]
+        return self.embeddings[emb['VariableEmbedder']*0]
     
     def get_embeddings_from_var_idx(self, emb=None):
         return self.embeddings[emb['VariableEmbedder']]
