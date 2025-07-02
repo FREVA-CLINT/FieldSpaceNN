@@ -105,7 +105,6 @@ class GridSelfAttention(nn.Module):
 
         if mask[0] is not None:
             mask = torch.concat(mask, dim=-1)
-            mask = mask == False
             mask = rearrange(mask, self.nh_mask_pattern)
         else:
             mask = None

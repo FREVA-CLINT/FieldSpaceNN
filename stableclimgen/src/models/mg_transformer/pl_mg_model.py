@@ -137,20 +137,16 @@ class LightningMGModel(LightningMGNOBaseModel):
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=(self.composed_loss==False))
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
 
         target_loss = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
 
-        if not self.composed_loss:
-            target_loss = self.model.encoder(target_loss)
 
         loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
 
-        self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
+        self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True, sync_dist=True)
         self.log_dict(loss_dict, logger=True)
 
-        if not self.composed_loss:
-            output = self.model.decoder(output, emb=emb, sample_dict=sample_dict)
 
         output = output[list(output.keys())[0]]
 

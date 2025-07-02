@@ -216,7 +216,6 @@ class RearrangeNHCentric(RearrangeBlock):
         x_nh = rearrange(x_nh, self.pattern)
         
         if mask_nh is not None:
-            mask_nh = mask_nh == False if mask_nh is not None else None
             mask_nh = rearrange(mask_nh, self.nh_mask_pattern)
 
         x = self.fn(x, x_nh, mask=mask_nh)
