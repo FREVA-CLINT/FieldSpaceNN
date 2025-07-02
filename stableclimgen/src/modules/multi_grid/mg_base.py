@@ -116,7 +116,7 @@ class MGEmbedding(nn.Module):
         if 'patch_index' in sample_dict:
             idx = get_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
         else:
-            idx = self.grid_layer_emb.adjc.unsqueeze(dim=0)
+            idx = self.grid_layer_emb.adjc[:,[0]].unsqueeze(dim=0)
 
         idx = idx.view(idx.shape[0],1,1,-1,1)
 
