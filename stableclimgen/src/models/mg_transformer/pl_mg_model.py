@@ -144,7 +144,7 @@ class LightningMGModel(LightningMGNOBaseModel):
 
         loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
 
-        self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True, sync_dist=True)
+        self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
 
