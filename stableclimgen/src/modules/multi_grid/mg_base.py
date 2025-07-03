@@ -251,12 +251,13 @@ class ConservativeLayer(nn.Module):
 
     def forward_all(self, x_zooms, sample_dict=None, **kwargs):
 
-        for zoom, x in x_zooms.items():
- 
+        for zoom in sorted(x_zooms.keys()):
+            
+            x = x_zooms[zoom]
             zoom_level_cons = zoom - self.cons_dict[zoom]
 
             if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) - x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1])
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) 
 
                 mean = x.mean(dim=-2)
                 x = (x-mean.unsqueeze(dim=-2)).view(*x.shape[:3], -1, x.shape[-1])
@@ -270,13 +271,14 @@ class ConservativeLayer(nn.Module):
 
     def forward_ffo(self, x_zooms, sample_dict=None, **kwargs):
 
-        for zoom, x in x_zooms.items():
- 
+        for zoom in sorted(x_zooms.keys()):
+            
+            x = x_zooms[zoom]
             zoom_level_cons = zoom - self.cons_dict[zoom]
 
             x = x[...,0]
             if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons) - x.view(*x.shape[:3], -1, 4**zoom_level_cons)
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons)
 
                 mean = x.mean(dim=-1)
                 x = (x - mean.unsqueeze(dim=-1)).view(*x.shape[:3], -1)
