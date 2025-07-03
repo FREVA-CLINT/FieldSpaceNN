@@ -47,14 +47,14 @@ class MG_Transformer(MG_base_model):
         if len(mg_emb_confs)>0:
             mg_emb_zoom = mg_emb_confs['zoom']
 
-            self.embs = get_mg_embedding(
+            self.mg_emeddings = get_mg_embedding(
                 self.grid_layers[str(mg_emb_zoom)],
                 mg_emb_confs['features'],
                 mg_emb_confs.get("n_vars_total",1),
                 init_mode=mg_emb_confs.get('init_mode','fourier_sphere'))
         else:
             mg_emb_zoom = 0
-            self.embs=None
+            self.mg_emeddings=None
 
         self.Blocks = nn.ModuleList()
 
@@ -184,7 +184,7 @@ class MG_Transformer(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        emb['MGEmbedder'] = (self.embs, emb['VariableEmbedder'])
+        emb['MGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
         mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}

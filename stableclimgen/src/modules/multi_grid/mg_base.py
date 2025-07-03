@@ -62,7 +62,7 @@ def get_mg_embedding(
     
     
     if init_mode=='random':
-        embs = nn.Parameter(torch.randn(1, coords.shape[-2], features))
+        embs = torch.randn(1, coords.shape[-2], features)
     
     elif init_mode=='fourier_sphere':
         fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features)
@@ -81,6 +81,8 @@ def get_mg_embedding(
 
     
     embs = embs.repeat_interleave(n_vars_total, dim=0)
+    
+    embs = nn.Parameter(embs, requires_grad=True)
 
     return embs
 
