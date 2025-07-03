@@ -141,7 +141,6 @@ class LightningMGModel(LightningMGNOBaseModel):
 
         target_loss = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
 
-
         loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
@@ -161,3 +160,20 @@ class LightningMGModel(LightningMGNOBaseModel):
             
 
         return loss
+
+
+    def predict_step(self, batch, batch_idx):
+        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
+
+        output = output[self.model.max_zoom]
+
+        if hasattr(self.model,'predict_var') and self.model.predict_var:
+            output, output_var = output.chunk(2, dim=-1)
+        else:
+            output_var = None
+
+        output = {'output': output,
+                'output_var': output_var,
+                'mask': mask}
+        return output
