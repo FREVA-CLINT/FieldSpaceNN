@@ -11,9 +11,6 @@ from ..modules.grids.grid_layer import GridLayer
 from .factorization import SpatiaFacLayer
 
 
-from ..modules.embedding.embedder import EmbedderSequential
-
-
 class IdentityLayer(nn.Module):
     def __init__(self):
         super().__init__()
@@ -28,7 +25,7 @@ class LinEmbLayer(nn.Module):
                  layer_norm = False,
                  identity_if_equal = False,
                  layer_confs: dict={},
-                 embedder: EmbedderSequential=None,
+                 embedder=None,
                 ) -> None: 
          
         super().__init__()

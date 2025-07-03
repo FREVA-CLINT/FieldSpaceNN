@@ -22,6 +22,7 @@ class MG_SingleBlock(nn.Module):
                  layer_settings: Dict,
                  in_features_list: List[int],
                  out_features_list: List[int],
+                 mg_emb_zoom: int,
                  layer_confs = {}
                 ) -> None: 
       
@@ -49,7 +50,7 @@ class MG_SingleBlock(nn.Module):
                     layer_confs=layer_confs)
             
             else:
-                embedders = get_embedder(**layer_settings.get('embed_confs', {}), zoom=zoom)
+                embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
 
 
                 if type == 'TransformerBlock':
@@ -135,9 +136,11 @@ class MG_MultiBlock(nn.Module):
                  layer_settings: Dict,
                  in_features: int,
                  out_features: int,
+                 mg_emb_zoom: int,
                  q_zooms:List|int = -1,
                  kv_zooms:List|int = -1,
-                 layer_confs={}
+                 layer_confs={},
+
                  ) -> None:
         super().__init__()
         
@@ -167,7 +170,7 @@ class MG_MultiBlock(nn.Module):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of q_zooms not found in in_zooms")
             
-            embedder_q = get_embedder(**layer_settings.get('embed_confs', {}), zoom=zoom)
+            embedder_q = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)], zoom=zoom)
             embedders_q[str(zoom)] = embedder_q
             
         
@@ -175,7 +178,7 @@ class MG_MultiBlock(nn.Module):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
-            embedder_kv = get_embedder(**layer_settings.get('embed_confs', {}), zoom=zoom)
+            embedder_kv = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)], zoom=zoom)
             embedders_kv[str(zoom)] = embedder_kv
      
         grid_layer = grid_layers[str(min(q_zooms + kv_zooms))] 

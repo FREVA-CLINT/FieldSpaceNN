@@ -8,7 +8,7 @@ from typing import List
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
 from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig
 from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder, MG_Decoder, MG_Encoder
@@ -27,15 +27,15 @@ class MG_Transformer(MG_base_model):
                  mg_decoder_config,
                  in_features: int=1,
                  out_features: int=1,
+                 mg_emb_confs: dict={},
                  **kwargs
                  ) -> None: 
         
-        self.max_zoom = kwargs.get("max_zoom", mgrids[-1]['zoom'])
-        self.in_features = in_features 
-        
-        predict_var = kwargs.get("predict_var", defaults['predict_var'])
         
         super().__init__(mgrids)
+        self.max_zoom = kwargs.get("max_zoom", mgrids[-1]['zoom'])
+        self.in_features = in_features 
+        predict_var = kwargs.get("predict_var", defaults['predict_var'])
 
         if predict_var:
             out_features = out_features * 2
@@ -43,6 +43,18 @@ class MG_Transformer(MG_base_model):
 
         self.out_features = out_features
         self.predict_var = predict_var
+
+        if len(mg_emb_confs)>0:
+            mg_emb_zoom = mg_emb_confs['zoom']
+
+            self.embs = get_mg_embedding(
+                self.grid_layers[str(mg_emb_zoom)],
+                mg_emb_confs['features'],
+                mg_emb_confs.get("n_vars_total",1),
+                init_mode=mg_emb_confs.get('init_mode','fourier_sphere'))
+        else:
+            mg_emb_zoom = 0
+            self.embs=None
 
         self.Blocks = nn.ModuleList()
 
@@ -83,6 +95,7 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      block_conf.out_features,
+                     mg_emb_zoom,
                     layer_confs=layer_confs)
                         
             elif isinstance(block_conf, MGConservativeConfig):
@@ -108,6 +121,7 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      block_conf.out_features,
+                     mg_emb_zoom,
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs)
@@ -170,13 +184,7 @@ class MG_Transformer(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-       # x = x.view(b, nv, nt, n, self.in_features)
-        #b,n,nv,nc = x.shape[:4]
-
-        
-
-        #x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
-        #x = x.view(*x.shape[:4],-1)
+        emb['MGEmbedder'] = (self.embs, emb['VariableEmbedder'])
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
         mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}

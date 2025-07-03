@@ -14,7 +14,7 @@ UncertaintyEmbedder:
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
-  shared: true
+  shared: false
 VariableEmbedder:
   in_channels: 16
   embed_dim: 64
@@ -22,7 +22,7 @@ VariableEmbedder:
 GridEmbedder:
   in_channels: 11
   embed_dim: 64
-  shared: true
+  shared: false
 MaskEmbedder:
   in_channels: 2
   embed_dim: 64
@@ -30,3 +30,17 @@ TimeEmbedder:
   in_channels: 1
   embed_dim: 64
   time_scales: [1, 7, 30.4375, 365.25]
+MGEmbedder:
+  shared: false
+  in_channels: 3
+  embed_dim: 64
+  mg_emb_confs:
+    zoom: 6
+    features: 64
+    n_vars_total: 1
+    init_method: random
+  layer_confs:
+    rank_channel: 0
+    n_vars_total: 3
+    bias: true
+

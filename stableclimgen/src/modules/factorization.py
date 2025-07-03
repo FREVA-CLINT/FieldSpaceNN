@@ -255,9 +255,13 @@ class SpatiaFacLayer(nn.Module):
         self.get_space_fac_fcn = self.get_spatial_factors if factorize_space else self.get_empty_space
 
         if bias:
-            bias = torch.empty(out_features[-1],1)
-            nn.init.kaiming_uniform_(bias)
-            self.bias = nn.Parameter(bias.squeeze())
+            if len(out_features)==1:
+                bias = torch.randn(out_features)
+            else:
+                bias = torch.empty(out_features)
+                nn.init.kaiming_uniform_(bias)
+                
+            self.bias = nn.Parameter(bias)
             self.return_fcn = self.return_w_bias
         else:
             self.return_fcn = self.return_wo_bias

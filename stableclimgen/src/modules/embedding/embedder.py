@@ -7,8 +7,9 @@ import torch.nn as nn
 from torch import ModuleDict
 
 from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
-from ...modules.grids.grid_layer import GridLayer
+from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch
 from ...utils.helpers import expand_tensor
+from ..base import get_layer,IdentityLayer
 
 
 class BaseEmbedder(nn.Module):
@@ -40,7 +41,7 @@ class BaseEmbedder(nn.Module):
 
 
 class TimeEmbedder(BaseEmbedder):
-    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales, **kwargs):
         """
         Time2Vec module with fixed periodic components based on user-defined time scales.
         :param out_features: Number of output features (embedding dimension).
@@ -68,7 +69,7 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -90,6 +91,98 @@ class CoordinateEmbedder(BaseEmbedder):
 
         coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
         return self.embedding_fn(coordinates)
+    
+
+class MGEmbedder(BaseEmbedder):
+    """
+    A neural network module to embed longitude and latitude coordinates.
+
+    :param embed_dim: Dimensionality of the embedding output.
+    :param in_channels: Number of input coordinate features (default is 2).
+    """
+
+    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layer=None, zoom=None, layer_confs={}, **kwargs) -> None:
+
+        in_channels = mg_emb_confs['features']
+
+        super().__init__(name, in_channels, embed_dim)
+
+        n_vars_total = mg_emb_confs.get("n_vars_total")
+        if n_vars_total ==1:
+            self.get_emb_fcn = self.get_embeddings
+        else:
+            self.get_emb_fcn = self.get_embeddings_from_var_idx
+
+        self.grid_layer = grid_layer
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "v", "t", "s", "c"]
+
+        emb_zoom = mg_emb_confs['zoom']
+   
+        if zoom == emb_zoom:
+            layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels != embed_dim else IdentityLayer()
+            self.get_patch_fcn = self.get_patch
+
+        elif zoom > emb_zoom:
+            nh_dim = grid_layer.adjc.shape[-1]
+            layer = get_layer([nh_dim, in_channels], [4**(zoom - emb_zoom), embed_dim], layer_confs=layer_confs)
+            self.get_patch_fcn = self.get_patch_nh
+
+        else:
+            layer = get_layer([4**(emb_zoom - zoom), in_channels], [embed_dim], layer_confs=layer_confs)
+            self.get_patch_fcn = self.get_patch
+
+        self.layer = layer
+
+
+    def get_embeddings(self, mg_emb, var_indices):
+        return mg_emb[var_indices*0]
+    
+    def get_embeddings_from_var_idx(self, mg_emb, var_indices):
+        return mg_emb[var_indices]
+    
+
+    def get_patch(self, embs, sample_dict={}):
+    
+        if 'patch_index' in sample_dict:
+            idx = get_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)
+        else:
+            idx = self.grid_layer.adjc[:,[0]].unsqueeze(dim=0)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+
+        return embs
+    
+    def get_patch_nh(self, embs, sample_dict={}):
+
+        if 'patch_index' in sample_dict:
+            idx, mask = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)
+        else:
+            idx = self.grid_layer.adjc
+            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+        mask = mask.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+       
+        
+        return embs
+    
+    def forward(self, mg_emb_var, sample_dict={},**kwargs):
+
+        embs, var_indices = mg_emb_var
+        embs = self.get_emb_fcn(embs, var_indices)
+
+        embs = self.get_patch_fcn(embs, sample_dict=sample_dict)
+
+        embs = self.layer(embs, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+
+        embs = embs.view(*embs.shape[:3],-1,embs.shape[-1])
+
+        return embs
 
 class DensityEmbedder(BaseEmbedder):
     """
@@ -99,7 +192,7 @@ class DensityEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -122,37 +215,6 @@ class DensityEmbedder(BaseEmbedder):
         density = density.view(*density.shape[:3],-1, 4**zoom_diff, density.shape[-1]).mean(dim=-2)
         return self.embedding_fn(density)
 
-class MGPosEmbedder(BaseEmbedder):
-    """
-    A neural network module to embed longitude and latitude coordinates.
-
-    :param embed_dim: Dimensionality of the embedding output.
-    :param in_channels: Number of input coordinate features (default is 2).
-    """
-
-    def __init__(self, name: str, in_channels: int, embed_dim: int, grid_layers: Dict[str, GridLayer], zooms:list, emb_zoom: int) -> None:
-        super().__init__(name, in_channels, embed_dim)
-
-        # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "v" ,"t", "s", "c"]
-
-        self.zoom = zoom
-
-        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-        )
-    
-    def forward(self, density, **kwargs):
-        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
-        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
-
-        density = density.view(*density.shape[:1],-1, 4**zoom_diff, *density.shape[3:]).mean(dim=2)
-        return self.embedding_fn(density)
-
 
 class UncertaintyEmbedder(BaseEmbedder):
     """
@@ -162,7 +224,7 @@ class UncertaintyEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None, zoom=None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -196,7 +258,7 @@ class UncertaintyEmbedder(BaseEmbedder):
     
 class VariableEmbedder(BaseEmbedder):
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         self.keep_dims = ["b", "v" ,"t", "c"]
@@ -208,7 +270,7 @@ class VariableEmbedder(BaseEmbedder):
 
 class MaskEmbedder(BaseEmbedder):
 
-    def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None) -> None:
+    def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         self.keep_dims = ["b", "v", "t", "s", "c"]
@@ -220,7 +282,7 @@ class MaskEmbedder(BaseEmbedder):
 
 class GridEmbedder(BaseEmbedder):
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         self.keep_dims = ["v", "c"]
@@ -239,7 +301,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
     and then processes these embeddings through a simple feedforward network.
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, **kwargs):
         """
         Initializes the DiffusionStepEmbedder module.
 

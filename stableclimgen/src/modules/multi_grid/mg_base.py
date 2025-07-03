@@ -1,4 +1,5 @@
 from typing import List,Dict
+import math
 
 import torch
 import torch.nn as nn
@@ -50,6 +51,38 @@ class SumReductionLayer(nn.Module):
 
         return x_out, mask_out
 
+
+def get_mg_embedding(
+        grid_layer_emb: GridLayer, 
+        features, 
+        n_vars_total, 
+        init_mode='fourier_sphere'):
+    
+    coords = grid_layer_emb.get_coordinates()
+    
+    
+    if init_mode=='random':
+        embs = nn.Parameter(torch.randn(1, coords.shape[-2], features))
+    
+    elif init_mode=='fourier_sphere':
+        fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features)
+        embs = fourier_layer(coords)
+
+    elif init_mode=='fourier':
+        clon, clat = coords[...,0], coords[...,1]
+        x = torch.cos(clat) * torch.cos(clon)
+        y = torch.cos(clat) * torch.sin(clon)
+        z = torch.sin(clat)
+
+        coords_3d = torch.stack((x, y, z), dim=-1).float()
+
+        fourier_layer = RandomFourierLayer(in_features=3, n_neurons=features)
+        embs = fourier_layer(coords_3d)
+
+    
+    embs = embs.repeat_interleave(n_vars_total, dim=0)
+
+    return embs
 
 class MGEmbedding(nn.Module):
   
@@ -221,12 +254,17 @@ class ConservativeLayer(nn.Module):
             zoom_level_cons = zoom - self.cons_dict[zoom]
 
             if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) - x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]).mean(dim=-2, keepdim=True)
-                x = x.view(*x.shape[:3], -1, x.shape[-1])
-            
-            x_zooms[zoom] = x
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) - x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1])
+
+                mean = x.mean(dim=-2)
+                x = (x-mean.unsqueeze(dim=-2)).view(*x.shape[:3], -1, x.shape[-1])
+
+                x_zooms[self.cons_dict[zoom]] = x_zooms[self.cons_dict[zoom]] + mean
+
+                x_zooms[zoom] = x
 
         return x_zooms
+
 
     def forward_ffo(self, x_zooms, sample_dict=None, **kwargs):
 
@@ -236,10 +274,13 @@ class ConservativeLayer(nn.Module):
 
             x = x[...,0]
             if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons) - x.view(*x.shape[:3], -1, 4**zoom_level_cons).mean(dim=-1, keepdim=True)
-                x = x.view(*x.shape[:3], -1)
-            
-            x_zooms[zoom][...,0] = x
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons) - x.view(*x.shape[:3], -1, 4**zoom_level_cons)
+
+                mean = x.mean(dim=-1)
+                x = (x - mean.unsqueeze(dim=-1)).view(*x.shape[:3], -1)
+                
+                x_zooms[self.cons_dict[zoom]][...,0] = x_zooms[self.cons_dict[zoom]][...,0] + mean
+                x_zooms[zoom][...,0] = x
 
         return x_zooms
     
