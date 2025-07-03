@@ -51,7 +51,7 @@ class MG_Transformer(MG_base_model):
                 self.grid_layers[str(mg_emb_zoom)],
                 mg_emb_confs['features'],
                 mg_emb_confs.get("n_vars_total",1),
-                init_mode=mg_emb_confs.get('init_mode','fourier_sphere'))
+                init_mode=mg_emb_confs.get('init_method','fourier_sphere'))
         else:
             mg_emb_zoom = 0
             self.mg_emeddings=None
