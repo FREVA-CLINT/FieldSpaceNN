@@ -28,6 +28,7 @@ class MG_Transformer(MG_base_model):
                  in_features: int=1,
                  out_features: int=1,
                  mg_emb_confs: dict={},
+                 with_global_gamma=True,
                  **kwargs
                  ) -> None: 
         
@@ -108,6 +109,7 @@ class MG_Transformer(MG_base_model):
                                     block_conf.features,
                                     n_vars_total=check_get([block_conf,kwargs,{'n_vars_total': 1}], "n_vars_total"),
                                     zooms = in_zooms,
+                                    init_mode=check_get([block_conf,kwargs,{'init_mode': "fourier_sphere"}], "init_mode"),
                                     layer_confs=layer_confs)
                 block.out_zooms = in_zooms
 
@@ -163,8 +165,10 @@ class MG_Transformer(MG_base_model):
         
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
-        #if self.learn_residual:
-        #    self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+        if self.learn_residual and with_global_gamma:
+            self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+        else:
+            self.gamma = nn.Parameter(torch.ones(1), requires_grad=False)
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
 
@@ -202,7 +206,7 @@ class MG_Transformer(MG_base_model):
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
                 x, x_var = x.chunk(2,dim=-1) 
-                x = x_zooms_res[zoom] + x
+                x = x_zooms_res[zoom] + self.gamma*x
                 x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
 
         elif self.predict_var:
@@ -212,7 +216,7 @@ class MG_Transformer(MG_base_model):
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
+                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma*x_zooms[zoom]
 
         if return_zooms:
             return x_zooms
