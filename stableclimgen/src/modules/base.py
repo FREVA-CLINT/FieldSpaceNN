@@ -38,8 +38,7 @@ class LinEmbLayer(nn.Module):
             out_features_ = out_features
 
         if self.embedder is not None:
-            #self.embedding_layer = nn.Linear(self.embedder.get_out_channels, out_features_ * 2)
-            self.embedding_layer = get_layer(self.embedder.get_out_channels, [2, out_features_], layer_confs=layer_confs)
+            self.embedding_layer = nn.Linear(self.embedder.get_out_channels, out_features_ * 2)
             self.forward_fcn = self.forward_w_embedding
         else:
             self.forward_fcn = self.forward_wo_embedding
@@ -61,9 +60,7 @@ class LinEmbLayer(nn.Module):
         x_shape = x.shape
 
         emb_ = self.embedder(emb, sample_dict)
-        #scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
-        emb = self.embedding_layer(emb_, sample_dict=sample_dict, emb=emb)
-        scale, shift = emb[...,0,:],emb[...,1,:]
+        scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
 
         n = scale.shape[1]
         scale = scale.view(*scale.shape[:3], -1, x_shape[-1])
