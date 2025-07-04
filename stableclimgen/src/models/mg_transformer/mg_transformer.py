@@ -199,11 +199,7 @@ class MG_Transformer(MG_base_model):
             # Process input through the block
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
-        if self.learn_residual:
-            for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma*x_zooms[zoom]
-
-        elif self.predict_var and self.learn_residual:
+        if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
                 x, x_var = x.chunk(2,dim=-1) 
                 x = x_zooms_res[zoom] + x
@@ -214,6 +210,9 @@ class MG_Transformer(MG_base_model):
                 x, x_var = x.chunk(2,dim=-1) 
                 x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
 
+        elif self.learn_residual:
+            for zoom in x_zooms.keys():
+                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma*x_zooms[zoom]
 
         if return_zooms:
             return x_zooms
