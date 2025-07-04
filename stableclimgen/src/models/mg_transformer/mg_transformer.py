@@ -163,8 +163,8 @@ class MG_Transformer(MG_base_model):
         
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
-        if self.learn_residual:
-            self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+        #if self.learn_residual:
+        #    self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
 
@@ -212,7 +212,7 @@ class MG_Transformer(MG_base_model):
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma*x_zooms[zoom]
+                x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
 
         if return_zooms:
             return x_zooms
