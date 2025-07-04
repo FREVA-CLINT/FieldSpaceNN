@@ -26,7 +26,7 @@ def check_empty(x):
 import torch.nn as nn
 
 class MGMultiLoss(nn.Module):
-    def __init__(self, lambda_dict):
+    def __init__(self, lambda_dict, grid_layers=None, max_zoom=None):
         super().__init__()
         
         self.level_loss_fcns = {}   # {level: [{'lambda': x, 'fcn': ...}, ...]}
@@ -39,13 +39,13 @@ class MGMultiLoss(nn.Module):
                     if float(lambda_) > 0:
                         self.level_loss_fcns[key].append({
                             'lambda': float(lambda_),
-                            'fcn': globals()[loss_name]()
+                            'fcn': globals()[loss_name](grid_layers[str(key)])
                         })
             else:  # Common loss
                 if float(value) > 0:
                     self.common_loss_fcns.append({
                         'lambda': float(value),
-                        'fcn': globals()[key]()
+                        'fcn': globals()[key](grid_layers[str(max_zoom)])
                     })
 
     def forward(self, output, target, mask=None, sample_dict=None, prefix=''):
@@ -104,7 +104,7 @@ class LightningMGModel(LightningMGNOBaseModel):
             interpolator_settings=interpolator_settings
         )
 
-        self.loss = MGMultiLoss(lambda_loss_dict)
+        self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=model.max_zoom)
 
         self.composed_loss = composed_loss
 
