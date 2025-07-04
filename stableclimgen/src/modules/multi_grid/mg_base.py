@@ -93,6 +93,7 @@ class MGEmbedding(nn.Module):
                  features: int,
                  zooms: List,
                  n_vars_total: int =1,
+                 init_mode='fourier_sphere',
                  layer_confs={}
                 ) -> None: 
       
@@ -102,18 +103,14 @@ class MGEmbedding(nn.Module):
 
         emb_zoom = grid_layer_emb.zoom
 
-        coords = grid_layer_emb.get_coordinates()
-    
-        
-        fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features)
         if n_vars_total > 1:
-            emb_features = fourier_layer(coords).repeat_interleave(n_vars_total, dim=0)
+
             self.get_embedding_fcn = self.get_embeddings_from_var_idx
         else:
-            emb_features = fourier_layer(coords)
+
             self.get_embedding_fcn = self.get_embeddings
 
-        self.embeddings = nn.Parameter(emb_features, requires_grad=True)
+        self.embeddings = get_mg_embedding(grid_layer_emb, features, n_vars_total=n_vars_total, init_mode=init_mode)
 
         layer_confs_ = copy.deepcopy(layer_confs)
 
