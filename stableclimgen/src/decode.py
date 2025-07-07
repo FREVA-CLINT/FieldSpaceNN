@@ -8,6 +8,10 @@ import numpy as np
 from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
 from joblib import Memory
 
+import warnings
+warnings.filterwarnings('ignore')
+torch.set_float32_matmul_precision('medium')
+
 mem = Memory("/tmp/joblib_cache", verbose=0)
 
 @mem.cache
