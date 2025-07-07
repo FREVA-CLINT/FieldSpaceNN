@@ -9,6 +9,10 @@ from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torc
 from joblib import Memory
 
 import warnings
+import logging
+logging.getLogger("lightning.pytorch.utilities.rank_zero").setLevel(logging.WARNING)
+logging.getLogger("lightning.pytorch.accelerators.cuda").setLevel(logging.WARNING)
+logging.getLogger("lightning.pytorch").setLevel(logging.WARNING)
 warnings.filterwarnings('ignore')
 torch.set_float32_matmul_precision('medium')
 
