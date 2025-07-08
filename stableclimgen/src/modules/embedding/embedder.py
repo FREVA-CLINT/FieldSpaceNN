@@ -362,7 +362,7 @@ class EmbedderSequential(nn.Module):
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode = mode
         self.spatial_dim_count = spatial_dim_count
-        self.activation = nn.SiLU()
+        self.activation = nn.Identity()
 
     def forward(self, inputs: Dict[str, torch.Tensor], sample_dict: Dict=None):
         """
