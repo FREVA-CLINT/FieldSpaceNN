@@ -77,9 +77,10 @@ class GridSelfAttention(nn.Module):
             self.nh_mask_pattern = 'b v t s n -> (b t s) 1 1 (v n)'
             self.reverse_pattern = '(b t s) (v n) c -> b v t s n c'
 
-    def forward(self, x_zooms, mask_zooms=None, emb=None, sample_dict={}):
-        
+    def forward(self, x_zooms, mask_zooms=None, emb=None, sample_dict={}):        
+
         zoom_att = self.grid_layer.zoom
+
         q = []
         kv = []
         mask = []
@@ -88,6 +89,7 @@ class GridSelfAttention(nn.Module):
             kv_ = kv_layer(x_zooms[int(zoom)], emb=emb, sample_dict=sample_dict)
             kv_, mask_ = self.grid_layer.get_nh(kv_, **sample_dict, with_nh=self.with_nh, mask=None)
             kv.append(kv_)
+            mask_ = mask_ if mask_ is not None else torch.ones_like(kv_[...,0], dtype=torch.bool, device=kv_.device)
             mask.append(mask_)
 
         for zoom, kv_layer in self.q_layers.items():
