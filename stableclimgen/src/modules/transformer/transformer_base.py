@@ -139,7 +139,7 @@ class SelfAttention(nn.Module):
         :return: Output tensor after applying attention mechanism.
         """
         mask = mask==False if mask is not None else None
-        return safe_scaled_dot_product_attention(q, k, v, mask==mask, is_causal=self.is_causal)
+        return safe_scaled_dot_product_attention(q, k, v, mask=mask, is_causal=self.is_causal)
 
 
 class NHAttention(nn.Module):
