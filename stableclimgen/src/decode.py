@@ -7,6 +7,8 @@ import healpy as hp
 import numpy as np
 from stableclimgen.src.utils.grid_utils_healpix import healpix_pixel_lonlat_torch
 from joblib import Memory
+import contextlib
+import io
 
 import warnings
 import logging
@@ -49,6 +51,12 @@ def init_model():
     return model, trainer, cfg
 
 
+@contextlib.contextmanager
+def suppress_stdout():
+    with contextlib.redirect_stdout(io.StringIO()):
+        yield
+
+
 def decode(timesteps, variables, lon=None, lat=None, n_avg_timesteps=1):
     model, trainer, cfg = init_model()
 
@@ -86,7 +94,8 @@ def decode(timesteps, variables, lon=None, lat=None, n_avg_timesteps=1):
                                variables_target=data_dict["test"]["target"]["variables"])
     data_module = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
-    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
+    with suppress_stdout():
+        predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
     output = rearrange(output, "(b2 b1) n t s ... -> b2 n t (b1 s) ... ",
                        b1=1 if test_dataset.region != -1 else (test_dataset.global_cells.shape[0]
