@@ -198,10 +198,10 @@ class GridLayer(nn.Module):
             mask = mask.reshape(*x_feat_dims, 1, s,-1) if mask is not None else None
             return x, mask
         
-        elif (self.adjc.shape[1]>s and with_nh):
-            x = x.view(*x_feat_dims, s, 1, f).expand(*[-1]*len(x_feat_dims),-1,s,-1)
-            mask = mask.reshape(*x_feat_dims, 1, s, -1).expand(*[-1]*len(x_feat_dims),-1,s,-1) if mask is not None else None
-            return x, mask
+       # elif (self.adjc.shape[1]>s and with_nh):
+       #     x = x.view(*x_feat_dims, s, 1, f).expand(*[-1]*len(x_feat_dims),-1,s,-1)
+       #     mask = mask.reshape(*x_feat_dims, 1, s, -1).expand(*[-1]*len(x_feat_dims),-1,s,-1) if mask is not None else None
+       #     return x, mask
 
         x = x.reshape(-1, s//4**zoom_diff, f*4**zoom_diff)
 
