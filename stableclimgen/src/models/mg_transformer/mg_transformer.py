@@ -120,6 +120,7 @@ class MG_Transformer(MG_base_model):
                 block = MG_MultiBlock(
                      self.grid_layers,
                      in_zooms,
+                     check_get([block_conf,{'out_zooms':in_zooms}], "out_zooms"),
                      layer_settings,
                      in_features,
                      block_conf.out_features,

@@ -187,11 +187,15 @@ class GridLayer(nn.Module):
 
         x_feat_dims = x.shape[:-2]
 
-        if 4**zoom_diff > s or (self.adjc.shape[1]>s and with_nh):
+        if 4**zoom_diff > s:
             x = x.view(*x_feat_dims, 1, s, f)
             mask = mask.reshape(*x_feat_dims, 1, s,-1) if mask is not None else None
             return x, mask
-
+        
+        elif (self.adjc.shape[1]>s and with_nh):
+            x = x.view(*x_feat_dims, s, 1, f).expand(*[-1]*len(x_feat_dims),-1,s,-1)
+            mask = mask.reshape(*x_feat_dims, 1, s, -1).expand(*[-1]*len(x_feat_dims),-1,s,-1) if mask is not None else None
+            return x, mask
 
         x = x.reshape(-1, s//4**zoom_diff, f*4**zoom_diff)
 
@@ -506,7 +510,7 @@ def get_interpolation(x: torch.tensor,
 
     indices = indices + (indices_offset * offset).view(1, 1, 1, indices.shape[-3], 1, 1)
 
-    x = x.view(b, nv, nt, -1, f)
+    x = x.reshape(b, nv, nt, -1, f)
     
     indices = indices.reshape(b, nv, nt, -1, 1).expand(-1, -1, -1, -1, f)
 
