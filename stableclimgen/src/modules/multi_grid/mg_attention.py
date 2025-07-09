@@ -92,8 +92,8 @@ class GridSelfAttention(nn.Module):
             mask_ = mask_ if mask_ is not None else torch.zeros_like(kv_[...,0], dtype=torch.bool, device=kv_.device)
             mask.append(mask_)
 
-        for zoom, kv_layer in self.q_layers.items():
-            q_ = self.q_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_dict=sample_dict)
+        for zoom, q_layer in self.q_layers.items():
+            q_ = q_layer(x_zooms[int(zoom)], emb=emb, sample_dict=sample_dict)
             q_ = q_.view(*q_.shape[:3], -1, 4**(self.seq_length + int(zoom)-zoom_att) ,q_.shape[-1])
 
             n_p.append(q_.shape[-2])
