@@ -144,10 +144,7 @@ class MGEmbedder(BaseEmbedder):
 
     def get_patch(self, embs, sample_dict={}):
     
-        if 'patch_index' in sample_dict:
-            idx = get_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)
-        else:
-            idx = self.grid_layer.adjc[:,[0]].unsqueeze(dim=0)
+        idx = self.grid_layer.get_idx_of_patch(**sample_dict, return_local=False)
 
         idx = idx.view(idx.shape[0],1,1,-1,1)
 
@@ -157,17 +154,11 @@ class MGEmbedder(BaseEmbedder):
     
     def get_patch_nh(self, embs, sample_dict={}):
 
-        if 'patch_index' in sample_dict:
-            idx, mask = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)
-        else:
-            idx = self.grid_layer.adjc
-            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
+        idx = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)[0]
 
         idx = idx.view(idx.shape[0],1,1,-1,1)
-        mask = mask.view(idx.shape[0],1,1,-1,1)
 
         embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
-       
         
         return embs
     

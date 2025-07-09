@@ -7,20 +7,26 @@ from typing import List,Dict
 from .grid_utils import get_distance_angle
 
 
-def get_nh_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True, **kwargs):
-    zoom_patch_sample = zoom_patch_sample[0] if zoom_patch_sample.numel()>1 else zoom_patch_sample
+def get_nh_idx_of_patch(adjc, patch_index=None, zoom_patch_sample=None, return_local=True, **kwargs):
 
     # for icon and healpix
     zoom = int(math.log((adjc.shape[0])/4, 4))
+
+    if zoom_patch_sample is not None:
+        zoom_patch_sample = zoom_patch_sample[0] if zoom_patch_sample.numel()>1 else zoom_patch_sample
+
+        n_pts_patch = 4**(zoom-zoom_patch_sample)
+
+        adjc_patch = adjc.reshape(-1, n_pts_patch, adjc.shape[-1])[patch_index].clone()
+
+        index_range = (patch_index * n_pts_patch, (patch_index + 1) * n_pts_patch)
+
+        adjc_mask = (adjc_patch < index_range[0].view(-1,1,1)) | (adjc_patch >= index_range[1].view(-1,1,1))
+    else:
+        adjc_patch = adjc.clone().unsqueeze(dim=0)
+        adjc_mask = (adjc_patch < 0) | (adjc_patch >= adjc_patch.shape[0])
+
     
-    n_pts_patch = 4**(zoom-zoom_patch_sample)
-
-    adjc_patch = adjc.reshape(-1, n_pts_patch, adjc.shape[-1])[patch_index].clone()
-    
-    index_range = (patch_index * n_pts_patch, (patch_index + 1) * n_pts_patch)
-
-    adjc_mask = (adjc_patch < index_range[0].view(-1,1,1)) | (adjc_patch >= index_range[1].view(-1,1,1))
-
     ind = torch.where(adjc_mask)
     adjc_patch[ind] = adjc_patch[ind[0],ind[1],0]
 

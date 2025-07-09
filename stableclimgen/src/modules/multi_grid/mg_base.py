@@ -142,45 +142,15 @@ class MGEmbedding(nn.Module):
     def get_embeddings_from_var_idx(self, emb=None):
         return self.embeddings[emb['VariableEmbedder']]
     
-    def get_embs(self, sample_dict={}, emb=None):
-        embs = self.get_embedding_fcn(emb=emb)
-
-        if 'patch_index' in sample_dict:
-            idx = get_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
-        else:
-            idx = self.grid_layer_emb.adjc[:,[0]].unsqueeze(dim=0)
-
-        idx = idx.view(idx.shape[0],1,1,-1,1)
-
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
-
-        return embs
-    
-    def get_embs_with_nh(self, sample_dict={}, emb=None):
-        embs = self.get_embedding_fcn(emb=emb)
-
-        if 'patch_index' in sample_dict:
-            idx, mask = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
-        else:
-            idx = self.grid_layer_emb.adjc.unsqueeze(dim=0)
-            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
-
-        idx = idx.view(idx.shape[0],1,1,-1,1)
-        mask = mask.view(idx.shape[0],1,1,-1,1)
-
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
-
-        return embs
-
-    def sample_embs(self, layer, sample_dict=None, emb=None):
-        embs = self.get_embs(sample_dict=sample_dict, emb=emb)
-        
-        emb = layer(embs, sample_dict=sample_dict, emb=emb)
-
-        return emb
     
     def downsample_embs(self, layer, sample_dict=None, emb=None):
-        embs = self.get_embs(sample_dict=sample_dict, emb=emb)
+        embs = self.get_embedding_fcn(emb=emb)
+
+        idx = self.grid_layer_emb.get_idx_of_patch(**sample_dict, return_local=False)
+
+        idx = idx.view(idx.shape[0],1,1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
         
         embs = layer(embs, sample_dict=sample_dict, emb=emb)
 
@@ -189,14 +159,9 @@ class MGEmbedding(nn.Module):
     def upsample_embs(self, layer, sample_dict=None, emb=None):
         embs = self.get_embedding_fcn(emb=emb)
 
-        if 'patch_index' in sample_dict:
-            idx, mask = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)
-        else:
-            idx = self.grid_layer_emb.adjc
-            mask = torch.zeros_like(idx, device=idx.device, dtype=int)
-
+        idx = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)[0]
+ 
         idx = idx.view(idx.shape[0],1,1,-1,1)
-        mask = mask.view(idx.shape[0],1,1,-1,1)
 
         embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
        
