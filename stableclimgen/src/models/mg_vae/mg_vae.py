@@ -95,7 +95,7 @@ class MG_VAE(MG_base_model):
 
         self.bottleneck_zoom = in_zooms[-1]
 
-        quant_embedders = get_embedder(**quant_config.embed_confs, zoom=self.bottleneck_zoom)
+        quant_embedders = get_embedder(**quant_config.embed_confs, zoom=self.bottleneck_zoom,  grid_layer=self.grid_layers[str(self.bottleneck_zoom)])
         self.quantization = Quantization(in_features[-1],
                                          quant_config.latent_ch,
                                          quant_config.block_type,
