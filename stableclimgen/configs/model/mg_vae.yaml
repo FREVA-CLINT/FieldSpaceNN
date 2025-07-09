@@ -14,29 +14,26 @@ interpolator_settings:
   power: 1
 lr_groups:
   default:
-    lr: 1e-4
-    warmup: 1
+    lr: 2e-4
+    warmup: 0
   attention:
     matches: ['TransformerBlock','GridSelfAttention']
-    lr: 1e-4
-    warmup: 1000
+    lr: 2e-4
+    warmup: 2000
 model:
   _target_: stableclimgen.src.models.mg_vae.mg_vae.MG_VAE
   mgrids: ${mgrids}
+  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
   in_features: 1
   out_features: 1
   lift_features: 1
   n_head_channels: 16
-  input_layer_confs:
-    n_vars_total: 2
-    rank_vars: 4
-    rank_feat: null
-    bias: false
-    fc: false
-  learn_residual: false
+  learn_residual: true
+  layer_confs:
+    -rank_channel: 16
   mg_encoder_config:
     type: diff
-    out_zooms: [6,4,2]
+    out_zooms: [6,5,3]
   mg_decoder_config:
     type: sum
     out_zoom: [6]
@@ -53,28 +50,28 @@ model:
       layer_settings:
         type: "TransformerBlock"
         blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 1
+        seq_lengths: 2
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [2, 4, 6]
-      kv_zooms: [2, 4, 6]
+      q_zooms: [6,5,3]
+      kv_zooms: [6,5,3]
       layer_settings:
         with_nh: true
         common_kv: true
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: ["UncertaintyEmbedder","CoordinateEmbedder"]
+          embed_names: ["MGEmbedder","UncertaintyEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
@@ -82,44 +79,60 @@ model:
       layer_settings:
         type: "TransformerBlock"
         blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 1
+        seq_lengths: 2
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
-            - ["UncertaintyEmbedder","CoordinateEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [ 2 ]
-      kv_zooms: [ 6,4,2 ]
-      out_zooms: [ 2 ]
+      q_zooms: [ 3 ]
+      kv_zooms: [6,5,3]
+      out_zooms: [3]
       layer_settings:
         with_nh: true
         common_kv: true
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+          embed_names: [ "MGEmbedder","UncertaintyEmbedder" ]
           embed_confs: ${embedding}
           embed_mode: "sum"
   decoder_block_configs:
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [ 6,4,2 ]
-      kv_zooms: [ 2 ]
-      out_zooms: [ 6,4,2 ]
+      q_zooms: [6,5,3]
+      kv_zooms: [3]
+      out_zooms: [6,5,3]
       layer_settings:
         with_nh: true
         common_kv: true
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+          embed_names: [ "MGEmbedder","UncertaintyEmbedder" ]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [128,128,128]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["vsnh","mlp","vsnh","mlp"]
+        seq_lengths: 2
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names:
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
+            - ["MGEmbedder","UncertaintyEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
@@ -131,28 +144,28 @@ model:
       layer_settings:
         type: "TransformerBlock"
         blocks: [ "vsnh","mlp","vsnh","mlp" ]
-        seq_lengths: 1
+        seq_lengths: 2
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [ 2, 4, 6 ]
-      kv_zooms: [ 2, 4, 6 ]
+      q_zooms: [6,5,3]
+      kv_zooms: [6,5,3]
       layer_settings:
         with_nh: true
         common_kv: true
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+          embed_names: [ "MGEmbedder","UncertaintyEmbedder" ]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
@@ -160,32 +173,28 @@ model:
       layer_settings:
         type: "TransformerBlock"
         blocks: [ "vsnh","mlp","vsnh","mlp" ]
-        seq_lengths: 1
+        seq_lengths: 2
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
-            - [ "UncertaintyEmbedder","CoordinateEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
+            - [ "MGEmbedder","UncertaintyEmbedder" ]
           embed_confs: ${embedding}
           embed_mode: "sum"
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [ 1,1,1 ]
       layer_settings:
-        type: 'mlp'
+        type: 'linear'
     - _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
   quant_config:
     _target_: stableclimgen.src.models.mgno_vae.confs.MGNOQuantConfig
     block_type: "TransformerBlock"
-    latent_ch: [ 4 ]
-    layer_confs:
-      fc: false
+    latent_ch: [16]
     embed_confs:
-      embed_names: [ [ "CoordinateEmbedder" ] ]
-      embed_confs: ${embedding}
-      embed_mode: "sum"
+      embed_names: []
     layer_settings:
       blocks: [ "mlp" ]
       n_head_channels: [ 2 ]

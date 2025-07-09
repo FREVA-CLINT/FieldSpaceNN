@@ -140,9 +140,11 @@ class MG_VAE(MG_base_model):
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
         if self.learn_residual and with_global_gamma:
-            self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+            self.gamma1 = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+            self.gamma2 = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
         else:
-            self.register_buffer('gamma', torch.ones(1), persistent=False)
+            self.register_buffer('gamma1', torch.ones(1), persistent=False)
+            self.register_buffer('gamma2', torch.ones(1), persistent=False)
 
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
@@ -198,10 +200,16 @@ class MG_VAE(MG_base_model):
 
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
 
+        if self.learn_residual:
+            x_res = x_zooms[self.bottleneck_zoom]
+
         for k, block in enumerate(self.encoder_blocks):
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
-        x = x_zooms[self.bottleneck_zoom]
+        if self.learn_residual:
+            x = self.gamma1*x_zooms[self.bottleneck_zoom] + x_res
+        else:
+            x = x_zooms[self.bottleneck_zoom]
 
         x = self.quantization.quantize(x, sample_dict=sample_dict, emb=emb)
         posterior = self.quantization.get_distribution(x)
@@ -210,11 +218,19 @@ class MG_VAE(MG_base_model):
     def decode(self, x, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
         x = self.quantization.post_quantize(x, sample_dict=sample_dict, emb=emb)
 
+        if self.learn_residual:
+            x_res = x
+
         x_zooms = {self.bottleneck_zoom: x}
         mask_zooms = {self.bottleneck_zoom: mask}
 
         for k, block in enumerate(self.decoder_blocks):
+
+            if k == len(self.decoder_blocks)-2 and self.learn_residual:
+                x_zooms[self.bottleneck_zoom] = self.gamma2*x_zooms[self.bottleneck_zoom] + x_res
+
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+
 
         if return_zooms:
             return x_zooms
