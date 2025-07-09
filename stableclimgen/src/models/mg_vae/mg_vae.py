@@ -6,11 +6,13 @@ import torch.nn as nn
 from ..mg_transformer.confs import defaults
 from ..mg_transformer.mg_base_model import MG_base_model
 from ..mgno_vae.confs import MGNOQuantConfig
+from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
     MGCoordinateEmbeddingConfig
 from ...modules.multi_grid.input_output import MG_Difference_Encoder, MG_Sum_Decoder, MG_Decoder, MG_Encoder
 from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embedding
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
+from ...modules.vae.quantization import Quantization
 from ...utils.helpers import check_get
 
 
@@ -91,6 +93,18 @@ class MG_VAE(MG_base_model):
             in_features = block.out_features
             in_zooms = block.out_zooms
 
+        self.bottleneck_zoom = in_zooms[-1]
+
+        quant_embedders = get_embedder(**quant_config.embed_confs, zoom=self.bottleneck_zoom)
+        self.quantization = Quantization(in_features[-1],
+                                         quant_config.latent_ch,
+                                         quant_config.block_type,
+                                         1,
+                                         **quant_config.layer_settings,
+                                         embedders=quant_embedders,
+                                         layer_confs=check_get([quant_config, kwargs, defaults], "layer_confs"),
+                                         grid_layer=self.grid_layers[str(self.bottleneck_zoom)])
+
         for block_idx, block_conf in enumerate(decoder_block_configs):
             block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
 
@@ -130,7 +144,7 @@ class MG_VAE(MG_base_model):
         else:
             self.register_buffer('gamma', torch.ones(1), persistent=False)
 
-    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, kwargs):
+    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
 
         if isinstance(block_conf, MGProcessingConfig):
@@ -166,6 +180,7 @@ class MG_VAE(MG_base_model):
             block = MG_MultiBlock(
                 self.grid_layers,
                 in_zooms,
+                check_get([block_conf, {'out_zooms': in_zooms}], "out_zooms"),
                 layer_settings,
                 in_features,
                 block_conf.out_features,

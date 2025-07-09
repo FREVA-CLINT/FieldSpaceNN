@@ -88,9 +88,10 @@ class MG_Diff_MSE_loss(nn.Module):
 class LightningMGVAEModel(LightningMGNOBaseModel):
     def __init__(self, 
                  model, 
-                 lr_groups, 
-                 lambda_loss_dict: dict, 
-                 weight_decay=0, 
+                 lr_groups,
+                 lambda_loss_dict: dict,
+                 kl_weight: float = 1e-6,
+                 weight_decay=0,
                  noise_std=0.0,
                  composed_loss = True,
                  interpolator_settings=None):
@@ -105,6 +106,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
         )
 
         self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=model.max_zoom)
+        self.kl_weight = kl_weight
 
         self.composed_loss = composed_loss
 
@@ -135,9 +137,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         loss_dict['train/total_loss'] = loss.item()
 
-        self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
-        self.log_dict(loss_dict, logger=True)
-        
+        self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
+
         return loss
     
 
@@ -152,22 +153,20 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         target_loss = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
 
-        rec_loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
+        rec_loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='val/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
             kl_loss = posterior.kl()
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
             loss = rec_loss + self.kl_weight * kl_loss
-            loss_dict['train/kl_loss'] = self.kl_weight * kl_loss
+            loss_dict['val/kl_loss'] = self.kl_weight * kl_loss
         else:
             loss = rec_loss
 
         loss_dict['val/total_loss'] = loss.item()
 
-        self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
-        self.log_dict(loss_dict, logger=True)
-
+        self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
         output = output[list(output.keys())[0]]
 
