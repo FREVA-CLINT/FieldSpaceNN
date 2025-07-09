@@ -277,6 +277,7 @@ class TransformerBlock(EmbedBlock):
             spatial_dim_count: int = 1,
             embedders: List[EmbedderSequential] = None,
             layer_confs: Dict = {},
+            layer_confs_emb={},
             **kwargs
     ):
         super().__init__()
@@ -330,7 +331,7 @@ class TransformerBlock(EmbedBlock):
 
                 trans_block = rearrange_fn(SelfAttention(in_features, in_features, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'])
      
-            lin_emb_layers.append(LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True))
+            lin_emb_layers.append(LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb))
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection
             if in_features != out_features_list[i]:

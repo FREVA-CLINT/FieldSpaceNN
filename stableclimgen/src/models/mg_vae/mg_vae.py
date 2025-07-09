@@ -172,7 +172,9 @@ class MG_VAE(MG_base_model):
                                 n_vars_total=check_get([block_conf, kwargs, {'n_vars_total': 1}], "n_vars_total"),
                                 zooms=in_zooms,
                                 init_mode=check_get([block_conf, kwargs, {'init_mode': "fourier_sphere"}], "init_mode"),
-                                layer_confs=layer_confs)
+                                layer_confs=layer_confs,
+                                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb")
+                                )
             block.out_zooms = in_zooms
 
         elif isinstance(block_conf, MGSelfProcessingConfig):
@@ -189,7 +191,8 @@ class MG_VAE(MG_base_model):
                 mg_emb_zoom,
                 q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
                 kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
-                layer_confs=layer_confs)
+                layer_confs=layer_confs,
+                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
         return block
 
     def encode(self, x, coords_input, sample_dict={}, mask=None, emb=None):

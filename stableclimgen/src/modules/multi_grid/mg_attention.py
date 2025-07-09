@@ -33,7 +33,8 @@ class GridSelfAttention(nn.Module):
                  common_q = False,
                  common_out = False,
                  seq_length: int = 0,
-                 layer_confs: Dict = {}) -> None: 
+                 layer_confs: Dict = {},
+                 layer_confs_emb= {}) -> None: 
         
         super().__init__()
         
@@ -51,17 +52,17 @@ class GridSelfAttention(nn.Module):
         self.gammas = nn.ParameterDict()
 
         for in_zoom in embedders_q.keys():
-            self.q_layers[in_zoom] = LinEmbLayer(in_features, [in_features], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders_q[in_zoom], layer_norm=True) if not common_q else IdentityLayer()
-            self.mlp_emb_layers[in_zoom] = LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=False, embedder=embedders_q[in_zoom], layer_norm=True)
+            self.q_layers[in_zoom] = LinEmbLayer(in_features, [in_features], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders_q[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) if not common_q else IdentityLayer()
+            self.mlp_emb_layers[in_zoom] = LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=False, embedder=embedders_q[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[in_zoom] = MLP_fac(in_features, in_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
-            self.out_layers[in_zoom] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, layer_norm=False) if not common_out else IdentityLayer()
+            self.out_layers[in_zoom] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, layer_norm=False, layer_confs_emb=layer_confs_emb) if not common_out else IdentityLayer()
             self.gammas[in_zoom] =  torch.nn.Parameter(torch.ones(in_features) * 1E-6)
 
         for in_zoom in embedders_kv.keys():
-            self.kv_layers[in_zoom] = LinEmbLayer(in_features, [in_features*2],  layer_confs=layer_confs_kv, identity_if_equal=True, embedder=embedders_kv[in_zoom], layer_norm=True) if not common_kv else IdentityLayer()
+            self.kv_layers[in_zoom] = LinEmbLayer(in_features, [2, in_features],  layer_confs=layer_confs_kv, identity_if_equal=True, embedder=embedders_kv[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) if not common_kv else IdentityLayer()
         
-        self.common_q_layer = nn.Linear(in_features, in_features, bias=False)  if common_q else nn.Identity()
-        self.common_kv_layer = nn.Linear(in_features, in_features*2, bias=True)  if common_kv else nn.Identity()
+        self.common_q_layer = get_layer(in_features, in_features, bias=False, layer_confs=layer_confs) if common_q else IdentityLayer()
+        self.common_kv_layer = get_layer(in_features, [2, in_features], bias=True, layer_confs=layer_confs) if common_kv else IdentityLayer()
 
         num_heads = num_heads if not n_head_channels else in_features // n_head_channels
         self.attention = SelfAttention(in_features, in_features, num_heads=num_heads, dropout=dropout, cross=True, qkv_proj=False)
@@ -70,10 +71,12 @@ class GridSelfAttention(nn.Module):
 
         if not var_att:
             self.pattern = 'b v t s n c -> (b v t s) (n) c'
+            self.kv_pattern = 'b v t s n kv c -> (b v t s) (n) (kv c)'
             self.nh_mask_pattern = 'b v t s n -> (b v t s) 1 1 n'
             self.reverse_pattern = '(b v t s) n c -> b v t s n c'
         else:
             self.pattern = 'b v t s n c -> (b t s) (v n) c'
+            self.kv_pattern = 'b v t s n kv c -> (b t s) (v n) (kv c)'
             self.nh_mask_pattern = 'b v t s n -> (b t s) 1 1 (v n)'
             self.reverse_pattern = '(b t s) (v n) c -> b v t s n c'
 
@@ -102,8 +105,8 @@ class GridSelfAttention(nn.Module):
         kv = torch.concat(kv, dim=-2)
         q = torch.concat(q, dim=-2)
 
-        q = self.common_q_layer(q)
-        kv = self.common_kv_layer(kv)
+        q = self.common_q_layer(q, sample_dict=sample_dict, emb=emb)
+        kv = self.common_kv_layer(kv, sample_dict=sample_dict, emb=emb)
 
         if mask[0] is not None:
             mask = torch.concat(mask, dim=-1)
@@ -114,7 +117,7 @@ class GridSelfAttention(nn.Module):
         b, v, t, s, n, c = q.shape
 
         q = rearrange(q, self.pattern)
-        kv = rearrange(kv, self.pattern)
+        kv = rearrange(kv, self.kv_pattern)
 
         q = self.attention(q, kv, mask=mask)
 

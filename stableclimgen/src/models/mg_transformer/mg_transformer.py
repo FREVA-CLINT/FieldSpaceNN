@@ -97,7 +97,8 @@ class MG_Transformer(MG_base_model):
                      in_features,
                      block_conf.out_features,
                      mg_emb_zoom,
-                    layer_confs=layer_confs)
+                    layer_confs=layer_confs,
+                    layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
                         
             elif isinstance(block_conf, MGConservativeConfig):
                 block = ConservativeLayer(in_zooms,
@@ -127,7 +128,8 @@ class MG_Transformer(MG_base_model):
                      mg_emb_zoom,
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
-                     layer_confs=layer_confs)
+                     layer_confs=layer_confs,
+                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
                 
             self.Blocks.append(block)     
 

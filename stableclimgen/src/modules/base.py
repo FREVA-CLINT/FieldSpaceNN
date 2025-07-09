@@ -25,6 +25,7 @@ class LinEmbLayer(nn.Module):
                  layer_norm = False,
                  identity_if_equal = False,
                  layer_confs: dict={},
+                 layer_confs_emb: dict={},
                  embedder=None,
                 ) -> None: 
          
@@ -38,7 +39,8 @@ class LinEmbLayer(nn.Module):
             out_features_ = out_features
 
         if self.embedder is not None:
-            self.embedding_layer = nn.Linear(self.embedder.get_out_channels, out_features_ * 2)
+            self.embedding_layer = get_layer(self.embedder.get_out_channels, [2, out_features_], layer_confs=layer_confs_emb)
+         
             self.forward_fcn = self.forward_w_embedding
         else:
             self.forward_fcn = self.forward_wo_embedding
@@ -60,7 +62,7 @@ class LinEmbLayer(nn.Module):
         x_shape = x.shape
 
         emb_ = self.embedder(emb, sample_dict)
-        scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
+        scale, shift = self.embedding_layer(emb_).chunk(2, dim=-2)
 
         n = scale.shape[1]
         scale = scale.view(*scale.shape[:3], -1, x_shape[-1])
@@ -185,17 +187,19 @@ class LinearLayer(nn.Module):
         if isinstance(out_features,int):
             out_features = [out_features]
 
-        self.in_features = int(torch.tensor(in_features).prod())
        # self.out_features = int(torch.tensor(out_features).prod())
 
         self.layer = nn.Linear(int(torch.tensor(in_features).prod()), int(torch.tensor(out_features).prod()), bias=bias)
 
+        self.in_features = in_features
         self.out_features = out_features
+
     def forward(self, x, **kwargs):
-        
-        x = x.view(*x.shape[:4], -1, self.in_features)
+        x_dims = x.shape[:-len(self.in_features)]
+
+        x = x.view(*x_dims, *self.in_features)
         x = self.layer(x)
-        x = x.view(*x.shape[:4], *self.out_features)
+        x = x.view(*x_dims, *self.out_features)
         
         return x
 

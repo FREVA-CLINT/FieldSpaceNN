@@ -23,7 +23,8 @@ class MG_SingleBlock(nn.Module):
                  in_features_list: List[int],
                  out_features_list: List[int],
                  mg_emb_zoom: int,
-                 layer_confs = {}
+                 layer_confs = {},
+                 layer_confs_emb={}
                 ) -> None: 
       
         super().__init__()
@@ -47,7 +48,8 @@ class MG_SingleBlock(nn.Module):
                     out_features, 
                     layer_norm=False, 
                     identity_if_equal=True,
-                    layer_confs=layer_confs)
+                    layer_confs=layer_confs,
+                    layer_confs_emb=layer_confs_emb)
             
             else:
                 embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
@@ -68,7 +70,8 @@ class MG_SingleBlock(nn.Module):
                                 spatial_dim_count=layer_settings.get('spatial_dim_count', 1),
                                 embedders=embedders,
                                 layer_confs=layer_confs,
-                                grid_layer=grid_layers[str(zoom_block)]
+                                grid_layer=grid_layers[str(zoom_block)],
+                                layer_confs_emb=layer_confs_emb
                             )
                     
                 elif type == 'nh_conv':
@@ -102,7 +105,8 @@ class MG_SingleBlock(nn.Module):
                         layer_norm=False, 
                         identity_if_equal=False,
                         embedder=embedders,
-                        layer_confs=layer_confs)
+                        layer_confs=layer_confs,
+                        layer_confs_emb=layer_confs_emb)
                     
                 elif type == 'mlp':
 
@@ -141,7 +145,7 @@ class MG_MultiBlock(nn.Module):
                  q_zooms:List|int = -1,
                  kv_zooms:List|int = -1,
                  layer_confs={},
-
+                 layer_confs_emb={}
                  ) -> None:
         super().__init__()
         
@@ -205,7 +209,8 @@ class MG_MultiBlock(nn.Module):
                                 common_q = layer_settings.get("common_q",False),
                                 embedders_q=embedders_q,
                                 embedders_kv=embedders_kv,
-                                layer_confs=layer_confs
+                                layer_confs=layer_confs,
+                                layer_confs_emb=layer_confs_emb
                                 )
         self.block = block
 
