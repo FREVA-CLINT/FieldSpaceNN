@@ -62,7 +62,7 @@ class LinEmbLayer(nn.Module):
         x_shape = x.shape
 
         emb_ = self.embedder(emb, sample_dict)
-        scale, shift = self.embedding_layer(emb_).chunk(2, dim=-2)
+        scale, shift = self.embedding_layer(emb_, sample_dict=sample_dict, emb=emb).chunk(2, dim=-2)
 
         n = scale.shape[1]
         scale = scale.view(*scale.shape[:3], -1, x_shape[-1])
