@@ -106,7 +106,8 @@ class GridSelfAttention(nn.Module):
         q = torch.concat(q, dim=-2)
 
         q = self.common_q_layer(q, sample_dict=sample_dict, emb=emb)
-        kv = self.common_kv_layer(kv, sample_dict=sample_dict, emb=emb)
+        kv_shape = kv.shape[:5]
+        kv = self.common_kv_layer(kv, sample_dict=sample_dict, emb=emb).view(*kv_shape,2,-1)
 
         if mask[0] is not None:
             mask = torch.concat(mask, dim=-1)
