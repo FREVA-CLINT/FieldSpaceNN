@@ -185,7 +185,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
     def predict_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)[0]
 
         output = output[self.model.max_zoom]
 
