@@ -117,7 +117,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
     
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=(self.composed_loss==False))
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=(self.composed_loss==False))
         
         target = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
 
@@ -128,7 +128,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
-            kl_loss = posterior.kl()
+            kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
             loss = rec_loss + self.kl_weight * kl_loss
             loss_dict['train/kl_loss'] = self.kl_weight * kl_loss
@@ -149,7 +149,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
 
         target_loss = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
 
@@ -157,7 +157,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
-            kl_loss = posterior.kl()
+            kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
             loss = rec_loss + self.kl_weight * kl_loss
             loss_dict['val/kl_loss'] = self.kl_weight * kl_loss
