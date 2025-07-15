@@ -285,8 +285,9 @@ class ProjLayer(nn.Module):
                 x = x.mean(dim=-2)
 
         elif self.zoom_diff > 0:
-            x = x.unsqueeze(dim=-2).repeat_interleave(4**(self.zoom_diff), dim=-2)
-            x = x.view(*x.shape[:3],-1,x.shape[-1])
+            #x = x.unsqueeze(dim=-2).repeat_interleave(4**(self.zoom_diff), dim=-2)
+            x = x.unsqueeze(dim=-2).expand(-1,-1,-1,-1,4**(self.zoom_diff),-1)
+            x = x.reshape(*x.shape[:3],-1,x.shape[-1])
             
         return x
 
