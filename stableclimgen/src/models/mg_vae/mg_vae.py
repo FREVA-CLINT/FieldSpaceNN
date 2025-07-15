@@ -129,7 +129,7 @@ class MG_VAE(MG_base_model):
                                 out_zoom=check_get([mg_decoder_config, {"out_zoom": self.max_zoom}], "out_zoom"),
                                 with_residual=check_get([mg_decoder_config,kwargs,defaults], "with_residual"),
                                 layer_confs=layer_confs,
-                                aggregation=check_get([mg_decoder_config,kwargs,defaults], "aggregation"),
+                                aggregation=check_get([mg_decoder_config,kwargs,defaults], "aggregation")
                             ) 
         
 
@@ -157,7 +157,8 @@ class MG_VAE(MG_base_model):
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
                 mg_emb_zoom,
-                layer_confs=layer_confs)
+                layer_confs=layer_confs,
+                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
 
         elif isinstance(block_conf, MGConservativeConfig):
             block = ConservativeLayer(in_zooms,
@@ -170,8 +171,7 @@ class MG_VAE(MG_base_model):
                                 n_vars_total=check_get([block_conf, kwargs, {'n_vars_total': 1}], "n_vars_total"),
                                 zooms=in_zooms,
                                 init_mode=check_get([block_conf, kwargs, {'init_mode': "fourier_sphere"}], "init_mode"),
-                                layer_confs=layer_confs,
-                                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb")
+                                layer_confs=layer_confs
                                 )
             block.out_zooms = in_zooms
 
