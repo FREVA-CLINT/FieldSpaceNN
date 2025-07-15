@@ -2,6 +2,7 @@ from typing import List
 
 import torch
 import torch.nn as nn
+from stableclimgen.src.modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
 
 from ..mg_transformer.confs import defaults
 from ..mg_transformer.mg_base_model import MG_base_model
@@ -28,6 +29,7 @@ class MG_VAE(MG_base_model):
                  out_features: int=1,
                  mg_emb_confs: dict={},
                  with_global_gamma=True,
+                 distribution: str = "gaussian",
                  **kwargs
                  ) -> None: 
         
@@ -43,6 +45,7 @@ class MG_VAE(MG_base_model):
 
         self.out_features = out_features
         self.predict_var = predict_var
+        self.distribution = distribution
 
         if len(mg_emb_confs)>0:
             mg_emb_zoom = mg_emb_confs['zoom']
@@ -93,21 +96,16 @@ class MG_VAE(MG_base_model):
             in_features = block.out_features
             in_zooms = block.out_zooms
 
-        self.bottleneck_zoom = in_zooms[-1]
+        self.bottleneck_zooms = in_zooms
 
-        quant_embedders = get_embedder(**quant_config.embed_confs, zoom=self.bottleneck_zoom,  grid_layer=self.grid_layers[str(self.bottleneck_zoom)])
-        self.quantization = Quantization(in_features[-1],
-                                         quant_config.latent_ch,
-                                         quant_config.block_type,
-                                         1,
-                                         **quant_config.layer_settings,
-                                         embedders=quant_embedders,
-                                         layer_confs=check_get([quant_config, kwargs, defaults], "layer_confs"),
-                                         grid_layer=self.grid_layers[str(self.bottleneck_zoom)])
+        quant_out_feat = [2 * feat for feat in quant_config.out_features]
+        self.quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, in_features,
+                                                          mg_emb_zoom, quant_out_feat, **kwargs)
+        self.post_quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, quant_config.out_features,
+                                                               mg_emb_zoom, in_features, **kwargs)
 
         for block_idx, block_conf in enumerate(decoder_block_configs):
             block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
-
             self.decoder_blocks.append(block)
 
             in_features = block.out_features
@@ -146,7 +144,7 @@ class MG_VAE(MG_base_model):
             self.register_buffer('gamma1', torch.ones(1), persistent=False)
             self.register_buffer('gamma2', torch.ones(1), persistent=False)
 
-    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs):
+    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
 
         if isinstance(block_conf, MGProcessingConfig):
@@ -157,7 +155,7 @@ class MG_VAE(MG_base_model):
                 in_zooms,
                 layer_settings,
                 in_features,
-                block_conf.out_features,
+                out_features if out_features is not None else block_conf.out_features,
                 mg_emb_zoom,
                 layer_confs=layer_confs,
                 layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
@@ -187,7 +185,7 @@ class MG_VAE(MG_base_model):
                 check_get([block_conf, {'out_zooms': in_zooms}], "out_zooms"),
                 layer_settings,
                 in_features,
-                block_conf.out_features,
+                out_features if out_features is not None else block_conf.out_features,
                 mg_emb_zoom,
                 q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
                 kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
@@ -204,34 +202,30 @@ class MG_VAE(MG_base_model):
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
 
         if self.learn_residual:
-            x_res = x_zooms[self.bottleneck_zoom]
+            x_res_zooms = {int(zoom): x_zooms[zoom] for zoom in self.bottleneck_zooms}
 
         for k, block in enumerate(self.encoder_blocks):
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
         if self.learn_residual:
-            x = self.gamma1*x_zooms[self.bottleneck_zoom] + x_res
-        else:
-            x = x_zooms[self.bottleneck_zoom]
+            x_zooms = {int(zoom): self.gamma1 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in self.bottleneck_zooms}
 
-        x = self.quantization.quantize(x, sample_dict=sample_dict, emb=emb)
-        posterior = self.quantization.get_distribution(x)
-        return posterior
+        x_zooms = self.quantize(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+        posterior_zooms = {int(zoom): self.get_distribution(x) for zoom, x in x_zooms.items()}
+        return posterior_zooms
 
     def decode(self, x, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
-        x = self.quantization.post_quantize(x, sample_dict=sample_dict, emb=emb)
+        x_zooms = self.post_quantize(x, sample_dict=sample_dict, emb=emb)
 
         if self.learn_residual:
-            x_res = x
+            x_res_zooms = x_zooms
 
-        x_zooms = {self.bottleneck_zoom: x}
-        mask_zooms = {self.bottleneck_zoom: mask}
+        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
 
         for k, block in enumerate(self.decoder_blocks):
 
             if k == len(self.decoder_blocks)-2 and self.learn_residual:
-                x_zooms[self.bottleneck_zoom] = self.gamma2*x_zooms[self.bottleneck_zoom] + x_res
-
+                x_zooms = {int(zoom): self.gamma2 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in x_zooms.keys()}
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
 
@@ -258,10 +252,25 @@ class MG_VAE(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        posterior = self.encode(x, coords_input, sample_dict=sample_dict, mask=mask, emb=emb)
+        posterior_zooms = self.encode(x, coords_input, sample_dict=sample_dict, mask=mask, emb=emb)
 
-        z = posterior.sample()
+        z_zooms = {int(zoom): x.sample() for zoom, x in posterior_zooms.items()}
 
-        dec = self.decode(z, coords_output, sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=return_zooms)
+        dec = self.decode(z_zooms, coords_output, sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=return_zooms)
 
-        return dec, posterior
+        return dec, posterior_zooms
+
+    def get_distribution(self, x):
+        """
+        Encodes the input tensor x into a quantized latent space.
+
+        :param x: Input tensor.
+        :return: Distribution for tensor.
+        """
+        assert self.distribution == "gaussian" or self.distribution == "dirac"
+        if self.distribution == "gaussian":
+            return DiagonalGaussianDistribution(x)
+        elif self.distribution == "dirac":
+            return DiracDistribution(x)
+        else:
+            return None
