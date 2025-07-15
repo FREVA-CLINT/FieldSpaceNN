@@ -4,7 +4,7 @@ import copy
 import torch.nn as nn
 import torch
 
-from .mg_base import IWD_ProjLayer,UpDownLayer,Res_UpDownLayer
+from .mg_base import IWD_ProjLayer,UpDownLayer,Res_UpDownLayer,ProjLayer
 from ..base import IdentityLayer,get_layer,LinEmbLayer
 
 
@@ -62,10 +62,12 @@ class MG_Sum_Decoder(nn.Module):
         
         for k, input_zoom in enumerate(in_zooms):
             if input_zoom != out_zoom:
-                self.proj_layers[str(input_zoom)] = IWD_ProjLayer(grid_layers,
-                            in_zooms[k],
-                            out_zoom,
-                            interpolator_confs=interpolator_confs)
+                #self.proj_layers[str(input_zoom)] = IWD_ProjLayer(grid_layers,
+                #            in_zooms[k],
+                #            out_zoom,
+                #            interpolator_confs=interpolator_confs)
+                
+                self.proj_layers[str(input_zoom)] = ProjLayer(1,1,out_zoom-in_zooms[k])
             else:
                 self.proj_layers[str(input_zoom)] = IdentityLayer()
         
