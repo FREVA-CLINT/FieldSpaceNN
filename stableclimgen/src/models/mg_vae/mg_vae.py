@@ -116,8 +116,7 @@ class MG_VAE(MG_base_model):
             self.decoder = MG_Sum_Decoder(
                         self.grid_layers,
                         in_zooms=in_zooms,
-                        out_zoom=self.max_zoom,
-                        interpolator_confs=check_get([mg_decoder_config,kwargs,defaults], "interpolator_confs")
+                        out_zoom=self.max_zoom
                     )  
             
         elif mg_decoder_config.type=='nh_conv':
