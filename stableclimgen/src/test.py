@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from einops import rearrange
 
 from stableclimgen.src.utils.pl_data_module import DataModule
+from stableclimgen.src.utils.helpers import load_from_state_dict
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="healpix_vae_test")
@@ -37,11 +38,14 @@ def test(cfg: DictConfig) -> None:
     model: Any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer)
 
+    if cfg.ckpt_path is not None:
+        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)
+
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
     # Start the training process
     start_time = time.time()
-    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader(), ckpt_path=cfg.ckpt_path)
+    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader())
     end_time = time.time()
 
     print(f"Predicted time: {end_time - start_time:.2f} seconds")

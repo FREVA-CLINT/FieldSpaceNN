@@ -1,4 +1,58 @@
 import omegaconf
+from collections import defaultdict
+import re
+import torch
+
+def load_from_state_dict(model, ckpt_path, print_keys=True):
+    weights = torch.load(ckpt_path) 
+    res = model.load_state_dict(weights['state_dict'], strict=False)
+
+    if print_keys:
+        zoom_counts_missing, block_counts_missing = analyze_keys(res.missing_keys)
+        zoom_counts, block_counts = analyze_keys(res.unexpected_keys)
+
+        print("Missing keys in checkpoint:")
+        for zoom, count in sorted(zoom_counts_missing.items()):
+            print(f"  Zoom level {zoom}: {count} keys")
+
+        print("Unexpected keys in checkpoint:")
+        for zoom, count in sorted(zoom_counts.items()):
+            print(f"  Zoom level {zoom}: {count} keys")
+    
+    return model
+
+def analyze_keys(missing_keys):
+    """
+    Analyzes missing state_dict keys and counts how many belong
+    to each zoom level and block.
+
+    Parameters:
+        missing_keys (list of str): List of missing state_dict keys.
+
+    Returns:
+        zoom_level_counts (dict): {zoom_level: count}
+        block_zoom_counts (dict): {(block, zoom_level): count}
+    """
+    zoom_level_counts = defaultdict(int)
+    block_zoom_counts = defaultdict(int)
+
+    for key in missing_keys:
+        # Try matching both naming schemes
+        match = re.search(r'\.encoder_blocks\.(\d+)\.blocks\.(\d+)\.|\.model\.(\d+)\.blocks\.(\d+)\.', key)
+        if match:
+            if match.group(1) and match.group(2):
+                block = int(match.group(1))
+                zoom = int(match.group(2))
+            elif match.group(3) and match.group(4):
+                block = int(match.group(3))
+                zoom = int(match.group(4))
+            else:
+                continue
+
+            zoom_level_counts[zoom] += 1
+            block_zoom_counts[(block, zoom)] += 1
+
+    return dict(zoom_level_counts), dict(block_zoom_counts)
 
 
 def check_value(value, n_repeat):
