@@ -64,14 +64,12 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         """if self.interpolator:
             model_kwargs['condition'] = interp_x
         else:"""
-        x = interp_x
+        x = x.squeeze(-1)
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: x}
-        init_zoom = list(x_zooms.keys())[-1]
-
-        #mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: mask}
-
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
+        init_zoom = list(x_zooms.keys())[0]
+
         mask_zooms = {int(zoom): torch.zeros_like(x_zooms[zoom]).bool() if zoom == init_zoom else torch.ones_like(x_zooms[zoom]).bool() for zoom in x_zooms.keys()}
 
         targets, outputs, pred_xstart = self.gaussian_diffusion.training_losses(self.model, x_zooms, diffusion_steps, mask_zooms, emb, create_pred_xstart=create_pred_xstart, **model_kwargs)
@@ -95,7 +93,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
 
-        targets, outputs, pred_xstart = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, return_zooms=(self.composed_loss==False), create_pred_xstart=(batch_idx == 0 and rank_zero_only))
+        targets, outputs, pred_xstart = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, return_zooms=False, create_pred_xstart=(batch_idx == 0 and rank_zero_only))
         loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_dict=sample_dict, prefix='val/')
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
@@ -103,7 +101,6 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
 
         if batch_idx == 0 and rank_zero_only:
             pred_xstart = pred_xstart[self.model.max_zoom]
-            print(pred_xstart.shape, outputs[self.model.max_zoom].shape)
 
             coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(
                 coords_output), check_empty(mask), check_empty(rel_dists_input)

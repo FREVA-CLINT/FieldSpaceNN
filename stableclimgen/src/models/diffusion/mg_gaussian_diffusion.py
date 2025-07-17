@@ -528,8 +528,8 @@ class GaussianDiffusion:
             if 'condition' in model_kwargs.keys():
                 x_input_zooms = torch.cat([x_t_zooms, model_kwargs.pop('condition')], dim=-1)
             else:
-                x_input_zooms = x_t_zooms.copy()
-            model_output = model(x_input_zooms, emb=emb, mask=mask_zooms, **model_kwargs)
+                x_input_zooms = x_t_zooms
+            model_output = model(x_input_zooms.copy(), emb=emb.copy(), mask=mask_zooms.copy(), **model_kwargs)
 
             # Determine the target for the MSE loss based on model_mean_type
             if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -544,6 +544,8 @@ class GaussianDiffusion:
                  target_zooms = self._predict_v_from_eps_and_xstart(noise_zooms, gt_zooms, diff_steps)
             else:
                 raise NotImplementedError(self.model_mean_type)
+
+            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
 
             if create_pred_xstart:
                 if self.model_mean_type == ModelMeanType.START_X:
@@ -560,11 +562,6 @@ class GaussianDiffusion:
                      pred_xstart_zooms = self.process_xstart(
                          self._predict_xstart_from_xprev(x_t_zooms=x_t_zooms, t=diff_steps, xprev_zooms=model_output), diff_steps, None
                      )
-                if mask_zooms is not None:
-                    pred_xstart_zooms = {
-                        int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, x_t_zooms[zoom],
-                                               pred_xstart_zooms[zoom]) for zoom in mask_zooms.keys()}
-
             else:
                 pred_xstart_zooms = None
         else:
