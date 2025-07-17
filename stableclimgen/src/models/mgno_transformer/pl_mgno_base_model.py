@@ -340,7 +340,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
             if matched:
                 for p in module.parameters():
-                    if id(p) not in seen_params:
+                    if id(p) not in seen_params and p.requires_grad:
                         grouped_params[group_name].append(p)
                         seen_params.add(id(p))
 
@@ -357,7 +357,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         # Assign leftover parameters to default group
         for p in self.parameters():
-            if id(p) not in seen_params:
+            if id(p) not in seen_params and p.requires_grad:
                 grouped_params["default"].append(p)
                 seen_params.add(id(p))
 
