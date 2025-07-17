@@ -1,7 +1,6 @@
 import json
 import os
 from typing import Any
-
 import hydra
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
@@ -10,6 +9,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from stableclimgen.src.utils.pl_data_module import DataModule
 import torch
+from stableclimgen.src.utils.helpers import load_from_state_dict,freeze_zoom_levels
 
 torch.manual_seed(42)
 
@@ -50,7 +50,7 @@ def train(cfg: DictConfig) -> None:
     logger: WandbLogger = instantiate(cfg.logger)
     
     # Initialize model and trainer  
-    model: Any = instantiate(cfg.model)
+    model: any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer, logger=logger)
     
     if rank_zero_only.rank == 0:
@@ -60,9 +60,15 @@ def train(cfg: DictConfig) -> None:
         ))
 
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
+    
+    if cfg.ckpt_path is not None:
+        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)
+
+    if 'freeze_zooms' in cfg.keys():
+        freeze_zoom_levels(model, cfg.freeze_zooms)
 
     # Start the training process
-    trainer.fit(model=model, datamodule=data_module, ckpt_path=cfg.ckpt_path)
+    trainer.fit(model=model, datamodule=data_module)
 
 
 if __name__ == "__main__":

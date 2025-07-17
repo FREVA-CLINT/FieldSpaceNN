@@ -9,7 +9,7 @@ import xarray as xr
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from stableclimgen.src.modules.grids.grid_utils_healpix import healpix_pixel_lonlat_torch, get_mapping_to_healpix_grid
+from stableclimgen.src.modules.grids.grid_utils_healpix import healpix_pixel_lonlat_torch
 from stableclimgen.src.utils import normalizer as normalizers
 from stableclimgen.src.modules.grids.grid_utils_icon import get_coords_as_tensor
 
@@ -86,16 +86,18 @@ def test(cfg: DictConfig) -> None:
             assert (cfg.dataloader.dataset.in_grid is not None)
             input_coordinates = get_coords_as_tensor(xr.open_zarr(cfg.dataloader.dataset.in_grid, decode_times=False),
                                                      grid_type='cell')  # change for other grids
-        mapping = get_mapping_to_healpix_grid(coords_processing,
-                                              input_coordinates,
-                                              search_radius=cfg.dataloader.dataset.search_radius,
-                                              max_nh=cfg.dataloader.dataset.nh_input,
-                                              lowest_level=0,
-                                              periodic_fov=None)
+            """
+                mapping = get_mapping_to_healpix_grid(coords_processing,
+                                                    input_coordinates,
+                                                    search_radius=cfg.dataloader.dataset.search_radius,
+                                                    max_nh=cfg.dataloader.dataset.nh_input,
+                                                    lowest_level=0,
+                                                    periodic_fov=None)
 
-        input_mapping = mapping["indices"]
-        input_in_range = mapping["in_rng_mask"]
-
+            """
+            input_mapping = None
+            input_in_range = None
+    
     var_indices = [np.where(var==np.array(variables_train))[0][0] for var in variables]
 
     input_coordinates = input_coordinates[input_mapping].unsqueeze(dim=0) if input_coordinates is not None else input_coordinates
