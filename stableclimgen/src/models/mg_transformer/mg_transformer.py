@@ -23,7 +23,7 @@ class MG_Transformer(MG_base_model):
     def __init__(self, 
                  mgrids,
                  block_configs: List,
-                 mg_encoder_config,
+                 in_zooms,
                  mg_decoder_config,
                  in_features: int=1,
                  out_features: int=1,
@@ -59,36 +59,12 @@ class MG_Transformer(MG_base_model):
 
         self.Blocks = nn.ModuleList()
 
-        in_zooms = [self.max_zoom]
-        in_features = [in_features]
-
-        if mg_encoder_config.type=='diff':
-
-            self.encoder = MG_Difference_Encoder(
-                out_zooms=mg_encoder_config.out_zooms
-            )  
-            
-            out_features = in_features*len(self.encoder.out_zooms)
-                
-        elif mg_encoder_config.type=='nh_conv':
-            self.encoder =  MG_Encoder(
-                    self.grid_layers,
-                    in_zooms[0],
-                    in_features,
-                    mg_encoder_config.out_features,
-                    out_zooms=mg_encoder_config.out_zooms,
-                    layer_confs=layer_confs)
-
-            out_features = self.encoder.out_features
-
-        in_zooms = self.encoder.out_zooms
-        in_features = out_features
-
         for block_idx, block_conf in enumerate(block_configs):
             layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
-                
+
             if isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
+
 
                 block = MG_SingleBlock(
                      self.grid_layers,
@@ -172,7 +148,7 @@ class MG_Transformer(MG_base_model):
         else:
             self.register_buffer('gamma', torch.ones(1), persistent=False)
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, return_zooms=True):
+    def forward(self, x_zooms, coords_input, coords_output, sample_dict={}, mask_zooms=None, emb=None, return_zooms=True):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -185,23 +161,12 @@ class MG_Transformer(MG_base_model):
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
-        b, nv, nt, n, nc = x.shape[:5]
-
-        assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
-        assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
-
         emb['MGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
 
-        x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
-        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
-        
-        x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
-       
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
 
         for k, block in enumerate(self.Blocks):
-                        
             # Process input through the block
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 

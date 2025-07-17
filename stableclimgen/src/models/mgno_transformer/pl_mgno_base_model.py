@@ -292,7 +292,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         sample = 0
         for k in range(input.shape[1]):
             var_idx = emb['VariableEmbedder'][sample,k]
-            plot_name_var = f"{plot_name}_{var_idx}"
+            plot_name_var = f"{plot_name}_{var_idx.item()}"
             save_path = os.path.join(save_dir, f"{plot_name_var}.png")
             
             if mask is not None:
@@ -410,8 +410,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
                                                input_dists=dists_input)
             emb["DensityEmbedder"] = 1 - density_map
             emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
-
-            mask = None
 
         emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
         return x, coords_input, coords_output, sample_dict, mask, emb, dists_input
