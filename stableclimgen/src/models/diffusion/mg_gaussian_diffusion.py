@@ -128,7 +128,7 @@ class GaussianDiffusion:
         self,
         *,
         betas: Optional[np.ndarray] = None,
-        model_mean_type: ModelMeanType = ModelMeanType.EPSILON, # Default remains EPSILON
+        model_mean_type: ModelMeanType = "epsilon", # Default remains EPSILON
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
         rescale_timesteps: bool = False,
@@ -141,6 +141,12 @@ class GaussianDiffusion:
         uncertainty_diffusion = False,
         density_diffusion=False
     ):
+        if model_mean_type == "epsilon":
+            self.model_mean_type = ModelMeanType.EPSILON
+        elif model_mean_type == "v_prediction":
+            self.model_mean_type = ModelMeanType.V_PREDICTION
+        elif model_mean_type == "previous_x":
+            self.model_mean_type = ModelMeanType.PREVIOUS_X
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
