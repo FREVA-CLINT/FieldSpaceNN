@@ -9,7 +9,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from stableclimgen.src.utils.pl_data_module import DataModule
 import torch
-from stableclimgen.src.utils.helpers import load_from_state_dict
+from stableclimgen.src.utils.helpers import load_from_state_dict,freeze_zoom_levels
 
 torch.manual_seed(42)
 
@@ -63,6 +63,9 @@ def train(cfg: DictConfig) -> None:
     
     if cfg.ckpt_path is not None:
         model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)
+
+    if 'freeze_zooms' in cfg.keys():
+        freeze_zoom_levels(model, cfg.freeze_zooms)
 
     # Start the training process
     trainer.fit(model=model, datamodule=data_module)

@@ -1,5 +1,6 @@
 import omegaconf
 from collections import defaultdict
+from typing import List, Tuple, Optional
 import re
 import torch
 
@@ -21,38 +22,80 @@ def load_from_state_dict(model, ckpt_path, print_keys=True):
     
     return model
 
-def analyze_keys(missing_keys):
+def extract_block_and_zoom_from_key(key: str) -> Optional[Tuple[int, int]]:
+    """
+    Extracts (block, zoom) from a parameter key, supporting patterns like:
+        - model.encoder_blocks.{block}.blocks.{zoom}.
+        - model.decoder_blocks.{block}.blocks.{zoom}.
+        - model.{block}.blocks.{zoom}.
+
+    Returns:
+        Tuple of (block, zoom) if matched, else None.
+    """
+    match = re.search(
+        r'model(?:\.(?:encoder|decoder)_blocks)?\.(\d+)\.blocks\.(\d+)\.', key
+    )
+    if match:
+        block = int(match.group(1))
+        zoom = int(match.group(2))
+        return block, zoom
+    return None
+
+def analyze_keys(missing_keys: List[str]):
     """
     Analyzes missing state_dict keys and counts how many belong
     to each zoom level and block.
 
-    Parameters:
-        missing_keys (list of str): List of missing state_dict keys.
-
     Returns:
-        zoom_level_counts (dict): {zoom_level: count}
-        block_zoom_counts (dict): {(block, zoom_level): count}
+        zoom_level_counts: {zoom_level: count}
+        block_zoom_counts: {(block, zoom_level): count}
     """
     zoom_level_counts = defaultdict(int)
     block_zoom_counts = defaultdict(int)
 
     for key in missing_keys:
-        # Try matching both naming schemes
-        match = re.search(r'\.encoder_blocks\.(\d+)\.blocks\.(\d+)\.|\.model\.(\d+)\.blocks\.(\d+)\.', key)
-        if match:
-            if match.group(1) and match.group(2):
-                block = int(match.group(1))
-                zoom = int(match.group(2))
-            elif match.group(3) and match.group(4):
-                block = int(match.group(3))
-                zoom = int(match.group(4))
-            else:
-                continue
-
+        result = extract_block_and_zoom_from_key(key)
+        if result:
+            block, zoom = result
             zoom_level_counts[zoom] += 1
             block_zoom_counts[(block, zoom)] += 1
 
     return dict(zoom_level_counts), dict(block_zoom_counts)
+
+def get_zoom_keys(model, zooms: List[int]) -> List[str]:
+    """
+    Returns parameter names in the model that belong to the specified zoom levels.
+
+    Parameters:
+        model (nn.Module): The model to search.
+        zooms (List[int]): List of zoom levels.
+
+    Returns:
+        List[str]: Matching parameter keys.
+    """
+    matched_keys = []
+
+    for name, _ in model.named_parameters():
+        result = extract_block_and_zoom_from_key(name)
+        if result:
+            _, zoom = result
+            if zoom in zooms:
+                matched_keys.append(name)
+
+    return matched_keys
+
+def freeze_zoom_levels(model, zooms: List[int]):
+    """
+    Freezes parameters in the model that belong to specified zoom levels.
+
+    Parameters:
+        model (nn.Module): Model whose parameters will be modified.
+        zooms (List[int]): Zoom levels to freeze.
+    """
+    zoom_keys = set(get_zoom_keys(model, zooms))
+    for name, param in model.named_parameters():
+        if name in zoom_keys:
+            param.requires_grad = False
 
 
 def check_value(value, n_repeat):
