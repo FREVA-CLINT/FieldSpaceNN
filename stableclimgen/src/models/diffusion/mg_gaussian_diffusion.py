@@ -147,7 +147,6 @@ class GaussianDiffusion:
             self.model_mean_type = ModelMeanType.V_PREDICTION
         elif model_mean_type == "previous_x":
             self.model_mean_type = ModelMeanType.PREVIOUS_X
-        self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_steps = rescale_timesteps
