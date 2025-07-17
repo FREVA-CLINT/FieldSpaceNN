@@ -59,7 +59,8 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'sample_dict': sample_dict
+            'sample_dict': sample_dict,
+            'return_zooms': return_zooms
         }
         """if self.interpolator:
             model_kwargs['condition'] = interp_x
@@ -93,13 +94,14 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target.shape[0], target.device)
 
-        targets, outputs, pred_xstart = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, return_zooms=False, create_pred_xstart=(batch_idx == 0 and rank_zero_only))
+        targets, outputs, pred_xstart = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, return_zooms=(self.composed_loss==False), create_pred_xstart=(batch_idx == 0 and rank_zero_only))
         loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_dict=sample_dict, prefix='val/')
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only:
+            pred_xstart = self.model.decoder(pred_xstart, emb=emb, sample_dict=sample_dict)
             pred_xstart = pred_xstart[self.model.max_zoom]
 
             coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(
