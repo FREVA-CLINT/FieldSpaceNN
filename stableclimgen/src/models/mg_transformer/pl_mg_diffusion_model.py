@@ -67,12 +67,12 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         x = interp_x
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: x}
-        init_zoom = list(x_zooms.keys())[0]
+        init_zoom = list(x_zooms.keys())[-1]
 
-        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: mask}
+        #mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: mask}
 
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
-        mask_zooms = {int(zoom): mask_zooms[init_zoom] if zoom == init_zoom else torch.zeros_like(x_zooms[zoom]).bool() for zoom in x_zooms.keys()}
+        mask_zooms = {int(zoom): torch.zeros_like(x_zooms[zoom]).bool() if zoom == init_zoom else torch.ones_like(x_zooms[zoom]).bool() for zoom in x_zooms.keys()}
 
         targets, outputs, pred_xstart = self.gaussian_diffusion.training_losses(self.model, x_zooms, diffusion_steps, mask_zooms, emb, create_pred_xstart=create_pred_xstart, **model_kwargs)
         return targets, outputs, pred_xstart
