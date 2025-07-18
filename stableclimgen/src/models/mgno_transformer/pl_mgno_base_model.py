@@ -401,7 +401,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
             coords_output), check_empty(mask), check_empty(dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        if self.interpolator:
+        """if self.interpolator:
             x, density_map = self.interpolator(x,
                                                mask=mask,
                                                calc_density=True,
@@ -409,7 +409,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
                                                input_coords=coords_input,
                                                input_dists=dists_input)
             emb["DensityEmbedder"] = 1 - density_map
-            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
+            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])"""
 
         emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
         return x, coords_input, coords_output, sample_dict, mask, emb, dists_input

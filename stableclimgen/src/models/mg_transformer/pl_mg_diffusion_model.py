@@ -6,12 +6,13 @@ from stableclimgen.src.models.mg_transformer.pl_mg_model import MGMultiLoss
 from stableclimgen.src.modules.multi_grid.input_output import MG_Difference_Encoder, MG_Encoder
 from pytorch_lightning.utilities import rank_zero_only
 
+from .pl_mg_probabilistic import LightningProbabilisticModel
 from ..diffusion.mg_gaussian_diffusion import GaussianDiffusion
-from ..diffusion.sampler import DDPMSampler, DDIMSampler
+from ..diffusion.mg_sampler import DDPMSampler, DDIMSampler
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel, check_empty
 
 
-class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
+class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self,
                  model,
                  gaussian_diffusion: GaussianDiffusion,
@@ -62,9 +63,6 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
             'sample_dict': sample_dict,
             'return_zooms': return_zooms
         }
-        """if self.interpolator:
-            model_kwargs['condition'] = interp_x
-        else:"""
         x = x.squeeze(-1)
 
         x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: x}
@@ -127,8 +125,27 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel):
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, input_dists):
-        source, mask, emb, model_kwargs = self.prepare_inputs(source, coords_input, coords_output, sample_dict, mask, emb, input_dists)
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, dists_input):
+        interp_x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
+                                                                                                         coords_input,
+                                                                                                         coords_output,
+                                                                                                         sample_dict,
+                                                                                                         mask, emb,
+                                                                                                         dists_input)
+        model_kwargs = {
+            'coords_input': coords_input,
+            'coords_output': coords_output,
+            'sample_dict': sample_dict
+        }
+        source = source.squeeze(-1)
 
-        return self.sampler.sample_loop(self.model, source, mask,
-                                        progress=True, emb=emb, **model_kwargs)
+        x_zooms = {int(sample_dict['zoom'][0]): source} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: source}
+        x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
+        init_zoom = list(x_zooms.keys())[0]
+
+        mask_zooms = {int(zoom): torch.zeros_like(x_zooms[zoom]).bool() if zoom == init_zoom else torch.ones_like(
+            x_zooms[zoom]).bool() for zoom in x_zooms.keys()}
+
+        outputs = self.sampler.sample_loop(self.model, x_zooms, mask_zooms, progress=True, emb=emb, **model_kwargs)
+        outputs = self.model.decoder(outputs, emb=emb, sample_dict=sample_dict)[self.model.max_zoom]
+        return outputs

@@ -333,7 +333,7 @@ class GaussianDiffusion:
             x_input_zooms = {int(zoom): torch.cat([x_zooms[zoom], model_kwargs.pop('condition')][zoom], dim=-1) for zoom in x_zooms.keys()}
         else:
             x_input_zooms = x_zooms
-        model_output_zooms = model(x_input_zooms, emb=emb.copy(), mask=mask_zooms, **model_kwargs)
+        model_output_zooms = model(x_input_zooms.copy(), emb=emb.copy(), mask=mask_zooms.copy(), **model_kwargs)
 
         # Calculate variance
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
