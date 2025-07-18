@@ -147,6 +147,10 @@ class GaussianDiffusion:
             self.model_mean_type = ModelMeanType.V_PREDICTION
         elif model_mean_type == "previous_x":
             self.model_mean_type = ModelMeanType.PREVIOUS_X
+        elif model_mean_type == "start_x":
+            self.model_mean_type = ModelMeanType.START_X
+        else:
+            raise NotImplementedError
         self.model_var_type = model_var_type
         self.loss_type = loss_type
         self.rescale_steps = rescale_timesteps
@@ -510,15 +514,9 @@ class GaussianDiffusion:
     ) -> Tuple[dict, dict, dict]:
         if noise_zooms is None:
             noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
-        if self.uncertainty_diffusion:
-            diff_steps = self.get_uncertainty_timesteps(emb["UncertaintyEmbedder"][0])
-        elif self.density_diffusion:
-            diff_steps = self.get_uncertainty_timesteps(emb["DensityEmbedder"])
-        x_t_zooms = {int(zoom): self.q_sample(gt_zooms[zoom], diff_steps, noise=noise_zooms[zoom]) for zoom in gt_zooms.keys()}
-
-        # Apply mask if provided (useful for inpainting/imputation)
         if mask_zooms is not None:
-            x_t_zooms = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, gt_zooms[zoom], x_t_zooms[zoom]) for zoom in gt_zooms.keys()}
+            noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
+        x_t_zooms = {int(zoom): self.q_sample(gt_zooms[zoom], diff_steps, noise=noise_zooms[zoom]) for zoom in gt_zooms.keys()}
 
         if self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
             # Prepare model inputs
@@ -545,7 +543,7 @@ class GaussianDiffusion:
             else:
                 raise NotImplementedError(self.model_mean_type)
 
-            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
+            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], target_zooms[zoom]) for zoom in target_zooms.keys()}
 
             if create_pred_xstart:
                 if self.model_mean_type == ModelMeanType.START_X:
