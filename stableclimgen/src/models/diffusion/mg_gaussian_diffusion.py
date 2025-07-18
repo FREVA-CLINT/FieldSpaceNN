@@ -543,7 +543,7 @@ class GaussianDiffusion:
             else:
                 raise NotImplementedError(self.model_mean_type)
 
-            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], target_zooms[zoom]) for zoom in target_zooms.keys()}
+            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
 
             if create_pred_xstart:
                 if self.model_mean_type == ModelMeanType.START_X:
