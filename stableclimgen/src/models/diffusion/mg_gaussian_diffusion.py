@@ -132,12 +132,11 @@ class GaussianDiffusion:
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
         rescale_timesteps: bool = False,
-        clip_denoised: bool = True,
-        use_dynamic_clipping: bool = True,
+        clip_denoised: bool = False,
+        use_dynamic_clipping: bool = False,
         diffusion_steps: int = 1000,
         diffusion_step_scheduler: str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
-        unmask_existing = True,
         uncertainty_diffusion = False,
         density_diffusion=False
     ):
@@ -156,7 +155,6 @@ class GaussianDiffusion:
         self.rescale_steps = rescale_timesteps
         self.clip_denoised = clip_denoised
         self.use_dynamic_clipping = use_dynamic_clipping
-        self.unmask_existing = unmask_existing
 
         # Use float64 for accuracy.
         if betas is None:
@@ -442,7 +440,7 @@ class GaussianDiffusion:
 
     def predict_eps_from_xstart(self, x_t_zooms: dict, t: torch.Tensor, pred_xstart_zooms: dict) -> dict:
         return {int(zoom): (
-               extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms
+               extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
                - pred_xstart_zooms[zoom]
         ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
 
@@ -515,7 +513,7 @@ class GaussianDiffusion:
         if noise_zooms is None:
             noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
         if mask_zooms is not None:
-            noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
+            noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
         x_t_zooms = {int(zoom): self.q_sample(gt_zooms[zoom], diff_steps, noise=noise_zooms[zoom]) for zoom in gt_zooms.keys()}
 
         if self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
@@ -543,7 +541,7 @@ class GaussianDiffusion:
             else:
                 raise NotImplementedError(self.model_mean_type)
 
-            model_output = {int(zoom): torch.where(~mask_zooms[zoom] * self.unmask_existing, target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
+            model_output = {int(zoom): torch.where(~mask_zooms[zoom], target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
 
             if create_pred_xstart:
                 if self.model_mean_type == ModelMeanType.START_X:

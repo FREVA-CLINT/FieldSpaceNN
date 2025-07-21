@@ -125,8 +125,8 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, dists_input):
-        interp_x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
+    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
+        interp_x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(target,
                                                                                                          coords_input,
                                                                                                          coords_output,
                                                                                                          sample_dict,
@@ -135,11 +135,12 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'sample_dict': sample_dict
+            'sample_dict': sample_dict,
+            'return_zooms': (self.composed_loss==False)
         }
-        source = source.squeeze(-1)
+        target = target.squeeze(-1)
 
-        x_zooms = {int(sample_dict['zoom'][0]): source} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: source}
+        x_zooms = {int(sample_dict['zoom'][0]): target} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: target}
         x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
         init_zoom = list(x_zooms.keys())[0]
 

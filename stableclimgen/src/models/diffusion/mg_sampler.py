@@ -85,7 +85,7 @@ class Sampler:
         :return: A generator yielding the sample dictionary for each diffusion step.
         """
         if mask_zooms is not None:
-            x_0_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(input_zooms[zoom]), x_0_zooms[zoom]) for zoom in x_0_zooms.keys()}
+            x_0_zooms = {int(zoom): torch.where(~mask_zooms[zoom], input_zooms[zoom], x_0_zooms[zoom]) for zoom in x_0_zooms.keys()}
 
         indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
 
@@ -175,7 +175,7 @@ class DDPMSampler(Sampler):
         """
         out_zooms = self.gaussian_diffusion.p_mean_variance(
             model,
-            x_t_zooms.copy(),
+            x_t_zooms,
             diffusion_steps,
             mask_zooms,
             denoised_fn=denoised_fn,
@@ -231,9 +231,9 @@ class DDIMSampler(Sampler):
 
         eps_zooms = self.gaussian_diffusion.predict_eps_from_xstart(x_t_zooms, diffusion_steps, out_zooms["pred_xstart"])
 
-        alpha_bar_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t_zooms.shape) for zoom in x_t_zooms.keys()}
-        alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t_zooms.shape) for zoom in x_t_zooms.keys()}
-        sigma_zooms = {int(zoom): eta * torch.sqrt((1 - alpha_bar_prev_zooms) / (1 - alpha_bar_zooms)) * torch.sqrt(1 - alpha_bar_zooms / alpha_bar_prev_zooms) for zoom in x_t_zooms.keys()}
+        alpha_bar_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+        alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+        sigma_zooms = {int(zoom): eta * torch.sqrt((1 - alpha_bar_prev_zooms[zoom]) / (1 - alpha_bar_zooms[zoom])) * torch.sqrt(1 - alpha_bar_zooms[zoom] / alpha_bar_prev_zooms[zoom]) for zoom in x_t_zooms.keys()}
 
         noise_zooms = {int(zoom): torch.randn_like(x_t_zooms[zoom]) for zoom in x_t_zooms.keys()}
         mean_pred_zooms = {int(zoom): out_zooms["pred_xstart"][zoom] * torch.sqrt(alpha_bar_prev_zooms[zoom]) + torch.sqrt(1 - alpha_bar_prev_zooms[zoom] - sigma_zooms[zoom] ** 2) * eps_zooms[zoom] for zoom in x_t_zooms.keys()}

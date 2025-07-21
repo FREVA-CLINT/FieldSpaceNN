@@ -8,6 +8,8 @@ from typing import Dict
 from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
+
+from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...utils.visualization import scatter_plot
 from ...modules.grids.grid_layer import GridLayer, Interpolator
 from ...models.mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel,MSE_loss,NH_loss,GNLL_loss
@@ -85,7 +87,7 @@ class MG_Diff_MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
 
-class LightningMGVAEModel(LightningMGNOBaseModel):
+class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self, 
                  model, 
                  lr_groups,
@@ -94,7 +96,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
                  weight_decay=0,
                  noise_std=0.0,
                  composed_loss = True,
-                 interpolator_settings=None):
+                 interpolator_settings=None,
+                 n_samples=1, max_batchsize=-1):
         
         super().__init__(
             model,  # Main VAE model
@@ -107,6 +110,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=model.max_zoom)
         self.kl_weight = kl_weight
+        self.n_samples = n_samples
+        self.max_batchsize = max_batchsize
 
         self.composed_loss = composed_loss
 
@@ -178,23 +183,30 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
                 input_density = None
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
             self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, input_inter=input_inter, input_density=input_density, has_var=has_var)
-            
-
         return loss
 
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)[0]
+        # Call the desired parent's method directly
+        # Note: Pass 'self' explicitly here
+        return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-        output = output[self.model.max_zoom]
-
-        if hasattr(self.model,'predict_var') and self.model.predict_var:
-            output, output_var = output.chunk(2, dim=-1)
-        else:
-            output_var = None
-
-        output = {'output': output,
-                'output_var': output_var,
-                'mask': mask}
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, dists_input):
+        sample_dict = self.prepare_sample_dict(sample_dict)
+        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
+                                                                                                  coords_input,
+                                                                                                  coords_output,
+                                                                                                  sample_dict, mask,
+                                                                                                  emb, dists_input)
+        if self.mode == "encode_decode":
+            output, posterior = self.model(source, coords_input=coords_input, coords_output=coords_output,
+                                           sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=False)
+        elif self.mode == "encode":
+            output = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
+                                       mask=mask, emb=emb)
+        elif self.mode == "decode":
+            output = self.model.decode(x, coords_input=coords_input, coords_output=coords_output,
+                                       sample_dict=sample_dict,
+                                       mask=mask, emb=emb, return_zooms=False)
+        output = output[list(output.keys())[0]]
         return output

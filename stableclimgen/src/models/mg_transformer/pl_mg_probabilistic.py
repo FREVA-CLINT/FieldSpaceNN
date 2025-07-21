@@ -34,6 +34,7 @@ class LightningProbabilisticModel(pl.LightningModule):
 
             output_chunk = self._predict_step(
                 source=source[start:end],
+                target=target[start:end],
                 mask=mask[start:end],
                 emb=emb_chunk,
                 coords_input=coords_input[start:end],
