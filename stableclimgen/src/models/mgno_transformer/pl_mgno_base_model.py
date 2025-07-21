@@ -1,9 +1,12 @@
 import os
 import math
+
+import mlflow
 import torch.nn as nn
 
 import lightning.pytorch as pl
 import torch
+from lightning.pytorch.loggers import WandbLogger, MLFlowLogger
 
 from torch.optim import AdamW
 
@@ -280,7 +283,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
     def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, sample_dict, plot_name, emb, input_inter=None, input_density=None, max_samples=8, has_var=False):
 
-        save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
+        save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
         
         if coords_input is None:
@@ -317,9 +320,10 @@ class LightningMGNOBaseModel(pl.LightningModule):
                          input_density=input_density_p, 
                          save_path=save_path,
                          has_var=has_var)
-
-            self.logger.log_image(f"plots/{plot_name_var}", [save_path])
-
+            if isinstance(self.logger, WandbLogger):
+                self.logger.log_image(f"plots/{plot_name_var}", [save_path])
+            elif isinstance(self.logger, MLFlowLogger):
+                mlflow.log_artifact(save_path, artifact_path=f"plots/{plot_name_var}")
 
     def configure_optimizers(self):
         grouped_params = {group_name: [] for group_name in self.lr_groups}
