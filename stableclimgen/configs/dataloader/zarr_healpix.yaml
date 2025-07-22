@@ -1,14 +1,17 @@
 dataset:
   _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
+  out_zooms: [6,5,3]
   data_dict: ${run_dir}/input/data_healpix.json
-  zoom_patch_sample: 2
+  zoom_patch_sample: 1
   norm_dict: ${run_dir}/input/norm_dict.json
   p_dropout: 0.95
   p_drop_vars: 1
   n_sample_timesteps: 1
+  random_p: false
+  n_sample_vars: 2
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule
   batch_size: 2
-  num_workers: 1
+  num_workers: 0
   use_costum_ddp_sampler: false

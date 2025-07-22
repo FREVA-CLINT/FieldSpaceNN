@@ -1,2 +1,2 @@
-_target_: stableclimgen.src.modules.grids.grid_utils_healpix.healpix_grid_to_mgrid
+_target_: stableclimgen.src.modules.grids.grid_utils.healpix_grid_to_mgrid
 zoom_max: 6
