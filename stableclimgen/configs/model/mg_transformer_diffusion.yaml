@@ -83,7 +83,7 @@ gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.mg_respace.SpacedDiffusion
   diffusion_steps: 1000
   diffusion_step_scheduler:
-    6: "cosine"
-    5: "cosine"
+    6: "karras"
+    5: "karras"
     4: "cosine"
     3: "cosine"

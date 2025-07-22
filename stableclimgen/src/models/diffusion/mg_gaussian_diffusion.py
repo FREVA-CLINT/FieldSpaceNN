@@ -39,6 +39,44 @@ def get_named_beta_schedule(schedule_name: str, num_diffusion_timesteps: int) ->
             num_diffusion_timesteps,
             lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,
         )
+    elif schedule_name == "sigmoid":
+        # Sigmoid schedule provides a smooth, S-shaped transition.
+        scale = 1000 / num_diffusion_timesteps
+        beta_start = scale * 0.0001
+        beta_end = scale * 0.02
+        # Generate values for the sigmoid function, centered around 0.
+        sig_range = np.linspace(-6, 6, num_diffusion_timesteps)
+        # Apply the sigmoid function.
+        sig = 1 / (1 + np.exp(-sig_range))
+        # Scale the sigmoid output to the desired beta range.
+        return beta_start + (beta_end - beta_start) * sig
+    elif schedule_name == "exponential":
+        # Exponential schedule increases beta values geometrically.
+        scale = 1000 / num_diffusion_timesteps
+        beta_start = scale * 0.0001
+        beta_end = scale * 0.02
+        # Creates a geometric progression from beta_start to beta_end.
+        return np.geomspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
+    elif schedule_name == "karras":
+        # Karras (EDM) schedule, defined in terms of noise levels (sigma).
+        # See https://arxiv.org/abs/2206.00364 for details.
+        sigma_min = 0.002
+        sigma_max = 80.0
+        rho = 7.0
+
+        # Generate the noise level schedule (sigmas)
+        steps = np.arange(num_diffusion_timesteps, dtype=np.float64)
+        ramp = steps / (num_diffusion_timesteps - 1)
+        sigmas = (sigma_max ** (1 / rho) + ramp * (sigma_min ** (1 / rho) - sigma_max ** (1 / rho))) ** rho
+
+        # Convert sigmas to alpha_bars
+        alpha_bars = 1.0 / (sigmas ** 2 + 1)
+
+        # Convert alpha_bars to betas
+        alpha_bars_prev = np.append(1.0, alpha_bars[:-1])
+        betas = 1 - alpha_bars / alpha_bars_prev
+
+        return np.clip(betas, 0.0, 0.999)  # Clip for numerical stability
     else:
         raise NotImplementedError(f"Unknown beta schedule: {schedule_name}")
 
