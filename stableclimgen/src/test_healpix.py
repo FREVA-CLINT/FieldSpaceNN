@@ -9,7 +9,7 @@ import xarray as xr
 from hydra.utils import instantiate
 from omegaconf import DictConfig
 
-from stableclimgen.src.modules.grids.grid_utils_healpix import healpix_pixel_lonlat_torch
+from stableclimgen.src.modules.grids.grid_utils import healpix_pixel_lonlat_torch
 from stableclimgen.src.utils import normalizer as normalizers
 from stableclimgen.src.modules.grids.grid_utils_icon import get_coords_as_tensor
 

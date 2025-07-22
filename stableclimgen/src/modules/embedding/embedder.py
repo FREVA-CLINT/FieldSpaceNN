@@ -9,7 +9,7 @@ from torch import ModuleDict
 from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
 from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch
 from ...utils.helpers import expand_tensor
-from ..base import get_layer,IdentityLayer
+from ..base import get_layer,IdentityLayer,MLP_fac
 
 
 class BaseEmbedder(nn.Module):
@@ -69,7 +69,7 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, layer_confs={}, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -78,19 +78,20 @@ class CoordinateEmbedder(BaseEmbedder):
         self.zoom = zoom
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-        )
+        self.embedding_fn = RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2)
+        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs,gamma=False) 
 
-    def forward(self, coordinates, **kwargs):
+    def forward(self, coordinates_emb, **kwargs):
+        coordinates, var_indices = coordinates_emb
+
         sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
         zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
 
         coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
-        return self.embedding_fn(coordinates)
+        coord_emb = self.embedding_fn(coordinates)
+
+        coord_emb = self.mlp(coord_emb, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+        return coord_emb
     
 
 class MGEmbedder(BaseEmbedder):
@@ -125,11 +126,11 @@ class MGEmbedder(BaseEmbedder):
 
         elif zoom > emb_zoom:
             nh_dim = grid_layer.adjc.shape[-1]
-            layer = get_layer([nh_dim, in_channels], [4**(zoom - emb_zoom), embed_dim], layer_confs=layer_confs)
+            layer = get_layer([nh_dim, in_channels], [*[4]*int(zoom-emb_zoom), embed_dim], layer_confs=layer_confs)
             self.get_patch_fcn = self.get_patch_nh
 
         else:
-            layer = get_layer([4**(emb_zoom - zoom), in_channels], [embed_dim], layer_confs=layer_confs)
+            layer = get_layer([*[4]*int(emb_zoom-zoom), in_channels], [embed_dim], layer_confs=layer_confs)
             self.get_patch_fcn = self.get_patch
 
         self.layer = layer
@@ -183,7 +184,7 @@ class DensityEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, layer_confs={}, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
@@ -192,61 +193,38 @@ class DensityEmbedder(BaseEmbedder):
         self.zoom = zoom
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-        )
+        self.embedding_fn = RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2)
+        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs,gamma=False) 
     
-    def forward(self, density, **kwargs):
-        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
-        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
-                    
-        density = density.view(*density.shape[:3],-1, 4**zoom_diff, density.shape[-1]).mean(dim=-2)
-        return self.embedding_fn(density)
+    def forward(self, density_emb, **kwargs):
+        density, var_indices = density_emb
+        sample_dict = kwargs.get('sample_dict', {})
 
-
-class UncertaintyEmbedder(BaseEmbedder):
-    """
-    A neural network module to embed longitude and latitude coordinates.
-
-    :param embed_dim: Dimensionality of the embedding output.
-    :param in_channels: Number of input coordinate features (default is 2).
-    """
-
-    def __init__(self, name: str, in_channels: int, embed_dim: int, in_channels_var:int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, **kwargs) -> None:
-        super().__init__(name, in_channels, embed_dim)
-
-        # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "v" ,"t", "s", "c"]
-
-        self.zoom = zoom
-
-        self.betas = nn.Parameter(torch.ones(in_channels_var), requires_grad=True)
-
-        # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
-        self.embedding_fn = torch.nn.Sequential(
-            RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-            torch.nn.GELU(),
-            torch.nn.Linear(self.embed_dim, self.embed_dim),
-        )
+        if self.zoom in density.keys():
+            density_ = density[self.zoom]
+        else:
+            zooms = torch.tensor(list(density.keys()),device=list(density.values())[0].device)
+            sorted_zooms, indices = torch.sort(zooms)
+            is_higher = sorted_zooms > self.zoom
+            if is_higher.any():
+                zoom = sorted_zooms[is_higher][0].item()
+            else:
+         
+                is_lower = sorted_zooms <= self.zoom
+                if is_lower.any():
+                    zoom = sorted_zooms[is_lower][-1].item()
+                else:
+                    raise ValueError("No suitable zoom level found.")
+            
+            density_ = density_[zoom].clone()
     
-    def forward(self, density_var, **kwargs):
-        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
-        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
-
-        density, var_indices = density_var
+            density_ = density_.view(*density_.shape[:3],-1, 4**(zoom-self.zoom), density.shape[-1]).mean(dim=-2)
         
-        density = density.view(*density.shape[:3],-1, 4**zoom_diff, density.shape[-1]).mean(dim=-2)
+        density_emb = self.embedding_fn(density_)
 
-        betas = self.betas[var_indices].view(*density.shape[:3],1,1)
+        density_emb = self.mlp(density_emb, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+        return density_emb
 
-        uncertainty =  1 - density** betas
-
-        return self.embedding_fn(uncertainty)
-    
 class VariableEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:

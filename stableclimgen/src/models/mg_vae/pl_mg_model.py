@@ -9,10 +9,10 @@ from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
 
+
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
-from ...utils.visualization import scatter_plot
-from ...modules.grids.grid_layer import GridLayer, Interpolator
-from ...models.mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel,MSE_loss,NH_loss,GNLL_loss
+from ...modules.grids.grid_utils import decode_zooms
+from ...models.mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel,MSE_loss,GNLL_loss,NH_loss
 
 
 def check_empty(x):
@@ -75,17 +75,6 @@ class MGMultiLoss(nn.Module):
 
         return total_loss, loss_dict
 
-    
-class MG_Diff_MSE_loss(nn.Module):
-    def __init__(self, lambda_=1, grid_layer=None):
-        super().__init__()
-
-        self.loss_fcn = torch.nn.MSELoss()
-
-    def forward(self, output:Dict, target:Dict, **kwargs):
-
-        loss = self.loss_fcn(output, target.view(output.shape))
-        return loss
 
 class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self, 
@@ -95,8 +84,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
                  kl_weight: float = 1e-6,
                  weight_decay=0,
                  noise_std=0.0,
-                 composed_loss = True,
-                 interpolator_settings=None,
+                 decomposed_loss = True,
                  n_samples=1, max_batchsize=-1):
         
         super().__init__(
@@ -104,8 +92,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
             lr_groups,
             {},
             weight_decay=weight_decay,
-            noise_std=noise_std,
-            interpolator_settings=interpolator_settings
+            noise_std=noise_std
         )
 
         self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=model.max_zoom)
@@ -113,21 +100,21 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
 
-        self.composed_loss = composed_loss
+        self.decomposed_loss = decomposed_loss
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None, return_zooms=True):
         x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=return_zooms)
+        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
         return x, posterior
     
     def training_step(self, batch, batch_idx):
         source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=(self.composed_loss==False))
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
         
-        target = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
-
-        if not self.composed_loss:
-            target = self.model.encoder(target)
+        if not self.decomposed_loss:
+            max_zoom = max(target.keys())
+            target = {max_zoom: decode_zooms(target,max_zoom)}
+            output = {max_zoom: decode_zooms(output,max_zoom)}
 
         rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
 
@@ -154,9 +141,16 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)
+        source_ = {k: v.clone() for k, v in source.items()}
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
-        target_loss = {self.model.max_zoom: target.squeeze(dim=-2)} if not isinstance(target, dict) else target
+        target_loss = {k: v.clone() for k, v in target.items()}
+        output_loss = {k: v.clone() for k, v in output.items()}
+        
+        max_zoom = max(target.keys())
+        if not self.decomposed_loss:
+            target_loss = {max_zoom: decode_zooms(target_loss,max_zoom)}
+            output_loss = {max_zoom: decode_zooms(output_loss,max_zoom)}
 
         rec_loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='val/')
 
@@ -173,16 +167,15 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
-        output = output[list(output.keys())[0]]
-
         if batch_idx == 0 and rank_zero_only:
-            if hasattr(self, "interpolator") and self.interpolator is not None:
-                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, sample_dict=sample_dict, calc_density=True, input_dists=rel_dists_input)
-            else:
-                input_inter = None
-                input_density = None
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, input_inter=input_inter, input_density=input_density, has_var=has_var)
+
+            source_p = decode_zooms(source_,max_zoom)
+            output_p = decode_zooms(output,max_zoom)
+            target_p = decode_zooms(target,max_zoom)
+            mask = mask[max_zoom] if mask is not None else None
+            self.log_tensor_plot(source_p, output_p, target_p, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, has_var=has_var)     
+
         return loss
 
 

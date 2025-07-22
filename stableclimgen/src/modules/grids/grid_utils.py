@@ -2,8 +2,18 @@ import torch
 import xarray as xr
 import numpy as np
 import math
+import healpy as hp
+from typing import Dict
 
 radius_earth= 6371
+
+def get_zoom_from_npix(npix):
+    try:
+        nside = hp.npix2nside(npix)
+        zoom_level = int(np.log2(nside))
+        return zoom_level
+    except ValueError:
+        return None
 
 def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_type:str=None, target='torch'):
     """
@@ -26,6 +36,14 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
     elif grid_type == 'lonlat':
         lon, lat = 'lon', 'lat'
     
+    if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
+        zoom = get_zoom_from_npix(len(ds.cell))
+        if zoom is not None:
+            return healpix_pixel_lonlat_torch(zoom, return_numpy=target=='numpy')
+
+    elif (lon not in ds.keys()) or (lat not in ds.keys()):
+        return None
+
     if target=='torch':
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
@@ -277,3 +295,335 @@ def get_zoom_x(x, zoom_patch_sample=None, **kwargs):
     s = x.shape[2]
     zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample else int(math.log(s/5) / math.log(4))
     return zoom_x
+
+
+def healpix_get_adjacent_cell_indices(zoom: int, nh: int = 5):
+    """
+    Function to get neighbored cell indices for Healpix grid.
+
+    :param nside: Healpix resolution parameter
+    :param nh: number of neighbor levels
+
+    :returns: adjacent cell indices, duplicates mask
+    """
+    nside = 2**zoom
+    npix = hp.nside2npix(nside)
+
+    global_indices = torch.arange(npix)
+
+    # The first level of neighbors
+    adjcs = [global_indices.view(-1, 1)]  # List of adjacency tensors, starting with the pixel indices
+    duplicates = [torch.zeros_like(adjcs[0], dtype=torch.bool)]  # Mask for duplicates
+
+    visited_neighbors = torch.full((npix, 1), fill_value=-1, dtype=torch.long)
+    visited_neighbors[:, 0] = global_indices
+
+    # Iterate over each neighbor level
+    for level in range(1, nh + 1):
+        current_neighbors = []
+
+        # Find neighbors for the previous level
+        for pixel in range(npix):
+            # Get current pixel's neighbors
+            prev_neighbors = adjcs[-1][pixel].tolist()  # Previous level neighbors
+            new_neighbors = set()
+
+            for prev_pixel in prev_neighbors:
+                if prev_pixel >= 0:  # Ignore invalid entries
+                    neighbors = set(hp.get_all_neighbours(nside, prev_pixel, nest=True))
+                    neighbors.discard(-1)  # Remove invalid neighbors
+                    new_neighbors.update(neighbors)
+
+            # Remove already visited pixels
+            new_neighbors.difference_update(visited_neighbors[pixel].tolist())
+            current_neighbors.append(list(new_neighbors))
+
+        # Ensure all rows have the same length by padding with -1
+        max_len = max(len(neigh) for neigh in current_neighbors)
+        padded_neighbors = [neigh + [-1] * (max_len - len(neigh)) for neigh in current_neighbors]
+        adjc_tensor = torch.tensor(padded_neighbors, dtype=torch.long)
+
+        # Update visited pixels
+        if visited_neighbors.size(1) < max_len:
+            padding_size = max_len - visited_neighbors.size(1)
+            visited_neighbors = torch.cat([visited_neighbors, -torch.ones((npix, padding_size), dtype=torch.long)], dim=1)
+
+        # Update the visited pixels
+        visited_neighbors[:, :max_len] = adjc_tensor
+
+        # Handle duplicates
+        check_indices = torch.concat(adjcs, dim=-1).unsqueeze(dim=-2)
+        is_prev = adjc_tensor.unsqueeze(dim=-1) - check_indices == 0
+        is_prev = is_prev.sum(dim=-1) > 0
+
+        is_removed = is_prev
+        is_removed_count = is_removed.sum(dim=-1)
+
+        # Resolve duplicates by majority as in the original function
+        unique, counts = is_removed_count.unique(return_counts=True)
+        majority = unique[counts.argmax()]
+
+        for minority in unique[unique != majority]:
+            where_minority = torch.where(is_removed_count == minority)[0]
+            ind0, ind1 = torch.where(is_removed[where_minority])
+
+            ind0 = ind0.reshape(len(where_minority), -1)[:, :minority - majority].reshape(-1)
+            ind1 = ind1.reshape(len(where_minority), -1)[:, :minority - majority].reshape(-1)
+
+            is_removed[where_minority[ind0], ind1] = False
+
+        adjc_tensor = adjc_tensor[~is_removed]
+        adjc_tensor = adjc_tensor.reshape(npix, -1)
+
+        if level > 1:
+            counts = []
+            uniques = []
+            for row in adjc_tensor:
+                unique, count = row.unique(return_counts=True)
+                uniques.append(unique)
+                counts.append(len(unique))
+
+            adjc_tensor = torch.nn.utils.rnn.pad_sequence(uniques, batch_first=True, padding_value=-1)
+            duplicates_mask = adjc_tensor == -1
+        else:
+            duplicates_mask = torch.zeros_like(adjc_tensor)
+
+        adjcs.append(adjc_tensor)
+        duplicates.append(duplicates_mask)
+
+    # Concatenate results
+    adjc = torch.concat(adjcs, dim=-1)
+    duplicates = torch.concat(duplicates, dim=-1)
+
+    return adjc, duplicates
+
+
+def healpix_pixel_lonlat_torch(zoom, return_numpy=False):
+    """
+    Get the longitude and latitude coordinates of each pixel in a Healpix grid using PyTorch tensors.
+
+    :param nside: Healpix resolution parameter
+    :return: A tuple of PyTorch tensors (lon, lat) with the longitude and latitude of each pixel.
+    """
+    nside = 2**zoom
+
+    npix = hp.nside2npix(nside)  # Total number of pixels
+
+    # Get pixel indices as a PyTorch tensor
+    pixel_indices = torch.arange(npix, dtype=torch.long)
+
+    # Get theta (colatitude) and phi (longitude) for each pixel using healpy
+    theta, phi = hp.pix2ang(nside, pixel_indices.numpy(), nest=True)
+
+    # Convert theta and phi to PyTorch tensors
+    theta_tensor = torch.tensor(theta, dtype=torch.float32) - 0.5 * torch.pi
+    phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
+
+    coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
+
+    if return_numpy:
+        return coords.numpy()
+    else:
+        return coords
+
+
+def healpix_grid_to_mgrid(zoom_max:int=10, nh:int=1)->list:
+    
+    zooms = []
+    grids = []
+
+    for zoom in range(zoom_max + 1):
+        zooms.append(zoom)
+
+        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom, nh)
+
+        grid_lvl = {
+            "coords": healpix_pixel_lonlat_torch(zoom),
+            "adjc": adjc,
+            "adjc_mask": adjc_mask,
+            "zoom": zoom
+        }
+        grids.append(grid_lvl)
+
+    return grids
+
+
+def estimate_healpix_cell_radius_rad(n_cells):
+    return math.sqrt(4*math.pi / n_cells)
+
+
+def hierarchical_zoom_distance_map(input_coords, max_zoom):
+    """
+    Iteratively computes distances between HEALPix cell centers and input_coords across zoom levels.
+
+    Args:
+        input_coords: (1, N, 2) in radians (lon, lat)
+        max_zoom: int
+
+    Returns:
+        A dict of zoom_level → {
+            "cell_centers": (B, 1, 2),
+            "closest_input_coords": (B, K, 2),
+            "distances": (B, K)
+        }
+    """
+    #if input_coords.dim()==2:
+    #    input_coords=input_coords.unsqueeze(dim=0)
+
+    current_input = input_coords  # (1, N, 2)
+    results = {}
+    global_indices = torch.arange(input_coords.shape[0]).view(1,-1)
+
+    for zoom in range(1, max_zoom + 1):
+        c = healpix_pixel_lonlat_torch(zoom)  # (num_cells, 2)
+        
+        n_cells = c.shape[0]
+        r = estimate_healpix_cell_radius_rad(n_cells)
+
+        if zoom == 1:
+            # First level: (1, n_cells, 1, 2)
+            c = c.view(1, -1, 1, 2)
+        else:
+            # Next levels: batch size = current_input.shape[0]
+            c = c.view(current_input.shape[0], -1, 1, 2)
+
+        # Compute distance and angle
+        d, _ = get_distance_angle(
+            c[..., 0], c[..., 1],                   # shape: (B, M, 1)
+            current_input[..., 0].unsqueeze(dim=-2), current_input[..., 1].unsqueeze(dim=-2),  # shape: (B, 1, N)
+            base='polar',
+            rotate_coords=False
+        )  # Output: (B, M, N)
+
+        in_search_radius = d <= r * 2
+        n_radius = in_search_radius.sum(dim=-1)  # (B, M)
+        n_keep = n_radius.max().item()   # scalar
+
+        # Get top-k distances and indices
+        d_sorted, idx_sorted = torch.topk(d, k=n_keep, dim=-1, largest=False)  # (B, M, k)
+
+
+       # gathered_coords = torch.gather(current_input, dim=1,index=idx_sorted.view(idx_sorted.shape[0],-1,1).expand(-1,-1,2))
+     #   gathered_coords = gathered_coords.view(gathered_coords.shape[0], c.shape[1], n_keep, 2)
+
+        global_indices = torch.gather(global_indices, dim=1,index=idx_sorted.view(idx_sorted.shape[0],-1))
+        global_indices = global_indices.view(idx_sorted.shape[0]*idx_sorted.shape[1], n_keep)
+
+        current_input = input_coords[global_indices]
+
+        c = c.view(-1,2)
+        dim_out = c.shape[0]
+
+        # Save current zoom level
+        results[zoom] = {
+ #           "cell_centers": c.view(-1,2),                 
+            "indices": global_indices.view(dim_out,-1),
+  #          "closest_input_coords": gathered_coords.view(dim_out,-1,2),           
+            "distances": d_sorted.view(dim_out,-1),
+            "resolution": r/2
+        }
+        
+    #    current_input = gathered_coords.view(-1, gathered_coords.shape[-2], 2)
+
+    return results
+
+
+def get_mapping_weights(mapping, drop_mask=None,  mode='binary'):
+    zooms = [z for z in mapping.keys()]
+
+    weights_zooms = {}
+
+    for zoom in zooms:
+
+        weights = mapping[zoom]['distances'] 
+
+        if drop_mask is not None:
+            drop_mask_zoom = drop_mask[mapping[zoom]['indices']]
+            weights = weights + (drop_mask_zoom * 1e5)
+
+        if mode == '1/r':
+            weights = mapping[zoom]["resolution"]/weights 
+
+            weights[weights> 1.] = 1.
+
+            #weights = weights.mean(dim=-1)
+            
+            weights_zooms[zoom] = weights
+        
+        elif mode == 'normal':
+            pass
+
+        elif mode == 'binary':
+            weights = mapping[zoom]["resolution"]/weights 
+
+            weights[weights> 1.] = 1.
+            weights[weights< 1.] = 0.
+
+            #weights = weights.mean(dim=-1).bool()
+
+            weights_zooms[zoom] = weights.bool()
+
+    return weights_zooms
+
+
+def encode_zooms(x: torch.Tensor, in_zoom: int, out_zooms:int, apply_diff=True, mask: torch.Tensor=None, binarize_mask=False):
+    bvt = x.shape[:-2]
+    c = x.shape[-1]
+    
+    if mask is not None:
+        mask = mask==0
+    
+    x_zooms = {}
+    mask_zooms = {}
+    for out_zoom in sorted(out_zooms, reverse=False):
+        x = x.view(*bvt, -1, 4**(in_zoom - out_zoom), c)
+
+        if mask is not None:
+            mask = mask.view(*bvt,-1,4**(in_zoom - out_zoom),1)
+            weight = mask.sum(dim=-2,keepdim=True)
+            x_zoom = (x * mask).sum(dim=-2,keepdim=True)/weight
+            x_zoom[weight == 0] = 0
+            mask_zooms[out_zoom] = 1-(weight)/4**(in_zoom - out_zoom)
+            if binarize_mask:
+                mask_zooms[out_zoom][mask_zooms[out_zoom] < 1]=0
+                mask_zooms[out_zoom] = mask_zooms[out_zoom].bool()
+            
+            mask_zooms[out_zoom] = mask_zooms[out_zoom].view(*bvt,-1)
+        else:
+            x_zoom = x.mean(dim=-2, keepdim=True)
+
+        x_zooms[out_zoom] = x_zoom.view(*bvt,-1,c)
+        
+        if apply_diff:
+            x = (x - x_zoom).view(*bvt,-1,c)
+        else:
+            x = x.view(*bvt,-1,c)
+
+    return x_zooms, mask_zooms
+
+
+def decode_zooms(x_zooms: dict, out_zoom: int):
+    """
+    Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
+
+    Args:
+        x_zooms (dict): Dictionary mapping zoom levels (int) to tensors of shape [..., N, C]
+                        representing residuals or features at each zoom level.
+        in_zoom (int): The coarsest (lowest resolution) zoom level available in x_zooms.
+        out_zoom (int): The target (finest) zoom level to decode to.
+
+    Returns:
+        torch.Tensor: The reconstructed tensor at the desired out_zoom level, shape [..., 4**(in_zoom - out_zoom)*N, C]
+    """
+    x = 0
+    for zoom in sorted(x_zooms.keys(),reverse=True):
+        if zoom > out_zoom:
+            continue  # Skip higher-resolution than target
+
+        x_zoom = x_zooms[zoom]  # shape [..., N, C]
+        up_factor = 4 ** (out_zoom - zoom)
+        x_zoom = x_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
+
+        x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
+
+    return x
