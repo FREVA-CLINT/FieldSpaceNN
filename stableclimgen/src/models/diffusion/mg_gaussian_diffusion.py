@@ -111,7 +111,7 @@ class GaussianDiffusion:
     Ported directly from here, and then adapted over time to further experimentation.
     https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/diffusion_utils_2.py#L42
 
-    :param betas: a 1-D numpy array of betas for each diffusion timestep,
+    :param betas_zooms: a 1-D numpy array of betas for each diffusion timestep,
                   starting at T and going to 1.
     :param model_mean_type: a ModelMeanType determining what the model outputs.
     :param model_var_type: a ModelVarType determining how variance is output.
@@ -127,7 +127,7 @@ class GaussianDiffusion:
     def __init__(
         self,
         *,
-        betas: Optional[np.ndarray] = None,
+        betas_zooms: Optional[dict] = None,
         model_mean_type: ModelMeanType = "epsilon", # Default remains EPSILON
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
@@ -135,7 +135,7 @@ class GaussianDiffusion:
         clip_denoised: bool = False,
         use_dynamic_clipping: bool = False,
         diffusion_steps: int = 1000,
-        diffusion_step_scheduler: str = "linear",
+        diffusion_step_scheduler: dict | str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
         uncertainty_diffusion = False,
         density_diffusion=False
@@ -157,48 +157,47 @@ class GaussianDiffusion:
         self.use_dynamic_clipping = use_dynamic_clipping
 
         # Use float64 for accuracy.
-        if betas is None:
-            betas = get_named_beta_schedule(diffusion_step_scheduler, diffusion_steps)
-            betas = np.array(betas, dtype=np.float64)
-        self.betas = betas
-        assert len(betas.shape) == 1, "betas must be 1-D"
-        assert (betas > 0).all() and (betas <= 1).all()
+        if betas_zooms is None:
+            betas_zooms = {}
+            for zoom in diffusion_step_scheduler.keys():
+                betas_zooms[zoom] = get_named_beta_schedule(diffusion_step_scheduler[zoom], diffusion_steps)
+                betas_zooms[zoom] = np.array(betas_zooms[zoom], dtype=np.float64)
+        self.betas_zooms = betas_zooms
 
         if diffusion_step_sampler is None:
             diffusion_step_sampler = create_named_schedule_sampler("uniform", diffusion_steps)
         self.diffusion_step_sampler = diffusion_step_sampler
-        self.diffusion_steps = int(betas.shape[0])
+        self.diffusion_steps = int(betas_zooms[list(betas_zooms.keys())[0]].shape[0])
 
-        alphas = 1.0 - betas
-        self.alphas_cumprod = np.cumprod(alphas, axis=0)
-        self.alphas_cumprod_prev = np.append(1.0, self.alphas_cumprod[:-1])
-        self.alphas_cumprod_next = np.append(self.alphas_cumprod[1:], 0.0)
-        assert self.alphas_cumprod_prev.shape == (self.diffusion_steps,)
+        alphas_zooms = {int(zoom): 1.0 - betas_zooms[zoom] for zoom in betas_zooms.keys()}
+        self.alphas_cumprod_zooms = {int(zoom): np.cumprod(alphas_zooms[zoom], axis=0) for zoom in betas_zooms.keys()}
+        self.alphas_cumprod_prev_zooms = {int(zoom): np.append(1.0, self.alphas_cumprod_zooms[zoom][:-1]) for zoom in betas_zooms.keys()}
+        self.alphas_cumprod_next_zooms = {int(zoom): np.append(self.alphas_cumprod_zooms[zoom][1:], 0.0) for zoom in betas_zooms.keys()}
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.sqrt_alphas_cumprod = np.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = np.sqrt(1.0 - self.alphas_cumprod)
-        self.log_one_minus_alphas_cumprod = np.log(1.0 - self.alphas_cumprod)
-        self.sqrt_recip_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = np.sqrt(1.0 / self.alphas_cumprod - 1)
+        self.sqrt_alphas_cumprod_zooms = {int(zoom): np.sqrt(self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
+        self.sqrt_one_minus_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
+        self.log_one_minus_alphas_cumprod_zooms = {int(zoom): np.log(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
+        self.sqrt_recip_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
+        self.sqrt_recipm1_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom] - 1) for zoom in betas_zooms.keys()}
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
-        self.posterior_variance = (
-            betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        )
+        self.posterior_variance_zooms = {int(zoom): (
+                betas_zooms[zoom] * (1.0 - self.alphas_cumprod_prev_zooms[zoom]) / (1.0 - self.alphas_cumprod_zooms[zoom])
+        ) for zoom in betas_zooms.keys()}
         # log calculation clipped because the posterior variance is 0 at the
         # beginning of the diffusion chain.
-        self.posterior_log_variance_clipped = np.log(
-            np.append(self.posterior_variance[1], self.posterior_variance[1:])
-        )
-        self.posterior_mean_coef1 = (
-            betas * np.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        )
-        self.posterior_mean_coef2 = (
-            (1.0 - self.alphas_cumprod_prev)
-            * np.sqrt(alphas)
-            / (1.0 - self.alphas_cumprod)
-        )
+        self.posterior_log_variance_clipped_zooms = {int(zoom): np.log(
+            np.append(self.posterior_variance_zooms[zoom][1], self.posterior_variance_zooms[zoom][1:])
+        ) for zoom in betas_zooms.keys()}
+        self.posterior_mean_coef1_zooms = {int(zoom): (
+                betas_zooms[zoom] * np.sqrt(self.alphas_cumprod_prev_zooms[zoom]) / (1.0 - self.alphas_cumprod_zooms[zoom])
+        ) for zoom in betas_zooms.keys()}
+        self.posterior_mean_coef2_zooms = {int(zoom): (
+            (1.0 - self.alphas_cumprod_prev_zooms[zoom])
+            * np.sqrt(alphas_zooms[zoom])
+            / (1.0 - self.alphas_cumprod_zooms[zoom])
+        ) for zoom in betas_zooms.keys()}
         self.uncertainty_diffusion = uncertainty_diffusion
         self.density_diffusion = density_diffusion
 
@@ -212,31 +211,30 @@ class GaussianDiffusion:
         :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
         :return: A tuple (mean, variance, log_variance), all of x_start's shape.
         """
-        mean = extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start
-        variance = extract_into_tensor(1.0 - self.alphas_cumprod, t, x_start.shape)
-        log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
+        mean = extract_into_tensor(self.sqrt_alphas_cumprod_zooms, t, x_start.shape) * x_start
+        variance = extract_into_tensor(1.0 - self.alphas_cumprod_zooms, t, x_start.shape)
+        log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod_zooms, t, x_start.shape)
         return mean, variance, log_variance
 
     def q_sample(
-        self, x_start: torch.Tensor, diff_steps: torch.Tensor, noise: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        self, x_start_zooms: dict, diff_steps: torch.Tensor, noise_zooms: Optional[dict] = None
+    ) -> dict:
         """
         Diffuse the data for a given number of diffusion steps.
 
         In other words, sample from q(x_t | x_0).
 
-        :param x_start: the initial data batch.
+        :param x_start_zooms: the initial data batch.
         :param diff_steps: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :param noise: if specified, the split-out normal noise.
+        :param noise_zooms: if specified, the split-out normal noise.
         :return: A noisy version of x_start.
         """
-        if noise is None:
-            noise = torch.randn_like(x_start)
-        assert noise.shape == x_start.shape
-        return (
-            extract_into_tensor(self.sqrt_alphas_cumprod, diff_steps, x_start.shape) * x_start
-            + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, diff_steps, x_start.shape) * noise
-        )
+        if noise_zooms is None:
+            noise_zooms = {int(zoom): torch.randn_like(x_start_zooms[zoom]) for zoom in x_start_zooms.keys()}
+        return {int(zoom): (
+                extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], diff_steps, x_start_zooms[zoom].shape) * x_start_zooms[zoom]
+                + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], diff_steps, x_start_zooms[zoom].shape) * noise_zooms[zoom]
+        ) for zoom in x_start_zooms.keys()}
 
     def q_posterior_mean_variance(
         self, x_start_zooms: dict, x_t_zooms: dict, diff_steps: torch.Tensor
@@ -248,12 +246,12 @@ class GaussianDiffusion:
 
         """
         posterior_mean_zooms = {int(zoom): (
-                extract_into_tensor(self.posterior_mean_coef1, diff_steps, x_t_zooms[zoom].shape) * x_start_zooms[zoom]
-                + extract_into_tensor(self.posterior_mean_coef2, diff_steps, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
+                extract_into_tensor(self.posterior_mean_coef1_zooms[zoom], diff_steps, x_t_zooms[zoom].shape) * x_start_zooms[zoom]
+                + extract_into_tensor(self.posterior_mean_coef2_zooms[zoom], diff_steps, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
-        posterior_variance_zooms = {int(zoom): extract_into_tensor(self.posterior_variance, diff_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+        posterior_variance_zooms = {int(zoom): extract_into_tensor(self.posterior_variance_zooms[zoom], diff_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
         posterior_log_variance_clipped_zooms = {int(zoom): extract_into_tensor(
-            self.posterior_log_variance_clipped, diff_steps, x_t_zooms[zoom].shape
+            self.posterior_log_variance_clipped_zooms[zoom], diff_steps, x_t_zooms[zoom].shape
         ) for zoom in x_t_zooms.keys()}
         return posterior_mean_zooms, posterior_variance_zooms, posterior_log_variance_clipped_zooms
 
@@ -281,7 +279,7 @@ class GaussianDiffusion:
         if self.clip_denoised:
             for zoom in in_zooms.keys():
                 if self.use_dynamic_clipping:
-                    sqrt_alpha_cumprod_t = extract_into_tensor(self.sqrt_alphas_cumprod, t, in_zooms[zoom].shape)
+                    sqrt_alpha_cumprod_t = extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, in_zooms[zoom].shape)
                     denominator = 1.0 - sqrt_alpha_cumprod_t + 1e-5  # Add epsilon for numerical stability
                     snr = sqrt_alpha_cumprod_t / denominator
 
@@ -333,39 +331,24 @@ class GaussianDiffusion:
             x_input_zooms = x_zooms
         model_output_zooms = model(x_input_zooms.copy(), emb=emb.copy(), mask=mask_zooms.copy(), **model_kwargs)
 
-        # Calculate variance
-        if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
-            # Split model output into mean prediction part and variance part
-            model_output_zooms, model_var_values_zooms = torch.split(model_output_zooms, c, dim=1) # Split along channel dim
-
-            if self.model_var_type == ModelVarType.LEARNED:
-                model_log_variance_zooms = model_var_values_zooms
-                model_variance_zooms = torch.exp(model_log_variance_zooms)
-            else: # ModelVarType.LEARNED_RANGE
-                min_log = extract_into_tensor(
-                    self.posterior_log_variance_clipped, diff_steps, x_zooms.shape
-                )
-                max_log = extract_into_tensor(np.log(self.betas), diff_steps, x_zooms.shape)
-                # The model_var_values are assumed to be in [-1, 1] range
-                frac = (model_var_values_zooms + 1) / 2
-                model_log_variance_zooms = frac * max_log + (1 - frac) * min_log
-                model_variance_zooms = torch.exp(model_log_variance_zooms)
-        else:
+        if self.model_var_type in [ModelVarType.FIXED_LARGE, ModelVarType.FIXED_SMALL]:
             # Use pre-calculated fixed variance schedules
-            model_variance, model_log_variance = {
+            model_variance_zooms, model_log_variance_zooms = {
                 # for fixedlarge, we set the initial variance estimates to B.
                 # at the same time, we need to make sure we don't include beta_0.
                 ModelVarType.FIXED_LARGE: (
-                    np.append(self.posterior_variance[1], self.betas[1:]),
-                    np.log(np.append(self.posterior_variance[1], self.betas[1:])),
+                    {int(zoom): np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:]) for zoom in x_zooms.keys()},
+                    {int(zoom): np.log(np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:])) for zoom in x_zooms.keys()},
                 ),
                 ModelVarType.FIXED_SMALL: (
-                    self.posterior_variance,
-                    self.posterior_log_variance_clipped,
+                    self.posterior_variance_zooms,
+                    self.posterior_log_variance_clipped_zooms,
                 ),
             }[self.model_var_type]
-            model_variance_zooms = {int(zoom): extract_into_tensor(model_variance, diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
-            model_log_variance_zooms = {int(zoom): extract_into_tensor(model_log_variance, diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
+            model_variance_zooms = {int(zoom): extract_into_tensor(model_variance_zooms[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
+            model_log_variance_zooms = {int(zoom): extract_into_tensor(model_log_variance_zooms[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
+        else:
+            raise NotImplementedError
 
         # --- Calculate predicted x_start and model mean based on model_mean_type ---
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -406,43 +389,42 @@ class GaussianDiffusion:
 
     def _predict_xstart_from_eps(self, x_t_zooms: dict, t: torch.Tensor, eps_zooms: dict) -> dict:
         return {int(zoom): (
-                extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
-                - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t_zooms[zoom].shape) * eps_zooms[zoom]
+                extract_into_tensor(self.sqrt_recip_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
+                - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * eps_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
     def _predict_xstart_from_xprev(self, x_t_zooms: dict, t: torch.Tensor, xprev_zooms: dict) -> dict:
         return {int(zoom): (
-                extract_into_tensor(1.0 / self.posterior_mean_coef1, t, x_t_zooms[zoom].shape) * xprev_zooms[zoom]
+                extract_into_tensor(1.0 / self.posterior_mean_coef1_zooms[zoom], t, x_t_zooms[zoom].shape) * xprev_zooms[zoom]
                 - extract_into_tensor(
-                self.posterior_mean_coef2 / self.posterior_mean_coef1, t, x_t_zooms[zoom].shape
+            self.posterior_mean_coef2_zooms[zoom] / self.posterior_mean_coef1_zooms[zoom], t, x_t_zooms[zoom].shape
             )
                 * x_t_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
-    # <<< START NEW CODE >>>
     def _predict_xstart_from_v(self, x_t_zooms: dict, t: torch.Tensor, v_zooms: dict) -> dict:
         return {int(zoom): (
-                extract_into_tensor(self.sqrt_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
-                - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_t_zooms[zoom].shape) * v_zooms[zoom]
+                extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
+                - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
     def _predict_eps_from_v(self, x_t_zooms: dict, t: torch.Tensor, v_zooms: dict) -> dict:
         return {int(zoom): (
-                extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
-                + extract_into_tensor(self.sqrt_alphas_cumprod, t, x_t_zooms[zoom].shape) * v_zooms
+                extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
+                + extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms
         ) for zoom in x_t_zooms.keys()}
 
     def _predict_v_from_eps_and_xstart(self, eps_zooms: dict, x_start_zooms: dict, t: torch.Tensor) -> dict:
         return {int(zoom): (
-                extract_into_tensor(self.sqrt_alphas_cumprod, t, eps_zooms[zoom].shape) * eps_zooms[zoom]
-                - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod, t, eps_zooms[zoom].shape) * x_start_zooms[zoom]
+                extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, eps_zooms[zoom].shape) * eps_zooms[zoom]
+                - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, eps_zooms[zoom].shape) * x_start_zooms[zoom]
         ) for zoom in eps_zooms.keys()}
 
     def predict_eps_from_xstart(self, x_t_zooms: dict, t: torch.Tensor, pred_xstart_zooms: dict) -> dict:
         return {int(zoom): (
-               extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
-               - pred_xstart_zooms[zoom]
-        ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+                extract_into_tensor(self.sqrt_recip_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
+                - pred_xstart_zooms[zoom]
+        ) / extract_into_tensor(self.sqrt_recipm1_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
 
     def _scale_steps(self, t: torch.Tensor) -> torch.Tensor:
         """
@@ -514,7 +496,7 @@ class GaussianDiffusion:
             noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
         if mask_zooms is not None:
             noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
-        x_t_zooms = {int(zoom): self.q_sample(gt_zooms[zoom], diff_steps, noise=noise_zooms[zoom]) for zoom in gt_zooms.keys()}
+        x_t_zooms = self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms)
 
         if self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
             # Prepare model inputs

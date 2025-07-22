@@ -231,8 +231,8 @@ class DDIMSampler(Sampler):
 
         eps_zooms = self.gaussian_diffusion.predict_eps_from_xstart(x_t_zooms, diffusion_steps, out_zooms["pred_xstart"])
 
-        alpha_bar_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
-        alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+        alpha_bar_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_zooms[zoom], diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+        alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev_zooms[zoom], diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
         sigma_zooms = {int(zoom): eta * torch.sqrt((1 - alpha_bar_prev_zooms[zoom]) / (1 - alpha_bar_zooms[zoom])) * torch.sqrt(1 - alpha_bar_zooms[zoom] / alpha_bar_prev_zooms[zoom]) for zoom in x_t_zooms.keys()}
 
         noise_zooms = {int(zoom): torch.randn_like(x_t_zooms[zoom]) for zoom in x_t_zooms.keys()}

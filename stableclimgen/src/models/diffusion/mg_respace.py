@@ -87,17 +87,20 @@ class SpacedDiffusion(GaussianDiffusion):
         self.original_num_steps = diffusion_steps
 
         base_diffusion = GaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
-        last_alpha_cumprod = 1.0
-        new_betas = []
+        last_alpha_cumprod_zooms = {int(zoom): 1.0 for zoom in base_diffusion.alphas_cumprod_zooms.keys()}
+        new_betas_zooms = {int(zoom): [] for zoom in base_diffusion.alphas_cumprod_zooms.keys()}
 
         # Calculate new betas for selected diffusion steps
-        for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
-            if i in self.use_steps:
-                new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
-                last_alpha_cumprod = alpha_cumprod
-                self.diffusion_step_map.append(i)
+        for k, zoom in enumerate(base_diffusion.alphas_cumprod_zooms.keys()):
+            for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod_zooms[zoom]):
+                if i in self.use_steps:
+                    new_betas_zooms[zoom].append(1 - alpha_cumprod / last_alpha_cumprod_zooms[zoom])
+                    last_alpha_cumprod_zooms[zoom] = alpha_cumprod
+                    if k==0:
+                        self.diffusion_step_map.append(i)
+            new_betas_zooms[zoom] = np.array(new_betas_zooms[zoom])
 
-        kwargs["betas"] = np.array(new_betas)
+        kwargs["betas_zooms"] = new_betas_zooms
         super().__init__(diffusion_steps=diffusion_steps, **kwargs)
 
     def p_mean_variance(self, model, *args, **kwargs):
