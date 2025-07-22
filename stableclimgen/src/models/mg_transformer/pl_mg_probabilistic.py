@@ -15,6 +15,7 @@ class LightningProbabilisticModel(pl.LightningModule):
 
         # Repeat each sample n_samples times
         source = source.repeat_interleave(self.n_samples, dim=0)
+        target = target.repeat_interleave(self.n_samples, dim=0)
         coords_input = coords_input.repeat_interleave(self.n_samples, dim=0)
         coords_output = coords_output.repeat_interleave(self.n_samples, dim=0)
         rel_dists_input = rel_dists_input.repeat_interleave(self.n_samples, dim=0)
@@ -31,7 +32,7 @@ class LightningProbabilisticModel(pl.LightningModule):
             # Slice dictionaries properly
             emb_chunk = {k: v[start:end] for k, v in emb.items()}
             sample_dict_chunk = indices[start:end] if torch.is_tensor(indices) else {k: v[start:end] for k, v in indices.items()}
-
+            
             output_chunk = self._predict_step(
                 source=source[start:end],
                 target=target[start:end],
