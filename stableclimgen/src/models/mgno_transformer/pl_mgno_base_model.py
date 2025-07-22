@@ -9,7 +9,7 @@ from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
 from ...utils.visualization import scatter_plot
-from ...modules.grids.grid_layer import GridLayer, Interpolator
+from ...modules.grids.grid_layer import GridLayer
 
 
 def check_empty(x):
@@ -178,27 +178,11 @@ class LightningMGNOBaseModel(pl.LightningModule):
                  lr_groups, 
                  lambda_loss_dict: dict, 
                  weight_decay=0, 
-                 noise_std=0.0, 
-                 interpolator_settings=None):
+                 noise_std=0.0):
         
         super().__init__()
         # maybe create multi_grid structure here?
         self.model = model
-
-        if interpolator_settings is not None:
-            self.interpolator = Interpolator(self.model.grid_layers,
-                                             interpolator_settings.get("search_zoom_rel", 3),
-                                             interpolator_settings.get("input_zoom", model.max_zoom),
-                                             interpolator_settings.get("target_zoom", model.max_zoom),
-                                             interpolator_settings.get("precompute", True),
-                                             interpolator_settings.get("nh_inter", 3),
-                                             interpolator_settings.get("power", 1),
-                                             interpolator_settings.get("cutoff_dist_zoom", None),
-                                             interpolator_settings.get("cutoff_dist", None),
-                                             interpolator_settings.get("search_zoom_compute", None)
-                                             )
-        else:
-            self.interpolator = None
 
         self.weight_decay = weight_decay
         self.lr_groups=lr_groups
@@ -262,19 +246,13 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only:
-            if hasattr(self, "interpolator") and self.interpolator is not None:
-                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, sample_dict=sample_dict, calc_density=True, input_dists=rel_dists_input)
-            else:
-                input_inter = None
-                input_density = None
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, input_inter=input_inter, input_density=input_density, has_var=has_var)
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, has_var=has_var)
             
-
         return loss
 
     def get_coords_from_model(self, sample_dict={}):
-        coords = self.model.grid_layers[str(self.model.max_zoom)].get_coordinates(**sample_dict)
+        coords = self.model.grid_layers[str(max(self.model.in_zooms))].get_coordinates(**sample_dict)
         return coords
 
 
@@ -400,18 +378,6 @@ class LightningMGNOBaseModel(pl.LightningModule):
         coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(
             coords_output), check_empty(mask), check_empty(dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
-
-        if self.interpolator:
-            x, density_map = self.interpolator(x,
-                                               mask=mask,
-                                               calc_density=True,
-                                               sample_dict=sample_dict,
-                                               input_coords=coords_input,
-                                               input_dists=dists_input)
-            emb["DensityEmbedder"] = 1 - density_map
-            emb["UncertaintyEmbedder"] = (density_map, emb['VariableEmbedder'])
-
-            mask = None
 
         emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
         return x, coords_input, coords_output, sample_dict, mask, emb, dists_input
