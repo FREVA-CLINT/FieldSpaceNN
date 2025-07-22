@@ -9,6 +9,8 @@ from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
 
+
+from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...modules.grids.grid_utils import decode_zooms
 from ...models.mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel,MSE_loss,GNLL_loss,NH_loss
 
@@ -74,7 +76,7 @@ class MGMultiLoss(nn.Module):
         return total_loss, loss_dict
 
 
-class LightningMGVAEModel(LightningMGNOBaseModel):
+class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
     def __init__(self, 
                  model, 
                  lr_groups,
@@ -82,7 +84,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
                  kl_weight: float = 1e-6,
                  weight_decay=0,
                  noise_std=0.0,
-                 decomposed_loss = True):
+                 decomposed_loss = True,
+                 n_samples=1, max_batchsize=-1):
         
         super().__init__(
             model,  # Main VAE model
@@ -94,6 +97,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=model.max_zoom)
         self.kl_weight = kl_weight
+        self.n_samples = n_samples
+        self.max_batchsize = max_batchsize
 
         self.decomposed_loss = decomposed_loss
 
@@ -164,6 +169,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
         if batch_idx == 0 and rank_zero_only:
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
+
             source_p = decode_zooms(source_,max_zoom)
             output_p = decode_zooms(output,max_zoom)
             target_p = decode_zooms(target,max_zoom)
@@ -174,17 +180,26 @@ class LightningMGVAEModel(LightningMGNOBaseModel):
 
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input, return_zooms=False)[0]
+        # Call the desired parent's method directly
+        # Note: Pass 'self' explicitly here
+        return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-        output = output[self.model.max_zoom]
-
-        if hasattr(self.model,'predict_var') and self.model.predict_var:
-            output, output_var = output.chunk(2, dim=-1)
-        else:
-            output_var = None
-
-        output = {'output': output,
-                'output_var': output_var,
-                'mask': mask}
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, dists_input):
+        sample_dict = self.prepare_sample_dict(sample_dict)
+        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
+                                                                                                  coords_input,
+                                                                                                  coords_output,
+                                                                                                  sample_dict, mask,
+                                                                                                  emb, dists_input)
+        if self.mode == "encode_decode":
+            output, posterior = self.model(source, coords_input=coords_input, coords_output=coords_output,
+                                           sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=False)
+        elif self.mode == "encode":
+            output = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
+                                       mask=mask, emb=emb)
+        elif self.mode == "decode":
+            output = self.model.decode(x, coords_input=coords_input, coords_output=coords_output,
+                                       sample_dict=sample_dict,
+                                       mask=mask, emb=emb, return_zooms=False)
+        output = output[list(output.keys())[0]]
         return output

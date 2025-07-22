@@ -62,9 +62,10 @@ class MG_Transformer(MG_base_model):
 
         for block_idx, block_conf in enumerate(block_configs):
             layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
-                
+
             if isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
+
 
                 block = MG_SingleBlock(
                      self.grid_layers,
@@ -121,6 +122,7 @@ class MG_Transformer(MG_base_model):
         else:
             self.register_buffer('gamma', torch.ones(1), persistent=False)
 
+
     def forward(self, x_zooms: Dict[int, torch.Tensor], coords_input, coords_output, sample_dict={}, mask: Dict[int, torch.Tensor]= None, emb=None):
 
         """
@@ -152,7 +154,6 @@ class MG_Transformer(MG_base_model):
         mask = None
 
         for k, block in enumerate(self.Blocks):
-                        
             # Process input through the block
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
 
