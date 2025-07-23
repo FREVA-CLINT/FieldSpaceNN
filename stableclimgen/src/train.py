@@ -46,7 +46,8 @@ def train(cfg: DictConfig) -> None:
     if "WandbLogger" in cfg.logger['_target_']:
         if not hasattr(cfg.logger, "id") or cfg.logger.id is None:
             logger: WandbLogger = instantiate(cfg.logger)
-            cfg.logger.id = logger.experiment.id
+            if rank_zero_only.rank == 0:
+                cfg.logger.id = logger.experiment.id
         else:
             logger: WandbLogger = instantiate(cfg.logger)
     elif "MLFlowLogger" in cfg.logger['_target_']:
