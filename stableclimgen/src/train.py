@@ -2,6 +2,7 @@ import json
 import os
 from typing import Any
 import hydra
+import wandb
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger, MLFlowLogger
@@ -41,15 +42,19 @@ def train(cfg: DictConfig) -> None:
     else:
         val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
 
-
+    OmegaConf.set_struct(cfg, False)
     if "WandbLogger" in cfg.logger['_target_']:
-        logger: WandbLogger = instantiate(cfg.logger)
+        if not hasattr(cfg.logger, "id") or cfg.logger.id is None:
+            logger: WandbLogger = instantiate(cfg.logger)
+            cfg.logger.id = logger.experiment.id
+        else:
+            logger: WandbLogger = instantiate(cfg.logger)
     elif "MLFlowLogger" in cfg.logger['_target_']:
         mlflow.enable_system_metrics_logging()
         mlflow.set_tracking_uri(cfg.logger.tracking_uri)
         mlflow.set_experiment(cfg.project_name)
         mlflow.start_run(run_name=cfg.run_name, run_id=cfg.logger.run_id, tags={"user": getpass.getuser()})
-        if not cfg.logger.run_id:
+        if not hasattr(cfg.logger, "run_id") or not cfg.logger.run_id:
             cfg.logger.run_id = mlflow.active_run().info.run_id
         mlflow.log_params(OmegaConf.to_container(cfg, resolve=True))
         logger: MLFlowLogger = instantiate(cfg.logger)
