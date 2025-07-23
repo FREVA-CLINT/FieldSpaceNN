@@ -196,7 +196,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
         x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
         return x
 
     def on_after_backward(self):

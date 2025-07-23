@@ -46,7 +46,7 @@ def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_int
         output_var = output_var[...,0] if output_var is not None else output_var
         gt = gt[...,0]
         input = input[...,0]
-        input_inter = input_inter[...,0]
+        input_inter = input_inter[...,0] if input_inter is not None else input_inter
 
     # Set up the figure layout
     fig, axes = plt.subplots(

@@ -1,0 +1,88 @@
+_target_: stableclimgen.src.models.mg_transformer.pl_mg_diffusers_model.Lightning_MG_diffusion_transformer
+lambda_loss_dict:
+  MSE_loss: 1
+noise_std: 0
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 2e-4
+    warmup: 5000
+  attention:
+    matches: ['TransformerBlock','GridSelfAttention']
+    lr: 2e-4
+    warmup: 5000
+model:
+  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
+  predict_var: false
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 16
+  learn_residual: true
+  in_zooms: [6,5,4,3]
+  layer_confs:
+    n_vars_total: 1
+  layer_confs_emb:
+    n_vars_total: 4
+  block_configs:
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [ 128,128,128, 128 ]
+      layer_settings:
+        type: 'linear'
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+      out_features: 128
+      q_zooms: [6,5,4,3]
+      kv_zooms: [6,5,4,3]
+      layer_settings:
+        with_nh: true
+        common_kv: true
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names: [ "MGEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [ 128,128,128,128 ]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: [ "vsnh","mlp","vsnh","mlp" ]
+        seq_lengths: 1
+        n_head_channels: 32
+        mlp_mult: 2
+        embed_confs:
+          embed_names:
+            - [ "MGEmbedder"]
+            - [ "MGEmbedder"]
+            - [ "MGEmbedder"]
+            - [ "MGEmbedder"]
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [ 1,1,1, 1 ]
+      layer_settings:
+        type: 'mlp'
+    - _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
+schedulers:
+  6:
+    _target_: diffusers.DDPMScheduler
+    prediction_type: "epsilon"
+    beta_schedule: "linear"
+    num_train_timesteps: 1000
+  5:
+    _target_: diffusers.DDPMScheduler
+    prediction_type: "epsilon"
+    beta_schedule: "linear"
+    num_train_timesteps: 1000
+  4:
+    _target_: diffusers.DDPMScheduler
+    prediction_type: "epsilon"
+    beta_schedule: "linear"
+    num_train_timesteps: 1000
+  3:
+    _target_: diffusers.DDPMScheduler
+    prediction_type: "epsilon"
+    beta_schedule: "linear"
+    num_train_timesteps: 1000
