@@ -167,7 +167,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
-        if batch_idx == 0 and rank_zero_only and (source_p.device in ['cuda:0','cpu','mps']):
+        if batch_idx == 0 and rank_zero_only and (source_.device in ['cuda:0','cpu','mps']):
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
 
             source_p = decode_zooms(source_,max_zoom)
