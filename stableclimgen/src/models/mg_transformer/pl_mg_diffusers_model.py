@@ -85,7 +85,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         self.log_dict(loss_dict, logger=True)
 
         max_zoom = max(target.keys())
-        if batch_idx == 0 and rank_zero_only:
+        if batch_idx == 0 and rank_zero_only and (source[max_zoom].device in ['cuda:0','cpu','mps']):
             # We can get the predicted original sample from the first step's output
             pred_xstart = {}
             for zoom in noisy_target_zooms.keys():
