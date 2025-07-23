@@ -285,7 +285,7 @@ class BaseDataset(Dataset):
             data_source.append(data_source_g)
             var_indices.append([self.var_indices[var] for var in variables])
 
-        var_indices = np.concat(var_indices,axis=0)
+        var_indices = np.concatenate(var_indices,axis=0)
         data_source = torch.concat(data_source, dim=0)
         masks = torch.concat(masks, dim=0)
 
