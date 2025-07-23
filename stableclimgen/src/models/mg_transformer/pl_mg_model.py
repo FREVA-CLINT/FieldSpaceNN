@@ -122,8 +122,7 @@ class LightningMGModel(LightningMGNOBaseModel):
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        source_ = {k: v.clone() for k, v in source.items()}
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        output = self(source.copy(), coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
         target_loss = {k: v.clone() for k, v in target.items()}
         output_loss = {k: v.clone() for k, v in output.items()}
@@ -139,9 +138,9 @@ class LightningMGModel(LightningMGNOBaseModel):
         self.log_dict(loss_dict, logger=True)
 
 
-        if batch_idx == 0 and rank_zero_only and (source_[max_zoom].device in ['cuda:0','cpu','mps']):
+        if batch_idx == 0 and rank_zero_only and (source[max_zoom].device in ['cuda:0','cpu','mps']):
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            source_p = decode_zooms(source_,max_zoom)
+            source_p = decode_zooms(source,max_zoom)
             output_p = decode_zooms(output,max_zoom)
             target_p = decode_zooms(target,max_zoom)
             mask = mask[max_zoom] if mask is not None else None

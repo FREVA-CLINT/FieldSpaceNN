@@ -332,6 +332,8 @@ class BaseDataset(Dataset):
         rel_dists_input = torch.tensor([])
         rel_dists_output = torch.tensor([])
 
+        mask_zooms = {k: v.unsqueeze(dim=-1)for k, v in mask_zooms.items()}
+
         return data_source_zooms, data_target_zooms, coords_input, coords_output, sample_dict, mask_zooms, embed_data, rel_dists_input, rel_dists_output
 
     def __len__(self):

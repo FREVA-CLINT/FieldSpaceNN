@@ -123,7 +123,7 @@ class MG_Transformer(MG_base_model):
             self.register_buffer('gamma', torch.ones(1), persistent=False)
 
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], coords_input, coords_output, sample_dict={}, mask: Dict[int, torch.Tensor]= None, emb=None):
+    def forward(self, x_zooms: Dict[int, torch.Tensor], coords_input, coords_output, sample_dict={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -132,7 +132,7 @@ class MG_Transformer(MG_base_model):
         :param coords_input: Input coordinates for x
         :param coords_output: Output coordinates for position embedding.
         :param sampled_indices_batch_dict: Dictionary of sampled indices for regional models.
-        :param mask: Mask for dropping cells in the input tensor.
+        :param mask_zooms: Mask for dropping cells in the input tensor.
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
@@ -151,11 +151,11 @@ class MG_Transformer(MG_base_model):
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
 
-        mask = None
+        mask_zooms = None
 
         for k, block in enumerate(self.Blocks):
             # Process input through the block
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
+            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
