@@ -23,7 +23,8 @@ class LightningProbabilisticModel(pl.LightningModule):
         mask = {int(zoom): mask[zoom].repeat_interleave(self.n_samples, dim=0) for zoom in mask.keys()}
 
         indices = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in sample_dict.items()}
-        emb = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in emb.items()}
+        emb = {k: (v.repeat_interleave(self.n_samples, dim=0) if torch.is_tensor(v)
+        else ({ik: iv.repeat_interleave(self.n_samples, dim=0) for ik, iv in v[0].items()}, v[1].repeat_interleave(self.n_samples, dim=0))) for k, v in emb.items()}
 
         outputs = []
         max_batchsize = self.max_batchsize if self.max_batchsize != -1 else total_samples
@@ -31,7 +32,7 @@ class LightningProbabilisticModel(pl.LightningModule):
             end = min(start + max_batchsize, total_samples)
 
             # Slice dictionaries properly
-            emb_chunk = {k: v[start:end] for k, v in emb.items()}
+            emb_chunk = {k: v[start:end] if torch.is_tensor(v) else ({ik: iv[start:end] for ik, iv in v[0].items()}, v[1][start:end]) for k, v in emb.items()}
             sample_dict_chunk = indices[start:end] if torch.is_tensor(indices) else {k: v[start:end] for k, v in indices.items()}
             
             output_chunk = self._predict_step(
@@ -50,5 +51,4 @@ class LightningProbabilisticModel(pl.LightningModule):
         output = torch.cat(outputs, dim=0)
 
         output = output.view(batch_size, self.n_samples, *output.shape[1:])
-        mask = mask.view(batch_size, self.n_samples, *mask.shape[1:])
-        return {"output": output, "mask": mask}
+        return {"output": output, "mask": torch.zeros_like(output)}

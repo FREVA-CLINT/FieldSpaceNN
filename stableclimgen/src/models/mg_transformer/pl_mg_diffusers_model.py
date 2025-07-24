@@ -118,14 +118,17 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
         for i, t in enumerate(tqdm(self.schedulers[zoom].timesteps, desc="Sampling")):
             timesteps = torch.full((target[list(target.keys())[0]].shape[0],), t, device=self.device, dtype=torch.long)
-            noise_pred_zooms = self.model(image_zooms, timesteps, emb=emb)
+            emb["DiffusionStepEmbedder"] = timesteps
+            noise_pred_zooms = self.model(image_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
+                                          sample_dict=sample_dict,
+                                          mask_zooms=mask, emb=emb)
 
             # Compute the previous noisy sample x_{t-1}
             stepped_zooms = {}
             for zoom in image_zooms.keys():
                 stepped_zooms[zoom] = self.schedulers[zoom].step(noise_pred_zooms[zoom], t, image_zooms[zoom]).prev_sample
 
-            if i < len(self.scheduler.timesteps) - 1:
+            if i < len(self.schedulers[zoom].timesteps) - 1:
                 # 1. Noise the ground truth to the `prev_timestep` level
                 noised_ground_truth_zooms = {}
                 for zoom in target.keys():
@@ -143,5 +146,5 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
             image_zooms = stepped_zooms
 
-        outputs = self.model.decoder(image_zooms, emb=emb, sample_dict=sample_dict)[self.model.max_zoom]
+        outputs = decode_zooms(image_zooms, max(image_zooms.keys()))
         return outputs
