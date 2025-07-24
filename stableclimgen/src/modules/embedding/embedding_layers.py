@@ -69,12 +69,16 @@ class TimeScaleLayer(nn.Module):
             self,
             in_features = 1,
             n_neurons: int = 512,
-            time_scales: float = []
+            time_scales: float = [],
+            time_mean: float = 0.0,
+            time_std: float = 1.0
     ) -> None:
         super().__init__()
 
         self.time_scales = torch.tensor(time_scales, dtype=torch.float32)
         self.features_per_scale = n_neurons // (2 * len(time_scales))
+        self.time_mean = time_mean
+        self.time_std = time_std
 
         # The first weight (alpha) is for the linear term
         self.linear_term = nn.Linear(in_features, n_neurons // 2, bias=True)
@@ -87,10 +91,11 @@ class TimeScaleLayer(nn.Module):
         :param in_tensor: Input tensor to be transformed.
         :return: Transformed output tensor.
         """
-        in_tensor = in_tensor.unsqueeze(-1) / self.SECONDS_PER_DAY
-        linear_term = self.linear_term(in_tensor)
+        normalized_in_tensor = (in_tensor - self.time_mean) / self.time_std
+        linear_term = self.linear_term(normalized_in_tensor.unsqueeze(-1))
+        periodic_in_tensor = in_tensor.unsqueeze(-1) / self.SECONDS_PER_DAY
         periodic_terms = torch.cat([
-            torch.sin(2 * torch.pi * in_tensor / scale).repeat(1, 1, self.features_per_scale)
+            torch.sin(2 * torch.pi * periodic_in_tensor / scale).repeat(1, 1, self.features_per_scale)
             for scale in self.time_scales
         ], dim=-1)
         return torch.cat([linear_term, periodic_terms], dim=-1)
