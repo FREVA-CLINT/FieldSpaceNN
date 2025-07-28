@@ -190,7 +190,7 @@ class RearrangeNHCentric(RearrangeBlock):
 
       #  self.pattern = 'b t s v c -> (b t s v) 1 c'
         self.pattern = 'b v t s n c -> (b v t s) (n) c'
-        self.nh_mask_pattern = 'b v t s n -> (b v t s) 1 1 n'
+        self.nh_mask_pattern = 'b v t s n 1 -> (b v t s) 1 1 n'
         self.reverse_pattern = '(b v t s) n c -> b v t (s n) c'
 
     
@@ -246,7 +246,7 @@ class RearrangeVarNHCentric(RearrangeNHCentric):
 
       #  self.pattern = 'b t s v c -> (b t s v) 1 c'
         self.pattern = 'b v t s n c -> (b t s) (v n) c'
-        self.nh_mask_pattern = 'b v t s n -> (b t s) 1 1 (v n)'
+        self.nh_mask_pattern = 'b v t s n 1-> (b t s) 1 1 (v n)'
         self.reverse_pattern = '(b t s) (v n) c -> b v t (s n) c'
 
     

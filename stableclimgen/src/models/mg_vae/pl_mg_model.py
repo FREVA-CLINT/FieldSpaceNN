@@ -167,17 +167,10 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
-        if batch_idx == 0 and rank_zero_only and (source_[max_zoom].device in ['cuda:0','cpu','mps']):
-            has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-
-            source_p = decode_zooms(source_,max_zoom)
-            output_p = decode_zooms(output,max_zoom)
-            target_p = decode_zooms(target,max_zoom)
-            mask = mask[max_zoom] if mask is not None else None
-            self.log_tensor_plot(source_p, output_p, target_p, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, has_var=has_var)     
+        if batch_idx == 0 and rank_zero_only.rank==0 and (source[max_zoom].device.type in ['cuda:0','cpu','mps']):
+            self.log_tensor_plot(source_, output, target,mask, sample_dict, emb, self.current_epoch)   
 
         return loss
-
 
     def predict_step(self, batch, batch_idx):
         # Call the desired parent's method directly

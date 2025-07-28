@@ -72,12 +72,12 @@ class GridSelfAttention(nn.Module):
         if not var_att:
             self.pattern = 'b v t s n c -> (b v t s) (n) c'
             self.kv_pattern = 'b v t s n kv c -> (b v t s) (n) (kv c)'
-            self.nh_mask_pattern = 'b v t s n -> (b v t s) 1 1 n'
+            self.nh_mask_pattern = 'b v t s n 1 -> (b v t s) 1 1 n'
             self.reverse_pattern = '(b v t s) n c -> b v t s n c'
         else:
             self.pattern = 'b v t s n c -> (b t s) (v n) c'
             self.kv_pattern = 'b v t s n kv c -> (b t s) (v n) (kv c)'
-            self.nh_mask_pattern = 'b v t s n -> (b t s) 1 1 (v n)'
+            self.nh_mask_pattern = 'b v t s n 1 -> (b t s) 1 1 (v n)'
             self.reverse_pattern = '(b t s) (v n) c -> b v t s n c'
 
     def forward(self, x_zooms, mask_zooms=None, emb=None, sample_dict={}):        
@@ -90,9 +90,9 @@ class GridSelfAttention(nn.Module):
         n_p = []
         for zoom, kv_layer in self.kv_layers.items():
             kv_ = kv_layer(x_zooms[int(zoom)], emb=emb, sample_dict=sample_dict)
-            kv_, mask_ = self.grid_layer.get_nh(kv_, **sample_dict, with_nh=self.with_nh, mask=None)
+            kv_, mask_ = self.grid_layer.get_nh(kv_, **sample_dict, with_nh=self.with_nh, mask=mask_zooms[int(zoom)] if len(mask_zooms)>0 else None)
             kv.append(kv_)
-            mask_ = mask_ if mask_ is not None else torch.zeros_like(kv_[...,0], dtype=torch.bool, device=kv_.device)
+            mask_ = mask_ if mask_ is not None else torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
             mask.append(mask_)
 
         for zoom, q_layer in self.q_layers.items():
@@ -110,7 +110,7 @@ class GridSelfAttention(nn.Module):
         kv = self.common_kv_layer(kv, sample_dict=sample_dict, emb=emb).view(*kv_shape,2,-1)
 
         if mask[0] is not None:
-            mask = torch.concat(mask, dim=-1)
+            mask = torch.concat(mask, dim=-2)
             mask = rearrange(mask, self.nh_mask_pattern)
         else:
             mask = None

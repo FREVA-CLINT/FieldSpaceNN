@@ -82,7 +82,7 @@ class LinEmbLayer(nn.Module):
 
         return x
 
-    def forward(self, x, emb=None, sample_dict=None):
+    def forward(self, x, emb=None, sample_dict=None,**kwargs):
         return self.forward_fcn(x, emb=emb, sample_dict=sample_dict)
 
 

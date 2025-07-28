@@ -1,181 +1,148 @@
 import os
-from typing import Optional
+from typing import Optional,Dict
 
+import healpy as hp
 import cartopy
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import cartopy.crs as ccrs
 import numpy as np
 import torch
+from scipy.interpolate import griddata
 
-def scatter_plot(input, output, gt, coords_input, coords_output, mask, input_inter=None, input_density=None, save_path=None, has_var=False):
+def healpix_plot_local(values, zoom, ax=None, vmin=None, vmax=None, title="", zoom_patch_sample=1, patch_index=0):
+    ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_index[0]]
+    lon, lat = hp.pix2ang(2**zoom, ipix, nest=True, lonlat=True)
 
-    input = input.cpu().numpy()
-    output = output.cpu().to(dtype=torch.float32).numpy()
-    gt = gt.cpu().numpy()
+    n_p = max(100, int(np.sqrt(len(lon))))
 
-    if torch.is_tensor(input_inter):
-        input_inter = input_inter.cpu().to(dtype=torch.float32).numpy()
-    
-    if torch.is_tensor(input_density):
-        input_density = input_density.cpu().to(dtype=torch.float32).numpy()
+    # Create grid for interpolation
+    lon_grid = np.linspace(np.min(lon), np.max(lon), n_p)
+    lat_grid = np.linspace(np.min(lat), np.max(lat), n_p)
+    lon_mesh, lat_mesh = np.meshgrid(lon_grid, lat_grid)
 
-    coords_input = coords_input.rad2deg().cpu().numpy()
-    coords_output = coords_output.rad2deg().cpu().numpy()
-    plot_input_inter = input_inter is not None
-    plot_input_density = input_density is not None
-
-    if mask is not None:
-        mask = mask.cpu().bool().numpy()
-    else:
-        mask = np.zeros_like(input, dtype=bool).squeeze(-1)
-
-    # Define image size and calculate differences between ground truth and output
-    img_size = 3
-
-    if has_var:
-        output, output_var = np.split(output,2, axis=-1)
-        output_var = output_var**0.5
-        plot_var = True
-    else:
-        output_var = None
-        plot_var = False
-    
-    if output.shape[-1] > 1:
-        output = output[...,0]
-        output_var = output_var[...,0] if output_var is not None else output_var
-        gt = gt[...,0]
-        input = input[...,0]
-        input_inter = input_inter[...,0] if input_inter is not None else input_inter
-
-    # Set up the figure layout
-    fig, axes = plt.subplots(
-        nrows=gt.shape[0], ncols=4 + plot_input_inter  + plot_input_density + plot_var,
-        figsize=(2 * img_size * 4, img_size * gt.shape[0]),
-        subplot_kw={"projection": ccrs.Mollweide()}
+    # Interpolate scattered data onto regular lat/lon grid
+    grid_values = griddata(
+        points=np.stack((lon, lat), axis=-1),
+        values=values,
+        xi=(lon_mesh, lat_mesh),
+        method='nearest',
+        fill_value=np.nan
     )
-    axes = np.atleast_2d(axes)
+
+    # Plot using contourf
+    ctf = ax.contourf(lon_mesh, lat_mesh, grid_values,
+                        levels=100,
+                        vmin=vmin,
+                        vmax=vmax,
+                        cmap='viridis')
+    ax.set_title(title)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    cbar = plt.colorbar(ctf, ax=ax, orientation='horizontal', fraction=0.046, pad=0.04)
+
+    tick_locs = np.linspace(ctf.get_clim()[0], ctf.get_clim()[1], 5)
+    cbar.set_ticks(tick_locs)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.ax.set_xticklabels([f"{x:.2f}" for x in tick_locs])
+
+def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_dict={}):
+    """
+    Plot HEALPix maps per zoom level for a specific variable and save the result.
+    """
+    zoom_levels = sorted(input_maps.keys())
+    n_rows = len(zoom_levels)
+    n_cols = 4  # input, output, gt, error
+    n_plots = n_rows * n_cols
+
+    fig = plt.figure(figsize=(4 * n_cols, 3 * n_rows))
+    titles = ['Input', 'Output', 'Ground Truth', 'Error']
+
+    for row_idx, zoom in enumerate(zoom_levels):
+        inp_map = input_maps[zoom]
+        out_map = output_maps[zoom]
+        gt_map = gt_maps[zoom]
+        mask_map = mask_maps[zoom] if mask_maps is not None else None
+
+        error_map = (out_map - gt_map) #* mask_map
+
+        maps = [inp_map, out_map, gt_map, error_map]
+        gt_min, gt_max = np.quantile(gt_map, [0.001,0.999])
+        error_map_min, error_map_max = np.quantile(error_map, [0.001,0.999])
+        min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
+
+        for col_idx in range(n_cols):
+            plot_idx = row_idx * n_cols + col_idx + 1  # 1-based index for subplots
+
+            if len(sample_dict)==0:
+                hp.mollview(maps[col_idx],
+                            title=f"{titles[col_idx]} (zoom {zoom})",
+                            sub=(n_rows, n_cols, plot_idx),
+                            nest=True,
+                            min=min_max[col_idx][0],
+                            max=min_max[col_idx][1],
+                            fig=fig)
+            else:
+                ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+                healpix_plot_local(maps[col_idx], 
+                                  zoom, 
+                                  ax=ax, 
+                                  vmin=min_max[col_idx][0], 
+                                  vmax=min_max[col_idx][1], 
+                                  title=f"{titles[col_idx]} (zoom {zoom})", 
+                                  **sample_dict)
+
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor], 
+                           output_zooms: Dict[int, torch.Tensor],
+                           gt_zooms: Dict[int, torch.Tensor],
+                           save_dir: str, 
+                           mask_zooms: Dict[int, torch.Tensor] = None,
+                           sample_dict={}, 
+                           emb=None,
+                           plot_name: str = "healpix_plot",
+                           sample: int = 0,
+                           plot_n_vars: int= -1,
+                           plot_n_ts: int = 1):
+    """
+    Create HEALPix plots for each variable across zoom levels and save them.
+    """
+
+    zoom_levels = sorted(input_zooms.keys())
+    save_paths = []
+
+    for ts in range(plot_n_ts):
+        # Assume all zoom levels have same number of variables
+        B, V, T, _, _ = input_zooms[zoom_levels[0]].shape
+
+        if plot_n_vars==-1:
+            plot_n_vars=V
+
+        for var in range(plot_n_vars):
+            input_maps = {}
+            output_maps = {}
+            gt_maps = {}
+            mask_maps = {}
+
+            for zoom in zoom_levels:
+                input_maps[zoom] = input_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
+                output_maps[zoom] = output_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
+                gt_maps[zoom] = gt_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
+                mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0].cpu().numpy() if mask_zooms is not None else None
+
+            # Use embedding index for variable name if available
+            if emb is not None and 'VariableEmbedder' in emb:
+                var_idx = emb['VariableEmbedder'][sample, var].item()
+            else:
+                var_idx = var
+
+            save_path = os.path.join(save_dir, f"{plot_name}_{ts}_{var_idx}.png")
+            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_dict=sample_dict)
+            save_paths.append(save_path)
     
-    # Plot each sample and timestep
-    for i in range(gt.shape[0]):
-        gt_min = np.min(gt[i])
-        gt_max = np.max(gt[i])
-        plot_samples = [
-            (input[i][mask[i] == False], coords_input[mask[i].reshape(-1) == False].reshape(-1, 2), "Input", None, None),
-            (gt[i], coords_output, "Ground Truth", gt_min, gt_max),
-            (output[i], coords_output, "Output", gt_min, gt_max),
-            (gt[i].squeeze() - output[i].squeeze(), coords_output, "Error", None, None)
-        ] 
-        
-        if plot_input_inter:
-          plot_samples.insert(1, (input_inter[i], coords_output, "Input Interpolated", None, None))
-          
-        if plot_input_density:
-          plot_samples.insert(1, (input_density[i], coords_output, "Input Density", None, None))
-
-        if plot_var:
-          plot_samples.insert(-2, (output_var[i], coords_output, "Output std", None, None))
-
-        # Loop over samples
-        for index, plot_sample in enumerate(plot_samples):
-            data, coords, title, vmin, vmax = plot_sample
-            # Turn off axes for cleaner plots
-            axes[i, index].set_axis_off()
-            axes[i, index].set_title(title)
-            #cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6, vmin=vmin, vmax=vmax)
-            cax = axes[i, index].scatter(coords[:, 0], coords[:, 1], c=data, transform=ccrs.PlateCarree(), s=6)
-            # Add color bar to each difference plot
-            cb = fig.colorbar(cax, ax=axes[i, index], orientation='horizontal', shrink=0.6)
-
-    # Adjust layout and save the figure for the current channel
-    plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
-    if save_path is not None:
-        plt.savefig(save_path, bbox_inches='tight')
-
-def plot_images(
-    gt_data: torch.Tensor,
-    in_data: torch.Tensor,
-    out_data: torch.Tensor,
-    filename: str,
-    directory: str,
-    gt_coords: Optional[torch.Tensor] = None,
-    in_coords: Optional[torch.Tensor] = None
-) -> None:
-    """
-    Generate and save comparison plots between ground truth and generated images.
-
-    :param gt_data: Ground truth data tensor of shape (samples, channels, timesteps, height, width).
-    :param in_data: Input data tensor of the same shape as `gt_data`.
-    :param out_data: Generated data tensor of the same shape as `gt_data`.
-    :param filename: Base filename for saving the images.
-    :param directory: Directory where the images will be saved.
-    :param gt_coords: Optional coordinate tensor for ground truth data, used for geospatial plotting.
-    :param in_coords: Optional coordinate tensor for input data, used for geospatial plotting.
-    """
-    # Move data to CPU if necessary
-    gt_data, in_data, out_data = gt_data.cpu(), in_data.cpu(), out_data.cpu()
-    if gt_coords is not None and in_coords is not None:
-        gt_coords, in_coords = gt_coords.cpu(), in_coords.cpu()
-
-    # Set the projection for geospatial plots if coordinates are provided
-    subplot_kw = {"projection": ccrs.Robinson()} if gt_coords is not None and in_coords is not None else {}
-
-    # Limit to a maximum of 12 timesteps and 16 samples for readability
-    gt_data, in_data, out_data = gt_data[:16, :12], in_data[:16, :12], out_data[:16, :12]
-
-    # Define image size and calculate differences between ground truth and output
-    img_size = 3
-    differences = gt_data - out_data
-
-    # Iterate over each channel in the output data
-    for v in range(out_data.shape[-2]):  # Loop over channels
-
-        # Set up the figure layout
-        fig, axes = plt.subplots(
-            nrows=gt_data.shape[0], ncols=gt_data.shape[1] * 4,
-            figsize=(2 * img_size * gt_data.shape[1] * 4, img_size * gt_data.shape[0]),
-            subplot_kw=subplot_kw
-        )
-        axes = np.atleast_2d(axes)
-
-        # Plot each sample and timestep
-        for i in range(gt_data.shape[0]):  # Loop over samples
-            for j in range(gt_data.shape[1]):  # Loop over timesteps
-                gt_min = torch.min(gt_data[i, j, ..., v, :])
-                gt_max = torch.max(gt_data[i, j, ..., v, :])
-                for index, data, vmin, vmax, coords, title in [
-                    (j, in_data, None, None, in_coords, "Input"),
-                    (j + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
-                    (j + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords, "Output"),
-                    (j + 3 * gt_data.shape[1], differences, None, None, gt_coords, "Error")
-                ]:
-                    # Turn off axes for cleaner plots
-                    axes[i, index].set_axis_off()
-                    axes[i, index].set_title(title)
-                    if coords is not None:  # Geospatial plotting with coordinates
-                        # Add coastlines and borders
-                        axes[i, index].add_feature(cartopy.feature.COASTLINE, edgecolor="black", linewidth=0.6)
-                        axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
-                        # Create a pcolormesh with geospatial coordinates
-                        pcm = axes[i, index].pcolormesh(
-                            coords[0, j, 0, :, v, 1], coords[0, j, :, 0, v, 0],
-                            np.squeeze(data[i, j, ..., v, :].numpy()),
-                            transform=ccrs.PlateCarree(), shading='auto',
-                            cmap="RdBu_r", rasterized=True, vmin=vmin, vmax=vmax
-                        )
-                    else:  # Standard plot without coordinates
-                        pcm = axes[i, index].pcolormesh(
-                            np.squeeze(data[i, j, ..., v, :].numpy()),
-                            vmin=vmin, vmax=vmax, shading='auto', cmap="RdBu_r"
-                        )
-                    # Add color bar to each difference plot
-                    cb = fig.colorbar(pcm, ax=axes[i, index])
-
-        # Adjust layout and save the figure for the current channel
-        plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
-        os.makedirs(directory, exist_ok=True)
-        plt.savefig(os.path.join(directory, f'{filename}_{v}.png'), bbox_inches='tight')
-        plt.clf()  # Clear the figure for the next iteration
-
-    # Close all open figures to free memory
-    plt.close('all')
+    return save_paths

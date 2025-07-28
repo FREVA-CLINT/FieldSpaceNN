@@ -95,7 +95,7 @@ class LightningMGModel(LightningMGNOBaseModel):
 
     def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
         x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
         return x
     
     def training_step(self, batch, batch_idx):
@@ -124,29 +124,22 @@ class LightningMGModel(LightningMGNOBaseModel):
 
         output = self(source.copy(), coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
-        target_loss = {k: v.clone() for k, v in target.items()}
-        output_loss = {k: v.clone() for k, v in output.items()}
+        target_loss = target.copy()
+        output_loss = output.copy()
         
         max_zoom = max(target.keys())
         if not self.decomposed_loss:
-            target_loss = {max_zoom: decode_zooms(target_loss,max_zoom)}
-            output_loss = {max_zoom: decode_zooms(output_loss,max_zoom)}
+            target_loss = {max_zoom: decode_zooms(target_loss, max_zoom)}
+            output_loss = {max_zoom: decode_zooms(output_loss, max_zoom)}
 
         loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-
-        if batch_idx == 0 and rank_zero_only and (source[max_zoom].device in ['cuda:0','cpu','mps']):
-            has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            source_p = decode_zooms(source,max_zoom)
-            output_p = decode_zooms(output,max_zoom)
-            target_p = decode_zooms(target,max_zoom)
-            mask = mask[max_zoom] if mask is not None else None
-            self.log_tensor_plot(source_p, output_p, target_p, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, has_var=has_var)
+        if batch_idx == 0 and rank_zero_only.rank==0 and (source[max_zoom].device.type in ['cuda:0','cpu','mps']):
+            self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
             
-
         return loss
 
 
@@ -165,3 +158,4 @@ class LightningMGModel(LightningMGNOBaseModel):
                 'output_var': output_var,
                 'mask': mask}
         return output
+    
