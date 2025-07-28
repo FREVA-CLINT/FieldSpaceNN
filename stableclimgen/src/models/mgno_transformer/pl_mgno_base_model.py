@@ -8,11 +8,11 @@ import lightning.pytorch as pl
 import torch
 from lightning.pytorch.loggers import WandbLogger, MLFlowLogger
 
-from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
-from ...utils.visualization import scatter_plot
+from ...utils.visualization import healpix_plot_zooms_var
 from ...modules.grids.grid_layer import GridLayer
+from ...modules.grids.grid_utils import decode_zooms
 
 
 def check_empty(x):
@@ -250,59 +250,34 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
         if batch_idx == 0 and rank_zero_only:
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,f"tensor_plot_{int(self.current_epoch)}", emb, has_var=has_var)
+            self.log_tensor_plot(source, output, target, mask, sample_dict, emb, has_var=has_var)
             
         return loss
 
-    def get_coords_from_model(self, sample_dict={}):
-        coords = self.model.grid_layers[str(max(self.model.in_zooms))].get_coordinates(**sample_dict)
-        return coords
 
-
-    def log_tensor_plot(self, input, output, gt, coords_input, coords_output, mask, sample_dict, plot_name, emb, input_inter=None, input_density=None, max_samples=8, has_var=False):
+    def log_tensor_plot(self, input, output, gt, mask, sample_dict, emb, current_epoch):
 
         save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
-        
-        if coords_input is None:
-            coords_input = self.get_coords_from_model(sample_dict)
 
-        if coords_output is None:
-            coords_output = self.get_coords_from_model(sample_dict)
+        save_paths_zooms = healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_dict=sample_dict, plot_name=f"epoch_{current_epoch}", emb=emb)
+    
+        max_zoom = max(self.model.in_zooms)
 
-        sample = 0
-        for k in range(input.shape[1]):
-            var_idx = emb['VariableEmbedder'][sample,k]
-            plot_name_var = f"{plot_name}_{var_idx.item()}"
-            save_path = os.path.join(save_dir, f"{plot_name_var}.png")
-            
-            if mask is not None:
-                mask_p = mask[sample, k, :max_samples]
-            else:
-                mask_p = None
+        source_p = {max_zoom: decode_zooms(input,max_zoom)}
+        output_p = {max_zoom: decode_zooms(output,max_zoom)}
+        target_p = {max_zoom: decode_zooms(gt,max_zoom)}
+        mask = {max_zoom: mask[max_zoom]} if mask is not None else None
+        save_paths = healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_dict=sample_dict, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
 
-            if input_inter is not None:
-                input_inter_p = input_inter[sample,k,:max_samples]
-                input_density_p = input_density[sample,k,:max_samples]
-            else:
-                input_inter_p = None
-                input_density_p = None
-
-            scatter_plot(input[sample,k,:max_samples], 
-                         output[sample,k,:max_samples], 
-                         gt[sample,k,:max_samples], 
-                         coords_input[sample] if coords_input.shape[0]>1 else coords_input[0], 
-                         coords_output[sample] if coords_output.shape[0]>1 else coords_output[0], 
-                         mask_p, 
-                         input_inter=input_inter_p, 
-                         input_density=input_density_p, 
-                         save_path=save_path,
-                         has_var=has_var)
+        save_paths+=save_paths_zooms
+        for k, save_path in enumerate(save_paths):
             if isinstance(self.logger, WandbLogger):
-                self.logger.log_image(f"plots/{plot_name_var}", [save_path])
+                self.logger.log_image(f"plots/{os.path.basename(save_path).replace('.png','')}", [save_path])
             elif isinstance(self.logger, MLFlowLogger):
-                mlflow.log_artifact(save_path, artifact_path=f"plots/{plot_name_var}")
+                mlflow.log_artifact(save_path, artifact_path=f"plots/{os.path.basename(save_path).replace('.png','')}")
 
+    
     def configure_optimizers(self):
         grouped_params = {group_name: [] for group_name in self.lr_groups}
         grouped_params["default"] = []  # fallback group
@@ -367,9 +342,9 @@ class LightningMGNOBaseModel(pl.LightningModule):
         pass
         # Check for parameters with no gradients before optimizer.step()
        # print("Checking for parameters with None gradients before optimizer step:")
-        #for name, param in self.named_parameters():
-         #   if param.grad is None:
-          #      print(f"Parameter with no gradient: {name}")
+   #     for name, param in self.named_parameters():
+   #         if param.grad is None:
+   #             print(f"Parameter with no gradient: {name}")
 
     def prepare_sample_dict(self, sample_dict={}):
         if sample_dict is None:

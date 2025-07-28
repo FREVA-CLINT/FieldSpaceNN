@@ -75,7 +75,8 @@ class MG_Transformer(MG_base_model):
                      block_conf.out_features,
                      mg_emb_zoom,
                     layer_confs=layer_confs,
-                    layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
+                    layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
+                    use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
                         
             elif isinstance(block_conf, MGConservativeConfig):
                 block = ConservativeLayer(in_zooms,
@@ -106,7 +107,8 @@ class MG_Transformer(MG_base_model):
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs,
-                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
+                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
                 
             self.Blocks.append(block)     
 
@@ -150,8 +152,6 @@ class MG_Transformer(MG_base_model):
        
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
-
-        mask_zooms = None
 
         for k, block in enumerate(self.Blocks):
             # Process input through the block

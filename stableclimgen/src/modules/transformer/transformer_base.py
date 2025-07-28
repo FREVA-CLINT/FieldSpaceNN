@@ -138,7 +138,7 @@ class SelfAttention(nn.Module):
         :param mask: Optional mask tensor for attention.
         :return: Output tensor after applying attention mechanism.
         """
-        mask = mask==False if mask is not None else None
+        mask = mask==False if mask is not None and mask.dtype==bool else None
         return safe_scaled_dot_product_attention(q, k, v, mask=mask, is_causal=self.is_causal)
 
 
@@ -366,7 +366,7 @@ class TransformerBlock(EmbedBlock):
         for block, lin_emb_layer, residual in zip(self.blocks, self.lin_emb_layers, self.residuals):
 
             out = lin_emb_layer(x, emb=emb, sample_dict=sample_dict)
-            x = block(out, emb=emb, sample_dict=sample_dict) + residual(x, emb=emb)
+            x = block(out, emb=emb, sample_dict=sample_dict, mask=mask) + residual(x, emb=emb)
 
         return x
 
