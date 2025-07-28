@@ -35,6 +35,7 @@ class BaseDataset(Dataset):
                  p_patchify=0,
                  p_patch_dropout=0,
                  zoom_patchify_max=0,
+                 mask_zooms=None,
                  p_drop_vars=0,
                  n_drop_vars=-1,
                  p_drop_timesteps=-1,
@@ -65,6 +66,7 @@ class BaseDataset(Dataset):
         self.out_zooms = out_zooms
         self.output_differences = output_differences
         self.output_binary_mask = output_binary_mask
+        self.mask_zooms = mask_zooms
 
         self.variables_source = data_dict["source"]["variables"]
         self.variables_target = data_dict["target"]["variables"]
@@ -312,6 +314,14 @@ class BaseDataset(Dataset):
         data_source[masks] = 0
         data_source_zooms, mask_zooms = encode_zooms(data_source.float(), max_zoom, self.out_zooms, apply_diff=self.output_differences, mask=masks, binarize_mask=self.output_binary_mask)
         data_target_zooms = encode_zooms(data_target.float(), max_zoom, self.out_zooms, apply_diff=self.output_differences)[0]
+
+        if self.mask_zooms:
+            for zoom in self.mask_zooms:
+                if zoom in data_source_zooms.keys():
+                    data_source_zooms[zoom] = torch.zeros_like(data_target_zooms[zoom])
+                    mask_zooms[zoom] = torch.ones_like(mask_zooms[zoom])
+                    if self.output_binary_mask:
+                        mask_zooms[zoom] = mask_zooms[zoom].bool()
 
         if self.zoom_patch_sample == -1:
             sample_dict = {
