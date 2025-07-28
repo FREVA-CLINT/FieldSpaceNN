@@ -114,7 +114,8 @@ class MG_VAE(MG_base_model):
                 out_features if out_features is not None else block_conf.out_features,
                 mg_emb_zoom,
                 layer_confs=layer_confs,
-                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
+                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
 
         elif isinstance(block_conf, MGConservativeConfig):
             block = ConservativeLayer(in_zooms,
@@ -146,7 +147,8 @@ class MG_VAE(MG_base_model):
                 q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
                 kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
                 layer_confs=layer_confs,
-                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"))
+                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
         return block
 
     def encode(self, x_zooms, coords_input, sample_dict={}, mask=None, emb=None):

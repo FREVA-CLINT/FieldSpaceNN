@@ -24,7 +24,8 @@ class MG_SingleBlock(nn.Module):
                  out_features_list: List[int],
                  mg_emb_zoom: int,
                  layer_confs = {},
-                 layer_confs_emb={}
+                 layer_confs_emb={},
+                 use_mask=False
                 ) -> None: 
       
         super().__init__()
@@ -35,6 +36,7 @@ class MG_SingleBlock(nn.Module):
 
         self.blocks = nn.ModuleDict()
         self.grid_layers = grid_layers
+        self.use_mask = use_mask
 
         max_zoom = layer_settings.get("max_zoom", max(in_zooms))
 
@@ -120,12 +122,12 @@ class MG_SingleBlock(nn.Module):
             self.blocks[str(zoom)] = block
         
 
-    def forward(self, x_zooms: Dict, sample_dict=None,  emb=None, **kwargs):
+    def forward(self, x_zooms: Dict, sample_dict=None,  emb=None, mask_zooms={}, **kwargs):
 
         for zoom, block in self.blocks.items():
             x = x_zooms[int(zoom)]
 
-            x = block(x, emb=emb, sample_dict=sample_dict)
+            x = block(x, emb=emb, sample_dict=sample_dict, mask=mask_zooms[int(zoom)] if self.use_mask else None)
 
             x_zooms[int(zoom)] = x
 
@@ -145,12 +147,14 @@ class MG_MultiBlock(nn.Module):
                  q_zooms:List|int = -1,
                  kv_zooms:List|int = -1,
                  layer_confs={},
-                 layer_confs_emb={}
+                 layer_confs_emb={},
+                 use_mask = False
                  ) -> None:
         super().__init__()
         
         self.out_features = [out_features]*len(out_zooms)
         self.out_zooms = out_zooms
+        self.use_mask = use_mask
 
         self.zero_zooms_gen = nn.ParameterDict()
 
@@ -232,7 +236,7 @@ class MG_MultiBlock(nn.Module):
                 x = self.generate_zoom(list(x_zooms.values())[0], zoom, sample_dict=sample_dict)
                 x_zooms[zoom] = x
     
-        x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms, sample_dict=sample_dict)
+        x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_dict=sample_dict)
 
         x_zooms_out = {}
         for zoom in self.out_zooms:

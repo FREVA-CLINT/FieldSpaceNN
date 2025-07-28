@@ -168,6 +168,8 @@ class GridLayer(nn.Module):
         # Get neighborhood indices and adjacency mask
         adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
         
+        if adjc_mask.sum()/adjc_mask.numel() > 0.98:
+            pass
        # x_shape = x.shape
        # x = x.reshape(*x_shape[:3],-1)
         # Gather neighborhood data
@@ -177,7 +179,11 @@ class GridLayer(nn.Module):
             # Combine provided mask with adjacency mask
             mask = gather_nh_data(mask, adjc_patch)
             mask = mask.view(adjc_mask.shape[0], -1, *mask.shape[1:])
-            mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
+            if mask.dtype==torch.bool:
+                mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
+            else:
+                #mask = mask * (adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask).fill(-torch.inf) * -torch.inf)
+                mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("-inf"))
         else:
             # Use adjacency mask if no mask is provided
             mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)#.repeat_interleave(x.shape[-1], dim=-1)
@@ -240,7 +246,7 @@ class GridLayer(nn.Module):
  
         x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)
 
-        mask = mask.reshape(*x_feat_dims, s//4**zoom_diff,-1) if mask is not None else None
+        mask = mask.reshape(*x_feat_dims, s//4**zoom_diff,-1,1) if mask is not None else None
     
         return x, mask
 
