@@ -10,7 +10,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 from stableclimgen.src.utils.pl_data_module import DataModule
 import torch
-from stableclimgen.src.utils.helpers import load_from_state_dict,freeze_zoom_levels
+from stableclimgen.src.utils.helpers import load_from_state_dict,freeze_zoom_levels,freeze_params
 import getpass
 import mlflow
 
@@ -79,7 +79,10 @@ def train(cfg: DictConfig) -> None:
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
     
     if hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None:
-        model = load_from_state_dict(model, cfg.ckpt_path_pretrained, print_keys=True)
+        model, matching_keys = load_from_state_dict(model, cfg.ckpt_path_pretrained, print_keys=True)
+        if hasattr(cfg, "freeze_pretrained") and cfg.freeze_pretrained:
+            freeze_params(model, matching_keys)
+
 
     if 'freeze_zooms' in cfg.keys():
         freeze_zoom_levels(model, cfg.freeze_zooms)
