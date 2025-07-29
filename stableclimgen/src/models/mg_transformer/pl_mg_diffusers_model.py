@@ -2,9 +2,11 @@ import torch
 from pytorch_lightning.utilities import rank_zero_only
 from tqdm import tqdm
 
+from scripts.test import get_schedule_jump_paper
 from stableclimgen.src.models.mg_transformer.pl_mg_model import MGMultiLoss
 from stableclimgen.src.modules.multi_grid.input_output import MG_Difference_Encoder
 from .pl_mg_probabilistic import LightningProbabilisticModel
+from ..diffusion.repaint_schedule import get_schedule_jump
 from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel, check_empty
 from ...modules.grids.grid_utils import decode_zooms
 
@@ -120,7 +122,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         self.log_dict(loss_dict, logger=True)
 
         max_zoom = max(target.keys())
-        if batch_idx == 0 and rank_zero_only and (source[max_zoom].device in ['cuda:0','cpu','mps']):
+        if batch_idx == 0 and rank_zero_only.rank==0:
             # We can get the predicted original sample from the first step's output
             pred_xstart = {}
             for zoom in noisy_target_zooms.keys():
@@ -153,44 +155,38 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
         # Use one scheduler's timesteps as the reference for the loop
         reference_timesteps = self.schedulers[max_zoom].timesteps
-
         if self.use_repaint:
-            time_pairs = get_repaint_paper_schedule(self.sampling_steps, self.repaint_jump_length, self.repaint_jumps)
-            time_pairs.append((0, -1))
-            for i_last, i_cur in tqdm(time_pairs, desc="RePainting (Corrected)"):
+            times = get_schedule_jump(self.sampling_steps, 1, self.repaint_jump_length, self.repaint_jumps, debug=True)
+            time_pairs = list(zip(times[:-1], times[1:]))
+            for i, (i_last, i_cur) in enumerate(tqdm(time_pairs, desc="RePainting")):
                 t_last = reference_timesteps[self.sampling_steps - i_last - 1]
 
                 emb['DiffusionStepEmbedder'] = torch.full((batch_size,), t_last, device=self.device, dtype=torch.long)
 
                 if i_cur < i_last:  # Reverse Step
+                    if i != 0:
+                        noised_ground_truth_zooms = {}
+                        t_last_tensor = torch.full((batch_size,), t_last, device=self.device, dtype=torch.long)
+                        for zoom in target.keys():
+                            noise = torch.randn_like(target[zoom])
+                            noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise_pred_zooms[zoom],
+                                                                                              t_last_tensor)
+                            image_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_ground_truth_zooms[zoom],
+                                                            image_zooms[zoom])
+
                     noise_pred_zooms =  self.model(image_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
                                           sample_dict=sample_dict,
-                                          mask_zooms=mask, emb=emb)
-                    predicted_sample_zooms = {}
-                    for zoom in image_zooms.keys():
-                        predicted_sample_zooms[zoom] = self.schedulers[zoom].step(noise_pred_zooms[zoom], t_last,
-                                                                                  image_zooms[zoom]).prev_sample
-
-                    t_next_tensor = torch.full((batch_size,), t_last, device=self.device, dtype=torch.long)
-                    noised_ground_truth_zooms = {}
-                    for zoom in target.keys():
-                        noise = torch.randn_like(target[zoom])
-                        noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise,
-                                                                                          t_next_tensor)
+                                          mask_zooms=mask.copy(), emb=emb.copy())
 
                     for zoom in image_zooms.keys():
-                        image_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_ground_truth_zooms[zoom],
-                                                        predicted_sample_zooms[zoom])
-
-                else:  # Forward Step
+                        image_zooms[zoom] = self.schedulers[zoom].step(noise_pred_zooms[zoom], t_last,
+                                                                       image_zooms[zoom]).prev_sample
+                else:
                     renoised_zooms = {}
                     for zoom in image_zooms.keys():
-                        # Use t_next (the destination time) to get the correct beta
-                        beta_t_next = self.schedulers[zoom].betas[self.sampling_steps - i_last - 1]
-                        alpha_t_next = 1.0 - beta_t_next
+                        beta_t_next = self.schedulers[zoom].betas[reference_timesteps[self.sampling_steps - i_cur - 1]]
                         noise = torch.randn_like(image_zooms[zoom])
-                        renoised_zooms[zoom] = alpha_t_next.sqrt() * image_zooms[zoom] + (
-                                    1.0 - alpha_t_next).sqrt() * noise
+                        renoised_zooms[zoom] = torch.sqrt(1-beta_t_next) * image_zooms[zoom] + torch.sqrt(beta_t_next) * noise_pred_zooms[zoom]
                     image_zooms = renoised_zooms
 
         else:
