@@ -92,7 +92,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-        if batch_idx == 0 and rank_zero_only:
+        if batch_idx == 0 and rank_zero_only.rank==0:
             source_p = decode_zooms(source, max_zoom)
             output_p = decode_zooms(pred_xstart, max_zoom)
             target_p = decode_zooms(target, max_zoom)
