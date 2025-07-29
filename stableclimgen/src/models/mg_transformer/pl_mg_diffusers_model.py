@@ -132,12 +132,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                     noisy_target_zooms[zoom][0:1]  # Slice to get a single sample
                 ).pred_original_sample
                 pred_xstart[zoom] = pred_zoom.unsqueeze(0)
-            source_p = decode_zooms(source, max_zoom)
-            output_p = decode_zooms(pred_xstart, max_zoom)
-            target_p = decode_zooms(target, max_zoom)
-            mask = mask[max_zoom] if mask is not None else None
-            self.log_tensor_plot(source_p, output_p, target_p, coords_input, coords_output, mask, sample_dict,
-                                 f"tensor_plot_{int(self.current_epoch)}_diff{timesteps[0].item()}", emb)
+            self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
 
         return loss
 
@@ -166,11 +161,8 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                 if i_cur < i_last:  # Reverse Step
                     if i != 0:
                         noised_ground_truth_zooms = {}
-                        t_last_tensor = torch.full((batch_size,), t_last, device=self.device, dtype=torch.long)
                         for zoom in target.keys():
-                            noise = torch.randn_like(target[zoom])
-                            noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise_pred_zooms[zoom],
-                                                                                              t_last_tensor)
+                            noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise_pred_zooms[zoom], t_last)
                             image_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_ground_truth_zooms[zoom],
                                                             image_zooms[zoom])
 
@@ -179,13 +171,11 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                                           mask_zooms=mask.copy(), emb=emb.copy())
 
                     for zoom in image_zooms.keys():
-                        image_zooms[zoom] = self.schedulers[zoom].step(noise_pred_zooms[zoom], t_last,
-                                                                       image_zooms[zoom]).prev_sample
+                        image_zooms[zoom] = self.schedulers[zoom].step(noise_pred_zooms[zoom], t_last, image_zooms[zoom]).prev_sample
                 else:
                     renoised_zooms = {}
                     for zoom in image_zooms.keys():
                         beta_t_next = self.schedulers[zoom].betas[reference_timesteps[self.sampling_steps - i_cur - 1]]
-                        noise = torch.randn_like(image_zooms[zoom])
                         renoised_zooms[zoom] = torch.sqrt(1-beta_t_next) * image_zooms[zoom] + torch.sqrt(beta_t_next) * noise_pred_zooms[zoom]
                     image_zooms = renoised_zooms
 
