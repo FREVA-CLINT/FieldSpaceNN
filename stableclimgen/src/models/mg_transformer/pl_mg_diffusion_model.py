@@ -93,12 +93,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            source_p = decode_zooms(source, max_zoom)
-            output_p = decode_zooms(pred_xstart, max_zoom)
-            target_p = decode_zooms(target, max_zoom)
-            mask = mask[max_zoom] if mask is not None else None
-            self.log_tensor_plot(source_p, output_p, target_p, coords_input, coords_output, mask, sample_dict,
-                                 f"tensor_plot_{int(self.current_epoch)}_diff{diffusion_steps[0].item()}", emb)
+            self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
 
         return loss
 
