@@ -137,7 +137,7 @@ class LightningMGModel(LightningMGNOBaseModel):
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-        if batch_idx == 0 and rank_zero_only.rank==0 and (source[max_zoom].device.type in ['cuda:0','cpu','mps']):
+        if batch_idx == 0 and rank_zero_only.rank==0:
             self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
             
         return loss

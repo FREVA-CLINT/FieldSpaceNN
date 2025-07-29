@@ -248,7 +248,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-        if batch_idx == 0 and rank_zero_only:
+        if batch_idx == 0 and rank_zero_only.rank==0:
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
             self.log_tensor_plot(source, output, target, mask, sample_dict, emb, has_var=has_var)
             
