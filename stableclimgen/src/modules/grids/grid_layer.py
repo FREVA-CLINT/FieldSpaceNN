@@ -183,7 +183,7 @@ class GridLayer(nn.Module):
                 mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
             else:
                 #mask = mask * (adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask).fill(-torch.inf) * -torch.inf)
-                mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("-inf"))
+                mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("inf"))
         else:
             # Use adjacency mask if no mask is provided
             mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)#.repeat_interleave(x.shape[-1], dim=-1)
