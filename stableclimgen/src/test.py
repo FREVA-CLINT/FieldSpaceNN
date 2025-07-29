@@ -39,7 +39,7 @@ def test(cfg: DictConfig) -> None:
     trainer: Trainer = instantiate(cfg.trainer)
 
     if cfg.ckpt_path is not None:
-        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)
+        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)[0]
 
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
