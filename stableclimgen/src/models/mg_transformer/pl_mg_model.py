@@ -148,6 +148,7 @@ class LightningMGModel(LightningMGNOBaseModel):
         output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
         output = decode_zooms(output, max(output.keys()))
+        mask = decode_zooms(mask, max(mask.keys()))
 
         if hasattr(self.model,'predict_var') and self.model.predict_var:
             output, output_var = output.chunk(2, dim=-1)
