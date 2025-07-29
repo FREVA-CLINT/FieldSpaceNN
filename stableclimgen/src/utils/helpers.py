@@ -33,7 +33,7 @@ def extract_block_and_zoom_from_key(key: str) -> Optional[Tuple[int, int]]:
         Tuple of (block, zoom) if matched, else None.
     """
     match = re.search(
-        r'model(?:\.(?:encoder|decoder)_blocks)?\.(\d+)\.blocks\.(\d+)\.', key
+        r'model(?:\.(?:encoder_blocks|decoder_blocks|Blocks))?\.(\d+)\.blocks\.(\d+)\.', key
     )
     if match:
         block = int(match.group(1))
