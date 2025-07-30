@@ -130,10 +130,10 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
             mask_maps = {}
 
             for zoom in zoom_levels:
-                input_maps[zoom] = input_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
-                output_maps[zoom] = output_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
-                gt_maps[zoom] = gt_zooms[zoom][sample, var, ts, :, 0].cpu().numpy()
-                mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0].cpu().numpy() if mask_zooms is not None else None
+                input_maps[zoom] = input_zooms[zoom][sample, var, ts, :, 0].float().cpu().numpy()
+                output_maps[zoom] = output_zooms[zoom][sample, var, ts, :, 0].float().cpu().numpy()
+                gt_maps[zoom] = gt_zooms[zoom][sample, var, ts, :, 0].float().cpu().numpy()
+                mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0].float().cpu().numpy() if mask_zooms is not None else None
 
             # Use embedding index for variable name if available
             if emb is not None and 'VariableEmbedder' in emb:
