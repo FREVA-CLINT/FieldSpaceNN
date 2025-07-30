@@ -20,7 +20,8 @@ def load_from_state_dict(model, ckpt_path, print_keys=True):
         for zoom, count in sorted(zoom_counts.items()):
             print(f"  Zoom level {zoom}: {count} keys")
     
-    return model
+    matching_keys = [key for key in weights['state_dict'].keys() if (key in model.state_dict().keys())]
+    return model, matching_keys
 
 def extract_block_and_zoom_from_key(key: str) -> Optional[Tuple[int, int]]:
     """
@@ -93,10 +94,19 @@ def freeze_zoom_levels(model, zooms: List[int]):
         zooms (List[int]): Zoom levels to freeze.
     """
     zoom_keys = set(get_zoom_keys(model, zooms))
-    for name, param in model.named_parameters():
-        if name in zoom_keys:
-            param.requires_grad = False
+    freeze_params(model, zoom_keys)
 
+def freeze_params(model, keys: List[str]):
+    """
+    Freezes parameters in the model that belong to specified zoom levels.
+
+    Parameters:
+        model (nn.Module): Model whose parameters will be modified.
+        zooms (List[int]): Zoom levels to freeze.
+    """
+    for name, param in model.named_parameters():
+        if name in keys:
+            param.requires_grad = False
 
 def check_value(value, n_repeat):
     if not isinstance(value, list) and not isinstance(value, omegaconf.listconfig.ListConfig) and not isinstance(value, tuple):
