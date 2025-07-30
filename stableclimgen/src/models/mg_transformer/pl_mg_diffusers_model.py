@@ -130,7 +130,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                     timesteps[0].item(),  # Get the integer timestep
                     noisy_target_zooms[zoom][0:1]  # Slice to get a single sample
                 ).pred_original_sample
-                pred_xstart[zoom] = pred_zoom.unsqueeze(0)
+                pred_xstart[zoom] = pred_zoom
             self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
 
         return loss
