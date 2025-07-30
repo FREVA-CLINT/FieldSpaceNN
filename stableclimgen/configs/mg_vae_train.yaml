@@ -1,7 +1,7 @@
 defaults:
   - trainer: mgno_transformer
   - logger: wandb
-  - model: mgno_vae
+  - model: mg_vae
   - mgrids: healpix
   - dataloader: zarr_healpix
   - hydra: default
@@ -10,6 +10,6 @@ defaults:
 
 ckpt_path: null
 
-project_name: healpix_vae
+project_name: mg_vae
 run_name: default
 run_dir: ../..
