@@ -2,7 +2,6 @@ import torch
 from pytorch_lightning.utilities import rank_zero_only
 from tqdm import tqdm
 
-from scripts.test import get_schedule_jump_paper
 from stableclimgen.src.models.mg_transformer.pl_mg_model import MGMultiLoss
 from stableclimgen.src.modules.multi_grid.input_output import MG_Difference_Encoder
 from .pl_mg_probabilistic import LightningProbabilisticModel
