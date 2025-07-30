@@ -44,7 +44,7 @@ def train(cfg: DictConfig) -> None:
 
     OmegaConf.set_struct(cfg, False)
     if "WandbLogger" in cfg.logger['_target_']:
-        if not hasattr(cfg.logger, "id") or cfg.logger.id is None:
+        if not hasattr(cfg.logger, "id") or cfg.logger.id is None or (hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None):
             logger: WandbLogger = instantiate(cfg.logger)
             if rank_zero_only.rank == 0:
                 cfg.logger.id = logger.experiment.id
