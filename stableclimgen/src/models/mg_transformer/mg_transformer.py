@@ -56,11 +56,13 @@ class MG_Transformer(MG_base_model):
             mg_emb_zoom = 0
             self.mg_emeddings=None
 
-        self.Blocks = nn.ModuleList()
+        self.Blocks = nn.ModuleDict()
 
         in_features = [in_features]*len(in_zooms)
 
-        for block_idx, block_conf in enumerate(block_configs):
+        for block_key, block_conf in block_configs.items():
+            assert isinstance(block_key, str), "block keys should be strings"
+
             layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
 
             if isinstance(block_conf, MGProcessingConfig):
@@ -110,7 +112,7 @@ class MG_Transformer(MG_base_model):
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
                 
-            self.Blocks.append(block)     
+            self.Blocks[block_key] = block     
 
             in_features = block.out_features
             in_zooms = block.out_zooms        
@@ -153,7 +155,7 @@ class MG_Transformer(MG_base_model):
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
 
-        for k, block in enumerate(self.Blocks):
+        for block in self.Blocks.values():
             # Process input through the block
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
 

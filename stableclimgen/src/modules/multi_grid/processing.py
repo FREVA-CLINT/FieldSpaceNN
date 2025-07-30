@@ -23,6 +23,7 @@ class MG_SingleBlock(nn.Module):
                  in_features_list: List[int],
                  out_features_list: List[int],
                  mg_emb_zoom: int,
+                 zooms = None,
                  layer_confs = {},
                  layer_confs_emb={},
                  use_mask=False
@@ -38,86 +39,75 @@ class MG_SingleBlock(nn.Module):
         self.grid_layers = grid_layers
         self.use_mask = use_mask
 
-        max_zoom = layer_settings.get("max_zoom", max(in_zooms))
+        zooms = in_zooms if zooms is None else zooms 
 
-        for in_features, out_features, zoom in zip(in_features_list, out_features_list, in_zooms):
+        for zoom, in_features, out_features in zip(zooms, in_features_list, out_features_list):
             
             type = layer_settings.get('type','TransformerBlock')
 
-            if zoom > max_zoom:
+            embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
+
+            if type == 'TransformerBlock':
+                zoom_block = max([zoom - layer_settings.get('seq_lengths', 0),0])
+                                
+                block = TransformerBlock(
+                            in_features,
+                            out_features,
+                            layer_settings['blocks'],
+                            seq_lengths=layer_settings.get('seq_lengths', None),
+                            num_heads=layer_settings.get('num_heads', 2),
+                            n_head_channels=layer_settings.get('n_head_channels', None),
+                            mlp_mult=layer_settings.get('mlp_mult', 1),
+                            dropout=layer_settings.get('dropout', 1),
+                            spatial_dim_count=layer_settings.get('spatial_dim_count', 1),
+                            embedders=embedders,
+                            layer_confs=layer_confs,
+                            grid_layer=grid_layers[str(zoom_block)],
+                            layer_confs_emb=layer_confs_emb
+                        )
+                    
+            elif type == 'nh_conv':
+                ranks_spatial = layer_settings.get('ranks_spatial', [])
+
+                block = NHConv(
+                    grid_layers[str(zoom)],
+                    in_features,
+                    out_features,
+                    ranks_spatial=ranks_spatial,
+                    layer_confs=layer_confs
+                )
+            
+            elif type == 'res_nh_conv':
+                ranks_spatial = layer_settings.get('ranks_spatial', [])
+
+                block = ResNHConv(
+                    grid_layers[str(zoom)],
+                    in_features,
+                    out_features,
+                    ranks_spatial=ranks_spatial,
+                    layer_confs=layer_confs
+                )
+
+            elif type == 'linear':
+                ranks_spatial = layer_settings.get('ranks_spatial', [])
+
                 block = LinEmbLayer(
                     in_features,
                     out_features, 
                     layer_norm=False, 
-                    identity_if_equal=True,
+                    identity_if_equal=False,
+                    embedder=embedders,
                     layer_confs=layer_confs,
                     layer_confs_emb=layer_confs_emb)
-            
-            else:
-                embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
-
-
-                if type == 'TransformerBlock':
-                    zoom_block = max([zoom - layer_settings.get('seq_lengths', 0),0])
-                                    
-                    block = TransformerBlock(
-                                in_features,
-                                out_features,
-                                layer_settings['blocks'],
-                                seq_lengths=layer_settings.get('seq_lengths', None),
-                                num_heads=layer_settings.get('num_heads', 2),
-                                n_head_channels=layer_settings.get('n_head_channels', None),
-                                mlp_mult=layer_settings.get('mlp_mult', 1),
-                                dropout=layer_settings.get('dropout', 1),
-                                spatial_dim_count=layer_settings.get('spatial_dim_count', 1),
-                                embedders=embedders,
-                                layer_confs=layer_confs,
-                                grid_layer=grid_layers[str(zoom_block)],
-                                layer_confs_emb=layer_confs_emb
-                            )
-                    
-                elif type == 'nh_conv':
-                    ranks_spatial = layer_settings.get('ranks_spatial', [])
-
-                    block = NHConv(
-                        grid_layers[str(zoom)],
-                        in_features,
-                        out_features,
-                        ranks_spatial=ranks_spatial,
-                        layer_confs=layer_confs
-                    )
                 
-                elif type == 'res_nh_conv':
-                    ranks_spatial = layer_settings.get('ranks_spatial', [])
+            elif type == 'mlp':
 
-                    block = ResNHConv(
-                        grid_layers[str(zoom)],
-                        in_features,
-                        out_features,
-                        ranks_spatial=ranks_spatial,
-                        layer_confs=layer_confs
-                    )
-
-                elif type == 'linear':
-                    ranks_spatial = layer_settings.get('ranks_spatial', [])
-
-                    block = LinEmbLayer(
-                        in_features,
-                        out_features, 
-                        layer_norm=False, 
-                        identity_if_equal=False,
-                        embedder=embedders,
-                        layer_confs=layer_confs,
-                        layer_confs_emb=layer_confs_emb)
-                    
-                elif type == 'mlp':
-
-                    block = MLP_fac(
-                        in_features,
-                        out_features, 
-                        mult=layer_settings.get('mlp_mult', 1), 
-                        dropout=layer_settings.get('dropout', 0), 
-                        layer_confs=layer_confs)
+                block = MLP_fac(
+                    in_features,
+                    out_features, 
+                    mult=layer_settings.get('mlp_mult', 1), 
+                    dropout=layer_settings.get('dropout', 0), 
+                    layer_confs=layer_confs)
 
             self.blocks[str(zoom)] = block
         
