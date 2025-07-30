@@ -141,18 +141,17 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         sample_dict = self.prepare_sample_dict(sample_dict)
 
-        source_ = {k: v.clone() for k, v in source.items()}
         output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
 
-        target_loss = {k: v.clone() for k, v in target.items()}
-        output_loss = {k: v.clone() for k, v in output.items()}
+        target_loss = target.copy()
+        output_loss = output.copy()
         
         max_zoom = max(target.keys())
         if not self.decomposed_loss:
             target_loss = {max_zoom: decode_zooms(target_loss,max_zoom)}
             output_loss = {max_zoom: decode_zooms(output_loss,max_zoom)}
 
-        rec_loss, loss_dict = self.loss(output, target_loss, mask=mask, sample_dict=sample_dict, prefix='val/')
+        rec_loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_dict=sample_dict, prefix='val/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -168,7 +167,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source_, output, target,mask, sample_dict, emb, self.current_epoch)   
+            self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
 
         return loss
 

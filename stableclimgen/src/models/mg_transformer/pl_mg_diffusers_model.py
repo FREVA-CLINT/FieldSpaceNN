@@ -2,7 +2,6 @@ import torch
 from pytorch_lightning.utilities import rank_zero_only
 from tqdm import tqdm
 
-from scripts.test import get_schedule_jump_paper
 from stableclimgen.src.models.mg_transformer.pl_mg_model import MGMultiLoss
 from stableclimgen.src.modules.multi_grid.input_output import MG_Difference_Encoder
 from .pl_mg_probabilistic import LightningProbabilisticModel
@@ -131,7 +130,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                     timesteps[0].item(),  # Get the integer timestep
                     noisy_target_zooms[zoom][0:1]  # Slice to get a single sample
                 ).pred_original_sample
-                pred_xstart[zoom] = pred_zoom.unsqueeze(0)
+                pred_xstart[zoom] = pred_zoom
             self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
 
         return loss
