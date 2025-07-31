@@ -49,14 +49,14 @@ class GridSelfAttention(nn.Module):
         self.mlp_emb_layers = nn.ModuleDict()
         self.mlps = nn.ModuleDict()
         self.out_layers = nn.ModuleDict()
-        self.gammas = nn.ParameterDict()
+       # self.gammas = nn.ParameterDict()
 
         for in_zoom in embedders_q.keys():
             self.q_layers[in_zoom] = LinEmbLayer(in_features, [in_features], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders_q[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) if not common_q else IdentityLayer()
             self.mlp_emb_layers[in_zoom] = LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=False, embedder=embedders_q[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[in_zoom] = MLP_fac(in_features, in_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
             self.out_layers[in_zoom] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, layer_norm=False, layer_confs_emb=layer_confs_emb) if not common_out else IdentityLayer()
-            self.gammas[in_zoom] =  torch.nn.Parameter(torch.ones(in_features) * 1E-6)
+          #  self.gammas[in_zoom] =  torch.nn.Parameter(torch.ones(in_features) * 1E-6)
 
         for in_zoom in embedders_kv.keys():
             self.kv_layers[in_zoom] = LinEmbLayer(in_features, [2, in_features],  layer_confs=layer_confs_kv, identity_if_equal=True, embedder=embedders_kv[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) if not common_kv else IdentityLayer()
@@ -128,7 +128,7 @@ class GridSelfAttention(nn.Module):
 
         for k, zoom in enumerate(self.q_layers.keys()):
 
-            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * q[k].reshape(x_zooms[int(zoom)].shape)
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + q[k].reshape(x_zooms[int(zoom)].shape)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_dict=sample_dict)
 
