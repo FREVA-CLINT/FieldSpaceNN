@@ -4,8 +4,8 @@ from typing import List, Tuple, Optional
 import re
 import torch
 
-def load_from_state_dict(model, ckpt_path, print_keys=True):
-    weights = torch.load(ckpt_path) 
+def load_from_state_dict(model, ckpt_path, device, print_keys=True):
+    weights = torch.load(ckpt_path, map_location=device)
     res = model.load_state_dict(weights['state_dict'], strict=False)
 
     if print_keys:

@@ -39,7 +39,7 @@ def test(cfg: DictConfig) -> None:
     trainer: Trainer = instantiate(cfg.trainer)
 
     if cfg.ckpt_path is not None:
-        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True)[0]
+        model = load_from_state_dict(model, cfg.ckpt_path, print_keys=True, device=model.device)[0]
 
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, dataset_test=test_dataset)
 
@@ -52,9 +52,14 @@ def test(cfg: DictConfig) -> None:
 
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"] for batch in predictions], dim=0)
-    output = rearrange(output, "(b2 b1) v t n ... -> b2 v t (b1 n) ... ", b1=test_dataset.indices.shape[0])
     mask = torch.cat([batch["mask"] for batch in predictions], dim=0)
-    mask = rearrange(mask, "(b2 b1) v t n ... -> b2 v t (b1 n) ... ", b1=test_dataset.indices.shape[0])
+    print(output.dim())
+    if output.dim() == 5:
+        output = rearrange(output, "(b2 b1) v t n ... -> b2 v t (b1 n) ... ", b1=test_dataset.indices.shape[0])
+        mask = rearrange(mask, "(b2 b1) v t n ... -> b2 v t (b1 n) ... ", b1=test_dataset.indices.shape[0])
+    else:
+        output = rearrange(output, "(b2 b1) m v t n ... -> b2 v m t (b1 n) ... ", b1=test_dataset.indices.shape[0])
+        mask = rearrange(mask, "(b2 b1) m v t n ... -> b2 v m t (b1 n) ... ", b1=test_dataset.indices.shape[0])
 
     if 'output_var' in predictions[0].keys() and predictions[0]['output_var'] is not None:
         output_var = torch.cat([batch["output_var"] for batch in predictions], dim=0)
