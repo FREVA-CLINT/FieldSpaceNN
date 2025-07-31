@@ -85,7 +85,8 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
                  weight_decay=0,
                  noise_std=0.0,
                  decomposed_loss = True,
-                 n_samples=1, max_batchsize=-1):
+                 n_samples=1, max_batchsize=-1,
+                 mode="encode_decode"):
         
         super().__init__(
             model,  # Main VAE model
@@ -99,6 +100,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.kl_weight = kl_weight
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
+        self.mode = mode
 
         self.decomposed_loss = decomposed_loss
 
@@ -176,22 +178,21 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, dists_input):
-        sample_dict = self.prepare_sample_dict(sample_dict)
+    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
         x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
                                                                                                   coords_input,
                                                                                                   coords_output,
                                                                                                   sample_dict, mask,
                                                                                                   emb, dists_input)
         if self.mode == "encode_decode":
-            output, posterior = self.model(source, coords_input=coords_input, coords_output=coords_output,
-                                           sample_dict=sample_dict, mask=mask, emb=emb, return_zooms=False)
+            outputs, posterior = self.model(source, coords_input=coords_input, coords_output=coords_output,
+                                           sample_dict=sample_dict, mask=mask, emb=emb)
         elif self.mode == "encode":
-            output = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
+            outputs = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
                                        mask=mask, emb=emb)
         elif self.mode == "decode":
-            output = self.model.decode(x, coords_input=coords_input, coords_output=coords_output,
+            outputs = self.model.decode(x, coords_input=coords_input, coords_output=coords_output,
                                        sample_dict=sample_dict,
-                                       mask=mask, emb=emb, return_zooms=False)
-        output = output[list(output.keys())[0]]
-        return output
+                                       mask=mask, emb=emb)
+        outputs = decode_zooms(outputs, max(outputs.keys()))
+        return outputs

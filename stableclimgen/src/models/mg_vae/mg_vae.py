@@ -60,15 +60,16 @@ class MG_VAE(MG_base_model):
             self.mg_emeddings=None
 
         # Construct blocks based on configurations
-        self.encoder_blocks = nn.ModuleList()
-        self.decoder_blocks = nn.ModuleList()
+        self.encoder_blocks = nn.ModuleDict()
+        self.decoder_blocks = nn.ModuleDict()
 
         in_features = [in_features]*len(in_zooms)
 
-        for block_idx, block_conf in enumerate(encoder_block_configs):
+        for block_key, block_conf in encoder_block_configs.items():
+            assert isinstance(block_key, str), "block keys should be strings"
             block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
                 
-            self.encoder_blocks.append(block)
+            self.encoder_blocks[block_key] = block
 
             in_features = block.out_features
             in_zooms = block.out_zooms
@@ -81,9 +82,9 @@ class MG_VAE(MG_base_model):
         self.post_quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, quant_config.out_features,
                                                                mg_emb_zoom, in_features, **kwargs)
 
-        for block_idx, block_conf in enumerate(decoder_block_configs):
+        for block_key, block_conf in decoder_block_configs.items():
             block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
-            self.decoder_blocks.append(block)
+            self.decoder_blocks[block_key] = block
 
             in_features = block.out_features
             in_zooms = block.out_zooms
@@ -158,7 +159,7 @@ class MG_VAE(MG_base_model):
         if self.learn_residual:
             x_res_zooms = {int(zoom): x_zooms[zoom] for zoom in self.bottleneck_zooms}
 
-        for k, block in enumerate(self.encoder_blocks):
+        for k, block in enumerate(self.encoder_blocks.values()):
             x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
 
         if self.learn_residual:
@@ -176,7 +177,7 @@ class MG_VAE(MG_base_model):
 
         mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
 
-        for k, block in enumerate(self.decoder_blocks):
+        for k, block in enumerate(self.decoder_blocks.values()):
 
             if k == len(self.decoder_blocks)-2 and self.learn_residual:
                 x_zooms = {int(zoom): self.gamma2 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in x_zooms.keys()}
