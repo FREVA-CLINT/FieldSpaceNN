@@ -42,7 +42,7 @@ class MG_SingleBlock(nn.Module):
 
         zooms = in_zooms if zooms is None else zooms 
 
-        if not (len(zooms) == len(in_features_list) == len(out_features_list)):
+        if not (len(zooms) == len(out_features_list)):
             warnings.warn(
                 f"Length mismatch: zooms({len(zooms)}), "
                 f"in_features_list({len(in_features_list)}), "

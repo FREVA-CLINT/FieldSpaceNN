@@ -168,6 +168,7 @@ class SpatiaFacLayer(nn.Module):
 
         self.factors_feats_in = nn.ParameterList() 
         
+        fan_in = 1
         for k, in_features_ in enumerate(in_features):
             
             if (factorize_features and k< (len(in_features) -1))  or (factorize_channels and k==(len(in_features) -1) and not omit_channel):
@@ -175,7 +176,7 @@ class SpatiaFacLayer(nn.Module):
                 m = get_fac_matrix(in_features_, rank, init_ones=False)
                 self.factors_feats_in.append(m)
                 core_dims.append(m.shape[1])
-                scale += m.shape[1]
+                fan_in *= m.shape[1]
 
                 sub_c = next(core_letters)
                 sub_f = next(factor_letters)
@@ -190,7 +191,7 @@ class SpatiaFacLayer(nn.Module):
                 self.subscripts['core'] += sub_c
                 self.subscripts['x']['features_in'] += sub_c
 
-                scale += in_features_
+                fan_in *= in_features_
                 core_dims.append(in_features_)
 
         self.fc = fc
@@ -199,6 +200,7 @@ class SpatiaFacLayer(nn.Module):
         else:
             out_features_c = out_features
 
+        fan_out = 1
         self.factors_feats_out = nn.ParameterList() 
         for k, out_features_ in enumerate(out_features_c[::-1]):
             
@@ -207,7 +209,7 @@ class SpatiaFacLayer(nn.Module):
                 m = get_fac_matrix(out_features_, rank, init_ones=False)
                 self.factors_feats_out.append(m)
                 core_dims.append(m.shape[1])
-                scale += m.shape[1]
+                fan_out *= m.shape[1]
 
                 sub_c = next(core_letters)
                 sub_f = next(factor_letters)
@@ -224,7 +226,7 @@ class SpatiaFacLayer(nn.Module):
                 self.subscripts['core'] += sub_c
 
                 core_dims.append(out_features_)
-                scale += out_features_
+                fan_out *= out_features_
 
                 if k <= len(out_features) - 1:
                     self.subscripts['x']['features_out'] += sub_c
@@ -234,9 +236,6 @@ class SpatiaFacLayer(nn.Module):
 
             elif not fc and len(out_features_c)==len(in_features):
                 self.subscripts['x']['features_out'] += self.subscripts['x']['features_in'][k]
-            
-            else:
-                print('why here??')
 
 
         self.feat_dims_in = in_features
@@ -247,6 +246,7 @@ class SpatiaFacLayer(nn.Module):
         nn.init.normal_(core)
     #nn.init.normal_(core)
     # core = torch.ones(core_dims)# * scale
+        scale = fan_in + fan_out
         self.core = nn.Parameter(core * (2 / scale)**0.5, requires_grad=True)
         
         #t = tl.tensor(core)

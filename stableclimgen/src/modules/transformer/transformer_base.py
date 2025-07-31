@@ -308,7 +308,7 @@ class TransformerBlock(EmbedBlock):
                 #qkv_proj = len(layer_confs) == 0
                 q_layer = get_layer(in_features, [in_features], layer_confs=layer_confs) 
                 kv_layer = get_layer(in_features, [2, in_features], layer_confs=layer_confs, bias=True) 
-                out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True)
+                out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if in_features != out_features_list[i] else IdentityLayer()
 
                 cross = False
                 # Select rearrangement function based on block type
