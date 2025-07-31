@@ -49,6 +49,7 @@ class MG_SingleBlock(nn.Module):
                 f"out_features_list({len(out_features_list)})"
             )
 
+        k = 0
         for zoom, in_features, out_features in zip(zooms, in_features_list, out_features_list):
             
             type = layer_settings.get('type','TransformerBlock')
@@ -56,13 +57,14 @@ class MG_SingleBlock(nn.Module):
             embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
 
             if type == 'TransformerBlock':
-                zoom_block = max([zoom - layer_settings.get('seq_lengths', 0),0])
-                                
+                seq_length = layer_settings.get('seq_lengths', [10]*len(in_zooms))[k]
+                zoom_block = max([zoom - seq_length,0])
+                
                 block = TransformerBlock(
                             in_features,
                             out_features,
                             layer_settings['blocks'],
-                            seq_lengths=layer_settings.get('seq_lengths', None),
+                            seq_lengths=seq_length,
                             num_heads=layer_settings.get('num_heads', 2),
                             n_head_channels=layer_settings.get('n_head_channels', None),
                             mlp_mult=layer_settings.get('mlp_mult', 1),
