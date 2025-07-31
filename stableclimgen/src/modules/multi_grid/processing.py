@@ -1,4 +1,5 @@
 from typing import List, Dict
+import warnings
 
 from omegaconf import ListConfig
 
@@ -40,6 +41,13 @@ class MG_SingleBlock(nn.Module):
         self.use_mask = use_mask
 
         zooms = in_zooms if zooms is None else zooms 
+
+        if not (len(zooms) == len(in_features_list) == len(out_features_list)):
+            warnings.warn(
+                f"Length mismatch: zooms({len(zooms)}), "
+                f"in_features_list({len(in_features_list)}), "
+                f"out_features_list({len(out_features_list)})"
+            )
 
         for zoom, in_features, out_features in zip(zooms, in_features_list, out_features_list):
             
