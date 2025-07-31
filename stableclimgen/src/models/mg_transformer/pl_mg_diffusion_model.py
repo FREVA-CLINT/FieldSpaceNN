@@ -112,18 +112,9 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'sample_dict': sample_dict,
-            'return_zooms': (self.composed_loss==False)
+            'sample_dict': sample_dict
         }
-        target = target.squeeze(-1)
 
-        x_zooms = {int(sample_dict['zoom'][0]): target} if 'zoom' in sample_dict.keys() else {self.model.max_zoom: target}
-        x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
-        init_zoom = list(x_zooms.keys())[0]
-
-        mask_zooms = {int(zoom): torch.zeros_like(x_zooms[zoom]).bool() if zoom == init_zoom else torch.ones_like(
-            x_zooms[zoom]).bool() for zoom in x_zooms.keys()}
-
-        outputs = self.sampler.sample_loop(self.model, x_zooms, mask_zooms, progress=True, emb=emb, **model_kwargs)
-        outputs = self.model.decoder(outputs, emb=emb, sample_dict=sample_dict)[self.model.max_zoom]
+        outputs = self.sampler.sample_loop(self.model, source, mask, progress=True, emb=emb, **model_kwargs)
+        outputs = decode_zooms(outputs, max(outputs.keys()))
         return outputs

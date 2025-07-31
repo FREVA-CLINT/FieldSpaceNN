@@ -52,6 +52,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                  max_batchsize=-1,
                  mg_encoder_config=None,
                  sampling_steps=None,
+                 unconditioned=False,
                  use_repaint=False,
                  repaint_jumps=10,
                  repaint_jump_length=10):
@@ -74,6 +75,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         self.use_repaint = use_repaint
         self.repaint_jumps = repaint_jumps
         self.repaint_jump_length = repaint_jump_length
+        self.unconditioned = unconditioned
 
         if mg_encoder_config:
             self.encoder = MG_Difference_Encoder(out_zooms=mg_encoder_config.out_zooms)
@@ -140,7 +142,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
     def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
         mask_zooms = mask
-        image_zooms = {zoom: torch.randn_like(t_tensor) for zoom, t_tensor in target.items()}
+        image_zooms = {int(zoom): torch.where(~mask_zooms[zoom], source[zoom], torch.randn_like(source[zoom])) for zoom in source.keys()}
         batch_size = next(iter(image_zooms.values())).shape[0]
         max_zoom = max(image_zooms.keys())
 
@@ -160,8 +162,8 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                 if i_cur < i_last:  # Reverse Step
                     if i != 0:
                         noised_ground_truth_zooms = {}
-                        for zoom in target.keys():
-                            noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise_pred_zooms[zoom], t_last)
+                        for zoom in source.keys():
+                            noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(source[zoom], noise_pred_zooms[zoom], t_last)
                             image_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_ground_truth_zooms[zoom],
                                                             image_zooms[zoom])
 
@@ -194,16 +196,18 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                                                                      image_zooms[zoom]).prev_sample
 
                 if mask_zooms is not None and i < len(self.schedulers[max_zoom].timesteps) - 1:
-                    noised_ground_truth_zooms = {}
-                    for zoom in target.keys():
-                        prev_timestep = self.schedulers[zoom].timesteps[i + 1]
-                        noise = torch.randn_like(target[zoom])
-                        noised_ground_truth_zooms[zoom] = self.schedulers[zoom].add_noise(target[zoom], noise,
-                                                                                          prev_timestep)
+                    noised_input_zooms = {}
+                    if self.unconditioned:
+                        for zoom in source.keys():
+                            prev_timestep = self.schedulers[zoom].timesteps[i + 1]
+                            noise = torch.randn_like(source[zoom])
+                            noised_input_zooms[zoom] = self.schedulers[zoom].add_noise(source[zoom], noise, prev_timestep)
+                    else:
+                        noised_input_zooms = source.copy()
 
                     for zoom in image_zooms.keys():
                         # Using ~mask to match your new convention (False = known region)
-                        stepped_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_ground_truth_zooms[zoom],
+                        stepped_zooms[zoom] = torch.where(~mask_zooms[zoom], noised_input_zooms[zoom],
                                                           stepped_zooms[zoom])
 
                 image_zooms = stepped_zooms
