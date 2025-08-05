@@ -9,9 +9,10 @@ dataset:
   n_sample_timesteps: 1
   random_p: false
   n_sample_vars: 2
+  output_binary_mask: true
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule
-  batch_size: 2
+  batch_size: 1
   num_workers: 0
   use_costum_ddp_sampler: false
