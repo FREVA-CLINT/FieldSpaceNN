@@ -217,7 +217,7 @@ class ClimateDataset(Dataset):
             coords = torch.stack((lat_grid, lon_grid), dim=-1).repeat(data_src.shape[0], 1, 1, 1).float()
             coords_out.append(coords)
 
-        return torch.stack(data_in, dim=-1), torch.stack(coords_in, dim=-2), torch.stack(data_out, dim=-1), torch.stack(coords_out, dim=-2)
+        return torch.stack(data_in), torch.stack(coords_in), torch.stack(data_out), torch.stack(coords_out)
 
     def __len__(self) -> int:
         """
@@ -275,4 +275,4 @@ class MaskClimateDataset(ClimateDataset):
         emb = {"CoordinateEmbedder": gt_coords,
                "VariableEmbedder": sample_vars}
 
-        return in_data, gt_data, in_coords, gt_coords, {}, drop_mask, emb, torch.tensor([])
+        return in_data, gt_data, in_coords, gt_coords, drop_mask, emb

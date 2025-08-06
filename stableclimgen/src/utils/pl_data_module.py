@@ -20,7 +20,7 @@ class BatchReshapeAllocator:
         # The shape will be (batch_size, n, C, H, W).
         collated_batch = default_collate(batch)
 
-        if self.dataset.reduce_zoom_to_batch is not None:
+        if hasattr(self.dataset, "reduce_zoom_to_batch") and self.dataset.reduce_zoom_to_batch is not None:
             assert self.dataset.reduce_zoom_to_batch > self.dataset.zoom_patch_sample
             # TODO: add reshapes for coords and rel_dists
             data_source_zooms, data_target_zooms, coords_input, coords_output, sample_dict, mask_zooms, embed_data, rel_dists_input, rel_dists_output = collated_batch
@@ -50,7 +50,7 @@ class BatchReshapeAllocator:
             embed_data["TimeEmbedder"] = embed_data["TimeEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
             collated_batch = data_source_zooms, data_target_zooms, coords_input, coords_output, sample_dict, mask_zooms, embed_data, rel_dists_input, rel_dists_output
 
-        if self.dataset.reduce_time_to_batch is not None:
+        if hasattr(self.dataset, "reduce_time_to_batch") and self.dataset.reduce_time_to_batch is not None:
             assert self.dataset.n_sample_timesteps % self.dataset.reduce_time_to_batch == 0
             # TODO: add reshapes for coords and rel_dists
             data_source_zooms, data_target_zooms, coords_input, coords_output, sample_dict, mask_zooms, embed_data, rel_dists_input, rel_dists_output = collated_batch

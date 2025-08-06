@@ -10,185 +10,266 @@ noise_std: 0
 weight_decay: 0
 lr_groups:
   default:
-    lr: 2e-4
+    lr: 0.0005
     warmup: 0
   attention:
-    matches: ['TransformerBlock','GridSelfAttention']
-    lr: 2e-4
-    warmup: 2000
+    matches:
+    - TransformerBlock
+    - GridSelfAttention
+    lr: 0.0005
+    warmup: 500
 model:
   _target_: stableclimgen.src.models.mg_vae.mg_vae.MG_VAE
   mgrids: ${mgrids}
-  in_zooms: ${dataloader.dataset.out_zooms}
   mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
+  in_zooms: ${dataloader.dataset.out_zooms}
   in_features: 1
   out_features: 1
   lift_features: 1
   n_head_channels: 16
-  learn_residual: true
   layer_confs_emb:
     n_vars_total: 1
-    rank_feat: 4
+    rank_feat: 2
   encoder_block_configs:
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128, 128 ]
+    "0":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: 'linear'
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128,128]
+        type: linear
+    "1":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: "TransformerBlock"
-        blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 2
+        type: TransformerBlock
+        blocks:
+        - vsnh
+        - mlp
+        - vsnh
+        - mlp
+        seq_lengths: [2, 2, 2, 2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+          embed_mode: sum
+    "2":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [3]
-      kv_zooms: [6,5,3]
+      q_zooms:
+      - 3
+      kv_zooms:
+      - 4
+      - 3
       layer_settings:
         with_nh: true
         common_kv: false
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: ["MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128,128]
+          embed_mode: sum
+    "3":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: "TransformerBlock"
-        blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 2
+        type: TransformerBlock
+        blocks:
+        - vsnh
+        - mlp
+        - vsnh
+        - mlp
+        seq_lengths: [2, 2, 2, 2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+          embed_mode: sum
+    "4":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [3]
-      kv_zooms: [6,5,3]
-      out_zooms: [3]
+      q_zooms:
+      - 3
+      kv_zooms:
+      - 4
+      - 3
+      out_zooms:
+      - 3
       layer_settings:
         with_nh: true
         common_kv: false
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
+          embed_mode: sum
   decoder_block_configs:
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+    "0":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [6,5,3]
-      kv_zooms: [3]
-      out_zooms: [6,5,3]
+      q_zooms:
+      - 4
+      - 3
+      kv_zooms:
+      - 3
+      out_zooms:
+      - 4
+      - 3
       layer_settings:
         with_nh: true
         common_kv: false
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128,128]
+          embed_mode: sum
+    "1":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: "TransformerBlock"
-        blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 2
+        type: TransformerBlock
+        blocks:
+        - vsnh
+        - mlp
+        - vsnh
+        - mlp
+        seq_lengths: [2, 2, 2, 2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128,128 ]
+          embed_mode: sum
+    "2":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: 'linear'
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128,128 ]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: [ "vsnh","mlp","vsnh","mlp" ]
-        seq_lengths: 2
+        type: TransformerBlock
+        blocks:
+        - vsnh
+        - mlp
+        - vsnh
+        - mlp
+        seq_lengths: [2, 2, 2, 2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
+          embed_mode: sum
+    "3":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [6,5,3]
-      kv_zooms: [6,5,3]
+      q_zooms:
+      - 4
+      - 3
+      kv_zooms:
+      - 4
+      - 3
       layer_settings:
         with_nh: true
         common_kv: false
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128,128 ]
+          embed_mode: sum
+    "4":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 128
+      - 128
+      - 128
+      - 128
       layer_settings:
-        type: "TransformerBlock"
-        blocks: [ "vsnh","mlp","vsnh","mlp" ]
-        seq_lengths: 2
+        type: TransformerBlock
+        blocks:
+        - vsnh
+        - mlp
+        - vsnh
+        - mlp
+        seq_lengths: [2, 2, 2, 2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 1,1,1, 1 ]
+          embed_mode: sum
+    "5":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 1
+      - 1
+      - 1
+      - 1
       layer_settings:
-        type: 'mlp'
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
+        type: mlp
+    "6":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
   quant_config:
     _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-    out_features: [ 4, 4, 4 ]
+    out_features:
+    - 4
+    - 4
+    - 4
     layer_settings:
-      type: "TransformerBlock"
-      blocks: [ "mlp" ]
-      seq_lengths: 2
+      type: TransformerBlock
+      blocks:
+      - mlp
+      seq_lengths: [2, 2, 2, 2]
       n_head_channels: 32
       mlp_mult: 2
       embed_confs:
         embed_names:
-          - ["MGEmbedder"]
+        - - MGEmbedder
         embed_confs: ${embedding}
-        embed_mode: "sum"
+        embed_mode: sum
