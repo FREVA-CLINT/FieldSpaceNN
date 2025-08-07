@@ -32,18 +32,39 @@ def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk
     Returns:
         Tensor of shape (B, H, L_q, D)
     """
-    B = q.shape[0]
-    chunks = [
-        scaled_dot_product_attention(
-            q[i:i+chunk_size],
-            k[i:i+chunk_size],
-            v[i:i+chunk_size],
-            attn_mask=None if mask is None else mask[i:i+chunk_size],
-            is_causal=is_causal
+    B, H, _, _ = q.shape
+
+    safe_chunk_size = chunk_size // H
+
+    if B <= safe_chunk_size:
+        return scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=is_causal
         )
-        for i in range(0, B, chunk_size)
-    ]
-    return torch.cat(chunks, dim=0)
+
+    results = []
+    for i in range(0, B, safe_chunk_size):
+        q_chunk = q[i:i + safe_chunk_size]
+        k_chunk = k[i:i + safe_chunk_size]
+        v_chunk = v[i:i + safe_chunk_size]
+
+        mask_chunk = None
+        if mask is not None:
+            if mask.dim() == 4:
+                mask_chunk = mask[i:i + safe_chunk_size]
+            else:
+                mask_chunk = mask
+        
+        chunk_result = scaled_dot_product_attention(
+            q_chunk,
+            k_chunk,
+            v_chunk,
+            attn_mask=mask_chunk,
+            dropout_p=0.0,
+            is_causal=is_causal,
+        )
+        results.append(chunk_result)
+
+    return torch.cat(results, dim=0)
 
 
 class SelfAttention(nn.Module):
