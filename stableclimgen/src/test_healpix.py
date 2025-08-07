@@ -110,7 +110,7 @@ def test(cfg: DictConfig) -> None:
             for k, var in enumerate(variables):
                 data[:,:,k] = var_normalizers[var].normalize(data[:,:,k])
 
-            embed_data = {'VariableEmbedder': torch.tensor(var_indices).unsqueeze(dim=0)}
+            embed_data = {'GroupEmbedder': torch.tensor(var_indices).unsqueeze(dim=0)}
 
             if coarsen_level_batches!=-1:
                 indices_sample = {'sample': torch.arange(data.shape[0]//4**coarsen_level_batches),
@@ -120,7 +120,7 @@ def test(cfg: DictConfig) -> None:
                 if input_coordinates is not None:
                     input_coordinates = input_coordinates.view(len(indices_sample['sample']),-1,input_coordinates.shape[2],2)
 
-                embed_data['VariableEmbedder'] = embed_data['VariableEmbedder'].repeat_interleave(data.shape[0],dim=0)
+                embed_data['GroupEmbedder'] = embed_data['GroupEmbedder'].repeat_interleave(data.shape[0],dim=0)
             else:
                 data = torch.tensor(data[np.newaxis,...,np.newaxis])
                 indices_sample=None

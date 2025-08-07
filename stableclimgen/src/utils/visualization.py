@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from scipy.interpolate import griddata
 
-def healpix_plot_local(values, zoom, ax=None, vmin=None, vmax=None, title="", zoom_patch_sample=1, patch_index=0):
+def healpix_plot_local(values, zoom, ax=None, vmin=None, vmax=None, title="", zoom_patch_sample=1, patch_index=0, **kwargs):
     ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_index[0]]
     lon, lat = hp.pix2ang(2**zoom, ipix, nest=True, lonlat=True)
 
@@ -48,7 +48,7 @@ def healpix_plot_local(values, zoom, ax=None, vmin=None, vmax=None, title="", zo
     cbar.ax.tick_params(labelsize=8)
     cbar.ax.set_xticklabels([f"{x:.2f}" for x in tick_locs])
 
-def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_dict={}):
+def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs={}):
     """
     Plot HEALPix maps per zoom level for a specific variable and save the result.
     """
@@ -61,6 +61,7 @@ def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_di
     titles = ['Input', 'Output', 'Ground Truth', 'Error']
 
     for row_idx, zoom in enumerate(zoom_levels):
+        sample_configs_zoom = sample_configs[zoom]
         inp_map = input_maps[zoom]
         out_map = output_maps[zoom]
         gt_map = gt_maps[zoom]
@@ -76,7 +77,7 @@ def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_di
         for col_idx in range(n_cols):
             plot_idx = row_idx * n_cols + col_idx + 1  # 1-based index for subplots
 
-            if len(sample_dict)==0:
+            if sample_configs_zoom['zoom_patch_sample']==-1:
                 hp.mollview(maps[col_idx],
                             title=f"{titles[col_idx]} (zoom {zoom})",
                             sub=(n_rows, n_cols, plot_idx),
@@ -92,7 +93,7 @@ def plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_di
                                   vmin=min_max[col_idx][0], 
                                   vmax=min_max[col_idx][1], 
                                   title=f"{titles[col_idx]} (zoom {zoom})", 
-                                  **sample_dict)
+                                  **sample_configs_zoom)
 
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -103,7 +104,7 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
                            gt_zooms: Dict[int, torch.Tensor],
                            save_dir: str, 
                            mask_zooms: Dict[int, torch.Tensor] = None,
-                           sample_dict={}, 
+                           sample_configs={}, 
                            emb=None,
                            plot_name: str = "healpix_plot",
                            sample: int = 0,
@@ -136,13 +137,13 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
                 mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0].float().cpu().numpy() if mask_zooms is not None else None
 
             # Use embedding index for variable name if available
-            if emb is not None and 'VariableEmbedder' in emb:
-                var_idx = emb['VariableEmbedder'][sample, var].item()
+            if emb is not None and 'GroupEmbedder' in emb:
+                var_idx = emb['GroupEmbedder'][sample, var].item()
             else:
                 var_idx = var
 
             save_path = os.path.join(save_dir, f"{plot_name}_{ts}_{var_idx}.png")
-            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_dict=sample_dict)
+            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs=sample_configs)
             save_paths.append(save_path)
     
     return save_paths

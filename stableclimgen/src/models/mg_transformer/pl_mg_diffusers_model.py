@@ -83,7 +83,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
             self.encoder = None
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         timesteps = torch.randint(0, self.schedulers[list(target.keys())[0]].config.num_train_timesteps,
                                   (target[list(target.keys())[0]].shape[0],),
                                   device=self.device).long()
@@ -92,9 +92,9 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         noisy_target_zooms = {zoom: self.schedulers[zoom].add_noise(target[zoom], noise_zooms[zoom], timesteps) for zoom in target.keys()}
 
         emb["DiffusionStepEmbedder"] = timesteps
-        model_pred_zooms = self(noisy_target_zooms, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
+        model_pred_zooms = self(noisy_target_zooms, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs,
                                 mask=mask, emb=emb, dists_input=rel_dists_input)
-        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_dict=sample_dict, prefix='train/')
+        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -102,12 +102,12 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         return loss
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         timesteps = torch.randint(0, self.schedulers[list(target.keys())[0]].config.num_train_timesteps,
                                   (target[list(target.keys())[0]].shape[0],),
                                   device=self.device).long()
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
+        sample_configs = self.prepare_sample_configs(sample_configs)
 
         noise_zooms = {int(zoom): torch.where(~mask[zoom], torch.zeros_like(target[zoom]), torch.randn_like(target[zoom])) for zoom in target.keys()}
         noisy_target_zooms = {zoom: self.schedulers[zoom].add_noise(target[zoom], noise_zooms[zoom], timesteps) for zoom in
@@ -115,9 +115,9 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
         emb["DiffusionStepEmbedder"] = timesteps
         model_pred_zooms = self(noisy_target_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
-                                sample_dict=sample_dict,
+                                sample_configs=sample_configs,
                                 mask=mask, emb=emb, dists_input=rel_dists_input)
-        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_dict=sample_dict, prefix='val/')
+        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='val/')
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -133,14 +133,14 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                     noisy_target_zooms[zoom][0:1]  # Slice to get a single sample
                 ).pred_original_sample
                 pred_xstart[zoom] = pred_zoom
-            self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
+            self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch)
 
         return loss
 
     def predict_step(self, batch, batch_idx):
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
+    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_configs, dists_input):
         mask_zooms = mask
         image_zooms = {int(zoom): torch.where(~mask_zooms[zoom], source[zoom], torch.randn_like(source[zoom])) for zoom in source.keys()}
         batch_size = next(iter(image_zooms.values())).shape[0]
@@ -168,7 +168,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                                                             image_zooms[zoom])
 
                     noise_pred_zooms =  self.model(image_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
-                                          sample_dict=sample_dict,
+                                          sample_configs=sample_configs,
                                           mask_zooms=mask.copy(), emb=emb.copy())
 
                     for zoom in image_zooms.keys():
@@ -187,7 +187,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
                 emb["DiffusionStepEmbedder"] = timesteps
 
                 noise_pred_zooms = self.model(image_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
-                                          sample_dict=sample_dict,
+                                          sample_configs=sample_configs,
                                           mask_zooms=mask, emb=emb)
 
                 stepped_zooms = {}

@@ -46,24 +46,24 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.save_hyperparameters(ignore=['model'])
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
+    def forward(self, x, coords_input, coords_output, sample_configs={}, mask=None, emb=None, dists_input=None):
+        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_configs, mask, emb, dists_input)
 
         interp_x = 0
         if self.residual_interpolator_up and self.residual_interpolator_down:
             interp_x, _ = self.residual_interpolator_down(x,
                                                           calc_density=False,
-                                                          sample_dict=sample_dict)
+                                                          sample_configs=sample_configs)
             interp_x, _ = self.residual_interpolator_up(interp_x.unsqueeze(dim=-3),
                                                         calc_density=False,
-                                                        sample_dict=sample_dict)
-        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, residual=interp_x)
+                                                        sample_configs=sample_configs)
+        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, residual=interp_x)
         return x, posterior
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
+        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -81,13 +81,13 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
+        sample_configs = self.prepare_sample_configs(sample_configs)
 
-        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        output, posterior = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
 
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='val/')
+        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='val/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -104,12 +104,12 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         if batch_idx == 0 and rank_zero_only:
             if hasattr(self, "interpolator") and self.interpolator is not None:
-                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, sample_dict=sample_dict, calc_density=True, input_dists=rel_dists_input)
+                input_inter, input_density = self.interpolator(source, mask=mask, input_coords=coords_input, sample_configs=sample_configs, calc_density=True, input_dists=rel_dists_input)
             else:
                 input_inter = None
                 input_density = None
             has_var = hasattr(self.model, 'predict_var') and self.model.predict_var
-            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_dict,
+            self.log_tensor_plot(source, output, target, coords_input, coords_output, mask, sample_configs,
                                  f"tensor_plot_{int(self.current_epoch)}", emb, input_inter=input_inter,
                                  input_density=input_density, has_var=has_var)
 
@@ -122,6 +122,6 @@ class Lightning_MGNO_VAE(LightningMGNOBaseModel, LightningProbabilisticModel):
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_dict, input_dists):
-        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=input_dists)
+    def _predict_step(self, source, mask, emb, coords_input, coords_output, sample_configs, input_dists):
+        output, posterior, _ = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=input_dists)
         return output

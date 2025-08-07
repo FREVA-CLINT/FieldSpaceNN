@@ -50,7 +50,7 @@ class MG_Transformer(MG_base_model):
             self.mg_emeddings = get_mg_embedding(
                 self.grid_layers[str(mg_emb_zoom)],
                 mg_emb_confs['features'],
-                mg_emb_confs.get("n_vars_total",1),
+                mg_emb_confs.get("n_groups",1),
                 init_mode=mg_emb_confs.get('init_method','fourier_sphere'))
         else:
             mg_emb_zoom = 0
@@ -89,7 +89,7 @@ class MG_Transformer(MG_base_model):
             elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
                 block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
                                     block_conf.features,
-                                    n_vars_total=check_get([block_conf,kwargs,{'n_vars_total': 1}], "n_vars_total"),
+                                    n_groups=check_get([block_conf,kwargs,{'n_groups': 1}], "n_groups"),
                                     zooms = in_zooms,
                                     init_mode=check_get([block_conf,kwargs,{'init_mode': "fourier_sphere"}], "init_mode"),
                                     layer_confs=layer_confs)
@@ -128,7 +128,7 @@ class MG_Transformer(MG_base_model):
             self.register_buffer('gamma', torch.ones(1), persistent=False)
 
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], coords_input, coords_output, sample_dict={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
+    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -146,19 +146,19 @@ class MG_Transformer(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        emb['MGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
+        emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
 
-       # x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
-       # mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
+       # x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
+       # mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
         
-       # x_zooms = self.encoder(x_zooms, emb=emb, sample_dict=sample_dict)
+       # x_zooms = self.encoder(x_zooms, emb=emb, sample_configs=sample_configs)
        
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
 
         for k, block in enumerate(self.Blocks.values()):
             # Process input through the block
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():

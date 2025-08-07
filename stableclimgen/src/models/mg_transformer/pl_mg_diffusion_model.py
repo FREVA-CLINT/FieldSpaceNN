@@ -54,24 +54,24 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
             self.encoder = None
 
 
-    def forward(self, x, diffusion_steps, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None, create_pred_xstart=False):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
+    def forward(self, x, diffusion_steps, coords_input, coords_output, sample_configs={}, mask=None, emb=None, dists_input=None, create_pred_xstart=False):
+        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_configs, mask, emb, dists_input)
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'sample_dict': sample_dict
+            'sample_configs': sample_configs
         }
         targets, outputs, pred_xstart = self.gaussian_diffusion.training_losses(self.model, x, diffusion_steps, mask, emb, create_pred_xstart=create_pred_xstart, **model_kwargs)
         return targets, outputs, pred_xstart
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         max_zoom = max(target.keys())
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target[max_zoom].shape[0], target[max_zoom].device)
 
-        targets, outputs, _ = self(target, diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input)
+        targets, outputs, _ = self(target, diffusion_steps, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input)
 
-        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_dict=sample_dict, prefix='train/')
+        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -80,20 +80,20 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
         max_zoom = max(target.keys())
         diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target[max_zoom].shape[0], target[max_zoom].device)
 
-        targets, outputs, pred_xstart = self(target.copy(), diffusion_steps, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, create_pred_xstart=(batch_idx == 0 and rank_zero_only))
-        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_dict=sample_dict, prefix='val/')
+        targets, outputs, pred_xstart = self(target.copy(), diffusion_steps, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, create_pred_xstart=(batch_idx == 0 and rank_zero_only))
+        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_configs=sample_configs, prefix='val/')
 
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source, pred_xstart, target, mask, sample_dict, emb, self.current_epoch)
+            self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch)
 
         return loss
 
@@ -102,17 +102,17 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
-        interp_x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(target,
+    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_configs, dists_input):
+        interp_x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(target,
                                                                                                          coords_input,
                                                                                                          coords_output,
-                                                                                                         sample_dict,
+                                                                                                         sample_configs,
                                                                                                          mask, emb,
                                                                                                          dists_input)
         model_kwargs = {
             'coords_input': coords_input,
             'coords_output': coords_output,
-            'sample_dict': sample_dict
+            'sample_configs': sample_configs
         }
 
         outputs = self.sampler.sample_loop(self.model, source, mask, progress=True, emb=emb, **model_kwargs)

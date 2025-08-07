@@ -181,10 +181,10 @@ class NHAttention(nn.Module):
             self.reverse_pattern = '(b t s v) 1 c -> b t s v c'
 
 
-    def forward(self, x: torch.Tensor, emb, mask=None, sample_dict: Dict={}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb, mask=None, sample_configs: Dict={}) -> torch.Tensor:
         b, t, s, v, c = x.shape
 
-        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_dict, with_nh=True, mask=mask)
+        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
 
         x = rearrange(x, self.pattern)
         x_nh = rearrange(x_nh, self.nh_pattern)
@@ -351,7 +351,7 @@ class TransformerBlock(EmbedBlock):
         self.residuals = nn.ModuleList(residuals)
 
     def forward(self, x: torch.Tensor, kv: torch.Tensor=None, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
-                sample_dict: Optional[Dict] = None, *args) -> torch.Tensor:
+                sample_configs: Optional[Dict] = None, *args) -> torch.Tensor:
         """
         Forward pass for the TransformerBlock.
 
@@ -366,8 +366,8 @@ class TransformerBlock(EmbedBlock):
         """
         for block, lin_emb_layer, residual in zip(self.blocks, self.lin_emb_layers, self.residuals):
 
-            out = lin_emb_layer(x, emb=emb, sample_dict=sample_dict)
-            x = block(out, emb=emb, sample_dict=sample_dict, mask=mask) + residual(x, emb=emb)
+            out = lin_emb_layer(x, emb=emb, sample_configs=sample_configs)
+            x = block(out, emb=emb, sample_configs=sample_configs, mask=mask) + residual(x, emb=emb)
 
         return x
 

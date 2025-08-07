@@ -194,7 +194,7 @@ class RearrangeNHCentric(RearrangeBlock):
         self.reverse_pattern = '(b v t s) n c -> b v t (s n) c'
 
     
-    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None, sample_dict: Dict = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None, sample_configs: Dict = None) -> torch.Tensor:
         
 
         q = self.proj_layer_q(x, emb=emb)
@@ -205,9 +205,8 @@ class RearrangeNHCentric(RearrangeBlock):
 
         x, x_nh = x.split([x.shape[-1]//3, 2*x.shape[-1]//3],dim=-1)
 
-        x_nh, mask_nh = self.grid_layer.get_nh(x_nh, **sample_dict, with_nh=True, mask=mask)
+        x_nh, mask_nh = self.grid_layer.get_nh(x_nh, **sample_configs, with_nh=True, mask=mask)
 
-        
         x = x.view(*x_nh.shape[:4],-1, x.shape[-1])
 
         b, v, t, s, n, c = x.shape

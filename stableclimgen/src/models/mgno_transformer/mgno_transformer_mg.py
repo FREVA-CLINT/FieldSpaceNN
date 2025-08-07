@@ -118,7 +118,7 @@ class MGNO_Transformer_MG(MGNO_base_model):
 
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None):
+    def forward(self, x, coords_input, coords_output, sample_configs={}, mask=None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -142,18 +142,18 @@ class MGNO_Transformer_MG(MGNO_base_model):
         if self.learn_residual:
             x_res = x
 
-        x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
+        x = self.in_layer(x, sample_configs=sample_configs, emb=emb)
 
-        x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
-        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
+        x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
+        mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
 
         for k, block in enumerate(self.Blocks):
                         
             # Process input through the block
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        x = x_zooms[int(sample_dict['zoom'][0]) if sample_dict else self.max_zoom]
-        x = self.out_layer(x, emb=emb, sample_dict=sample_dict)
+        x = x_zooms[int(sample_configs['zoom'][0]) if sample_configs else self.max_zoom]
+        x = self.out_layer(x, emb=emb, sample_configs=sample_configs)
 
         x = x.view(b,nv,nt,n,-1)
 

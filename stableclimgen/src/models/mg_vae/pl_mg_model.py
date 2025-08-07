@@ -50,7 +50,7 @@ class MGMultiLoss(nn.Module):
                         'fcn': globals()[key](grid_layers[str(max_zoom)])
                     })
 
-    def forward(self, output, target, mask=None, sample_dict=None, prefix=''):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix=''):
         loss_dict = {}
         total_loss = 0
 
@@ -61,14 +61,14 @@ class MGMultiLoss(nn.Module):
             # Level-specific losses
             if level_key in self.level_loss_fcns:
                 for loss_fcn in self.level_loss_fcns[level_key]:
-                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                     name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                     loss_dict[name] = loss.item()
                     total_loss += loss_fcn['lambda'] * loss
 
             # Common losses
             for loss_fcn in self.common_loss_fcns:
-                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                 name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                 loss_dict[name] = loss.item()
                 total_loss += loss_fcn['lambda'] * loss
@@ -104,21 +104,21 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
 
         self.decomposed_loss = decomposed_loss
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None, return_zooms=True):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+    def forward(self, x, coords_input, coords_output, sample_configs={}, mask=None, emb=None, dists_input=None, return_zooms=True):
+        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_configs, mask, emb, dists_input)
+        x, posterior = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb)
         return x, posterior
     
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
         
         if not self.decomposed_loss:
             max_zoom = max(target.keys())
             target = {max_zoom: decode_zooms(target,max_zoom)}
             output = {max_zoom: decode_zooms(output,max_zoom)}
 
-        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
+        rec_loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -138,12 +138,12 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
 
     def validation_step(self, batch, batch_idx):
 
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
 
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
+        sample_configs = self.prepare_sample_configs(sample_configs)
 
-        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        output, posterior_zooms = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
 
         target_loss = target.copy()
         output_loss = output.copy()
@@ -153,7 +153,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
             target_loss = {max_zoom: decode_zooms(target_loss,max_zoom)}
             output_loss = {max_zoom: decode_zooms(output_loss,max_zoom)}
 
-        rec_loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_dict=sample_dict, prefix='val/')
+        rec_loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_configs=sample_configs, prefix='val/')
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0:
@@ -169,7 +169,7 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         self.log_dict(loss_dict, prog_bar=True, sync_dist=False)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
+            self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch)
 
         return loss
 
@@ -178,21 +178,21 @@ class LightningMGVAEModel(LightningMGNOBaseModel, LightningProbabilisticModel):
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_dict, dists_input):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(source,
+    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_configs, dists_input):
+        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(source,
                                                                                                   coords_input,
                                                                                                   coords_output,
-                                                                                                  sample_dict, mask,
+                                                                                                  sample_configs, mask,
                                                                                                   emb, dists_input)
         if self.mode == "encode_decode":
             outputs, posterior = self.model(source, coords_input=coords_input, coords_output=coords_output,
-                                           sample_dict=sample_dict, mask=mask, emb=emb)
+                                           sample_configs=sample_configs, mask=mask, emb=emb)
         elif self.mode == "encode":
-            outputs = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict,
+            outputs = self.model.encode(x, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs,
                                        mask=mask, emb=emb)
         elif self.mode == "decode":
             outputs = self.model.decode(x, coords_input=coords_input, coords_output=coords_output,
-                                       sample_dict=sample_dict,
+                                       sample_configs=sample_configs,
                                        mask=mask, emb=emb)
         outputs = decode_zooms(outputs, max(outputs.keys()))
         return outputs

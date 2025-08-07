@@ -9,7 +9,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         self.max_batchsize = max_batchsize
 
     def predict_step(self, batch, batch_index):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
         batch_size = source.shape[0]
         total_samples = batch_size * self.n_samples  # Total expanded batch size
 
@@ -20,7 +20,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         rel_dists_input = rel_dists_input.repeat_interleave(self.n_samples, dim=0)
         mask = mask.repeat_interleave(self.n_samples, dim=0).unsqueeze(-1)
 
-        indices = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in sample_dict.items()}
+        indices = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in sample_configs.items()}
         emb = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in emb.items()}
 
         outputs = []
@@ -30,7 +30,7 @@ class LightningProbabilisticModel(pl.LightningModule):
 
             # Slice dictionaries properly
             emb_chunk = {k: v[start:end] for k, v in emb.items()}
-            sample_dict_chunk = indices[start:end] if torch.is_tensor(indices) else {k: v[start:end] for k, v in indices.items()}
+            sample_configs_chunk = indices[start:end] if torch.is_tensor(indices) else {k: v[start:end] for k, v in indices.items()}
 
             output_chunk = self._predict_step(
                 source=source[start:end],
@@ -38,7 +38,7 @@ class LightningProbabilisticModel(pl.LightningModule):
                 emb=emb_chunk,
                 coords_input=coords_input[start:end],
                 coords_output=coords_output[start:end],
-                sample_dict=sample_dict_chunk,
+                sample_configs=sample_configs_chunk,
                 input_dists=rel_dists_input[start:end]
             )
             outputs.append(output_chunk)

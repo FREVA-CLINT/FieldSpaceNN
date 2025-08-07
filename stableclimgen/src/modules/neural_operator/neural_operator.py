@@ -42,16 +42,16 @@ class NoLayer(nn.Module):
     
         self.no_nh_dist = rcm.nh_dists[no_zoom]
 
-    def transform(self, x, sample_dict=None, mask=None, emb=None, **kwargs):
+    def transform(self, x, sample_configs={}, mask=None, emb=None, **kwargs):
         
-        coordinates_rel, x, mask = self.rcm(self.in_zoom, self.no_zoom, sample_dict=sample_dict, x=x, mask=mask)
+        coordinates_rel, x, mask = self.rcm(self.in_zoom, self.no_zoom, sample_configs=sample_configs, x=x, mask=mask)
             
         return self.transform_(x, coordinates_rel, mask=mask, emb=emb)
         
 
-    def inverse_transform(self, x, sample_dict=None,  mask=None, emb=None, **kwargs):
+    def inverse_transform(self, x, sample_configs={},  mask=None, emb=None, **kwargs):
         
-        coordinates_rel, x, mask = self.rcm(self.no_zoom, self.out_zoom, sample_dict=sample_dict, x=x, mask=mask)
+        coordinates_rel, x, mask = self.rcm(self.no_zoom, self.out_zoom, sample_configs=sample_configs, x=x, mask=mask)
 
         return self.inverse_transform_(x, coordinates_rel, mask=mask, emb=emb)
 

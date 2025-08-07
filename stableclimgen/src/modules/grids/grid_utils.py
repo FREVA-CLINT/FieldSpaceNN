@@ -528,42 +528,244 @@ def hierarchical_zoom_distance_map(input_coords, max_zoom):
     return results
 
 
-def get_mapping_weights(mapping, drop_mask=None,  mode='binary'):
-    zooms = [z for z in mapping.keys()]
+def get_mapping_weights_zoom(mapping_zooms: Dict, drop_mask=None,  mode='binary'): 
 
     weights_zooms = {}
 
-    for zoom in zooms:
-
-        weights = mapping[zoom]['distances'] 
-
-        if drop_mask is not None:
-            drop_mask_zoom = drop_mask[mapping[zoom]['indices']]
-            weights = weights + (drop_mask_zoom * 1e5)
-
-        if mode == '1/r':
-            weights = mapping[zoom]["resolution"]/weights 
-
-            weights[weights> 1.] = 1.
-
-            #weights = weights.mean(dim=-1)
-            
-            weights_zooms[zoom] = weights
-        
-        elif mode == 'normal':
-            pass
-
-        elif mode == 'binary':
-            weights = mapping[zoom]["resolution"]/weights 
-
-            weights[weights> 1.] = 1.
-            weights[weights< 1.] = 0.
-
-            #weights = weights.mean(dim=-1).bool()
-
-            weights_zooms[zoom] = weights.bool()
+    for zoom, mapping in mapping_zooms.items():
+        weights_zooms[zoom] = get_mapping_weights(mapping, drop_mask=drop_mask, mode=mode)
 
     return weights_zooms
+
+def get_mapping_weights(mapping, drop_mask=None,  mode='binary'): 
+
+    weights = mapping['distances'] 
+
+    if drop_mask is not None:
+        drop_mask_zoom = drop_mask[mapping['indices']]
+        weights = weights + (drop_mask_zoom * 1e5)
+
+    if mode == '1/r':
+        weights = mapping["resolution"]/weights 
+
+        weights[weights> 1.] = 1.
+
+        #weights = weights.mean(dim=-1)
+    
+    elif mode == 'normal':
+        pass
+
+    elif mode == 'binary':
+        weights = mapping["resolution"]/weights 
+
+        weights[weights> 1.] = 1.
+        weights[weights< 1.] = 0.
+
+        #weights = weights.mean(dim=-1).bool()
+
+        weights = weights.bool()
+
+    return weights
+
+
+def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = None, binarize_mask=False):
+    """
+    Rescales tensor x from in_zoom to out_zoom by averaging (zoom in) or repeating (zoom out).
+    If mask is provided, performs masked averaging.
+    """
+    if in_zoom == out_zoom:
+        return x, mask
+
+    scale_factor = 4 ** abs(in_zoom - out_zoom)
+    bvt = x.shape[:-2]
+    c = x.shape[-1]
+
+    if in_zoom > out_zoom:
+        # Downsample by averaging
+        x = x.view(*bvt, -1, scale_factor, c)
+        if mask is not None:
+            mask = mask.reshape(*bvt, -1, scale_factor, mask.shape[-1])
+            weight = mask.sum(dim=-2, keepdim=True)
+            x_zoom = (x * mask).sum(dim=-2, keepdim=True) / weight.clamp(min=1e-6)
+            x_zoom[weight == 0] = 0
+
+            mask_zoom = (weight / (1.*scale_factor))
+            if binarize_mask:
+                mask_zoom[mask_zoom > 0] = 1
+                mask_zoom = mask_zoom.bool()
+
+            x_zoom = x_zoom.view(*bvt, -1, c)
+            mask_zoom = mask_zoom.view(*bvt, -1, mask_zoom.shape[-1])
+            return x_zoom, mask_zoom
+        else:
+            x_zoom = x.mean(dim=-2)
+            return x_zoom, None
+
+    else:
+        # Upsample by repeating
+        x_zoom = x.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
+        if mask is not None:
+            mask_zoom = mask.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
+            mask_zoom = mask_zoom * 1. if not binarize_mask else mask
+            return x_zoom, mask_zoom
+        else:
+            return x_zoom, None
+        
+
+def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12):
+    if zoom_h == zoom_target:
+        return x_s
+
+    batched = True
+    if x_h.dim() < 5:
+        x_h = x_h.unsqueeze(0)
+        x_s = x_s.unsqueeze(0)
+        batched = False
+
+    # Validate sizes
+    assert sample_configs[zoom_h]['n_past_ts'] >= sample_configs[zoom_target]['n_past_ts'], \
+        f'zoom {zoom_h} has a smaller number of past timesteps than {zoom_target}'
+    assert sample_configs[zoom_h]['n_future_ts'] >= sample_configs[zoom_target]['n_future_ts'], \
+        f'zoom {zoom_h} has a smaller number of future timesteps than {zoom_target}'
+    assert sample_configs[zoom_h]['zoom_patch_sample'] <= sample_configs[zoom_target]['zoom_patch_sample'], \
+        f'zoom {zoom_h} has a higher zoom_patch_sample than {zoom_target}'
+
+    ts_start = sample_configs[zoom_h]['n_past_ts'] - sample_configs[zoom_target]['n_past_ts']
+    ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
+
+
+    b, nv, nt, n = x_h.shape[:4]
+    c = x_h.shape[4:]
+    t_range = slice(ts_start, nt - ts_end)
+
+    if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
+        x_h_ = x_h.clone()
+        x_h_[:, :, t_range] = x_s
+        return x_h_ if batched else x_h_[0]
+    
+    else:
+        base_exp = 0
+
+        if sample_configs[zoom_h]['zoom_patch_sample'] == -1:
+            zoom_patch_diff = sample_configs[zoom_target]['zoom_patch_sample']
+            base_exp = 1
+        else:
+            zoom_patch_diff = sample_configs[zoom_target]['zoom_patch_sample'] - sample_configs[zoom_h]['zoom_patch_sample']
+
+        n_patches = base**base_exp * 4**zoom_patch_diff
+        patch_index = sample_configs[zoom_target]['patch_index'] % n_patches
+
+        x_h_ = x_h.view(b, nv, nt, n_patches, -1, *c).clone()
+
+        
+
+        if isinstance(patch_index, int) or (isinstance(patch_index, torch.Tensor) and patch_index.numel() == 1):
+            # Fill in the patch directly at index
+            x_h_[:, :, t_range, patch_index] = x_s
+        else:
+            # Broadcast and scatter each batch
+            x_s = x_s.unsqueeze(dim=3)
+            view_shape = (patch_index.shape[0], *([1] * (x_s.dim()-1)))
+            expand_shape = list(x_s.shape)
+            expand_shape[3] = 1
+            patch_index_exp = patch_index.view(view_shape).expand(expand_shape)
+
+            x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter(3, patch_index_exp, x_s)
+
+        x_h_ = x_h_.view(b, nv, nt, n, *c)
+
+        return x_h_ if batched else x_h_[0]
+
+
+def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, base=12):
+
+    if zoom_h==zoom_target:
+        return x_h
+    
+    batched = True
+
+    if x_h.dim()<5:
+        x_h = x_h.unsqueeze(dim=0)
+        batched = False
+    
+
+    if sample_configs[zoom_h]['n_past_ts'] < sample_configs[zoom_target]['n_past_ts']:
+        assert f'zoom {zoom_h} has a smaller number of past timesteps than {zoom_target}'
+
+    if sample_configs[zoom_h]['n_future_ts'] < sample_configs[zoom_target]['n_future_ts']:
+        assert f'zoom {zoom_h} has a smaller number of future timesteps than {zoom_target}'
+
+    if sample_configs[zoom_h]['zoom_patch_sample'] > sample_configs[zoom_target]['zoom_patch_sample']:
+        assert f'zoom {zoom_h} has a higher zoom_patch_sample than {zoom_target}'
+
+    ts_start = sample_configs[zoom_h]['n_past_ts'] - sample_configs[zoom_target]['n_past_ts']
+    ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
+    
+
+    b,nv,nt,n = x_h.shape[:4]
+    c = x_h.shape[4:]
+    
+    if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
+
+        x_h = x_h[:, :, ts_start:(nt-ts_end)]
+        return x_h if batched else x_h[0]
+    
+    else:
+        base_exp = 0 
+        if sample_configs[zoom_h]['zoom_patch_sample'] == -1:
+            zoom_patch_diff = sample_configs[zoom_target]['zoom_patch_sample']
+            base_exp = 1
+
+        else:
+            zoom_patch_diff = sample_configs[zoom_target]['zoom_patch_sample'] - sample_configs[zoom_h]['zoom_patch_sample']
+
+        n_patches = base**base_exp * 4**zoom_patch_diff
+        patch_index = sample_configs[zoom_target]['patch_index'] % n_patches
+
+        
+
+        x_h = x_h.view(b,nv,nt, n_patches, -1 ,*c)
+
+        if isinstance(patch_index, int) or patch_index.numel()==1:
+            x_h = x_h[:, :, ts_start:(nt-ts_end), patch_index]
+        else:
+            x_h = x_h[:, :, ts_start:(nt-ts_end)]
+            view_shape = (patch_index.shape[0],*(1,)*(x_h.dim()-1))
+            expand_shape = list(x_h.shape)
+            expand_shape[3] = 1
+            x_h = torch.gather(x_h, dim=3, index=patch_index.view(view_shape).expand(expand_shape))
+
+        x_h = x_h.view(*x_h.shape[:3],-1,*c)
+
+        if batched:
+            return x_h
+        else:
+            return x_h[0]
+
+
+
+
+
+def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict):
+
+    zooms = sorted(x_zooms.keys(),reverse=True)
+
+    for k in range(len(zooms)-1):
+        zoom = zooms[k]
+        zoom_h = zooms[k+1]
+        
+        x = x_zooms[zoom]
+        x_h = x_zooms[zoom_h]
+
+        bvt = x.shape[:-2]
+        x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs)     
+
+        x = x.view(*bvt, -1, 4**(zoom-zoom_h), x.shape[-1]) - x_h_patch.unsqueeze(dim=-2)
+        x_zooms[zoom] = x.view(*bvt, -1, x.shape[-1])
+
+    return x_zooms
+    
+
 
 
 def encode_zooms(x: torch.Tensor, in_zoom: int, out_zooms:int, apply_diff=True, mask: torch.Tensor=None, binarize_mask=False):
@@ -602,7 +804,7 @@ def encode_zooms(x: torch.Tensor, in_zoom: int, out_zooms:int, apply_diff=True, 
     return x_zooms, mask_zooms
 
 
-def decode_zooms(x_zooms: dict, out_zoom: int):
+def decode_zooms(x_zooms: dict, out_zoom: int, sample_configs):
     """
     Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
 
@@ -620,7 +822,7 @@ def decode_zooms(x_zooms: dict, out_zoom: int):
         if zoom > out_zoom:
             continue  # Skip higher-resolution than target
 
-        x_zoom = x_zooms[zoom]  # shape [..., N, C]
+        x_zoom = get_matching_time_patch(x_zooms[zoom],zoom,out_zoom, sample_configs)  # shape [..., N, C]
         up_factor = 4 ** (out_zoom - zoom)
         x_zoom = x_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
 

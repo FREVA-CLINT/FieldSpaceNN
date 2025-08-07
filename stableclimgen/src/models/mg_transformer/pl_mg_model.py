@@ -24,6 +24,12 @@ def check_empty(x):
 
 import torch.nn as nn
 
+def merge_sampling_dicts(sample_configs, patch_index_zooms):
+    for key, value in patch_index_zooms.items():
+        if key in sample_configs:
+            sample_configs[key]['patch_index'] = value
+
+    return sample_configs
 class MGMultiLoss(nn.Module):
     def __init__(self, lambda_dict, grid_layers=None, max_zoom=None):
         super().__init__()
@@ -47,7 +53,7 @@ class MGMultiLoss(nn.Module):
                         'fcn': globals()[key](grid_layers[str(max_zoom)])
                     })
 
-    def forward(self, output, target, mask=None, sample_dict=None, prefix=''):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix=''):
         loss_dict = {}
         total_loss = 0
 
@@ -58,14 +64,14 @@ class MGMultiLoss(nn.Module):
             # Level-specific losses
             if level_key in self.level_loss_fcns:
                 for loss_fcn in self.level_loss_fcns[level_key]:
-                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                     name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                     loss_dict[name] = loss.item()
                     total_loss += loss_fcn['lambda'] * loss
 
             # Common losses
             for loss_fcn in self.common_loss_fcns:
-                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                 name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                 loss_dict[name] = loss.item()
                 total_loss += loss_fcn['lambda'] * loss
@@ -93,21 +99,23 @@ class LightningMGModel(LightningMGNOBaseModel):
 
         self.decomposed_loss = decomposed_loss
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
+    def forward(self, x, sample_configs={}, mask_zooms=None, emb=None):
+        x: torch.tensor = self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
         return x
     
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = self.trainer.train_dataloader.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
+
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
         if not self.decomposed_loss:
             max_zoom = max(target.keys())
             target = {max_zoom: decode_zooms(target,max_zoom)}
             output = {max_zoom: decode_zooms(output,max_zoom)}
 
-        loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
+        loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -116,13 +124,12 @@ class LightningMGModel(LightningMGNOBaseModel):
     
 
     def validation_step(self, batch, batch_idx):
+        
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
 
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-
-        coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-        output = self(source.copy(), coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
         target_loss = target.copy()
         output_loss = output.copy()
@@ -132,20 +139,23 @@ class LightningMGModel(LightningMGNOBaseModel):
             target_loss = {max_zoom: decode_zooms(target_loss, max_zoom)}
             output_loss = {max_zoom: decode_zooms(output_loss, max_zoom)}
 
-        loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
+        loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_configs=sample_configs, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
+            self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch)
             
         return loss
 
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
+
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source.copy(), sample_configs=sample_configs, mask=mask, emb=emb)
 
         output = decode_zooms(output, max(output.keys()))
         mask = decode_zooms(mask, max(mask.keys()))

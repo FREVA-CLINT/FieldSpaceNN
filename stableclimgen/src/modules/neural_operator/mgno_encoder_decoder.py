@@ -131,7 +131,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             self.reduction_layers[str(out_zoom)] = reduction_layer
     
 
-    def forward(self, x_zooms, sample_dict=None, mask_zooms=None, emb=None):
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
 
         x_zooms_out = {}
         mask_zooms_out = {}
@@ -143,7 +143,7 @@ class MGNO_EncoderDecoder_Block(nn.Module):
             for in_zoom, layer in layers.items():
                 x = x_zooms[int(in_zoom)]
                                 
-                x_out = layer(x, sample_dict=sample_dict, emb=emb)
+                x_out = layer(x, sample_configs=sample_configs, emb=emb)
 
                 outputs_.append(x_out)
 
@@ -237,9 +237,9 @@ class MGNO_StackedEncoderDecoder_Block(nn.Module):
         else:
             self.zooms_concat = []
 
-    def forward(self, x_zooms, sample_dict=None, mask_zooms=None, emb=None):
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         
-        x_zooms_out = self.layer(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+        x_zooms_out = self.layer(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         for zoom in self.zooms_concat:
             x_zooms_out[zoom] = torch.concat((x_zooms_out[zoom], x_zooms[zoom]), dim=-1)

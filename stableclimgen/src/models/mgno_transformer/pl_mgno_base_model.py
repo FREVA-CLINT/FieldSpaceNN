@@ -94,7 +94,7 @@ class MSE_Hole_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None, sample_dict=None,**kwargs):
+    def forward(self, output, target, mask=None, sample_configs={},**kwargs):
         if mask is not None:
             mask = mask.view(output.shape)
             target = target.view(output.shape)[mask]
@@ -112,12 +112,12 @@ class MultiLoss(nn.Module):
                 self.loss_fcns.append({'lambda': float(lambda_), 
                                         'fcn': globals()[target](grid_layer=grid_layer)})
     
-    def forward(self, output, target, mask=None, sample_dict=None, prefix=''):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix=''):
         loss_dict = {}
         total_loss = 0
 
         for loss_fcn in self.loss_fcns:
-            loss = loss_fcn['fcn'](output, target, mask=mask, sample_dict=sample_dict)
+            loss = loss_fcn['fcn'](output, target, mask=mask, sample_configs=sample_configs)
             loss_dict[prefix + loss_fcn['fcn']._get_name()] = loss.item()
             total_loss = total_loss + loss_fcn['lambda'] * loss
         
@@ -130,11 +130,11 @@ class Grad_loss(nn.Module):
         self.grid_layer: GridLayer = grid_layer
         self.loss_fcn = torch.nn.KLDivLoss(log_target=True, reduction='batchmean') 
 
-    def forward(self, output, target, sample_dict=None, mask=None,**kwargs):
-        indices_in  = sample_dict["indices_layers"][int(self.grid_layer.global_zoom)] if sample_dict is not None and isinstance(sample_dict, dict) else None
-        output_nh, _ = self.grid_layer.get_nh(output, indices_in, sample_dict)
+    def forward(self, output, target, sample_configs={}, mask=None,**kwargs):
+        indices_in  = sample_configs["indices_layers"][int(self.grid_layer.global_zoom)] if sample_configs is not None and isinstance(sample_configs, dict) else None
+        output_nh, _ = self.grid_layer.get_nh(output, indices_in, sample_configs)
         
-        target_nh, _ = self.grid_layer.get_nh(target.view(output.shape), indices_in, sample_dict)
+        target_nh, _ = self.grid_layer.get_nh(target.view(output.shape), indices_in, sample_configs)
 
         nh_diff_output = 1+(output_nh[:,:,[0]] - output_nh[:,:,1:])/output_nh[:,:,[0]]
         nh_diff_target = 1+(target_nh[:,:,[0]] - target_nh[:,:,1:])/target_nh[:,:,[0]]
@@ -153,8 +153,8 @@ class NH_loss(nn.Module):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
 
-    def forward(self, output, target=None, sample_dict={}, mask=None,**kwargs):
-        output_nh, _ = self.grid_layer.get_nh(output, **sample_dict)
+    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
 
 
         loss = (((output_nh[...,[0],:] - output_nh[...,1:,:]))**2).mean().sqrt()
@@ -165,8 +165,8 @@ class NH_loss_rel(nn.Module):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
 
-    def forward(self, output, target=None, sample_dict=None, mask=None,**kwargs):
-        output_nh, _ = self.grid_layer.get_nh(output, **sample_dict)
+    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
         
         nh_rel = ((output_nh[...,[0],:] - output_nh[...,1:,:])/output_nh[...,[0],:]).abs()
         nh_rel = nh_rel[nh_rel>=torch.quantile(nh_rel, 0.98)]
@@ -194,9 +194,9 @@ class LightningMGNOBaseModel(pl.LightningModule):
         self.noise_std = noise_std
         self.loss = MultiLoss(lambda_loss_dict, self.model.grid_layer_max if hasattr(self.model,'grid_layer_max') else None)
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
+    def forward(self, x, coords_input, coords_output, sample_configs={}, mask=None, emb=None, dists_input=None):
+        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_configs, mask, emb, dists_input)
+        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
         return x
 
     def on_after_backward(self):
@@ -208,8 +208,8 @@ class LightningMGNOBaseModel(pl.LightningModule):
     
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
 
         if hasattr(self.model,'predict_var') and self.model.predict_var:
             output, output_var = output.chunk(2, dim=-1)
@@ -223,10 +223,10 @@ class LightningMGNOBaseModel(pl.LightningModule):
     
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
         
-        loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
+        loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -236,39 +236,39 @@ class LightningMGNOBaseModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
 
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
+        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
 
         coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
+        sample_configs = self.prepare_sample_configs(sample_configs)
 
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs, mask=mask, emb=emb, dists_input=rel_dists_input)
 
-        loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='validate/')
+        loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
             has_var = hasattr(self.model,'predict_var') and self.model.predict_var
-            self.log_tensor_plot(source, output, target, mask, sample_dict, emb, has_var=has_var)
+            self.log_tensor_plot(source, output, target, mask, sample_configs, emb, has_var=has_var)
             
         return loss
 
 
-    def log_tensor_plot(self, input, output, gt, mask, sample_dict, emb, current_epoch):
+    def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch):
 
         save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
         os.makedirs(save_dir, exist_ok=True)  
 
-        save_paths_zooms = healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_dict=sample_dict, plot_name=f"epoch_{current_epoch}", emb=emb)
+        save_paths_zooms = healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}", emb=emb)
     
         max_zoom = max(self.model.in_zooms)
 
-        source_p = {max_zoom: decode_zooms(input,max_zoom)}
-        output_p = {max_zoom: decode_zooms(output,max_zoom)}
-        target_p = {max_zoom: decode_zooms(gt,max_zoom)}
+        source_p = {max_zoom: decode_zooms(input, max_zoom, sample_configs)}
+        output_p = {max_zoom: decode_zooms(output, max_zoom, sample_configs)}
+        target_p = {max_zoom: decode_zooms(gt, max_zoom, sample_configs)}
         mask = {max_zoom: mask[max_zoom]} if mask is not None else None
-        save_paths = healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_dict=sample_dict, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
+        save_paths = healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
 
         save_paths+=save_paths_zooms
         for k, save_path in enumerate(save_paths):
@@ -346,18 +346,7 @@ class LightningMGNOBaseModel(pl.LightningModule):
    #         if param.grad is None:
    #             print(f"Parameter with no gradient: {name}")
 
-    def prepare_sample_dict(self, sample_dict={}):
-        if sample_dict is None:
-            sample_dict = {}
-        if 'zoom_patch_sample' in sample_dict.keys():
-            sample_dict['zoom_patch_sample'] = sample_dict['zoom_patch_sample'][0] if sample_dict['zoom_patch_sample'].numel()>1 else sample_dict['zoom_patch_sample']
-        return sample_dict
 
-    def prepare_inputs(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        coords_input, coords_output, mask, dists_input = check_empty(coords_input), check_empty(
-            coords_output), check_empty(mask), check_empty(dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-
-        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_dict)
-        return x, coords_input, coords_output, sample_dict, mask, emb, dists_input
+    def prepare_emb(self, emb=None, sample_configs={}):
+        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_configs)
+        return emb

@@ -74,13 +74,13 @@ class MG_Sum_Decoder(nn.Module):
         self.in_zooms = in_zooms
 
 
-    def forward(self, x_zooms, sample_dict=None, **kwargs):
+    def forward(self, x_zooms, sample_configs={}, **kwargs):
 
         k = 0
         for in_zoom, layer in self.proj_layers.items():
             x_out = x_zooms[int(in_zoom)]
             
-            x_out = layer(x_out, sample_dict=sample_dict)
+            x_out = layer(x_out, sample_configs=sample_configs)
 
             if k == 0:
                 x = x_out
@@ -130,14 +130,14 @@ class MG_Encoder(nn.Module):
                 self.layers[str(out_zoom)] = get_layer(in_features, out_features_list[k], layer_confs=layer_confs)
                 
 
-    def forward(self, x_zoom, emb=None, sample_dict={},**kwargs):
+    def forward(self, x_zoom, emb=None, sample_configs={},**kwargs):
 
         in_zoom = list(x_zoom.keys())[0]
         x = x_zoom[in_zoom]
 
         for out_zoom, layer in self.layers.items():
 
-            x_out = layer(x, emb=emb, sample_dict=sample_dict)
+            x_out = layer(x, emb=emb, sample_configs=sample_configs)
 
             x_zoom[int(out_zoom)] = x_out
 
@@ -195,13 +195,13 @@ class MG_Decoder(nn.Module):
         self.with_residual = with_residual
         self.gamma = nn.Parameter(torch.ones(out_features)*1e-6, requires_grad=True)
 
-    def forward(self, x_zooms, emb=None, sample_dict={},**kwargs):
+    def forward(self, x_zooms, emb=None, sample_configs={},**kwargs):
 
         x_out = []
         
         for in_zoom, layer in self.layers.items():
 
-            x = layer(x_zooms[int(in_zoom)], emb=emb, sample_dict=sample_dict)
+            x = layer(x_zooms[int(in_zoom)], emb=emb, sample_configs=sample_configs)
 
             x_out.append(x)
 
@@ -209,7 +209,7 @@ class MG_Decoder(nn.Module):
             x = torch.stack(x_out,dim=-1).sum(dim=-1)
         
         else:
-            x = self.aggregation_layer(torch.stack(x_out, dim=-1), emb=emb, sample_dict=sample_dict)
+            x = self.aggregation_layer(torch.stack(x_out, dim=-1), emb=emb, sample_configs=sample_configs)
 
         if self.with_residual and self.out_zooms[0] in x_zooms.keys():
             x = self.gamma*x + x_zooms[self.out_zooms[0]]

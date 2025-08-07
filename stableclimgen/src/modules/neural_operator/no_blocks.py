@@ -85,7 +85,7 @@ class Stacked_NOBlock(nn.Module):
             self.mlp_layers[str(out_zoom)] = MLP_fac(
                 in_features,
                 out_features,
-                layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                layer_confs={'n_groups': layer_confs['n_groups'],
                              'rank_vars':None,
                              'rank_feats':None,
                              'rank_channel':None,
@@ -95,12 +95,12 @@ class Stacked_NOBlock(nn.Module):
         self.activation = nn.SiLU()
               
 
-    def forward(self, x_zooms, sample_dict=None, mask_zooms=None, emb=None):
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         
         x_zooms_input = x_zooms
 
         x_zooms_out = self.no_conv(x_zooms, 
-                             sample_dict=sample_dict, 
+                             sample_configs=sample_configs, 
                              mask_zooms=mask_zooms, 
                              emb=emb)
 
@@ -111,11 +111,11 @@ class Stacked_NOBlock(nn.Module):
             else:
                 x_res = x_zooms_input[self.max_zoom_in]
             
-            x = self.gammas1[str(out_zoom)] * self.layer_norms1[str(out_zoom)](x, emb=emb, sample_dict=sample_dict) + self.lin_skip_inner[str(out_zoom)](x_res)
+            x = self.gammas1[str(out_zoom)] * self.layer_norms1[str(out_zoom)](x, emb=emb, sample_configs=sample_configs) + self.lin_skip_inner[str(out_zoom)](x_res)
 
             x = self.mlp_layers[str(out_zoom)](x, emb=emb)   
         
-            x = self.layer_norms2[str(out_zoom)](x, emb=emb, sample_dict=sample_dict)
+            x = self.layer_norms2[str(out_zoom)](x, emb=emb, sample_configs=sample_configs)
 
             x = self.gammas2[str(out_zoom)] * x + self.lin_skip_outer[str(out_zoom)](x_res)
 
@@ -195,7 +195,7 @@ class Stacked_PreActivationNOBlock(nn.Module):
             self.mlp_layers[str(out_zoom)] =  MLP_fac(
                                             in_features,
                                             out_features,
-                                            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+                                            layer_confs={'n_groups': layer_confs['n_groups'],
                                                         'rank_vars':None,
                                                         'rank_feats':None,
                                                         'rank_channel':None,
@@ -205,7 +205,7 @@ class Stacked_PreActivationNOBlock(nn.Module):
         self.activation = nn.SiLU()
               
 
-    def forward(self, x_zooms, sample_dict=None, mask_zooms=None, emb=None):
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         
         x_zooms_input = x_zooms
         mask_zooms_input = mask_zooms
@@ -214,11 +214,11 @@ class Stacked_PreActivationNOBlock(nn.Module):
         for in_zoom in self.in_zooms:
             in_zoom = int(in_zoom)
 
-            x_zooms[in_zoom] = self.layer_norms1[str(in_zoom)](x_zooms_input[in_zoom], emb=emb, sample_dict=sample_dict)
+            x_zooms[in_zoom] = self.layer_norms1[str(in_zoom)](x_zooms_input[in_zoom], emb=emb, sample_configs=sample_configs)
 
 
         x_zooms_out = self.no_conv(x_zooms, 
-                             sample_dict=sample_dict, 
+                             sample_configs=sample_configs, 
                              mask_zooms=mask_zooms, 
                              emb=emb)
 
@@ -231,7 +231,7 @@ class Stacked_PreActivationNOBlock(nn.Module):
 
             x = self.gammas1[str(out_zoom)] * x + self.lin_skip_inner[str(out_zoom)](x_res)
 
-            x = self.layer_norms2[str(out_zoom)](x, emb=emb, sample_dict=sample_dict)
+            x = self.layer_norms2[str(out_zoom)](x, emb=emb, sample_configs=sample_configs)
 
             x = self.mlp_layers[str(out_zoom)](x, emb=emb)  
 
@@ -307,7 +307,7 @@ class NOBlock(nn.Module):
         self.mlp_layer = MLP_fac(
             out_features,
             out_features,
-            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+            layer_confs={'n_groups': layer_confs['n_groups'],
                         'rank_vars':None,
                         'rank_feats':None,
                         'rank_channel':None,
@@ -317,20 +317,20 @@ class NOBlock(nn.Module):
         self.activation = nn.SiLU()
               
 
-    def forward(self, x, sample_dict=None, mask=None, emb=None):
+    def forward(self, x, sample_configs={}, mask=None, emb=None):
         
         x_res = x
         
         x_conv = self.no_conv(x, 
-                        sample_dict=sample_dict, 
+                        sample_configs=sample_configs, 
                         mask=mask, 
                         emb=emb)
 
-        x = self.gamma1 * self.layer_norm1(x_conv, emb=emb, sample_dict=sample_dict) + self.lin_skip_inner(x_res)
+        x = self.gamma1 * self.layer_norm1(x_conv, emb=emb, sample_configs=sample_configs) + self.lin_skip_inner(x_res)
 
         x = self.mlp_layer(x, emb=emb)
         
-        x = self.layer_norm2(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer_norm2(x, emb=emb, sample_configs=sample_configs)
 
         x = self.gamma2 * x + self.lin_skip_outer(x_res)
 
@@ -399,7 +399,7 @@ class PreActivation_NOBlock(nn.Module):
         self.mlp_layer = MLP_fac(
             out_features,
             out_features,
-            layer_confs={'n_vars_total': layer_confs['n_vars_total'],
+            layer_confs={'n_groups': layer_confs['n_groups'],
                         'rank_vars':None,
                         'rank_feats':None,
                         'rank_channel':None,
@@ -411,20 +411,20 @@ class PreActivation_NOBlock(nn.Module):
         self.lin_skip_outer = ProjLayer(in_features, out_features, self.zoom_diff)
         self.lin_skip_inner = ProjLayer(in_features, out_features, self.zoom_diff)
 
-    def forward(self, x, sample_dict=None, mask=None, emb=None):
+    def forward(self, x, sample_configs={}, mask=None, emb=None):
         
         x_res = x
         
-        x = self.layer_norm1(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer_norm1(x, emb=emb, sample_configs=sample_configs)
 
         x_conv = self.no_conv(x, 
-                        sample_dict=sample_dict, 
+                        sample_configs=sample_configs, 
                         mask=mask, 
                         emb=emb)
 
         x = self.gamma1 * x_conv + self.lin_skip_inner(x_res)
 
-        x = self.layer_norm2(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer_norm2(x, emb=emb, sample_configs=sample_configs)
 
         x = self.gamma2 * self.mlp_layer(x, emb=emb) + self.lin_skip_outer(x_res)
 
@@ -573,7 +573,7 @@ class Stacked_NOConv(nn.Module):
                                layer_confs=layer_confs)
 
 
-    def forward(self, x_zooms, sample_dict=None, mask_zooms=None, emb=None):
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         
         x = x_zooms[self.max_zoom_in]
         mask = mask_zooms[self.max_zoom_in] if mask_zooms is not None else None
@@ -582,7 +582,7 @@ class Stacked_NOConv(nn.Module):
 
         for k, no_layer in enumerate(self.no_layers):
 
-            x = no_layer.transform(x, sample_dict=sample_dict, mask=mask, emb=emb)
+            x = no_layer.transform(x, sample_configs=sample_configs, mask=mask, emb=emb)
 
             no_zoom = int(no_layer.no_zoom)
             if no_zoom in self.in_zooms:
@@ -602,7 +602,7 @@ class Stacked_NOConv(nn.Module):
         for k, no_layer in enumerate(self.no_layers[::-1]):
 
             x = x.reshape(*x.shape[:4], *self.no_dim, -1)
-            x = no_layer.inverse_transform(x, sample_dict=sample_dict, mask=mask, emb=emb)
+            x = no_layer.inverse_transform(x, sample_configs=sample_configs, mask=mask, emb=emb)
 
             if no_layer.out_zoom in self.out_zooms:
                 x_out = self.zoom_reduction_layers[str(no_layer.out_zoom)](x, emb=emb)
@@ -636,14 +636,14 @@ class NOConv(nn.Module):
                                 out_features, 
                                 layer_confs=layer_confs)
         
-    def forward(self, x, sample_dict=None, mask=None, emb=None):
-        x = self.no_layer.transform(x, sample_dict=sample_dict, mask=mask, emb=emb)
+    def forward(self, x, sample_configs={}, mask=None, emb=None):
+        x = self.no_layer.transform(x, sample_configs=sample_configs, mask=mask, emb=emb)
 
         x = self.layer(x, emb=emb)
         
         x = x.view(*x.shape[:3],*self.no_dims,-1)
 
-        x = self.no_layer.inverse_transform(x, sample_dict=sample_dict, mask=None, emb=emb)
+        x = self.no_layer.inverse_transform(x, sample_configs=sample_configs, mask=None, emb=emb)
 
         x = x.contiguous()
 
@@ -675,8 +675,8 @@ class O_NOConv(nn.Module):
                                 out_features, 
                                 layer_confs=layer_confs)
 
-    def forward(self, x, sample_dict=None, mask=None, emb=None):
-        x = self.no_layer.transform(x, sample_dict=sample_dict, mask=mask, emb=emb)
+    def forward(self, x, sample_configs={}, mask=None, emb=None):
+        x = self.no_layer.transform(x, sample_configs=sample_configs, mask=mask, emb=emb)
 
         x = self.layer(x, emb=emb)
     

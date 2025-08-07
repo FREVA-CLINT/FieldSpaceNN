@@ -47,11 +47,11 @@ class AdaptiveLayerNorm(nn.Module):
         if embedder is not None:
             self.embedding_layer = torch.nn.Linear(emb_dim, model_dim*2)
     
-    def forward(self, x, emb=None, sample_dict=None):
+    def forward(self, x, emb=None, sample_configs={}):
         x_shape = x.shape
 
         if hasattr(self,"embedding_layer"):
-            emb_ = self.embedder(emb, sample_dict=sample_dict)
+            emb_ = self.embedder(emb, sample_configs=sample_configs)
             scale, shift = self.embedding_layer(emb_).chunk(2, dim=-1)
             n = scale.shape[1]
             scale, shift = scale.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:]), shift.view(scale.shape[0],scale.shape[1],-1,*x_shape[3:])

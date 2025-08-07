@@ -122,12 +122,12 @@ class MG_SingleBlock(nn.Module):
             self.blocks[str(zoom)] = block
         
 
-    def forward(self, x_zooms: Dict, sample_dict=None,  emb=None, mask_zooms={}, **kwargs):
+    def forward(self, x_zooms: Dict, sample_configs={},  emb=None, mask_zooms={}, **kwargs):
 
         for zoom, block in self.blocks.items():
             x = x_zooms[int(zoom)]
 
-            x = block(x, emb=emb, sample_dict=sample_dict, mask=mask_zooms[int(zoom)] if self.use_mask else None)
+            x = block(x, emb=emb, sample_configs=sample_configs[int(zoom)], mask=mask_zooms[int(zoom)] if self.use_mask else None)
 
             x_zooms[int(zoom)] = x
 
@@ -218,25 +218,25 @@ class MG_MultiBlock(nn.Module):
                                 )
         self.block = block
 
-    def generate_zoom(self, x: torch.Tensor, zoom, sample_dict={}):
+    def generate_zoom(self, x: torch.Tensor, zoom, sample_configs={}):
         b,nv,t,s,f = x.shape
 
         x_zoom = self.zero_zooms_gen[str(zoom)]
 
-        if 'zoom_patch_sample' in sample_dict.keys():
-            x_zoom = x_zoom.view(1,1,1,12*4**sample_dict['zoom_patch_sample'],-1,1)[:,:,:,0]
+        if 'zoom_patch_sample' in sample_configs.keys():
+            x_zoom = x_zoom.view(1,1,1,12*4**sample_configs['zoom_patch_sample'],-1,1)[:,:,:,0]
 
         return x_zoom.expand(b,nv,t,-1,f)
 
 
-    def forward(self, x_zooms, emb=None, mask_zooms={}, sample_dict={}):
+    def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
 
         for zoom in self.out_zooms:
             if zoom not in x_zooms.keys():
-                x = self.generate_zoom(list(x_zooms.values())[0], zoom, sample_dict=sample_dict)
+                x = self.generate_zoom(list(x_zooms.values())[0], zoom, sample_configs=sample_configs)
                 x_zooms[zoom] = x
     
-        x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_dict=sample_dict)
+        x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
 
         x_zooms_out = {}
         for zoom in self.out_zooms:

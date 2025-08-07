@@ -55,7 +55,7 @@ class SumReductionLayer(nn.Module):
 def get_mg_embedding(
         grid_layer_emb: GridLayer, 
         features, 
-        n_vars_total, 
+        n_groups, 
         init_mode='fourier_sphere'):
     
     coords = grid_layer_emb.get_coordinates()
@@ -80,7 +80,7 @@ def get_mg_embedding(
         embs = fourier_layer(coords_3d)
 
     
-    embs = embs.repeat_interleave(n_vars_total, dim=0)
+    embs = embs.repeat_interleave(n_groups, dim=0)
     
     embs = nn.Parameter(embs, requires_grad=True)
 
@@ -92,7 +92,7 @@ class MGEmbedding(nn.Module):
                  grid_layer_emb: GridLayer,
                  features: int,
                  zooms: List,
-                 n_vars_total: int =1,
+                 n_groups: int =1,
                  init_mode='fourier_sphere',
                  layer_confs={}
                 ) -> None: 
@@ -103,14 +103,14 @@ class MGEmbedding(nn.Module):
 
         emb_zoom = grid_layer_emb.zoom
 
-        if n_vars_total > 1:
+        if n_groups > 1:
 
             self.get_embedding_fcn = self.get_embeddings_from_var_idx
         else:
 
             self.get_embedding_fcn = self.get_embeddings
 
-        self.embeddings = get_mg_embedding(grid_layer_emb, features, n_vars_total=n_vars_total, init_mode=init_mode)
+        self.embeddings = get_mg_embedding(grid_layer_emb, features, n_groups=n_groups, init_mode=init_mode)
 
         layer_confs_ = copy.deepcopy(layer_confs)
 
@@ -137,44 +137,44 @@ class MGEmbedding(nn.Module):
         return x
 
     def get_embeddings(self, emb=None):
-        return self.embeddings[emb['VariableEmbedder']*0]
+        return self.embeddings[emb['GroupEmbedder']*0]
     
     def get_embeddings_from_var_idx(self, emb=None):
-        return self.embeddings[emb['VariableEmbedder']]
+        return self.embeddings[emb['GroupEmbedder']]
     
     
-    def downsample_embs(self, layer, sample_dict=None, emb=None):
+    def downsample_embs(self, layer, sample_configs={}, emb=None):
         embs = self.get_embedding_fcn(emb=emb)
 
-        idx = self.grid_layer_emb.get_idx_of_patch(**sample_dict, return_local=False)
+        idx = self.grid_layer_emb.get_idx_of_patch(**sample_configs, return_local=False)
 
         idx = idx.view(idx.shape[0],1,1,-1,1)
 
         embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
         
-        embs = layer(embs, sample_dict=sample_dict, emb=emb)
+        embs = layer(embs, sample_configs=sample_configs, emb=emb)
 
         return embs
     
-    def upsample_embs(self, layer, sample_dict=None, emb=None):
+    def upsample_embs(self, layer, sample_configs={}, emb=None):
         embs = self.get_embedding_fcn(emb=emb)
 
-        idx = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_dict, return_local=False)[0]
+        idx = get_nh_idx_of_patch(self.grid_layer_emb.adjc, **sample_configs, return_local=False)[0]
  
         idx = idx.view(idx.shape[0],1,1,-1,1)
 
         embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
        
-        embs = layer(embs, sample_dict=sample_dict, emb=emb)
+        embs = layer(embs, sample_configs=sample_configs, emb=emb)
 
     
         return embs
 
 
-    def forward(self, x_zooms, sample_dict={}, emb=None,**kwargs):
+    def forward(self, x_zooms, sample_configs={}, emb=None,**kwargs):
         
         for zoom in x_zooms.keys():
-            embs = self.fcn_dict[zoom](self.layer_dict[str(zoom)],sample_dict=sample_dict, emb=emb)
+            embs = self.fcn_dict[zoom](self.layer_dict[str(zoom)],sample_configs=sample_configs, emb=emb)
 
             embs = embs.view(*embs.shape[:3],-1, 2*embs.shape[-1])
 
@@ -211,7 +211,7 @@ class ConservativeLayer(nn.Module):
         self.in_zooms = in_zooms
 
 
-    def forward_all(self, x_zooms, sample_dict=None, **kwargs):
+    def forward_all(self, x_zooms, sample_configs={}, **kwargs):
 
         for zoom in sorted(x_zooms.keys()):
             
@@ -231,7 +231,7 @@ class ConservativeLayer(nn.Module):
         return x_zooms
 
 
-    def forward_ffo(self, x_zooms, sample_dict=None, **kwargs):
+    def forward_ffo(self, x_zooms, sample_configs={}, **kwargs):
 
         for zoom in sorted(x_zooms.keys()):
             
@@ -251,7 +251,7 @@ class ConservativeLayer(nn.Module):
         return x_zooms
     
 
-    def forward(self, x_zooms, sample_dict=None, **kwargs):
+    def forward(self, x_zooms, sample_configs={}, **kwargs):
 
         x_zooms = self.fwd_fcn(x_zooms)
 
@@ -318,9 +318,9 @@ class IWD_ProjLayer(nn.Module):
                                         **interpolator_confs)
 
 
-    def forward(self, x, sample_dict=None):
+    def forward(self, x, sample_configs={}):
       
-        x,_ = self.interpolator(x.unsqueeze(dim=-2), calc_density=False, sample_dict=sample_dict)
+        x,_ = self.interpolator(x.unsqueeze(dim=-2), calc_density=False, sample_configs=sample_configs)
 
         return x
     
@@ -349,11 +349,11 @@ class NHConv(nn.Module):
         self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], out_features, layer_confs=layer_confs_)
 
     
-    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_dict: Dict = {}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
 
-        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_dict, with_nh=True, mask=mask)
+        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
 
-        x = self.layer(x_nh, emb=emb, sample_dict=sample_dict)
+        x = self.layer(x_nh, emb=emb, sample_configs=sample_configs)
 
         return x
     
@@ -379,7 +379,7 @@ class ResNHConv(nn.Module):
         
         self.skip_layer = LinEmbLayer(in_features, out_features, identity_if_equal=True)
     
-    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_dict: Dict = {}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
         
         x_res = self.skip_layer(x)
 
@@ -387,13 +387,13 @@ class ResNHConv(nn.Module):
 
         x = self.activation(x)
 
-        x = self.layer1(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer1(x, emb=emb, sample_configs=sample_configs)
 
         x = self.norm2(x)
 
         x = self.activation(x)
 
-        x = self.layer2(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer2(x, emb=emb, sample_configs=sample_configs)
 
         x = x + x_res
 
@@ -433,11 +433,11 @@ class UpDownLayer(nn.Module):
         self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
     
 
-    def forward(self, x: torch.Tensor, emb= None, sample_dict: Dict = {}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
         
-        x, mask_nh = self.grid_layer.get_nh(x, **sample_dict)
+        x, mask_nh = self.grid_layer.get_nh(x, **sample_configs)
         
-        x = self.layer(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer(x, emb=emb, sample_configs=sample_configs)
 
         x = x.reshape(*x.shape[:3],-1,self.out_features)
 
@@ -469,21 +469,21 @@ class Res_UpDownLayer(nn.Module):
         self.proj_layer = ProjLayer(1, 1, zoom_diff=out_zoom-in_zoom)
 
 
-    def forward(self, x: torch.Tensor, emb= None, sample_dict: Dict = {}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
 
-        x_res = self.skip_layer(self.proj_layer(x, sample_dict=sample_dict), emb=emb, sample_dict=sample_dict)
+        x_res = self.skip_layer(self.proj_layer(x, sample_configs=sample_configs), emb=emb, sample_configs=sample_configs)
         
         x = self.norm1(x)
 
         x = self.activation(x)
 
-        x = self.up_down_conv(x, emb=emb, sample_dict=sample_dict)
+        x = self.up_down_conv(x, emb=emb, sample_configs=sample_configs)
 
         x = self.norm2(x)
 
         x = self.activation(x)
 
-        x = self.nh_conv(x, emb=emb, sample_dict=sample_dict)
+        x = self.nh_conv(x, emb=emb, sample_configs=sample_configs)
 
         x = x + x_res
 

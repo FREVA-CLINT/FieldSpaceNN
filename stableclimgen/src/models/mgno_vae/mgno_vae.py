@@ -82,47 +82,47 @@ class MGNO_VAE(MGNO_base_model):
             embedder=embedder_output)
 
 
-    def encode(self, x, coords_input, sample_dict={}, mask=None, emb=None):
-        x = self.in_layer(x, sample_dict=sample_dict, emb=emb)
+    def encode(self, x, coords_input, sample_configs={}, mask=None, emb=None):
+        x = self.in_layer(x, sample_configs=sample_configs, emb=emb)
 
-        x_zooms = {int(sample_dict['zoom'][0]): x} if 'zoom' in sample_dict.keys() else {self.max_zoom: x}
-        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
+        x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
+        mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
 
         for k, block in enumerate(self.encoder_blocks):
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         x = x_zooms[self.bottleneck_zoom]
 
-        x = self.quantization.quantize(x, sample_dict=sample_dict, emb=emb)
+        x = self.quantization.quantize(x, sample_configs=sample_configs, emb=emb)
         posterior = self.quantization.get_distribution(x)
         return posterior
 
-    def decode(self, x, coords_output, sample_dict={}, mask=None, emb=None):
-        x = self.quantization.post_quantize(x, sample_dict=sample_dict, emb=emb)
+    def decode(self, x, coords_output, sample_configs={}, mask=None, emb=None):
+        x = self.quantization.post_quantize(x, sample_configs=sample_configs, emb=emb)
 
         x_zooms = {self.bottleneck_zoom: x}
         mask_zooms = {self.bottleneck_zoom: mask}
 
         for k, block in enumerate(self.decoder_blocks):
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        x = x_zooms[int(sample_dict['zoom'][0]) if sample_dict else self.max_zoom]
+        x = x_zooms[int(sample_configs['zoom'][0]) if sample_configs else self.max_zoom]
 
-        x = self.out_layer(x, emb=emb, sample_dict=sample_dict)
+        x = self.out_layer(x, emb=emb, sample_configs=sample_configs)
         return x
 
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, residual=0):
+    def forward(self, x, coords_input, coords_output, sample_configs={}, mask=None, emb=None, residual=0):
         b, nv, nt, n, nc = x.shape[:5]
 
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == self.out_features, f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        posterior = self.encode(x, coords_input, sample_dict=sample_dict, mask=mask, emb=emb)
+        posterior = self.encode(x, coords_input, sample_configs=sample_configs, mask=mask, emb=emb)
 
         z = posterior.sample()
 
-        dec = self.decode(z, coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+        dec = self.decode(z, coords_output, sample_configs=sample_configs, mask=mask, emb=emb)
         dec = dec + residual
 
         dec = dec.view(b,nv,nt,n,-1)
