@@ -237,7 +237,7 @@ class GridLayer(nn.Module):
             mask = mask.view(*mask_dims, s//4**zoom_diff, -1)
 
         elif mask is not None:
-            mask = mask.unsqueeze(dim=1).expand(x.shape[0] // mask.shape[0] if mask.shape[0] < x.shape[0] else -1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
+            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
 
 
         x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)

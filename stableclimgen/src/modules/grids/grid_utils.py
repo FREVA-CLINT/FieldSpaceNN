@@ -661,7 +661,7 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
 
         if isinstance(patch_index, int) or (isinstance(patch_index, torch.Tensor) and patch_index.numel() == 1):
             # Fill in the patch directly at index
-            x_h_[:, :, t_range, patch_index] = x_s
+            x_h_[:, :, t_range, patch_index] = x_s.unsqueeze(dim=3)
         else:
             # Broadcast and scatter each batch
             x_s = x_s.unsqueeze(dim=3)

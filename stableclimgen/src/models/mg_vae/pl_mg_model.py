@@ -75,7 +75,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        output, posterior_zooms = self(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+        output, posterior_zooms = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
         target_loss = target.copy()
         output_loss = output.copy()

@@ -12,11 +12,11 @@ dataset:
     4:
       n_past_ts: 0
       n_future_ts: 0
-      zoom_patch_sample: -1
+      zoom_patch_sample: 0
     6:
       n_past_ts: 0
       n_future_ts: 0
-      zoom_patch_sample: 0
+      zoom_patch_sample: 1
   dropout_zooms:
     3:
       p_dropout: 0.5
@@ -27,8 +27,6 @@ dataset:
     5:
       p_dropout: 0.5
       p_drop_full: 0
-  n_sample_vars: 2
-  output_binary_mask: true
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule
