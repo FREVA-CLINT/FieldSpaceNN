@@ -39,6 +39,7 @@ model:
       layer_settings:
         type: "TransformerBlock"
         blocks: ["vsnh","mlp","vsnh","mlp"]
+        att_dims: 256
         seq_lengths: [10,2,2]
         n_head_channels: 32
         mlp_mult: 2
