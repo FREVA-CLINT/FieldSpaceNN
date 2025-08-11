@@ -1,11 +1,8 @@
-import os
-import math
 import torch.nn as nn
 
 import lightning.pytorch as pl
 import torch
 from typing import Dict
-from torch.optim import AdamW
 
 from pytorch_lightning.utilities import rank_zero_only
 

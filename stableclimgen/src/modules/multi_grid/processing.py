@@ -67,6 +67,7 @@ class MG_SingleBlock(nn.Module):
                             seq_lengths=seq_length,
                             num_heads=layer_settings.get('num_heads', 2),
                             n_head_channels=layer_settings.get('n_head_channels', None),
+                            att_dims=layer_settings.get('att_dims', None),
                             mlp_mult=layer_settings.get('mlp_mult', 1),
                             dropout=layer_settings.get('dropout', 1),
                             spatial_dim_count=layer_settings.get('spatial_dim_count', 1),
