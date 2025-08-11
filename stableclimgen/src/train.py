@@ -17,30 +17,27 @@ import mlflow
 torch.manual_seed(42)
 
 
-@hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
+@hydra.main(version_base=None, config_path="../configs/", config_name="mg_transformer_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
-    then begins the training process.
+    then begins the training process. 
 
     :param cfg: Configuration object containing all settings for training, datasets,
                 model, and logging.
     """
     # Ensure the default root directory exists, then save the configuration file
+    
+
     if rank_zero_only.rank == 0 and not os.path.exists(cfg.trainer.default_root_dir):
         os.makedirs(cfg.trainer.default_root_dir)
 
-    # Load data configuration and initialize datasets
-    with open(cfg.dataloader.dataset.data_dict) as json_file:
-        data = json.load(json_file)
-    train_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["train"])
+    train_dataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split['train'])
 
     if hasattr(cfg.dataloader,'val_dataset') and cfg.dataloader.val_dataset is not None:
-        with open(cfg.dataloader.val_dataset.data_dict) as json_file:
-            data = json.load(json_file)
-        val_dataset = instantiate(cfg.dataloader.val_dataset, data_dict=data["val"])
+        val_dataset = instantiate(cfg.dataloader.val_dataset, data_dict=cfg.data_split['val'])
     else:
-        val_dataset = instantiate(cfg.dataloader.dataset, data_dict=data["val"])
+        val_dataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split['val'])
 
     OmegaConf.set_struct(cfg, False)
     if "WandbLogger" in cfg.logger['_target_']:

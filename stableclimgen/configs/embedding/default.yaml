@@ -9,13 +9,13 @@ DensityEmbedder:
 UncertaintyEmbedder:
   in_channels: 1
   embed_dim: 64
-  in_channels_var: ${embedding.VariableEmbedder.in_channels}
+  in_channels_var: ${embedding.GroupEmbedder.in_channels}
   shared: false
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
   shared: false
-VariableEmbedder:
+GroupEmbedder:
   in_channels: 16
   embed_dim: 64
   shared: false
@@ -39,10 +39,10 @@ MGEmbedder:
   mg_emb_confs:
     zoom: 6
     features: 64
-    n_vars_total: 1
+    n_groups: 2
     init_method: random
   layer_confs:
     rank_channel: 0
-    n_vars_total: 3
+    n_groups: 3
     bias: true
 

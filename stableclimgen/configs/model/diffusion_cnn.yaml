@@ -15,7 +15,7 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal", "normal", "down"]
-        embedder_names: [["CoordinateEmbedder", "VariableEmbedder", "DiffusionStepEmbedder"], ["CoordinateEmbedder", "VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
+        embedder_names: [["CoordinateEmbedder", "GroupEmbedder", "DiffusionStepEmbedder"], ["CoordinateEmbedder", "GroupEmbedder", "DiffusionStepEmbedder"], ["GroupEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
@@ -24,7 +24,7 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal", "normal", "down"]
-        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
+        embedder_names: [["GroupEmbedder", "DiffusionStepEmbedder"], ["GroupEmbedder", "DiffusionStepEmbedder"], ["GroupEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
@@ -32,7 +32,7 @@ model:
       ch_mult: 2
       sub_confs:
         blocks: ["normal"]
-        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"]]
+        embedder_names: [["GroupEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
     - _target_: stableclimgen.src.models.diffusion.model.DiffusionBlockConfig
       block_type: "resnet"
@@ -41,7 +41,7 @@ model:
       ch_mult: 0.5
       sub_confs:
         blocks: ["normal", "normal", "up"]
-        embedder_names: [["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"], ["VariableEmbedder", "DiffusionStepEmbedder"]]
+        embedder_names: [["GroupEmbedder", "DiffusionStepEmbedder"], ["GroupEmbedder", "DiffusionStepEmbedder"], ["GroupEmbedder", "DiffusionStepEmbedder"]]
         embed_confs: ${embedding}
   patch_emb_config:
     block_type: "conv"

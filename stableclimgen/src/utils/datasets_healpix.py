@@ -11,26 +11,27 @@ import healpy as hp
 class HealPixLoader(BaseDataset):
     def __init__(self, 
                  data_dict,
-                 zoom_patch_sample,
-                 out_zooms,
+                 sampling_zooms,
                  **kwargs
                  ):
         
-        self.zoom_patch_sample = zoom_patch_sample
+        self.data_dict = data_dict
+        self.sampling_zooms = sampling_zooms
 
-        npix = hp.nside2npix(2**max(out_zooms))
+        self.indices = {}
+        for zoom, sampling in sampling_zooms.items():
+            npix = hp.nside2npix(2**zoom)
 
-        self.zoom = int(math.log(npix // 12, 4)) 
+            if sampling['zoom_patch_sample'] == -1:
+                self.indices[zoom] = np.arange(npix).reshape(1,-1)
+            else:
+                n = 4**(zoom - sampling['zoom_patch_sample'])
+                self.indices[zoom] = np.arange(npix).reshape(-1, n)
 
-        if zoom_patch_sample == -1:
-            n_sample_patches = 1
-            self.indices = np.arange(npix).reshape(1,-1)
-        else:
-            n_sample_patches = npix // 4**(self.zoom - zoom_patch_sample)
-            self.indices = np.arange(npix).reshape(-1, 4**(self.zoom - zoom_patch_sample))
 
-        super().__init__(n_sample_patches, data_dict, out_zooms=out_zooms, mapping_fcn=hierarchical_zoom_distance_map, **kwargs)
+        super().__init__(mapping_fcn=hierarchical_zoom_distance_map, **kwargs)
     
 
-    def get_indices_from_patch_idx(self, patch_idx):
-        return self.indices[patch_idx].reshape(-1)
+
+    def get_indices_from_patch_idx(self, zoom, patch_idx):
+        return self.indices[zoom][patch_idx].reshape(-1)

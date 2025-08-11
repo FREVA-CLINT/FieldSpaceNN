@@ -6,7 +6,7 @@ from stableclimgen.src.modules.distributions.distributions import DiagonalGaussi
 
 from ..mg_transformer.confs import defaults
 from ..mg_transformer.mg_base_model import MG_base_model
-from ..mgno_vae.confs import MGNOQuantConfig
+from .confs import MGQuantConfig
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
     MGCoordinateEmbeddingConfig
@@ -22,11 +22,10 @@ class MG_VAE(MG_base_model):
                  in_zooms: List,
                  encoder_block_configs: List,
                  decoder_block_configs: List,
-                 quant_config: MGNOQuantConfig,
+                 quant_config: MGQuantConfig,
                  in_features: int=1,
                  out_features: int=1,
                  mg_emb_confs: dict={},
-                 with_global_gamma=True,
                  distribution: str = "gaussian",
                  **kwargs
                  ) -> None: 
@@ -53,7 +52,7 @@ class MG_VAE(MG_base_model):
             self.mg_emeddings = get_mg_embedding(
                 self.grid_layers[str(mg_emb_zoom)],
                 mg_emb_confs['features'],
-                mg_emb_confs.get("n_vars_total",1),
+                mg_emb_confs.get("n_groups",1),
                 init_mode=mg_emb_confs.get('init_method','fourier_sphere'))
         else:
             mg_emb_zoom = 0
@@ -91,15 +90,6 @@ class MG_VAE(MG_base_model):
 
         block.out_features = [in_features[0]]
 
-        self.learn_residual = check_get([kwargs, defaults], "learn_residual")
-
-        if self.learn_residual and with_global_gamma:
-            self.gamma1 = nn.Parameter(torch.ones(1) * 1e-6, requires_grad=True)
-            self.gamma2 = nn.Parameter(torch.ones(1) * 1e-6, requires_grad=True)
-        else:
-            self.register_buffer('gamma1', torch.ones(1), persistent=False)
-            self.register_buffer('gamma2', torch.ones(1), persistent=False)
-
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
 
@@ -126,7 +116,7 @@ class MG_VAE(MG_base_model):
         elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
             block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
                                 block_conf.features,
-                                n_vars_total=check_get([block_conf, kwargs, {'n_vars_total': 1}], "n_vars_total"),
+                                n_groups=check_get([block_conf, kwargs, {'n_groups': 1}], "n_groups"),
                                 zooms=in_zooms,
                                 init_mode=check_get([block_conf, kwargs, {'init_mode': "fourier_sphere"}], "init_mode"),
                                 layer_confs=layer_confs
@@ -152,39 +142,26 @@ class MG_VAE(MG_base_model):
                 use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
         return block
 
-    def encode(self, x_zooms, coords_input, sample_dict={}, mask=None, emb=None):
-        emb['MGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
-
-        if self.learn_residual:
-            x_res_zooms = x_zooms.copy()
+    def encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
+        emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
 
         for k, block in enumerate(self.encoder_blocks.values()):
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        if self.learn_residual:
-            x_zooms = {int(zoom): self.gamma1 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in self.bottleneck_zooms}
-
-        x_zooms = self.quantize(x_zooms, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
+        x_zooms = self.quantize(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
         posterior_zooms = {int(zoom): self.get_distribution(x) for zoom, x in x_zooms.items()}
         return posterior_zooms
 
-    def decode(self, x_zooms, coords_output, sample_dict={}, mask=None, emb=None):
-        x_zooms = self.post_quantize(x_zooms, sample_dict=sample_dict, emb=emb)
-
-        if self.learn_residual:
-            x_res_zooms = x_zooms.copy()
-
-        mask_zooms = {int(sample_dict['zoom'][0]): mask} if 'zoom' in sample_dict.keys() else {self.max_zoom: mask}
+    def decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
+        x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 
         for k, block in enumerate(self.decoder_blocks.values()):
-            if k == len(self.decoder_blocks) - 2 and self.learn_residual:
-                x_zooms = {int(zoom): (self.gamma2 * x_zooms[zoom] + x_res_zooms[zoom]) if zoom in self.bottleneck_zooms else x_zooms[zoom] for zoom in x_zooms.keys()}
-            x_zooms = block(x_zooms, sample_dict=sample_dict, mask_zooms=mask_zooms, emb=emb)
+            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         return x_zooms
 
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], coords_input, coords_output, sample_dict={}, mask: Dict[int, torch.Tensor]= None, emb=None):
+    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -202,11 +179,11 @@ class MG_VAE(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        posterior_zooms = self.encode(x_zooms, coords_input, sample_dict=sample_dict, mask=mask, emb=emb)
+        posterior_zooms = self.encode(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         z_zooms = {int(zoom): x.sample() for zoom, x in posterior_zooms.items()}
 
-        dec = self.decode(z_zooms, coords_output, sample_dict=sample_dict, mask=mask, emb=emb)
+        dec = self.decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         return dec, posterior_zooms
 

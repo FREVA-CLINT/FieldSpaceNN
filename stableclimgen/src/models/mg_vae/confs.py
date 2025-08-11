@@ -12,7 +12,7 @@ defaults = {
     'n_head_channels': 16
 }
 
-class MGNOQuantConfig:
+class MGQuantConfig:
     def __init__(self, **kwargs):
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():

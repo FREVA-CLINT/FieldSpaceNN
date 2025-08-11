@@ -22,9 +22,9 @@ model:
   learn_residual: true
   in_zooms: [6,5,3]
   layer_confs:
-    n_vars_total: 1
+    n_groups: 1
   layer_confs_emb:
-    n_vars_total: 4
+    n_groups: 4
   block_configs:
     "0":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig

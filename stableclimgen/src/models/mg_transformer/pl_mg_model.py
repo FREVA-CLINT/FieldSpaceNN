@@ -7,9 +7,14 @@ import torch
 from typing import Dict
 from torch.optim import AdamW
 
+import mlflow
+from lightning.pytorch.loggers import WandbLogger, MLFlowLogger
+
 from pytorch_lightning.utilities import rank_zero_only
 from ...modules.grids.grid_utils import decode_zooms
-from ...models.mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel,MSE_loss,GNLL_loss,NH_loss
+
+from ...utils.visualization import healpix_plot_zooms_var
+from ...utils.losses import MSE_loss,GNLL_loss,NH_loss
 
 
 def check_empty(x):
@@ -22,8 +27,46 @@ def check_empty(x):
     else:
         return x
 
-import torch.nn as nn
 
+def merge_sampling_dicts(sample_configs, patch_index_zooms):
+    for key, value in patch_index_zooms.items():
+        if key in sample_configs:
+            sample_configs[key]['patch_index'] = value
+
+    return sample_configs
+
+class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, max_iters, iter_start=0):
+        self.max_num_iters = max_iters
+        self.iter_start = iter_start
+
+        # Fetch per-group warmup and zero_iters from optimizer.param_groups
+        self.warmups = [group.get("warmup", 1) for group in optimizer.param_groups]
+        self.zero_iters = [group.get("zero_iters", 0) for group in optimizer.param_groups]
+
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        factor = self.get_lr_factors(self.last_epoch)
+        return [base_lr * f for base_lr, f in zip(self.base_lrs, factor)]
+
+    def get_lr_factors(self, epoch):
+        epoch += self.iter_start
+        lr_factors = [
+            0.5 * (1 + math.cos(math.pi * epoch / self.max_num_iters))
+            for _ in self.optimizer.param_groups
+        ]
+
+        for i in range(len(lr_factors)):
+            if epoch < self.zero_iters[i]:
+                lr_factors[i] = 0.0
+            elif epoch <= self.warmups[i] and self.warmups[i]>0:
+                lr_factors[i] *= epoch / (self.warmups[i])
+            elif epoch <= self.warmups[i] and self.warmups[i]==0:
+                lr_factors[i] *= epoch
+
+        return lr_factors
+    
 class MGMultiLoss(nn.Module):
     def __init__(self, lambda_dict, grid_layers=None, max_zoom=None):
         super().__init__()
@@ -47,7 +90,7 @@ class MGMultiLoss(nn.Module):
                         'fcn': globals()[key](grid_layers[str(max_zoom)])
                     })
 
-    def forward(self, output, target, mask=None, sample_dict=None, prefix=''):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix=''):
         loss_dict = {}
         total_loss = 0
 
@@ -58,56 +101,56 @@ class MGMultiLoss(nn.Module):
             # Level-specific losses
             if level_key in self.level_loss_fcns:
                 for loss_fcn in self.level_loss_fcns[level_key]:
-                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                     name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                     loss_dict[name] = loss.item()
                     total_loss += loss_fcn['lambda'] * loss
 
             # Common losses
             for loss_fcn in self.common_loss_fcns:
-                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_dict=sample_dict)
+                loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs)
                 name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                 loss_dict[name] = loss.item()
                 total_loss += loss_fcn['lambda'] * loss
 
         return total_loss, loss_dict
 
-class LightningMGModel(LightningMGNOBaseModel):
+class LightningMGModel(pl.LightningModule):
     def __init__(self, 
                  model, 
                  lr_groups, 
                  lambda_loss_dict: dict, 
                  weight_decay=0, 
-                 noise_std=0.0,
                  decomposed_loss=True):
         
-        super().__init__(
-            model,  # Main VAE model
-            lr_groups,
-            {},
-            weight_decay=weight_decay,
-            noise_std=noise_std
-        )
+        super().__init__()
+
+        self.model = model
+        self.lr_groups = lr_groups
+        self.weight_decay = weight_decay
+        
+        self.save_hyperparameters(ignore=['model'])
 
         self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=max(model.in_zooms))
 
         self.decomposed_loss = decomposed_loss
 
-    def forward(self, x, coords_input, coords_output, sample_dict={}, mask=None, emb=None, dists_input=None):
-        x, coords_input, coords_output, sample_dict, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_dict, mask, emb, dists_input)
-        x: torch.tensor = self.model(x, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask_zooms=mask, emb=emb)
-        return x
+    def forward(self, x, sample_configs={}, mask_zooms=None, emb=None) -> torch.Tensor:
+        return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
     
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = self.trainer.train_dataloader.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
+
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
         if not self.decomposed_loss:
             max_zoom = max(target.keys())
             target = {max_zoom: decode_zooms(target,max_zoom)}
             output = {max_zoom: decode_zooms(output,max_zoom)}
 
-        loss, loss_dict = self.loss(output, target, mask=mask, sample_dict=sample_dict, prefix='train/')
+        loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -116,13 +159,12 @@ class LightningMGModel(LightningMGNOBaseModel):
     
 
     def validation_step(self, batch, batch_idx):
+        
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
 
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-
-        coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
-        sample_dict = self.prepare_sample_dict(sample_dict)
-
-        output = self(source.copy(), coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
         target_loss = target.copy()
         output_loss = output.copy()
@@ -132,20 +174,23 @@ class LightningMGModel(LightningMGNOBaseModel):
             target_loss = {max_zoom: decode_zooms(target_loss, max_zoom)}
             output_loss = {max_zoom: decode_zooms(output_loss, max_zoom)}
 
-        loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_dict=sample_dict, prefix='validate/')
+        loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_configs=sample_configs, prefix='validate/')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source, output, target,mask, sample_dict, emb, self.current_epoch)
+            self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch)
             
         return loss
 
 
     def predict_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_dict, mask, emb, rel_dists_input, _ = batch
-        output = self(source, coords_input=coords_input, coords_output=coords_output, sample_dict=sample_dict, mask=mask, emb=emb, dists_input=rel_dists_input)
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
+
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        output = self(source.copy(), sample_configs=sample_configs, mask=mask, emb=emb)
 
         output = decode_zooms(output, max(output.keys()))
         mask = decode_zooms(mask, max(mask.keys()))
@@ -160,3 +205,99 @@ class LightningMGModel(LightningMGNOBaseModel):
                 'mask': mask}
         return output
     
+
+    def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch):
+
+        save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
+        os.makedirs(save_dir, exist_ok=True)  
+
+        save_paths_zooms = healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}", emb=emb)
+    
+        max_zoom = max(self.model.in_zooms)
+
+        source_p = {max_zoom: decode_zooms(input, max_zoom, sample_configs)}
+        output_p = {max_zoom: decode_zooms(output, max_zoom, sample_configs)}
+        target_p = {max_zoom: decode_zooms(gt, max_zoom, sample_configs)}
+        mask = {max_zoom: mask[max_zoom]} if mask is not None else None
+        save_paths = healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
+
+        save_paths+=save_paths_zooms
+        for k, save_path in enumerate(save_paths):
+            if isinstance(self.logger, WandbLogger):
+                self.logger.log_image(f"plots/{os.path.basename(save_path).replace('.png','')}", [save_path])
+            elif isinstance(self.logger, MLFlowLogger):
+                mlflow.log_artifact(save_path, artifact_path=f"plots/{os.path.basename(save_path).replace('.png','')}")
+
+
+    def configure_optimizers(self):
+        grouped_params = {group_name: [] for group_name in self.lr_groups}
+        grouped_params["default"] = []  # fallback group
+        seen_params = set()
+        
+        class_names = []
+        def visit_module(module):
+            # Match this module by class name
+            module_class_name = module.__class__.__name__
+            class_names.append(module_class_name)
+            matched = False
+            for group_name, group_cfg in self.lr_groups.items():
+                match_keys = group_cfg.get("matches", [group_name])
+                if any(mk in module_class_name for mk in match_keys):
+                    matched = True
+                    break
+
+            if matched:
+                for p in module.parameters():
+                    if id(p) not in seen_params and p.requires_grad:
+                        grouped_params[group_name].append(p)
+                        seen_params.add(id(p))
+
+            # Recurse into submodules (including inside ModuleList/Dict)
+            for name, child in module._modules.items():
+                if isinstance(child, (nn.ModuleList, nn.ModuleDict)):
+                    for sub_child in child.values() if isinstance(child, nn.ModuleDict) else child:
+                        visit_module(sub_child)
+                elif isinstance(child, nn.Module):
+                     visit_module(child)
+
+        # Start recursive traversal from self (i.e. the whole model)
+        visit_module(self)
+
+        # Assign leftover parameters to default group
+        for p in self.parameters():
+            if id(p) not in seen_params and p.requires_grad:
+                grouped_params["default"].append(p)
+                seen_params.add(id(p))
+
+        param_groups = []
+        for group_name, group_cfg in self.lr_groups.items():
+            param_groups.append({
+                "params": grouped_params[group_name],
+                "lr": group_cfg["lr"],
+                "name": group_name,
+                **{k: v for k, v in group_cfg.items() if k not in {"matches", "lr"}}
+            })
+
+        optimizer = torch.optim.Adam(param_groups, weight_decay=self.weight_decay)
+
+        scheduler = CosineWarmupScheduler(
+            optimizer=optimizer,
+            max_iters=self.trainer.max_steps,
+            iter_start=0
+        )
+        
+        return [optimizer], [{"scheduler": scheduler, "interval": "step", "frequency": 1}]
+    
+    def on_before_optimizer_step(self, optimizer):
+        #for debug only
+        pass
+        # Check for parameters with no gradients before optimizer.step()
+       # print("Checking for parameters with None gradients before optimizer step:")
+   #     for name, param in self.named_parameters():
+   #         if param.grad is None:
+   #             print(f"Parameter with no gradient: {name}")
+
+
+    def prepare_emb(self, emb=None, sample_configs={}):
+        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_configs)
+        return emb

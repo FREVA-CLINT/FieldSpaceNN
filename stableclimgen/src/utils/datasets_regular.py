@@ -273,6 +273,6 @@ class MaskClimateDataset(ClimateDataset):
         in_data[drop_mask] = 0
 
         emb = {"CoordinateEmbedder": gt_coords,
-               "VariableEmbedder": sample_vars}
+               "GroupEmbedder": sample_vars}
 
         return in_data, gt_data, in_coords, gt_coords, drop_mask, emb

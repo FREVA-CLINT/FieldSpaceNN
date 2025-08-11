@@ -1,0 +1,6 @@
+group1: 
+  variables: [tas]
+  depths: [1]
+group2:
+  variables: [uas,vas]
+  depths: [1,1]

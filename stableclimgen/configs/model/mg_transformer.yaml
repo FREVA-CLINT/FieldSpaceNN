@@ -3,7 +3,6 @@ decomposed_loss: true
 lambda_loss_dict:
   MSE_loss: 1
   NH_loss: 0
-noise_std: 0
 weight_decay: 0
 lr_groups:
   default:
@@ -17,29 +16,31 @@ model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
   mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
-  in_zooms: ${dataloader.dataset.out_zooms}
-  in_features: 1
-  out_features: 1
+  in_zooms: [4,6]
+  in_features: 2
+  out_features: 2
   lift_features: 1
-  n_head_channels: 16
-  learn_residual: true
+  n_head_channels: 15
+  learn_residual: false
+  with_global_gamma: false
+  use_mask: true
   layer_confs_emb:
-    n_vars_total: 4
-    rank_feat: 2
+    n_groups: 1
   block_configs:
-    "0": 
+    "input":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [128,128,128]
+      zooms: [4,6]
       layer_settings:
         type: 'linear'
-    "1": 
+    "0":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128]
-      zooms: [4]
+      out_features: [128,128]
+      zooms: [4,6]
       layer_settings:
         type: "TransformerBlock"
-        blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 2
+        blocks: ["t","mlp","vsnh","mlp"]
+        seq_lengths: [10,2]
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
@@ -50,25 +51,11 @@ model:
             - ["MGEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
-    "2":
+    "8":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [4,3]
-      kv_zooms: [4,3]
-      layer_settings:
-        with_nh: true
-        common_kv: false
-        n_head_channels: 32
-        mlp_mult: 2
-        embed_confs:
-          embed_names: ["MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-    "3":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
-      out_features: 128
-      q_zooms: [6]
-      kv_zooms: [4,3]
+      q_zooms: [4,6]
+      kv_zooms: [4,6]
       layer_settings:
         with_nh: true
         common_kv: false
@@ -78,27 +65,9 @@ model:
           embed_names: [ "MGEmbedder"]
           embed_confs: ${embedding}
           embed_mode: "sum"
-    "9": 
+    "output":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: ["vsnh","mlp","vsnh","mlp"]
-        seq_lengths: 2
-        n_head_channels: 32
-        mlp_mult: 2
-        embed_confs:
-          embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-    "4": 
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 1,1,1, 1 ]
+      out_features: [2,2]
+      zooms: [4,6]
       layer_settings:
         type: 'mlp'
-    "5":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig

@@ -57,14 +57,14 @@ class LinEmbLayer(nn.Module):
         else:
             self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
 
-    def forward_w_embedding(self, x, emb=None, sample_dict={}):
+    def forward_w_embedding(self, x, emb=None, sample_configs={}):
         
-        x = self.forward_wo_embedding(x, emb=emb, sample_dict=sample_dict)
+        x = self.forward_wo_embedding(x, emb=emb, sample_configs=sample_configs)
 
         x_shape = x.shape
 
-        emb_ = self.embedder(emb, sample_dict)
-        scale, shift = self.embedding_layer(emb_, sample_dict=sample_dict, emb=emb).chunk(2, dim=-2)
+        emb_ = self.embedder(emb, sample_configs)
+        scale, shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-2)
 
         n = scale.shape[1]
         scale = scale.view(*scale.shape[:3], -1, x_shape[-1])
@@ -74,17 +74,16 @@ class LinEmbLayer(nn.Module):
 
         return x
 
-    def forward_wo_embedding(self, x, emb=None, sample_dict=None):
+    def forward_wo_embedding(self, x, emb=None, sample_configs={}):
 
-        x = self.layer(x, emb=emb, sample_dict=sample_dict)
+        x = self.layer(x, emb=emb, sample_configs=sample_configs)
         x = x.view(*x.shape[:4 + self.spatial_dim_count-1],-1)
-
         x = self.layer_norm(x)
 
         return x
 
-    def forward(self, x, emb=None, sample_dict=None,**kwargs):
-        return self.forward_fcn(x, emb=emb, sample_dict=sample_dict)
+    def forward(self, x, emb=None, sample_configs={},**kwargs):
+        return self.forward_fcn(x, emb=emb, sample_configs=sample_configs)
 
 
     
@@ -139,11 +138,11 @@ def get_layer(
         
     rank_feat = check_get([layer_confs, kwargs, {'rank_feat': None}], 'rank_feat')
     rank_vars = check_get([layer_confs, kwargs, {'rank_vars': None}], 'rank_vars')
-    n_vars_total = check_get([layer_confs, kwargs, {'n_vars_total': 1}], 'n_vars_total')
+    n_groups = check_get([layer_confs, kwargs, {'n_groups': 1}], 'n_groups')
     rank_channel = check_get([layer_confs, kwargs, {'rank_channel': None}], 'rank_channel')
     bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
 
-    if not rank_feat and not rank_vars and rank_channel is None and n_vars_total==1:
+    if not rank_feat and not rank_vars and rank_channel is None and n_groups==1:
         layer = LinearLayer(
                 in_features,
                 out_features,
@@ -161,7 +160,7 @@ def get_layer(
             rank_vars=rank_vars,
             rank_channel=rank_channel,
             base=base,
-            n_vars_total=n_vars_total,
+            n_groups=n_groups,
             sum_n_zooms=sum_n_zooms,
             bias=bias)
         """

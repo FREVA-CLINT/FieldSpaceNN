@@ -53,7 +53,7 @@ class SpatiaFacLayer(nn.Module):
                  rank_feat = None,
                  rank_vars = None,
                  rank_channel = None,
-                 n_vars_total = 1,
+                 n_groups = 1,
                  bias = False,
                  ranks_spatial: Dict={},
                  dims_spatial: Dict= {},
@@ -94,23 +94,23 @@ class SpatiaFacLayer(nn.Module):
 
         # variables -----
         scale = 0
-        if factorize_vars and n_vars_total>1:
-            self.factor_vars = get_fac_matrix(n_vars_total, rank_vars)
+        if factorize_vars and n_groups>1:
+            self.factor_vars = get_fac_matrix(n_groups, rank_vars)
             core_dims.append(rank_vars)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core
 
             sub_c = next(core_letters)
             self.subscripts['core'] = sub_c
-            self.subscripts['factors']['variables'] = ['bvt' + sub_c]
+            self.subscripts['factors']['variables'] = ['bv' + sub_c]
 
-        elif n_vars_total>1:
-            core_dims.append(n_vars_total)
-            #scale += n_vars_total
+        elif n_groups>1:
+            core_dims.append(n_groups)
+            #scale += n_groups
             self.get_core_fcn = self.get_core_from_var_idx
             self.get_var_fac_fcn = self.get_empty1
 
-            self.subscripts['core'] = 'bvt'
+            self.subscripts['core'] = 'bv'
 
         else:
             self.get_core_fcn = self.get_core
@@ -267,18 +267,18 @@ class SpatiaFacLayer(nn.Module):
             self.return_fcn = self.return_wo_bias
 
     def get_core_from_var_idx(self, emb=None):
-        return self.core[emb['VariableEmbedder']]
+        return self.core[emb['GroupEmbedder']]
     
     def get_core(self,**kwargs):
         return self.core
     
-    def get_spatial_factors(self, sample_dict={}):
+    def get_spatial_factors(self, sample_configs={}):
         subscripts = []
 
         factors = []
-        if 'zoom_patch_sample' in sample_dict.keys():
-            indices_zooms = global_indices_to_paths_dict(sample_dict['patch_index'], 
-                                                         sizes=self.dims_spatial[:int(sample_dict['zoom_patch_sample']) + 1])
+        if 'zoom_patch_sample' in sample_configs.keys():
+            indices_zooms = global_indices_to_paths_dict(sample_configs['patch_index'], 
+                                                         sizes=self.dims_spatial[:int(sample_configs['zoom_patch_sample']) + 1])
         else:
             indices_zooms = {}
 
@@ -305,7 +305,7 @@ class SpatiaFacLayer(nn.Module):
         return []
     
     def get_variable_factors(self, emb):
-        return [self.factor_vars[emb['VariableEmbedder']]]
+        return [self.factor_vars[emb['GroupEmbedder']]]
     
     def get_in_feat_factors(self):
         return list(self.factors_feats_in) 
@@ -320,9 +320,9 @@ class SpatiaFacLayer(nn.Module):
         return x
     
 
-    def forward(self, x: torch.Tensor, emb: Dict=None, sample_dict={}):
+    def forward(self, x: torch.Tensor, emb: Dict=None, sample_configs={}):
         
-        f_s, N_out_of_sample = self.get_space_fac_fcn(sample_dict=sample_dict)
+        f_s, N_out_of_sample = self.get_space_fac_fcn(sample_configs=sample_configs)
         sub_space = ['b' + sub[1] if k<N_out_of_sample else sub for k, sub in enumerate(self.subscripts['factors']['space'])]
 
         f_v = self.get_var_fac_fcn(emb=emb)

@@ -84,13 +84,13 @@ class CoordinateEmbedder(BaseEmbedder):
     def forward(self, coordinates_emb, **kwargs):
         coordinates, var_indices = coordinates_emb
 
-        sample_dict = kwargs.get('sample_dict', {'zoom': self.zoom})
-        zoom_diff = int(sample_dict['zoom'][0] - self.zoom)
+        sample_configs = kwargs.get('sample_configs', {'zoom': self.zoom})
+        zoom_diff = int(sample_configs['zoom'][0] - self.zoom)
 
         coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
         coord_emb = self.embedding_fn(coordinates)
 
-        coord_emb = self.mlp(coord_emb, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+        coord_emb = self.mlp(coord_emb, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
         return coord_emb
     
 
@@ -108,8 +108,10 @@ class MGEmbedder(BaseEmbedder):
 
         super().__init__(name, in_channels, embed_dim)
 
-        n_vars_total = mg_emb_confs.get("n_vars_total")
-        if n_vars_total ==1:
+        self.zoom = zoom
+
+        n_groups = mg_emb_confs.get("n_groups")
+        if n_groups ==1:
             self.get_emb_fcn = self.get_embeddings
         else:
             self.get_emb_fcn = self.get_embeddings_from_var_idx
@@ -119,7 +121,8 @@ class MGEmbedder(BaseEmbedder):
         self.keep_dims = ["b", "v", "t", "s", "c"]
 
         emb_zoom = mg_emb_confs['zoom']
-   
+
+        
         if zoom == emb_zoom:
             layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels != embed_dim else IdentityLayer()
             self.get_patch_fcn = self.get_patch
@@ -143,34 +146,37 @@ class MGEmbedder(BaseEmbedder):
         return mg_emb[var_indices]
     
 
-    def get_patch(self, embs, sample_dict={}):
+    def get_patch(self, embs, sample_configs={}):
     
-        idx = self.grid_layer.get_idx_of_patch(**sample_dict, return_local=False)
+        idx = self.grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
 
-        idx = idx.view(idx.shape[0],1,1,-1,1)
+        idx = idx.view(idx.shape[0],1,-1,1)
 
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:2], idx.shape[-2], embs.shape[-1]))
 
         return embs
     
-    def get_patch_nh(self, embs, sample_dict={}):
+    def get_patch_nh(self, embs, sample_configs={}):
 
-        idx = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_dict, return_local=False)[0]
+        idx = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_configs, return_local=False)[0]
 
-        idx = idx.view(idx.shape[0],1,1,-1,1)
+        idx = idx.view(idx.shape[0],1,-1,1)
 
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:3], idx.shape[-2], embs.shape[-1]))
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:2], idx.shape[-2], embs.shape[-1]))
         
         return embs
     
-    def forward(self, mg_emb_var, sample_dict={},**kwargs):
+    def forward(self, mg_emb_var, sample_configs={},**kwargs):
 
         embs, var_indices = mg_emb_var
         embs = self.get_emb_fcn(embs, var_indices)
 
-        embs = self.get_patch_fcn(embs, sample_dict=sample_dict)
+        embs = self.get_patch_fcn(embs, sample_configs=sample_configs)
 
-        embs = self.layer(embs, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+        #unsqueeze time dimension
+        embs = embs.unsqueeze(dim=2)
+
+        embs = self.layer(embs, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
 
         embs = embs.view(*embs.shape[:3],-1,embs.shape[-1])
 
@@ -198,7 +204,7 @@ class DensityEmbedder(BaseEmbedder):
     
     def forward(self, density_emb, **kwargs):
         density, var_indices = density_emb
-        sample_dict = kwargs.get('sample_dict', {})
+        sample_configs = kwargs.get('sample_configs', {})
 
         if self.zoom in density.keys():
             density_ = density[self.zoom]
@@ -222,10 +228,10 @@ class DensityEmbedder(BaseEmbedder):
         
         density_emb = self.embedding_fn(density_)
 
-        density_emb = self.mlp(density_emb, sample_dict=sample_dict, emb={'VariableEmbedder': var_indices})
+        density_emb = self.mlp(density_emb, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
         return density_emb
 
-class VariableEmbedder(BaseEmbedder):
+class GroupEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
@@ -333,7 +339,7 @@ class EmbedderSequential(nn.Module):
         self.spatial_dim_count = spatial_dim_count
         self.activation = nn.Identity()
 
-    def forward(self, inputs: Dict[str, torch.Tensor], sample_dict: Dict=None):
+    def forward(self, inputs: Dict[str, torch.Tensor], sample_configs: Dict=None):
         """
         Args:
             inputs (dict): A dictionary of input tensors where each key corresponds to an embedder.
@@ -350,7 +356,7 @@ class EmbedderSequential(nn.Module):
                 raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
 
             input_tensor = inputs[embedder_name]
-            embed_output = embedder(input_tensor, sample_dict=sample_dict)
+            embed_output = embedder(input_tensor, sample_configs=sample_configs)
 
             # Add time dimension
             if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):

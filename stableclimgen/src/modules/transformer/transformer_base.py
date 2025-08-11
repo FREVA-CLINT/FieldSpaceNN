@@ -202,10 +202,10 @@ class NHAttention(nn.Module):
             self.reverse_pattern = '(b t s v) 1 c -> b t s v c'
 
 
-    def forward(self, x: torch.Tensor, emb, mask=None, sample_dict: Dict={}) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, emb, mask=None, sample_configs: Dict={}) -> torch.Tensor:
         b, t, s, v, c = x.shape
 
-        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_dict, with_nh=True, mask=mask)
+        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
 
         x = rearrange(x, self.pattern)
         x_nh = rearrange(x_nh, self.nh_pattern)
@@ -294,6 +294,7 @@ class TransformerBlock(EmbedBlock):
             seq_lengths: List[int] = None,
             num_heads: List[int] = 1,
             n_head_channels: List[int] = None,
+            att_dims: List[int] = None,
             mlp_mult: List[int] = 1,
             dropout: List[float] = 0.,
             spatial_dim_count: int = 1,
@@ -313,23 +314,26 @@ class TransformerBlock(EmbedBlock):
         mlp_mult = check_value(mlp_mult, len(blocks))
         dropout = check_value(dropout, len(blocks))
         seq_lengths = check_value(seq_lengths, len(blocks))
+        att_dims = check_value(att_dims, len(blocks))
 
         embedders = check_value(embedders, len(blocks))
 
         trans_blocks, lin_emb_layers, norms, residuals = [], [], [], []
         for i, block in enumerate(blocks):
             
-            n_heads = num_heads[i] if not n_head_channels[i] else in_features // n_head_channels[i]
+            att_dim = att_dims[i] if att_dims[i] is not None else in_features
+            n_heads = num_heads[i] if not n_head_channels[i] else att_dim // n_head_channels[i]
+
             seq_length = seq_lengths[i]
-     
+
             if block == "mlp":
-                trans_block = MLP_fac(in_features, out_features_list[i], mlp_mult[i], dropout[i], layer_confs=layer_confs, gamma=True)
+                trans_block = MLP_fac(att_dim, out_features_list[i], mlp_mult[i], dropout[i], layer_confs=layer_confs, gamma=True)
 
             else:
                 #qkv_proj = len(layer_confs) == 0
-                q_layer = get_layer(in_features, [in_features], layer_confs=layer_confs) 
-                kv_layer = get_layer(in_features, [2, in_features], layer_confs=layer_confs, bias=True) 
-                out_layer = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=True) if in_features != out_features_list[i] else IdentityLayer()
+                q_layer = get_layer(att_dim, [att_dim], layer_confs=layer_confs) 
+                kv_layer = get_layer(att_dim, [2, att_dim], layer_confs=layer_confs, bias=True) 
+                out_layer = get_layer(att_dim, out_features_list[i], layer_confs=layer_confs, bias=True) if att_dim != out_features_list[i] else IdentityLayer()
 
                 cross = False
                 # Select rearrangement function based on block type
@@ -351,9 +355,10 @@ class TransformerBlock(EmbedBlock):
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                trans_block = rearrange_fn(SelfAttention(in_features, in_features, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
+                trans_block = rearrange_fn(SelfAttention(att_dim, att_dim, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
      
-            lin_emb_layers.append(LinEmbLayer(in_features, in_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb, spatial_dim_count=spatial_dim_count))
+            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb, spatial_dim_count=spatial_dim_count))
+
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection
             if in_features != out_features_list[i]:
@@ -372,7 +377,7 @@ class TransformerBlock(EmbedBlock):
         self.residuals = nn.ModuleList(residuals)
 
     def forward(self, x: torch.Tensor, kv: torch.Tensor=None, emb: Optional[Dict] = None, mask: Optional[torch.Tensor] = None,
-                sample_dict: Optional[Dict] = None, *args) -> torch.Tensor:
+                sample_configs: Optional[Dict] = None, *args) -> torch.Tensor:
         """
         Forward pass for the TransformerBlock.
 
@@ -387,8 +392,8 @@ class TransformerBlock(EmbedBlock):
         """
         for block, lin_emb_layer, residual in zip(self.blocks, self.lin_emb_layers, self.residuals):
 
-            out = lin_emb_layer(x, emb=emb, sample_dict=sample_dict)
-            x = block(out, emb=emb, sample_dict=sample_dict, mask=mask) + residual(x, emb=emb)
+            out = lin_emb_layer(x, emb=emb, sample_configs=sample_configs)
+            x = block(out, emb=emb, sample_configs=sample_configs, mask=mask) + residual(x, emb=emb)
 
         return x
 
