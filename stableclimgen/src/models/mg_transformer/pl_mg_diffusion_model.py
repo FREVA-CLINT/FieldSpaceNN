@@ -9,11 +9,11 @@ from pytorch_lightning.utilities import rank_zero_only
 from .pl_mg_probabilistic import LightningProbabilisticModel
 from ..diffusion.mg_gaussian_diffusion import GaussianDiffusion
 from ..diffusion.mg_sampler import DDPMSampler, DDIMSampler
-from ..mgno_transformer.pl_mgno_base_model import LightningMGNOBaseModel, check_empty
+from ..mg_transformer.pl_mg_model import LightningMGModel, check_empty
 from ...modules.grids.grid_utils import decode_zooms
 
 
-class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbabilisticModel):
+class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisticModel):
     def __init__(self,
                  model,
                  gaussian_diffusion: GaussianDiffusion,

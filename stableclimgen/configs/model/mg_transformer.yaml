@@ -3,7 +3,6 @@ decomposed_loss: true
 lambda_loss_dict:
   MSE_loss: 1
   NH_loss: 0
-noise_std: 0
 weight_decay: 0
 lr_groups:
   default:

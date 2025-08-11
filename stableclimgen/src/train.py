@@ -17,11 +17,11 @@ import mlflow
 torch.manual_seed(42)
 
 
-@hydra.main(version_base=None, config_path="../configs/", config_name="mgno_transformer_train")
+@hydra.main(version_base=None, config_path="../configs/", config_name="mg_transformer_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
-    then begins the training process.
+    then begins the training process. 
 
     :param cfg: Configuration object containing all settings for training, datasets,
                 model, and logging.
