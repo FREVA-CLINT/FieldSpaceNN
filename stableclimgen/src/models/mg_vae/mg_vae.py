@@ -26,7 +26,6 @@ class MG_VAE(MG_base_model):
                  in_features: int=1,
                  out_features: int=1,
                  mg_emb_confs: dict={},
-                 with_global_gamma=True,
                  distribution: str = "gaussian",
                  **kwargs
                  ) -> None: 
@@ -89,17 +88,7 @@ class MG_VAE(MG_base_model):
             in_features = block.out_features
             in_zooms = block.out_zooms
 
-
         block.out_features = [in_features[0]]
-
-        self.learn_residual = check_get([kwargs,defaults], "learn_residual")
-
-        if self.learn_residual and with_global_gamma:
-            self.gamma1 = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
-            self.gamma2 = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
-        else:
-            self.register_buffer('gamma1', torch.ones(1), persistent=False)
-            self.register_buffer('gamma2', torch.ones(1), persistent=False)
 
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
@@ -156,14 +145,8 @@ class MG_VAE(MG_base_model):
     def encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
 
-        if self.learn_residual:
-            x_res_zooms = {int(zoom): x_zooms[zoom] for zoom in self.bottleneck_zooms}
-
         for k, block in enumerate(self.encoder_blocks.values()):
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
-
-        if self.learn_residual:
-            x_zooms = {int(zoom): self.gamma1 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in self.bottleneck_zooms}
 
         x_zooms = self.quantize(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
         posterior_zooms = {int(zoom): self.get_distribution(x) for zoom, x in x_zooms.items()}
@@ -172,13 +155,7 @@ class MG_VAE(MG_base_model):
     def decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 
-        if self.learn_residual:
-            x_res_zooms = x_zooms
-
         for k, block in enumerate(self.decoder_blocks.values()):
-
-            if k == len(self.decoder_blocks)-2 and self.learn_residual:
-                x_zooms = {int(zoom): self.gamma2 * x_zooms[zoom] + x_res_zooms[zoom] for zoom in x_zooms.keys()}
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         return x_zooms

@@ -18,7 +18,7 @@ class VAEBlockConfig:
     Configuration class for defining the parameters of VAE blocks.
 
     :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'conv' or 'resnet').
+    :param block_type: Type of block (e.g., 'ConvBlock' or 'ResnetBlock').
     :param ch_mult: Channel multiplier for the block; can be an int or list of ints.
     :param blocks: List of block configurations specific to the block type.
     :param enc: Boolean indicating if this is an encoder block. Default is False.
@@ -41,7 +41,7 @@ class QuantConfig:
 
     :param z_ch: Number of latent channels in the quantized representation.
     :param latent_ch: Number of latent channels in the bottleneck.
-    :param block_type: Block type used in quantization (e.g., 'conv' or 'resnet').
+    :param block_type: Block type used in quantization (e.g., 'ConvBlock' or 'ResnetBlock').
     """
 
     def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
@@ -97,17 +97,19 @@ class VAE(nn.Module):
                 out_ch = block_conf.ch_mult * model_channels if isinstance(block_conf.ch_mult, int) else [
                     ch_mult * model_channels for ch_mult in block_conf.ch_mult]
 
-                # Select the block type (conv, resnet, or transformer)
-                if block_conf.block_type == "conv":
+                # Select the block type (ConvBlock, ResnetBlock, or TransformerBlock)
+                if block_conf.block_type == "ConvBlock":
                     block = RearrangeConvCentric(
                         ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
-                elif block_conf.block_type == "resnet":
+                elif block_conf.block_type == "ResnetBlock":
                     block = RearrangeConvCentric(
                         ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
-                else:
+                elif block_conf.block_type == "TransformerBlock":
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
+                else:
+                    raise NotImplementedError
 
                 in_ch = out_ch if isinstance(out_ch, int) else out_ch[-1]  # Update input channels for next layer
 
@@ -151,6 +153,7 @@ class VAE(nn.Module):
         """
         z = self.quantization.post_quantize(z)
         dec = self.decoder(z)
+
         return dec
 
     def forward(self, x: torch.Tensor, embeddings: Optional[torch.Tensor] = None,
@@ -169,7 +172,7 @@ class VAE(nn.Module):
         :return: Tuple of reconstructed tensor and posterior distribution.
         """
         # Define output shape for reconstruction
-        out_shape = x.shape[1:-2][-self.dims:]
+        out_shape = x.shape[-self.dims-1:-1]
 
         posterior = self.encode(x)
         z = posterior.sample() if sample_posterior else posterior.mode()

@@ -18,7 +18,7 @@ class DiffusionBlockConfig:
     Configuration class for defining diffusion blocks in the model.
 
     :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'conv', 'resnet').
+    :param block_type: Type of block (e.g., 'ConvBlock', 'ResnetBlock').
     :param ch_mult: Channel multiplier for the block.
     :param sub_confs: Sub-configuration details specific to the block type.
     :param enc: Whether the block is an encoder block. Default is False.
@@ -41,7 +41,7 @@ class PatchEmbConfig:
     Configuration class for defining diffusion blocks in the model.
 
     :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'conv', 'resnet').
+    :param block_type: Type of block (e.g., 'ConvBlock', 'ResnetBlock').
     :param ch_mult: Channel multiplier for the block.
     :param sub_confs: Sub-configuration details specific to the block type.
     :param enc: Whether the block is an encoder block. Default is False.
@@ -49,7 +49,7 @@ class PatchEmbConfig:
     """
 
     def __init__(self,
-                 block_type: str = "conv",
+                 block_type: str = "ConvBlock",
                  patch_emb_size: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
                  patch_emb_kernel: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
                  sub_confs=None):
@@ -68,7 +68,7 @@ class DiffusionGenerator(nn.Module):
     :param model_channels: Number of base channels for the model. Default is 64.
     :param embed_dim: Embedding dimension for diffusion steps. Default is None.
     :param skip_connections: If True, skip connections are included. Default is False.
-    :param patch_emb_type: Type of patch embedding ('conv' or other). Default is 'conv'.
+    :param patch_emb_type: Type of patch embedding ('ConvBlock' or other). Default is 'ConvBlock'.
     :param patch_emb_size: Size of the patch embedding. Default is (1, 1, 1).
     :param patch_emb_kernel: Kernel size for the patch embedding. Default is (1, 1, 1).
     :param block_configs: List of block configurations for each block in the model.
@@ -118,17 +118,19 @@ class DiffusionGenerator(nn.Module):
                 if self.skip_connections and block_conf.dec:
                     in_ch += in_block_ch.pop()
 
-                # Determine block type (conv, resnet, or transformer)
-                if block_conf.block_type == "conv":
+                # Determine block type (ConvBlock, ResnetBlock, or TransformerBlock)
+                if block_conf.block_type == "ConvBlock":
                     block = RearrangeConvCentric(
                         ConvBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
-                elif block_conf.block_type == "resnet":
+                elif block_conf.block_type == "ResnetBlock":
                     block = RearrangeConvCentric(
                         ResBlockSequential(in_ch, out_ch, **block_conf.sub_confs, dims=self.dims), spatial_dim_count, dims=self.dims
                     )
-                else:
+                elif block_conf.block_type == "TransformerBlock":
                     block = TransformerBlock(in_ch, out_ch, **block_conf.sub_confs, spatial_dim_count=spatial_dim_count)
+                else:
+                    raise NotImplementedError
 
                 in_ch = out_ch
 
@@ -146,7 +148,7 @@ class DiffusionGenerator(nn.Module):
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
         # Define output unpatchifying layer
-        if patch_emb_config.block_type == "conv":
+        if patch_emb_config.block_type == "ConvBlock":
             self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch,
                                                            kernel_size=patch_emb_config.patch_emb_kernel, dims=self.dims),
                                             spatial_dim_count, dims=self.dims)

@@ -43,7 +43,9 @@ class BaseDataset(Dataset):
                  deterministic=False,
                  output_binary_mask=False,
                  output_differences=True,
-                 dropout_zooms=None
+                 dropout_zooms=None,
+                 reduce_zoom_to_batch=None,
+                 reduce_time_to_batch=None
                  ):
         
         super(BaseDataset, self).__init__()
@@ -61,6 +63,8 @@ class BaseDataset(Dataset):
         self.output_differences = output_differences
         self.output_binary_mask = output_binary_mask
         self.mask_zooms = mask_zooms
+        self.reduce_zoom_to_batch = reduce_zoom_to_batch
+        self.reduce_time_to_batch = reduce_time_to_batch
 
         self.variables = [v['variables'] for v in self.data_dict['variables'].values()]
         self.var_groups = [g for g in self.data_dict['variables'].keys()]

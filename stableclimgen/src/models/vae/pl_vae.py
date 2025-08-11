@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.nn.modules.loss import _Loss
 from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LambdaLR, LRScheduler
+from pytorch_lightning.utilities import rank_zero_only
 
 from .model import VAE
 from ...utils.visualization import plot_images
@@ -58,20 +59,20 @@ class LightningVAE(pl.LightningModule):
         """
         torch.optim.swa_utils.update_bn(self.trainer.train_dataloader, self.ema_model)
 
-    def forward(self, gt_data: Tensor, embeddings: Optional[Tensor] = None, mask_data: Optional[Tensor] = None,
-                cond_data: Optional[Tensor] = None, coords: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
+    def forward(self, target_data: Tensor, embeddings: Optional[Tensor] = None, mask_data: Optional[Tensor] = None,
+                source_data: Optional[Tensor] = None, coords: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         """
         Forward pass through the VAE model.
 
-        :param gt_data: Ground truth data tensor.
+        :param target_data: Ground truth data tensor.
         :param embeddings: Embedding tensor, optional.
         :param mask_data: Mask data tensor, optional.
-        :param cond_data: Conditioning data tensor, optional.
+        :param source_data: Conditioning data tensor, optional.
         :param coords: Coordinates data tensor, optional.
 
         :return: Tuple containing model output tensor and posterior distribution tensor.
         """
-        return self.model(gt_data, embeddings, mask_data, cond_data, coords)
+        return self.model(target_data, embeddings, mask_data, source_data, coords)
 
     def training_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> Tensor:
         """
@@ -82,11 +83,11 @@ class LightningVAE(pl.LightningModule):
 
         :return: Total calculated loss for the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
-        reconstructions, posterior = self(gt_data)
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+        reconstructions, posterior = self(target_data, emb, mask_data)
 
         # Compute reconstruction loss
-        rec_loss = self.loss(gt_data, reconstructions)
+        rec_loss = self.loss(target_data, reconstructions)
         # Compute KL divergence loss
         kl_loss = posterior.kl()
         kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
@@ -110,11 +111,11 @@ class LightningVAE(pl.LightningModule):
         :param batch: A tuple containing input tensors for validation.
         :param batch_idx: The index of the current batch.
         """
-        cond_data, cond_coords, gt_data, gt_coords, mask_data, sample_vars = batch
-        reconstructions, posterior = self(gt_data)
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+        reconstructions, posterior = self(target_data, emb, mask_data)
 
         # Calculate reconstruction and KL losses
-        rec_loss = self.loss(gt_data, reconstructions)
+        rec_loss = self.loss(target_data, reconstructions)
         kl_loss = posterior.kl()
         kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
 
@@ -122,11 +123,8 @@ class LightningVAE(pl.LightningModule):
         loss = rec_loss + self.kl_weight * kl_loss
 
         # Plot reconstruction samples on the first batch
-        if batch_idx == 0:
-            try:
-                self.log_tensor_plot(gt_data, cond_data, reconstructions, gt_coords, cond_coords, f"tensor_plot_{self.current_epoch}")
-            except Exception as e:
-                pass
+        if batch_idx == 0 and rank_zero_only.rank == 0:
+            self.log_tensor_plot(target_data, source_data, reconstructions, target_coords, source_coords, f"tensor_plot_{self.current_epoch}")
 
         # Log validation losses
         self.log("val_loss", loss.mean(), sync_dist=True)
@@ -137,20 +135,20 @@ class LightningVAE(pl.LightningModule):
         }, sync_dist=True)
 
     def log_tensor_plot(self, gt_tensor: torch.Tensor, in_tensor: torch.Tensor, rec_tensor: torch.Tensor,
-                        gt_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
+                        target_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
         """
         Logs a plot of ground truth and reconstructed tensor images for visualization.
 
         :param gt_tensor: Ground truth tensor.
         :param in_tensor: Input tensor.
         :param rec_tensor: Reconstructed tensor.
-        :param gt_coords: Ground truth coordinates tensor.
+        :param target_coords: Ground truth coordinates tensor.
         :param in_coords: Input coordinates tensor.
         :param plot_name: Name for the plot to be saved.
         """
         save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
         os.makedirs(save_dir, exist_ok=True)
-        plot_images(gt_tensor, in_tensor, rec_tensor, plot_name, save_dir, gt_coords, in_coords)
+        plot_images(gt_tensor, in_tensor, rec_tensor, plot_name, save_dir, target_coords, in_coords)
 
         # Log images for each channel
         for c in range(gt_tensor.shape[1]):

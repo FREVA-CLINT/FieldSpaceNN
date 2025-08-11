@@ -63,11 +63,11 @@ class RearrangeBlock(EmbedBlock):
             b, v, t, g, c = x.shape
 
         q = self.proj_layer_q(x, emb=emb)
-        kv = self.proj_layer_kv(x, emb=emb).view(*x.shape[:4],-1)
+        kv = self.proj_layer_kv(x, emb=emb).view(*x.shape[:dim-1],-1)
         x = torch.concat((q,kv), dim=-1)
         
-        x = x.reshape(*x.shape[:4],-1)
-        
+        x = x.reshape(*x.shape[:dim-1],-1)
+
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [
             rearrange(tensor, self.pattern) if torch.is_tensor(tensor) else tensor
@@ -136,8 +136,8 @@ class RearrangeSpaceCentric(RearrangeBlock):
     def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, proj_layer_q: torch.nn.Module = None, proj_layer_kv: torch.nn.Module = None, out_layer: torch.nn.Module = None, **kwargs):
         super().__init__(
             fn,
-            pattern='b v t g c  -> (b v t) g c',
-            reverse_pattern='(b v t) g c -> b v t g c',
+            pattern='b v t g c  -> (b v t) (g) c',
+            reverse_pattern='(b v t) (g) c -> b v t g c',
             spatial_dim_count=spatial_dim_count,
             seq_len=seq_len,
             proj_layer_q=proj_layer_q,
@@ -261,14 +261,14 @@ class RearrangeConvCentric(RearrangeBlock):
     def __init__(self, fn, spatial_dim_count=1, seq_len: int = None, dims: int = 2, **kwargs):
         assert dims == 1 or dims == 2 or dims == 3
         if dims - spatial_dim_count == 0:
-            pattern = 'b t g v c -> (b t v) c g'
-            reverse_pattern = '(b t v) c g -> b t g v c'
+            pattern = 'b v t g c -> (b v t) c g'
+            reverse_pattern = '(b v t) c g -> b v t g c'
         elif dims - spatial_dim_count == 1:
-            pattern = 'b t g v c -> (b v) c t g'
-            reverse_pattern = '(b v) c t g -> b t g v c'
+            pattern = 'b v t g c -> (b v) c t g'
+            reverse_pattern = '(b v) c t g -> b v t g c'
         else:
-            pattern = 'b t g v c -> b c t g v'
-            reverse_pattern = 'b c t g v -> b t g v c'
+            pattern = 'b v t g c -> b c v t g'
+            reverse_pattern = 'b c v t g -> b v t g c'
 
         super().__init__(
             fn,
@@ -289,7 +289,7 @@ class RearrangeConvCentric(RearrangeBlock):
         :param cond: Optional conditioning tensor.
         :return: Tensor after rearrangement, function application, and reverse rearrangement.
         """
-        b, t, v, c = x.shape[0], x.shape[1], x.shape[-2], x.shape[-1]
+        b, v, t, c = x.shape[0], x.shape[1], x.shape[2], x.shape[-1]
 
         # Rearrange input and optional tensors according to the specified pattern
         x, mask, cond = [

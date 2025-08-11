@@ -53,7 +53,6 @@ def get_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True,**k
 
 
 def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
-    
     bvt,s,f = x.shape
     b = adjc_patch.shape[0]
 
@@ -67,7 +66,7 @@ def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
     adjc_patch = adjc_patch.expand(-1, x.shape[1], -1, x.shape[-1])
 
     x = torch.gather(x, -2, index=adjc_patch)
-    
+
     x = x.view(bvt, s, nh, f)
 
     return x
@@ -187,6 +186,7 @@ class GridLayer(nn.Module):
         
         return x, mask
 
+
     def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_nh: bool=True, mask=None, **kwargs):
         
         s, f = x.shape[-2:]
@@ -223,7 +223,7 @@ class GridLayer(nn.Module):
 
         elif with_nh:
             x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
-        
+
         else:
             indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
 
@@ -233,14 +233,13 @@ class GridLayer(nn.Module):
             x = x[:,indices]
         
 
-
         if mask_dims is not None:
             mask = mask.view(*mask_dims, s//4**zoom_diff, -1)
 
         elif mask is not None:
-            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
+            mask = mask.unsqueeze(dim=1).expand(x.shape[0] // mask.shape[0] if mask.shape[0] < x.shape[0] else -1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
 
- 
+
         x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)
 
         mask = mask.reshape(*x_feat_dims, s//4**zoom_diff,-1,1) if mask is not None else None

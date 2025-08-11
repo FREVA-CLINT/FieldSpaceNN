@@ -27,11 +27,13 @@ class LinEmbLayer(nn.Module):
                  layer_confs: dict={},
                  layer_confs_emb: dict={},
                  embedder=None,
+                 spatial_dim_count=1
                 ) -> None: 
          
         super().__init__()
 
         self.embedder = embedder
+        self.spatial_dim_count = spatial_dim_count
 
         if isinstance(out_features, list):
             out_features_ = int(torch.tensor(out_features).prod())
@@ -75,9 +77,7 @@ class LinEmbLayer(nn.Module):
     def forward_wo_embedding(self, x, emb=None, sample_configs={}):
 
         x = self.layer(x, emb=emb, sample_configs=sample_configs)
-
-        x = x.view(*x.shape[:4],-1)
-
+        x = x.view(*x.shape[:4 + self.spatial_dim_count-1],-1)
         x = self.layer_norm(x)
 
         return x

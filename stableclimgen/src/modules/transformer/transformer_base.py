@@ -32,18 +32,39 @@ def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk
     Returns:
         Tensor of shape (B, H, L_q, D)
     """
-    B = q.shape[0]
-    chunks = [
-        scaled_dot_product_attention(
-            q[i:i+chunk_size],
-            k[i:i+chunk_size],
-            v[i:i+chunk_size],
-            attn_mask=None if mask is None else mask[i:i+chunk_size],
-            is_causal=is_causal
+    B, H, _, _ = q.shape
+
+    safe_chunk_size = chunk_size // H
+
+    if B <= safe_chunk_size:
+        return scaled_dot_product_attention(
+            q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=is_causal
         )
-        for i in range(0, B, chunk_size)
-    ]
-    return torch.cat(chunks, dim=0)
+
+    results = []
+    for i in range(0, B, safe_chunk_size):
+        q_chunk = q[i:i + safe_chunk_size]
+        k_chunk = k[i:i + safe_chunk_size]
+        v_chunk = v[i:i + safe_chunk_size]
+
+        mask_chunk = None
+        if mask is not None:
+            if mask.dim() == 4:
+                mask_chunk = mask[i:i + safe_chunk_size]
+            else:
+                mask_chunk = mask
+        
+        chunk_result = scaled_dot_product_attention(
+            q_chunk,
+            k_chunk,
+            v_chunk,
+            attn_mask=mask_chunk,
+            dropout_p=0.0,
+            is_causal=is_causal,
+        )
+        results.append(chunk_result)
+
+    return torch.cat(results, dim=0)
 
 
 class SelfAttention(nn.Module):
@@ -319,7 +340,7 @@ class TransformerBlock(EmbedBlock):
                 if block == "t":
                     rearrange_fn = RearrangeTimeCentric
                 elif block == "s":
-                    seq_length = 4**seq_length
+                    seq_length = 4**seq_length if seq_length else seq_length
                     rearrange_fn = RearrangeSpaceCentric
                 elif block == "snh":
                     seq_length = 1
@@ -334,9 +355,10 @@ class TransformerBlock(EmbedBlock):
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                trans_block = rearrange_fn(SelfAttention(att_dim, att_dim, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'])
+                trans_block = rearrange_fn(SelfAttention(att_dim, att_dim, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
      
-            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb))
+            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb, spatial_dim_count=spatial_dim_count))
+
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection
             if in_features != out_features_list[i]:

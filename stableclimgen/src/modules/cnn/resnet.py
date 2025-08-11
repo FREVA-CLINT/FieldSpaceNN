@@ -103,7 +103,7 @@ class ResBlock(EmbedBlock):
 
         if hasattr(self, "embedding_layer"):
             emb_out = self.embedding_layer(self.embedder_seq(emb))
-            pattern = 'b t h w v c -> (b v) c t h w' if self.dims == 3 else 'b t h w v c -> (b t v) c h w'
+            pattern = 'b t h w v c -> (b v) c t h w' if self.dims == 3 else 'b v t h w c -> (b v t) c h w'
             emb_out = rearrange(emb_out, pattern)
 
             # Apply scale-shift normalization if configured
@@ -143,9 +143,7 @@ class ResBlockSequential(EmbedBlock):
             out_ch: List[int],
             blocks: Union[str, List[str]],
             kernel_size: int | List[int] | List[List[int]] = 3,
-            embedder_names: List[List[str]] = None,
-            embed_confs: Dict = None,
-            embed_mode: str = "sum",
+            embedders: List[EmbedBlockSequential] = None,
             dropout: Union[float, List[float]] = 0.0,
             use_conv: Union[bool, List[bool]] = False,
             use_scale_shift_norm: Union[bool, List[bool]] = False,
@@ -166,9 +164,7 @@ class ResBlockSequential(EmbedBlock):
                 block,
                 kernel_size[i],
                 padding,
-                embedder_names[i] if embedder_names else None,
-                embed_confs,
-                embed_mode,
+                embedders[i] if embedders else None,
                 dropout[i],
                 use_conv[i],
                 use_scale_shift_norm[i],

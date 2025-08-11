@@ -9,12 +9,14 @@ lambda_loss_dict:
 weight_decay: 0
 lr_groups:
   default:
-    lr: 2e-4
+    lr: 0.0005
     warmup: 0
   attention:
-    matches: ['TransformerBlock','GridSelfAttention']
-    lr: 2e-4
-    warmup: 2000
+    matches:
+    - TransformerBlock
+    - GridSelfAttention
+    lr: 0.0005
+    warmup: 500
 model:
   _target_: stableclimgen.src.models.mg_vae.mg_vae.MG_VAE
   mgrids: ${mgrids}
@@ -45,10 +47,10 @@ model:
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
     "enc_1":
@@ -63,7 +65,8 @@ model:
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: ["MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
     "enc_2":
@@ -77,10 +80,10 @@ model:
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
   decoder_block_configs:
@@ -110,10 +113,10 @@ model:
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
     "dec_2":
@@ -127,10 +130,10 @@ model:
         mlp_mult: 2
         embed_confs:
           embed_names:
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
+          - - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
     "dec_3":
@@ -144,7 +147,8 @@ model:
         n_head_channels: 32
         mlp_mult: 2
         embed_confs:
-          embed_names: [ "MGEmbedder"]
+          embed_names:
+          - MGEmbedder
           embed_confs: ${embedding}
           embed_mode: "sum"
     "output":
@@ -161,9 +165,10 @@ model:
       type: "TransformerBlock"
       blocks: [ "mlp" ]
       n_head_channels: 32
+      att_dims: 128
       mlp_mult: 2
       embed_confs:
         embed_names:
-          - ["MGEmbedder"]
+        - - MGEmbedder
         embed_confs: ${embedding}
-        embed_mode: "sum"
+        embed_mode: sum

@@ -138,7 +138,7 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
 
             # Use embedding index for variable name if available
             if emb is not None and 'GroupEmbedder' in emb:
-                var_idx = emb['GroupEmbedder'][sample, var].item()
+                var_idx = emb['GroupEmbedder'][sample, var, ts].item()
             else:
                 var_idx = var
 
@@ -147,3 +147,92 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
             save_paths.append(save_path)
     
     return save_paths
+
+
+def plot_images(
+    gt_data: torch.Tensor,
+    in_data: torch.Tensor,
+    out_data: torch.Tensor,
+    filename: str,
+    directory: str,
+    gt_coords: Optional[torch.Tensor] = None,
+    in_coords: Optional[torch.Tensor] = None
+) -> None:
+    """
+    Generate and save comparison plots between ground truth and generated images.
+
+    :param gt_data: Ground truth data tensor of shape (samples, channels, timesteps, height, width).
+    :param in_data: Input data tensor of the same shape as `gt_data`.
+    :param out_data: Generated data tensor of the same shape as `gt_data`.
+    :param filename: Base filename for saving the images.
+    :param directory: Directory where the images will be saved.
+    :param gt_coords: Optional coordinate tensor for ground truth data, used for geospatial plotting.
+    :param in_coords: Optional coordinate tensor for input data, used for geospatial plotting.
+    """
+    # Move data to CPU if necessary
+    gt_data, in_data, out_data = gt_data.cpu(), in_data.cpu(), out_data.cpu()
+    if gt_coords is not None and in_coords is not None:
+        gt_coords, in_coords = gt_coords.cpu(), in_coords.cpu()
+
+    # Set the projection for geospatial plots if coordinates are provided
+    subplot_kw = {"projection": ccrs.Robinson()} if gt_coords is not None and in_coords is not None else {}
+
+    # Limit to a maximum of 12 timesteps and 16 samples for readability
+    gt_data, in_data, out_data = gt_data[:16, :12], in_data[:16, :12], out_data[:16, :12]
+
+    # Define image size and calculate differences between ground truth and output
+    img_size = 3
+    differences = gt_data - out_data
+
+    # Iterate over each channel in the output data
+    for v in range(out_data.shape[1]):  # Loop over channels
+
+        # Set up the figure layout
+        fig, axes = plt.subplots(
+            nrows=gt_data.shape[0], ncols=gt_data.shape[1] * 4,
+            figsize=(2 * img_size * gt_data.shape[1] * 4, img_size * gt_data.shape[0]),
+            subplot_kw=subplot_kw
+        )
+        axes = np.atleast_2d(axes)
+
+        # Plot each sample and timestep
+        for i in range(gt_data.shape[0]):  # Loop over samples
+            for t in range(gt_data.shape[2]):  # Loop over timesteps
+                gt_min = torch.min(gt_data[i, v, t, ..., :])
+                gt_max = torch.max(gt_data[i, v, t, ..., :])
+                for index, data, vmin, vmax, coords, title in [
+                    (t, in_data, None, None, in_coords, "Input"),
+                    (t + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
+                    (t + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords, "Output"),
+                    (t + 3 * gt_data.shape[1], differences, None, None, gt_coords, "Error")
+                ]:
+                    # Turn off axes for cleaner plots
+                    axes[i, index].set_axis_off()
+                    axes[i, index].set_title(title)
+                    if coords is not None:  # Geospatial plotting with coordinates
+                        # Add coastlines and borders
+                        axes[i, index].add_feature(cartopy.feature.COASTLINE, edgecolor="black", linewidth=0.6)
+                        axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
+                        # Create a pcolormesh with geospatial coordinates
+                        pcm = axes[i, index].pcolormesh(
+                            coords[0, v, t, 0, :, 1], coords[0, v, t, :, 0, 0],
+                            np.squeeze(data[i, v, t, ..., :].numpy()),
+                            transform=ccrs.PlateCarree(), shading='auto',
+                            cmap="RdBu_r", rasterized=True, vmin=vmin, vmax=vmax
+                        )
+                    else:  # Standard plot without coordinates
+                        pcm = axes[i, index].pcolormesh(
+                            np.squeeze(data[i, v, t, ..., :].numpy()),
+                            vmin=vmin, vmax=vmax, shading='auto', cmap="RdBu_r"
+                        )
+                    # Add color bar to each difference plot
+                    cb = fig.colorbar(pcm, ax=axes[i, index])
+
+        # Adjust layout and save the figure for the current channel
+        plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
+        os.makedirs(directory, exist_ok=True)
+        plt.savefig(os.path.join(directory, f'{filename}_{v}.png'), bbox_inches='tight')
+        plt.clf()  # Clear the figure for the next iteration
+
+    # Close all open figures to free memory
+    plt.close('all')
