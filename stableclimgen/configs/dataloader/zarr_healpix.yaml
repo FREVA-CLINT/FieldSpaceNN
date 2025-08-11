@@ -7,6 +7,10 @@ dataset:
   n_sample_groups: -1
   output_binary_mask: false
   sampling_zooms:
+    3:
+      n_past_ts: 2
+      n_future_ts: 0
+      zoom_patch_sample: -1
     4:
       n_past_ts: 0
       n_future_ts: 0

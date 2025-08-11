@@ -218,22 +218,22 @@ class MG_MultiBlock(nn.Module):
                                 )
         self.block = block
 
-    def generate_zoom(self, x: torch.Tensor, zoom, sample_configs={}):
-        b,nv,t,s,f = x.shape
+    def generate_zoom(self, in_shape, zoom, zoom_patch_sample=-1, n_past_ts=0, n_future_ts=0, **kwargs):
+        nt = n_past_ts + n_future_ts + 1
 
         x_zoom = self.zero_zooms_gen[str(zoom)]
 
-        if 'zoom_patch_sample' in sample_configs.keys():
-            x_zoom = x_zoom.view(1,1,1,12*4**sample_configs['zoom_patch_sample'],-1,1)[:,:,:,0]
+        if zoom_patch_sample > -1:
+            x_zoom = x_zoom.view(1,1,1,12*4**zoom_patch_sample,-1,1)[:,:,:,0]
 
-        return x_zoom.expand(b,nv,t,-1,f)
+        return x_zoom.expand(in_shape[0],in_shape[1],nt,-1,in_shape[-1])
 
 
     def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
 
         for zoom in self.out_zooms:
             if zoom not in x_zooms.keys():
-                x = self.generate_zoom(list(x_zooms.values())[0], zoom, sample_configs=sample_configs)
+                x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, **sample_configs[zoom])
                 x_zooms[zoom] = x
     
         x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)

@@ -360,7 +360,9 @@ class BaseDataset(Dataset):
             if drop_mask_input is not None:
                 ts_start = self.max_time_step_past - self.sampling_zooms[zoom]['n_past_ts']
                 ts_end = self.max_time_step_future - self.sampling_zooms[zoom]['n_future_ts']
-                drop_mask_input = drop_mask_input[:,ts_start:(drop_mask_input.shape[1]-ts_end)]
+                drop_mask_zoom = drop_mask_input[:,ts_start:(drop_mask_input.shape[1]-ts_end)]
+            else:
+                drop_mask_zoom = None
 
             data_source, data_time_zoom, drop_mask_zoom = self.get_data(ds_source, 
                                                                  time_index, 
@@ -370,7 +372,7 @@ class BaseDataset(Dataset):
                                                                  mapping_zoom, 
                                                                  zoom, 
                                                                  group_ids_sample=np.array(group_ids_sample), 
-                                                                 drop_mask=drop_mask_input)
+                                                                 drop_mask=drop_mask_zoom)
             
             if ds_target is not None:
                 data_target, _, _ = self.get_data(ds_target, 

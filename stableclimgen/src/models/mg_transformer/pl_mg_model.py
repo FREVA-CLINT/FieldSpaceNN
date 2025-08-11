@@ -135,9 +135,8 @@ class LightningMGModel(pl.LightningModule):
 
         self.decomposed_loss = decomposed_loss
 
-    def forward(self, x, sample_configs={}, mask_zooms=None, emb=None):
-        x: torch.tensor = self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
-        return x
+    def forward(self, x, sample_configs={}, mask_zooms=None, emb=None) -> torch.Tensor:
+        return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
     
     def training_step(self, batch, batch_idx):
         sample_configs = self.trainer.train_dataloader.dataset.sampling_zooms
