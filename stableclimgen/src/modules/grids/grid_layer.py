@@ -7,12 +7,12 @@ from typing import List,Dict
 from .grid_utils import get_distance_angle
 
 
-def get_nh_idx_of_patch(adjc, patch_index=None, zoom_patch_sample=None, return_local=True, **kwargs):
+def get_nh_idx_of_patch(adjc, patch_index=0, zoom_patch_sample=-1, return_local=True, **kwargs):
 
     # for icon and healpix
     zoom = int(math.log((adjc.shape[0])/4, 4))
 
-    if zoom_patch_sample is not None:
+    if zoom_patch_sample > -1:
 
         n_pts_patch = 4**(zoom-zoom_patch_sample)
 

@@ -16,7 +16,7 @@ model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
   mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
-  in_zooms: [4,6]
+  in_zooms: [3,4,6]
   in_features: 2
   out_features: 2
   lift_features: 1
@@ -30,13 +30,13 @@ model:
     "input":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [128,128,128]
-      zooms: [4,6]
+      zooms: [3,4,6]
       layer_settings:
         type: 'linear'
     "0":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128]
-      zooms: [4,6]
+      out_features: [128,128,128]
+      zooms: [3,4,6]
       layer_settings:
         type: "TransformerBlock"
         blocks: ["t","mlp","vsnh","mlp"]
@@ -54,8 +54,8 @@ model:
     "8":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
-      q_zooms: [4,6]
-      kv_zooms: [4,6]
+      q_zooms: [3,4,6]
+      kv_zooms: [3,4,6]
       layer_settings:
         with_nh: true
         common_kv: false
@@ -67,7 +67,7 @@ model:
           embed_mode: "sum"
     "output":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [2,2]
-      zooms: [4,6]
+      out_features: [2,2,2]
+      zooms: [3,4,6]
       layer_settings:
         type: 'mlp'

@@ -44,17 +44,19 @@ class MG_Transformer(MG_base_model):
         self.out_features = out_features
         self.predict_var = predict_var
 
-        if len(mg_emb_confs)>0:
-            mg_emb_zoom = mg_emb_confs['zoom']
 
-            self.mg_emeddings = get_mg_embedding(
-                self.grid_layers[str(mg_emb_zoom)],
-                mg_emb_confs['features'],
-                mg_emb_confs.get("n_groups",1),
-                init_mode=mg_emb_confs.get('init_method','fourier_sphere'))
+        if len(mg_emb_confs)>0:
+            self.mg_emeddings = nn.ParameterDict()
+
+            for zoom, features, n_groups, init_method in zip(mg_emb_confs['zooms'],mg_emb_confs['features'],mg_emb_confs["n_groups"],mg_emb_confs['init_methods']):
+            
+                self.mg_emeddings[str(zoom)] = get_mg_embedding(
+                    self.grid_layers[str(zoom)],
+                    features,
+                    n_groups,
+                    init_mode=init_method)
         else:
-            mg_emb_zoom = 0
-            self.mg_emeddings=None
+            self.mg_emeddings = None
 
         self.Blocks = nn.ModuleDict()
 
@@ -68,14 +70,12 @@ class MG_Transformer(MG_base_model):
             if isinstance(block_conf, MGProcessingConfig):
                 layer_settings = block_conf.layer_settings
 
-
                 block = MG_SingleBlock(
                      self.grid_layers,
                      in_zooms,
                      layer_settings,
                      in_features,
                      block_conf.out_features,
-                     mg_emb_zoom,
                      layer_confs=layer_confs,
                      zooms=check_get([block_conf, kwargs, {"zooms": None}], "zooms"),
                      layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
@@ -106,7 +106,6 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      block_conf.out_features,
-                     mg_emb_zoom,
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs,

@@ -1,7 +1,7 @@
 defaults:
   - trainer: mg_transformer
   - logger: wandb
-  - model: mg_vae
+  - model: mg_transformer
   - mgrids: healpix
   - data_zooms: default
   - data_variables: default

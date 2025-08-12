@@ -47,16 +47,17 @@ class MG_VAE(MG_base_model):
         self.distribution = distribution
 
         if len(mg_emb_confs)>0:
-            mg_emb_zoom = mg_emb_confs['zoom']
+            self.mg_emeddings = nn.ParameterDict()
 
-            self.mg_emeddings = get_mg_embedding(
-                self.grid_layers[str(mg_emb_zoom)],
-                mg_emb_confs['features'],
-                mg_emb_confs.get("n_groups",1),
-                init_mode=mg_emb_confs.get('init_method','fourier_sphere'))
+            for zoom, features, n_groups, init_method in zip(mg_emb_confs['zooms'],mg_emb_confs['features'],mg_emb_confs["n_groups"],mg_emb_confs['init_methods']):
+            
+                self.mg_emeddings[str(zoom)] = get_mg_embedding(
+                    self.grid_layers[str(zoom)],
+                    features,
+                    n_groups,
+                    init_mode=init_method)
         else:
-            mg_emb_zoom = 0
-            self.mg_emeddings=None
+            self.mg_emeddings = None
 
         # Construct blocks based on configurations
         self.encoder_blocks = nn.ModuleDict()
@@ -66,7 +67,7 @@ class MG_VAE(MG_base_model):
 
         for block_key, block_conf in encoder_block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
-            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
+            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, **kwargs)
                 
             self.encoder_blocks[block_key] = block
 
@@ -77,12 +78,12 @@ class MG_VAE(MG_base_model):
 
         quant_out_feat = [2 * feat for feat in quant_config.out_features]
         self.quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, in_features,
-                                                          mg_emb_zoom, quant_out_feat, **kwargs)
+                                                          quant_out_feat, **kwargs)
         self.post_quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, quant_config.out_features,
-                                                               mg_emb_zoom, in_features, **kwargs)
+                                                               in_features, **kwargs)
 
         for block_key, block_conf in decoder_block_configs.items():
-            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, mg_emb_zoom, **kwargs)
+            block = self.create_encoder_decoder_block(block_conf, in_zooms, in_features, **kwargs)
             self.decoder_blocks[block_key] = block
 
             in_features = block.out_features
@@ -90,7 +91,7 @@ class MG_VAE(MG_base_model):
 
         block.out_features = [in_features[0]]
 
-    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, mg_emb_zoom, out_features=None, **kwargs):
+    def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
 
         if isinstance(block_conf, MGProcessingConfig):
@@ -102,7 +103,6 @@ class MG_VAE(MG_base_model):
                 layer_settings,
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
-                mg_emb_zoom,
                 layer_confs=layer_confs,
                 zooms=check_get([block_conf, kwargs, {"zooms": None}], "zooms"),
                 layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
@@ -134,7 +134,6 @@ class MG_VAE(MG_base_model):
                 layer_settings,
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
-                mg_emb_zoom,
                 q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
                 kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
                 layer_confs=layer_confs,

@@ -12,6 +12,7 @@ from ...utils.helpers import expand_tensor
 from ..base import get_layer,IdentityLayer,MLP_fac
 
 
+
 class BaseEmbedder(nn.Module):
     """
     A neural network module to embed longitude and latitude coordinates.
@@ -102,41 +103,57 @@ class MGEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layer=None, zoom=None, layer_confs={}, **kwargs) -> None:
+    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, layer_confs={}, **kwargs) -> None:
 
-        in_channels = mg_emb_confs['features']
+        in_channels = mg_emb_confs['features'][0]
 
         super().__init__(name, in_channels, embed_dim)
 
         self.zoom = zoom
 
-        n_groups = mg_emb_confs.get("n_groups")
-        if n_groups ==1:
-            self.get_emb_fcn = self.get_embeddings
-        else:
-            self.get_emb_fcn = self.get_embeddings_from_var_idx
-
-        self.grid_layer = grid_layer
+        self.grid_layers = grid_layers
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "v", "t", "s", "c"]
 
-        emb_zoom = mg_emb_confs['zoom']
-
+        emb_zooms = list(mg_emb_confs['zooms'])
+        zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom <= zoom]
         
-        if zoom == emb_zoom:
-            layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels != embed_dim else IdentityLayer()
-            self.get_patch_fcn = self.get_patch
+        if len(zooms_proc_idx) == 0:
+            zooms_proc_idx += [int(torch.tensor(emb_zooms).argmin())]
+        
+        self.layers = nn.ModuleDict()
+        self.get_patch_fcns = {}
+        self.get_emb_fcns = {}
 
-        elif zoom > emb_zoom:
-            nh_dim = grid_layer.adjc.shape[-1]
-            layer = get_layer([nh_dim, in_channels], [*[4]*int(zoom-emb_zoom), embed_dim], layer_confs=layer_confs)
-            self.get_patch_fcn = self.get_patch_nh
+        self.grid_layers = nn.ModuleDict()
+        for zoom_proc_idx in zooms_proc_idx:
+            zoom_proc = emb_zooms[zoom_proc_idx]
+            self.grid_layers[str(zoom_proc)] = grid_layers[str(zoom_proc)]
 
-        else:
-            layer = get_layer([*[4]*int(emb_zoom-zoom), in_channels], [embed_dim], layer_confs=layer_confs)
-            self.get_patch_fcn = self.get_patch
+            in_channels = mg_emb_confs['features'][zoom_proc_idx]
+            n_groups = mg_emb_confs['n_groups'][zoom_proc_idx]
 
-        self.layer = layer
+            if n_groups ==1:
+                get_emb_fcn = self.get_embeddings
+            else:
+                get_emb_fcn = self.get_embeddings_from_var_idx
+
+            if zoom == zoom_proc:
+                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels != embed_dim else IdentityLayer()
+                get_patch_fcn = self.get_patch
+
+            elif zoom > zoom_proc:
+                nh_dim = grid_layers[str(zoom_proc)].adjc.shape[-1]
+                layer = get_layer([nh_dim, in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
+                get_patch_fcn = self.get_patch_nh
+
+            else:
+                layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [embed_dim], layer_confs=layer_confs)
+                get_patch_fcn = self.get_patch
+
+            self.get_emb_fcns[zoom_proc] = get_emb_fcn
+            self.get_patch_fcns[zoom_proc] = get_patch_fcn
+            self.layers[str(zoom_proc)] = layer
 
 
     def get_embeddings(self, mg_emb, var_indices):
@@ -146,9 +163,9 @@ class MGEmbedder(BaseEmbedder):
         return mg_emb[var_indices]
     
 
-    def get_patch(self, embs, sample_configs={}):
+    def get_patch(self, embs: torch.Tensor, grid_layer: GridLayer, sample_configs={}):
     
-        idx = self.grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
+        idx = grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
 
         idx = idx.view(idx.shape[0],1,-1,1)
 
@@ -156,9 +173,9 @@ class MGEmbedder(BaseEmbedder):
 
         return embs
     
-    def get_patch_nh(self, embs, sample_configs={}):
+    def get_patch_nh(self, embs: torch.Tensor, grid_layer: GridLayer, sample_configs={}):
 
-        idx = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_configs, return_local=False)[0]
+        idx = get_nh_idx_of_patch(grid_layer.adjc, **sample_configs, return_local=False)[0]
 
         idx = idx.view(idx.shape[0],1,-1,1)
 
@@ -168,19 +185,25 @@ class MGEmbedder(BaseEmbedder):
     
     def forward(self, mg_emb_var, sample_configs={},**kwargs):
 
-        embs, var_indices = mg_emb_var
-        embs = self.get_emb_fcn(embs, var_indices)
+        embs_zooms, var_indices = mg_emb_var
+        if len(self.get_patch_fcns.keys())==4:
+            pass
+        embs_out = 0
+        for zoom_proc in self.get_patch_fcns.keys():
+            get_emb_fcn = self.get_emb_fcns[zoom_proc]
+            get_patch_fcn = self.get_patch_fcns[zoom_proc]
 
-        embs = self.get_patch_fcn(embs, sample_configs=sample_configs)
+            embs = get_emb_fcn(embs_zooms[str(zoom_proc)], var_indices)
+            embs = get_patch_fcn(embs, self.grid_layers[str(zoom_proc)], sample_configs=sample_configs)
+            embs = embs.unsqueeze(dim=2)
 
-        #unsqueeze time dimension
-        embs = embs.unsqueeze(dim=2)
+            embs = self.layers[str(zoom_proc)](embs, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
 
-        embs = self.layer(embs, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
+            embs = embs.reshape(*embs.shape[:3],-1,embs.shape[-1])
 
-        embs = embs.view(*embs.shape[:3],-1,embs.shape[-1])
+            embs_out = embs_out + embs
 
-        return embs
+        return embs_out
 
 class DensityEmbedder(BaseEmbedder):
     """

@@ -1,5 +1,6 @@
 from typing import List,Dict
 import math
+from scipy.special import sph_harm_y
 
 import torch
 import torch.nn as nn
@@ -9,7 +10,7 @@ from ..base import get_layer, IdentityLayer, LinEmbLayer
 from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
 from ...modules.embedding.embedding_layers import RandomFourierLayer
 
-from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch
+from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch,estimate_healpix_cell_radius_rad
 
 class LinearReductionLayer(nn.Module):
   
@@ -58,19 +59,21 @@ def get_mg_embedding(
         grid_layer_emb: GridLayer, 
         features, 
         n_groups, 
-        init_mode='fourier_sphere'):
+        init_mode='fourier_sphere',
+        wavelength=1,
+        amplitude=1):
     
     coords = grid_layer_emb.get_coordinates()
     
-    
     if init_mode=='random':
-        embs = torch.randn(1, coords.shape[-2], features)
+        embs = amplitude*torch.randn(1, coords.shape[-2], features)
     
-    elif init_mode=='fourier_sphere':
-        fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features)
-        embs = fourier_layer(coords)
+    elif 'fourier_sphere' == init_mode:
+        fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features, wave_length=2*wavelength*torch.pi)
+        embs = amplitude*fourier_layer(coords)
 
-    elif init_mode=='fourier':
+    elif 'fourier' == init_mode:
+
         clon, clat = coords[...,0], coords[...,1]
         x = torch.cos(clat) * torch.cos(clon)
         y = torch.cos(clat) * torch.sin(clon)
@@ -78,10 +81,26 @@ def get_mg_embedding(
 
         coords_3d = torch.stack((x, y, z), dim=-1).float()
 
-        fourier_layer = RandomFourierLayer(in_features=3, n_neurons=features)
-        embs = fourier_layer(coords_3d)
-
+        fourier_layer = RandomFourierLayer(in_features=3, n_neurons=features, wave_length=wavelength)
+        embs = amplitude*fourier_layer(coords_3d)
     
+    elif "spherical_harmonics" == init_mode:
+        l_min = int(1/wavelength -1)
+        l_max = int(math.sqrt(math.pi*grid_layer_emb.adjc.shape[0])/4 - 1/2)
+
+        clon, clat = coords[...,0], coords[...,1]
+
+        ls = torch.randint(l_min, int(l_max), (features,))
+        ms = torch.stack([torch.randint(0, max([1,l]), (1,)) for l in ls])
+        
+        embs = torch.zeros(1, coords.shape[-2], features)
+
+        for k in range(features):
+
+            Y_lm = sph_harm_y(ls[k], ms[k], clat, clon)
+            embs[...,k] = amplitude*torch.tensor(Y_lm.real).view(1,-1)
+
+
     embs = embs.repeat_interleave(n_groups, dim=0)
     
     embs = nn.Parameter(embs, requires_grad=True)
@@ -106,10 +125,8 @@ class MGEmbedding(nn.Module):
         emb_zoom = grid_layer_emb.zoom
 
         if n_groups > 1:
-
             self.get_embedding_fcn = self.get_embeddings_from_var_idx
         else:
-
             self.get_embedding_fcn = self.get_embeddings
 
         self.embeddings = get_mg_embedding(grid_layer_emb, features, n_groups=n_groups, init_mode=init_mode)

@@ -37,12 +37,11 @@ MGEmbedder:
   in_channels: 3
   embed_dim: 64
   mg_emb_confs:
-    zoom: 6
-    features: 64
-    n_groups: 2
-    init_method: random
+    zooms: [3,4,6]
+    features: [16,16,16]
+    n_groups: [1,1,1]
+    init_methods: [spherical_harmonics, spherical_harmonics, spherical_harmonics]
   layer_confs:
-    rank_channel: 0
     n_groups: 3
-    bias: true
-
+    rank_feat: 1
+    bias: false

@@ -23,7 +23,6 @@ class MG_SingleBlock(nn.Module):
                  layer_settings: Dict,
                  in_features_list: List[int],
                  out_features_list: List[int],
-                 mg_emb_zoom: int,
                  zooms = None,
                  layer_confs = {},
                  layer_confs_emb={},
@@ -37,7 +36,6 @@ class MG_SingleBlock(nn.Module):
         self.out_zooms = in_zooms
 
         self.blocks = nn.ModuleDict()
-        self.grid_layers = grid_layers
         self.use_mask = use_mask
 
         zooms = in_zooms if zooms is None else zooms 
@@ -54,7 +52,7 @@ class MG_SingleBlock(nn.Module):
             
             type = layer_settings.get('type','TransformerBlock')
 
-            embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)],zoom=zoom)
+            embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers,zoom=zoom)
 
             if type == 'TransformerBlock':
                 seq_length = layer_settings.get('seq_lengths', [10]*len(in_zooms))[k]
@@ -144,7 +142,6 @@ class MG_MultiBlock(nn.Module):
                  layer_settings: Dict,
                  in_features: int,
                  out_features: int,
-                 mg_emb_zoom: int,
                  q_zooms:List|int = -1,
                  kv_zooms:List|int = -1,
                  layer_confs={},
@@ -188,7 +185,7 @@ class MG_MultiBlock(nn.Module):
             #if zoom not in in_zooms:
             #    raise ValueError(f"Zoom level {zoom} at index {k} of q_zooms not found in in_zooms")
             
-            embedder_q = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)], zoom=zoom)
+            embedder_q = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=zoom)
             embedders_q[str(zoom)] = embedder_q
             
         
@@ -196,7 +193,7 @@ class MG_MultiBlock(nn.Module):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
-            embedder_kv = get_embedder(**layer_settings.get('embed_confs', {}), grid_layer=grid_layers[str(mg_emb_zoom)], zoom=zoom)
+            embedder_kv = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=zoom)
             embedders_kv[str(zoom)] = embedder_kv
      
         grid_layer = grid_layers[str(min(q_zooms + kv_zooms))] 
