@@ -34,8 +34,7 @@ class BaseDataset(Dataset):
                  lazy_load=True,
                  mask_zooms=None,
                  p_dropout=0,
-                 p_drop_vars=0,
-                 n_drop_vars=-1,
+                 p_drop_groups=0,
                  n_drop_groups=-1,
                  random_p = False,
                  skewness_exp = 2,
@@ -57,8 +56,7 @@ class BaseDataset(Dataset):
         self.skewness_exp = skewness_exp
         self.n_sample_groups = n_sample_groups
         self.deterministic = deterministic
-        self.n_drop_vars = n_drop_vars
-        self.p_drop_vars = p_drop_vars
+        self.p_drop_groups = p_drop_groups
         self.n_drop_groups = n_drop_groups
         self.output_differences = output_differences
         self.output_binary_mask = output_binary_mask
@@ -281,24 +279,24 @@ class BaseDataset(Dataset):
 
    #def get_masks_zooms(self, grid_type):
 
-    def get_mask(self, ng, nt, n, p_dropout=0, p_drop_vars=0, p_drop_time_steps=0, n_drop_groups=-1):
+    def get_mask(self, ng, nt, n, p_dropout=0, p_drop_groups=0, p_drop_time_steps=0, n_drop_groups=-1):
 
-        drop_vars = torch.rand(1) < p_drop_vars
+        drop_groups = torch.rand(1) < p_drop_groups
         drop_timesteps = torch.rand(1) < p_drop_time_steps
         drop_mask = torch.zeros((ng, nt, n), dtype=bool)
 
-        if self.random_p and drop_vars:
+        if self.random_p and drop_groups:
             p_dropout = skewed_random_p(ng, exponent=self.skewness_exp, max_p=p_dropout)
         elif self.random_p:
             p_dropout = skewed_random_p(1, exponent=self.skewness_exp, max_p=p_dropout)
         else:
             p_dropout = torch.tensor(p_dropout)
 
-        if p_dropout > 0 and not drop_vars and not drop_timesteps:
+        if p_dropout > 0 and not drop_groups and not drop_timesteps:
             drop_mask_p = (torch.rand((nt, n)) < p_dropout).bool()
             drop_mask[:,drop_mask_p] = True
 
-        elif p_dropout > 0 and drop_vars:
+        elif p_dropout > 0 and drop_groups:
             drop_mask_p = (torch.rand((ng, nt, n)) < p_dropout.view(-1,1,1)).bool()
             drop_mask[drop_mask_p] = True
 
@@ -335,7 +333,7 @@ class BaseDataset(Dataset):
                                             nt, 
                                             self.indices[max(self.zooms)].size,
                                             self.p_dropout,
-                                            self.p_drop_vars,
+                                            self.p_drop_groups,
                                             self.n_drop_groups)
         else:
             drop_mask_input = None

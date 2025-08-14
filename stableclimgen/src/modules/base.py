@@ -36,9 +36,14 @@ class LinEmbLayer(nn.Module):
         self.spatial_dim_count = spatial_dim_count
 
         if isinstance(out_features, list):
-            out_features_ = int(torch.tensor(out_features).prod())
+            out_features_ = out_features[-1]
         else:
             out_features_ = out_features
+        
+        if isinstance(in_features, list):
+            in_features_ = in_features[-1]
+        else:
+            in_features_ = in_features
 
         if self.embedder is not None:
             self.embedding_layer = get_layer(self.embedder.get_out_channels, [2, out_features_], layer_confs=layer_confs_emb)
@@ -52,10 +57,10 @@ class LinEmbLayer(nn.Module):
         else:
             self.layer_norm = nn.Identity()
 
-        if identity_if_equal and in_features==out_features:
+        if identity_if_equal and in_features==out_features_:
             self.layer = IdentityLayer()
         else:
-            self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
+            self.layer = get_layer(in_features_, out_features_, layer_confs=layer_confs)
 
     def forward_w_embedding(self, x, emb=None, sample_configs={}):
         

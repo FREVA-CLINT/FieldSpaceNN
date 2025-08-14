@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict,Tuple,Optional
 import warnings
 
 from omegaconf import ListConfig
@@ -7,13 +7,13 @@ import torch
 import torch.nn as nn
 
 from ..transformer.transformer_base import TransformerBlock
-from ..base import LinEmbLayer, MLP_fac
+from ..base import LinEmbLayer, MLP_fac, get_layer
 
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import GridSelfAttention
-from .mg_base import NHConv,ResNHConv
+from .mg_attention import MultiZoomSelfAttention
+from .mg_base import NHConv,ResNHConv,get_weight_matrix,get_einsum_subscripts
 
 class MG_SingleBlock(nn.Module):
   
@@ -178,29 +178,29 @@ class MG_MultiBlock(nn.Module):
 
         grid_layer = grid_layers[str(in_zooms[0])]
 
-        embedders_kv = {}
-        embedders_q = {}
+        zooms_embedders = torch.tensor(q_zooms + kv_zooms).unique() 
 
-        for k, zoom in enumerate(q_zooms):
+        embedders = {}
+
+        for k, zoom in enumerate(zooms_embedders):
             #if zoom not in in_zooms:
             #    raise ValueError(f"Zoom level {zoom} at index {k} of q_zooms not found in in_zooms")
             
-            embedder_q = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=zoom)
-            embedders_q[str(zoom)] = embedder_q
+            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
+            embedders[str(int(zoom))] = embedder
             
         
         for k, zoom in enumerate(kv_zooms):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
-            embedder_kv = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=zoom)
-            embedders_kv[str(zoom)] = embedder_kv
-     
         grid_layer = grid_layers[str(min(q_zooms + kv_zooms))] 
             
-        block = GridSelfAttention(grid_layer,
+        block = MultiZoomSelfAttention(grid_layer,
                                 in_features,
                                 out_features,
+                                q_zooms,
+                                kv_zooms,
                                 mult = layer_settings.get("mlp_mult",1),
                                 num_heads = layer_settings.get("num_heads",1),
                                 n_head_channels = layer_settings.get("n_head_channels",None),
@@ -209,8 +209,7 @@ class MG_MultiBlock(nn.Module):
                                 seq_length= layer_settings.get("seq_length",0),
                                 common_kv = layer_settings.get("common_kv",False),
                                 common_q = layer_settings.get("common_q",False),
-                                embedders_q=embedders_q,
-                                embedders_kv=embedders_kv,
+                                embedders=embedders,
                                 layer_confs=layer_confs,
                                 layer_confs_emb=layer_confs_emb
                                 )

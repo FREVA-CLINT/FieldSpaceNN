@@ -55,8 +55,6 @@ class SpatiaFacLayer(nn.Module):
                  rank_channel = None,
                  n_groups = 1,
                  bias = False,
-                 ranks_spatial: Dict={},
-                 dims_spatial: Dict= {},
                  sum_n_zooms: int=0,
                  fc = False,
                  base=12,
@@ -115,39 +113,6 @@ class SpatiaFacLayer(nn.Module):
         else:
             self.get_core_fcn = self.get_core
             self.get_var_fac_fcn = self.get_empty1
-
-        # space ---------
-        
-        self.min_rank = min(ranks_spatial.values()) if len(ranks_spatial)>0 else 0      
-        self.factors_spatial = nn.ParameterDict()
-        factorize_space = False
-        
-        for zoom in sorted(ranks_spatial):
-            factorize_space = True
-            rank = ranks_spatial[zoom]
-
-            if len(dims_spatial)==0:
-                dims = base if zoom==0 else 4
-            else:
-                dims = dims_spatial[zoom]
-            
-            self.factors_spatial[str(zoom)] = get_fac_matrix(dims, rank)
-            
-            sub_c = next(core_letters)
-            sub_f = next(factor_letters)
-            self.subscripts['core'] += sub_c
-            self.subscripts['factors']['space'].append(sub_f + sub_c)
-            self.subscripts['x']['space']+=sub_f
-            core_dims.append(rank)
-
-        if len(dims_spatial)==0:
-            dims_spatial = [4 if k>0 else 12 for k in range(10)]
-        else:
-            dims_spatial = list(dims_spatial.values)
-
-        self.register_buffer('dims_spatial', torch.as_tensor(dims_spatial))
-
-        # features ---------
 
         if isinstance(in_features, int):
             in_features = [in_features]
@@ -252,7 +217,6 @@ class SpatiaFacLayer(nn.Module):
         #t = tl.tensor(core)
         self.get_in_feat_fac_fcn = self.get_in_feat_factors #if factorize_features else self.get_empty1
         self.get_out_feat_fac_fcn = self.get_out_feat_factors #if factorize_features else self.get_empty1
-        self.get_space_fac_fcn = self.get_spatial_factors if factorize_space else self.get_empty_space
 
         if bias:
             if len(out_features)==1:
@@ -271,35 +235,6 @@ class SpatiaFacLayer(nn.Module):
     
     def get_core(self,**kwargs):
         return self.core
-    
-    def get_spatial_factors(self, sample_configs={}):
-        subscripts = []
-
-        factors = []
-        if 'zoom_patch_sample' in sample_configs.keys():
-            indices_zooms = global_indices_to_paths_dict(sample_configs['patch_index'], 
-                                                         sizes=self.dims_spatial[:int(sample_configs['zoom_patch_sample']) + 1])
-        else:
-            indices_zooms = {}
-
-        idx_f = 0
-        N_out_of_sample = 0
-        for zoom, factor_m in self.factors_spatial.items():
-            if int(zoom) in indices_zooms.keys():
-                N_out_of_sample += 1
-               # subscript = 'b'
-                factors.append(factor_m[indices_zooms[int(zoom)]])
-            else:
-               # subscript = self.subscripts['features']['space'][idx_f]
-                factors.append(factor_m)
-            
-            #idx_f+=1
-           # subscripts.append(subscript)
-        
-        return factors, N_out_of_sample
-    
-    def get_empty_space(self,**kwargs):
-        return [], 0
     
     def get_empty1(self,**kwargs):
         return []
@@ -322,29 +257,26 @@ class SpatiaFacLayer(nn.Module):
 
     def forward(self, x: torch.Tensor, emb: Dict=None, sample_configs={}):
         
-        f_s, N_out_of_sample = self.get_space_fac_fcn(sample_configs=sample_configs)
-        sub_space = ['b' + sub[1] if k<N_out_of_sample else sub for k, sub in enumerate(self.subscripts['factors']['space'])]
-
         f_v = self.get_var_fac_fcn(emb=emb)
         f_f_in = self.get_in_feat_fac_fcn()
         f_f_out = self.get_out_feat_fac_fcn()
 
         core = self.get_core_fcn(emb=emb)
                 
-        x_dims_in = [-1] + [f_s[k].shape[0] for k in range(N_out_of_sample, len(self.subscripts['x']['space']))] + self.feat_dims_in 
+        x_dims_in = [-1] + self.feat_dims_in 
 
         x_dims_out = [-1] + self.feat_dims_out 
 
-        x_subscripts_in = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_in']
-        x_subscripts_out = self.subscripts['x']['base'] + self.subscripts['x']['space'][N_out_of_sample:] + self.subscripts['x']['features_out']
+        x_subscripts_in = self.subscripts['x']['base'] + self.subscripts['x']['features_in']
+        x_subscripts_out = self.subscripts['x']['base'] +  self.subscripts['x']['features_out']
 
         x = x.view(*x.shape[:3], *x_dims_in)
 
-        factor_subscripts = self.subscripts['factors']['variables'] + sub_space + self.subscripts['factors']['features'] 
+        factor_subscripts = self.subscripts['factors']['variables'] + self.subscripts['factors']['features'] 
         
         eq_parts_in = [x_subscripts_in] + [self.subscripts['core']] + factor_subscripts
 
-        factors = f_v + f_s + f_f_in + f_f_out 
+        factors = f_v + f_f_in + f_f_out 
         
         einsum_eq = (
             f"{','.join(eq_parts_in)}"
