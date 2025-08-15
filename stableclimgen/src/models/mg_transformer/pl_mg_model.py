@@ -147,8 +147,8 @@ class LightningMGModel(pl.LightningModule):
 
         if not self.decomposed_loss:
             max_zoom = max(target.keys())
-            target = {max_zoom: decode_zooms(target,max_zoom)}
-            output = {max_zoom: decode_zooms(output,max_zoom)}
+            target = {max_zoom: decode_zooms(target,max_zoom, sample_configs=sample_configs)}
+            output = {max_zoom: decode_zooms(output,max_zoom, sample_configs=sample_configs)}
 
         loss, loss_dict = self.loss(output, target, mask=mask, sample_configs=sample_configs, prefix='train/')
 
@@ -171,8 +171,8 @@ class LightningMGModel(pl.LightningModule):
         
         max_zoom = max(target.keys())
         if not self.decomposed_loss:
-            target_loss = {max_zoom: decode_zooms(target_loss, max_zoom)}
-            output_loss = {max_zoom: decode_zooms(output_loss, max_zoom)}
+            target_loss = {max_zoom: decode_zooms(target_loss, max_zoom, sample_configs=sample_configs)}
+            output_loss = {max_zoom: decode_zooms(output_loss, max_zoom, sample_configs=sample_configs)}
 
         loss, loss_dict = self.loss(output_loss, target_loss, mask=mask, sample_configs=sample_configs, prefix='validate/')
 

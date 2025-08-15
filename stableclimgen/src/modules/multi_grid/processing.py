@@ -176,7 +176,7 @@ class MG_MultiBlock(nn.Module):
         if not isinstance(kv_zooms,(List,ListConfig)) and (kv_zooms == -1):
             kv_zooms = in_zooms
 
-        grid_layer = grid_layers[str(in_zooms[0])]
+        
 
         zooms_embedders = torch.tensor(q_zooms + kv_zooms).unique() 
 
@@ -194,8 +194,12 @@ class MG_MultiBlock(nn.Module):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
-        grid_layer = grid_layers[str(min(q_zooms + kv_zooms))] 
-            
+        min_zoom = (min(q_zooms + kv_zooms))  
+        min_zoom = min([layer_settings.get("att_zoom",min_zoom), min_zoom])
+        grid_layer = grid_layers[str(min_zoom)]
+
+
+
         block = MultiZoomSelfAttention(grid_layer,
                                 in_features,
                                 out_features,
@@ -204,9 +208,9 @@ class MG_MultiBlock(nn.Module):
                                 mult = layer_settings.get("mlp_mult",1),
                                 num_heads = layer_settings.get("num_heads",1),
                                 n_head_channels = layer_settings.get("n_head_channels",None),
+                                compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
                                 with_nh= layer_settings.get("with_nh",True),
                                 var_att= layer_settings.get("var_att",False),
-                                seq_length= layer_settings.get("seq_length",0),
                                 common_kv = layer_settings.get("common_kv",False),
                                 common_q = layer_settings.get("common_q",False),
                                 embedders=embedders,

@@ -56,6 +56,10 @@ class MGDiffEncoderConfig(MGEncoderConfig):
 class MGConservativeConfig:
     pass
 
+class MGDecodeConfig:
+    def __init__(self, 
+                 out_zoom):
+        self.out_zoom = out_zoom
 
 class MGCoordinateEmbeddingConfig:
     def __init__(self, 

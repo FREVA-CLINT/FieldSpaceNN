@@ -114,7 +114,7 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     Create HEALPix plots for each variable across zoom levels and save them.
     """
 
-    zoom_levels = sorted(input_zooms.keys())
+    zoom_levels = sorted(output_zooms.keys())
     save_paths = []
 
     for ts in range(plot_n_ts):

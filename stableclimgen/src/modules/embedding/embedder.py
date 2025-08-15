@@ -144,11 +144,11 @@ class MGEmbedder(BaseEmbedder):
 
             elif zoom > zoom_proc:
                 nh_dim = grid_layers[str(zoom_proc)].adjc.shape[-1]
-                layer = get_layer([nh_dim, in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
+                layer = get_layer([nh_dim, *[1]*int((zoom -zoom_proc) -1) , in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
                 get_patch_fcn = self.get_patch_nh
 
             else:
-                layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [embed_dim], layer_confs=layer_confs)
+                layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [*[1]*int((zoom_proc-zoom)), embed_dim], layer_confs=layer_confs)
                 get_patch_fcn = self.get_patch
 
             self.get_emb_fcns[zoom_proc] = get_emb_fcn

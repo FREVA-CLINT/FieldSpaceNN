@@ -50,9 +50,10 @@ class SpatiaFacLayer(nn.Module):
     def __init__(self,
                  in_features: List|int, 
                  out_features: List|int, 
-                 rank_feat = None,
+                 rank_feat: int = None,
+                 rank_channel: int = None,
+                 skip_dims: List=None,
                  rank_vars = None,
-                 rank_channel = None,
                  n_groups = 1,
                  bias = False,
                  sum_n_zooms: int=0,
@@ -62,34 +63,34 @@ class SpatiaFacLayer(nn.Module):
 
         super().__init__()
 
+        # contract_dims: List[bool]
+        # rank_feat: List[int]
+        # ranks: None does not factorize,   
+
+        if isinstance(in_features, int):
+            in_features = [in_features]
+
+        if isinstance(out_features, int):
+            out_features = [out_features]
+
+        assert len(in_features)==len(out_features), f"unmachting len of in_features {in_features} and out_features {out_features}"
+        #contract_features = [rank_feat > 0 for k in in_features]
         factor_letters =  iter("adefghijklmopqruwxyz")
         core_letters = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
 
         self.sum_n_zooms = sum_n_zooms
         
         factorize_vars = rank_vars is not None
-        factorize_features = rank_feat is not None
-        factorize_channels = rank_channel is not None
-        
 
         self.subscripts = {
-            'factors': {
-                'space': [],
-                'time': [],
-                'variables': [],
-                'features': []
-            },
+            'factors': [],
             'core': '',
-            'x': {
-                'base': 'bvts',
-                'space': '',
-                'features_in':'',
-                'features_out':''
-            }
+            'x_in': 'bvtn',
+            'x_out': 'bvtn',
             }
         
         core_dims = []
-
+        
         # variables -----
         scale = 0
         if factorize_vars and n_groups>1:
@@ -100,124 +101,85 @@ class SpatiaFacLayer(nn.Module):
 
             sub_c = next(core_letters)
             self.subscripts['core'] = sub_c
-            self.subscripts['factors']['variables'] = ['bv' + sub_c]
+            self.subscripts['factors'].append(['bv' + sub_c])
 
         elif n_groups>1:
             core_dims.append(n_groups)
-            #scale += n_groups
             self.get_core_fcn = self.get_core_from_var_idx
             self.get_var_fac_fcn = self.get_empty1
-
             self.subscripts['core'] = 'bv'
 
         else:
             self.get_core_fcn = self.get_core
             self.get_var_fac_fcn = self.get_empty1
 
-        if isinstance(in_features, int):
-            in_features = [in_features]
-
-        if isinstance(out_features, int):
-            out_features = [out_features]
-
-        omit_channel = (rank_channel == 0) and (in_features[-1] == out_features[-1]) 
-
-        #if omit_channel and (len(in_features)==1 and len(in_features)==1):
-        #    raise Warning here that in this case channels will not be fac
         
-        if rank_channel == 0 and in_features[-1] != out_features[-1]:
-            raise ValueError(
-                f"When rank_channel is 0, the last dimensions of in_features ({in_features[-1]}) "
-                f"and out_features ({out_features[-1]}) must be equal."
-            )
+        ranks = [rank_feat]*(len(in_features)-1) + [rank_channel] 
+        skip_dims = [False]*len(ranks) if skip_dims is None else skip_dims
 
-        self.factors_feats_in = nn.ParameterList() 
+        fan_in=fan_out=0
+        self.factors = nn.ParameterList()
+        for skip_dim, rank, f_in, f_out in zip(skip_dims, ranks, in_features, out_features):
         
-        fan_in = 1
-        for k, in_features_ in enumerate(in_features):
+            if rank == 0 and f_in != f_out:
+                raise ValueError(
+                    f"When rank is 0, the dimensions of in_features ({f_in}) "
+                    f"and out_features ({f_out}) must be equal."
+                )
+
+            if skip_dim:
+                subs = next(factor_letters)
+                self.subscripts['x_in'] += subs
+                self.subscripts['x_out'] += subs
+
+            elif rank==0:
+                subs = next(core_letters)
+                self.subscripts['core'] += subs
+                self.subscripts['x_in'] += subs
+                self.subscripts['x_out'] += subs
+                core_dims.append(f_in)
             
-            if (factorize_features and k< (len(in_features) -1))  or (factorize_channels and k==(len(in_features) -1) and not omit_channel):
-                rank = rank_feat if (factorize_features and k< (len(in_features) -1)) else rank_channel
-                m = get_fac_matrix(in_features_, rank, init_ones=False)
-                self.factors_feats_in.append(m)
-                core_dims.append(m.shape[1])
-                fan_in *= m.shape[1]
+            elif rank is None:
+                subs_in = next(core_letters)
+                subs_out = next(core_letters)
+                self.subscripts['core'] += subs_in
+                self.subscripts['core'] += subs_out
+                self.subscripts['x_in'] += subs_in
+                self.subscripts['x_out'] += subs_out
 
-                sub_c = next(core_letters)
-                sub_f = next(factor_letters)
-                self.subscripts['core'] += sub_c
-                self.subscripts['factors']['features'].append(sub_f + sub_c)
-                self.subscripts['x']['features_in'] += sub_f
-
-            elif k==(len(in_features) -1) and omit_channel:
-                self.subscripts['x']['features_in'] += next(core_letters)
+                fan_in += f_in
+                fan_out += f_out
+                core_dims.append(f_in)
+                core_dims.append(f_out)
+            
             else:
-                sub_c = next(core_letters)
-                self.subscripts['core'] += sub_c
-                self.subscripts['x']['features_in'] += sub_c
+                subs_in = next(core_letters)
+                subs_out = next(core_letters)
+                sub_in_f = next(factor_letters)
+                sub_out_f = next(factor_letters)
+                self.subscripts['core'] += subs_in
+                self.subscripts['core'] += subs_out
+                self.subscripts['factors'].append(sub_in_f + subs_in)
+                self.subscripts['factors'].append(sub_out_f + subs_out)
+                self.subscripts['x_in'] += sub_in_f
+                self.subscripts['x_out'] += sub_out_f
 
-                fan_in *= in_features_
-                core_dims.append(in_features_)
+                fan_in += rank
+                fan_out += rank
+                core_dims.append(rank)
+                core_dims.append(rank)
 
-        self.fc = fc
-        if fc:
-            out_features_c = [*in_features[:-1], out_features[-1]]
-        else:
-            out_features_c = out_features
+                self.factors.append(get_fac_matrix(f_in, rank, init_ones=False))
+                self.factors.append(get_fac_matrix(f_out, rank, init_ones=False))
 
-        fan_out = 1
-        self.factors_feats_out = nn.ParameterList() 
-        for k, out_features_ in enumerate(out_features_c[::-1]):
-            
-            if (factorize_features and (fc or len(out_features)>len(in_features)) and k>0) or (factorize_channels and k==0 and not omit_channel):
-                rank = rank_feat if (factorize_features and k>0) else rank_channel
-                m = get_fac_matrix(out_features_, rank, init_ones=False)
-                self.factors_feats_out.append(m)
-                core_dims.append(m.shape[1])
-                fan_out *= m.shape[1]
+        self.in_features = in_features
+        self.out_features = out_features
 
-                sub_c = next(core_letters)
-                sub_f = next(factor_letters)
-                self.subscripts['core'] += sub_c
-                self.subscripts['factors']['features'].append(sub_f + sub_c)
-
-                if k <= len(out_features) - 1:
-                    self.subscripts['x']['features_out'] += sub_f
-
-
-            elif (not factorize_features and (fc or len(out_features)>len(in_features))) or not (factorize_channels and k==0):
-
-                sub_c = next(core_letters)
-                self.subscripts['core'] += sub_c
-
-                core_dims.append(out_features_)
-                fan_out *= out_features_
-
-                if k <= len(out_features) - 1:
-                    self.subscripts['x']['features_out'] += sub_c
-                    
-            elif  k==0 and omit_channel:
-                self.subscripts['x']['features_out'] += self.subscripts['x']['features_in'][-1]
-
-            elif not fc and len(out_features_c)==len(in_features):
-                self.subscripts['x']['features_out'] += self.subscripts['x']['features_in'][k]
-
-
-        self.feat_dims_in = in_features
-        self.feat_dims_out = out_features
-        
-        
         core = torch.empty(core_dims)
         nn.init.normal_(core)
-    #nn.init.normal_(core)
-    # core = torch.ones(core_dims)# * scale
         scale = fan_in + fan_out
         self.core = nn.Parameter(core * (2 / scale)**0.5, requires_grad=True)
         
-        #t = tl.tensor(core)
-        self.get_in_feat_fac_fcn = self.get_in_feat_factors #if factorize_features else self.get_empty1
-        self.get_out_feat_fac_fcn = self.get_out_feat_factors #if factorize_features else self.get_empty1
-
         if bias:
             if len(out_features)==1:
                 bias = torch.randn(out_features)
@@ -258,33 +220,26 @@ class SpatiaFacLayer(nn.Module):
     def forward(self, x: torch.Tensor, emb: Dict=None, sample_configs={}):
         
         f_v = self.get_var_fac_fcn(emb=emb)
-        f_f_in = self.get_in_feat_fac_fcn()
-        f_f_out = self.get_out_feat_fac_fcn()
 
         core = self.get_core_fcn(emb=emb)
-                
-        x_dims_in = [-1] + self.feat_dims_in 
-
-        x_dims_out = [-1] + self.feat_dims_out 
-
-        x_subscripts_in = self.subscripts['x']['base'] + self.subscripts['x']['features_in']
-        x_subscripts_out = self.subscripts['x']['base'] +  self.subscripts['x']['features_out']
-
-        x = x.view(*x.shape[:3], *x_dims_in)
-
-        factor_subscripts = self.subscripts['factors']['variables'] + self.subscripts['factors']['features'] 
         
-        eq_parts_in = [x_subscripts_in] + [self.subscripts['core']] + factor_subscripts
+        x_shape = list(x.shape[:3])
+        x_dims_in = x_shape + [-1] + self.in_features 
+        x_dims_out = x_shape + [-1] + self.out_features 
 
-        factors = f_v + f_f_in + f_f_out 
+        x = x.view(x_dims_in)
+        
+        lhs = [self.subscripts['x_in'], self.subscripts['core'], *self.subscripts['factors']]
         
         einsum_eq = (
-            f"{','.join(eq_parts_in)}"
-            f"->{x_subscripts_out}"
+            f"{','.join(lhs)}"
+            f"->{self.subscripts['x_out']}"
         )
 
-        x = torch.einsum(einsum_eq, x, core, *factors)
+        factors = f_v + list(self.factors)
 
-        x = x.reshape(*x.shape[:3], *x_dims_out)
+        x = torch.einsum(einsum_eq, x, core, *factors)
+        
+        x = x.reshape(x_dims_out)
 
         return self.return_fcn(x)

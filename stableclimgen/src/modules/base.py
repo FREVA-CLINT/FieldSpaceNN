@@ -146,6 +146,8 @@ def get_layer(
     n_groups = check_get([layer_confs, kwargs, {'n_groups': 1}], 'n_groups')
     rank_channel = check_get([layer_confs, kwargs, {'rank_channel': None}], 'rank_channel')
     bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
+    fac_mode = check_get([layer_confs, kwargs, {'fac_mode': 'Tucker'}], 'fac_mode')
+    skip_dims = check_get([layer_confs, kwargs, {'skip_dims': None}], 'skip_dims')
 
     if not rank_feat and not rank_vars and rank_channel is None and n_groups==1:
         layer = LinearLayer(
@@ -153,7 +155,7 @@ def get_layer(
                 out_features,
                 bias=bias
                 )
-    else:
+    elif fac_mode=='Tucker':
     
         """
         layer = SpatiaFacLayer(
@@ -169,6 +171,9 @@ def get_layer(
             sum_n_zooms=sum_n_zooms,
             bias=bias)
         """
+
+      #  contract_features = [layer_confs['rank_feat']!=0 if k <(len(in_features)-1) else layer_confs['rank_channel']!=0  for k in in_features] if contract_features is None else contract_features
+
         layer = SpatiaFacLayer(
             in_features,
             out_features,
@@ -182,6 +187,7 @@ class LinearLayer(nn.Module):
                  in_features: int|List, 
                  out_features: int|List,
                  bias=False,
+                 nh_dim=None,
                  **kwargs):
 
         super().__init__()
@@ -198,6 +204,10 @@ class LinearLayer(nn.Module):
 
         self.in_features = in_features
         self.out_features = out_features
+
+        if nh_dim is not None:
+            self.in_features = [nh_dim] + self.in_features
+            self.out_features = [nh_dim] + self.out_features
 
     def forward(self, x, **kwargs):
         x_dims = x.shape[:-len(self.in_features)]

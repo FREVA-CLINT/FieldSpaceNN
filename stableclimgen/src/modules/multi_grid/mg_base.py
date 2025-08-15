@@ -1,6 +1,7 @@
 from typing import List,Dict
 import math
 from scipy.special import sph_harm_y
+import string
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,9 @@ from ..base import get_layer, IdentityLayer, LinEmbLayer
 from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
 from ...modules.embedding.embedding_layers import RandomFourierLayer
 
-from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch,estimate_healpix_cell_radius_rad
+from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch,estimate_healpix_cell_radius_rad, decode_zooms
+
+_AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
 class LinearReductionLayer(nn.Module):
   
@@ -203,6 +206,24 @@ class MGEmbedding(nn.Module):
 
 
         return x_zooms
+
+
+class DecodeLayer(nn.Module):
+  
+    def __init__(self,
+                 out_zoom: int
+                ) -> None: 
+      
+        super().__init__()
+
+        self.out_zooms = [out_zoom]  
+        self.out_zoom = out_zoom
+
+    def forward(self, x_zooms, sample_configs={}, **kwargs):
+
+        x = {self.out_zoom: decode_zooms(x_zooms, self.out_zoom, sample_configs=sample_configs)}
+
+        return x
 
 class ConservativeLayer(nn.Module):
   

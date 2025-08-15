@@ -8,9 +8,9 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding,DecodeLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig
 
 from ...modules.embedding.embedder import get_embedder
 
@@ -84,6 +84,11 @@ class MG_Transformer(MG_base_model):
             elif isinstance(block_conf, MGConservativeConfig):
                 block = ConservativeLayer(in_zooms,
                                           first_feature_only=self.predict_var)
+                block.out_features = in_features
+
+            elif isinstance(block_conf, MGDecodeConfig):
+                block = DecodeLayer(block_conf.out_zoom)
+                
                 block.out_features = in_features
             
             elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
