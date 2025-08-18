@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from ..modules.grids.grid_layer import GridLayer
-from .factorization import SpatiaFacLayer
+from .factorization import TuckerLayer
 
 
 class IdentityLayer(nn.Module):
@@ -46,7 +46,7 @@ class LinEmbLayer(nn.Module):
             in_features_ = in_features
 
         if self.embedder is not None:
-            self.embedding_layer = get_layer(self.embedder.get_out_channels, [2, out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
          
             self.forward_fcn = self.forward_w_embedding
         else:
@@ -174,7 +174,7 @@ def get_layer(
 
       #  contract_features = [layer_confs['rank_feat']!=0 if k <(len(in_features)-1) else layer_confs['rank_channel']!=0  for k in in_features] if contract_features is None else contract_features
 
-        layer = SpatiaFacLayer(
+        layer = TuckerLayer(
             in_features,
             out_features,
             **layer_confs)
@@ -210,7 +210,7 @@ class LinearLayer(nn.Module):
             self.out_features = [nh_dim] + self.out_features
 
     def forward(self, x, **kwargs):
-        x_dims = x.shape[:-len(self.in_features)]
+        x_dims = x.shape[:4]
 
         x = x.view(*x_dims, *self.in_features)
         x = self.layer(x)

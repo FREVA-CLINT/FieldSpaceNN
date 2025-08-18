@@ -6,9 +6,10 @@ import torch
 import torch.nn as nn
 
 from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac
+from ..factorization import get_cp_tensor,get_cp_tensors, get_cp_equation
 
 from ...modules.grids.grid_layer import GridLayer
-from ...modules.transformer.transformer_base import SelfAttention
+from ...modules.transformer.transformer_base import SelfAttention,safe_scaled_dot_product_attention
 
 from ...modules.embedding.embedder import EmbedderSequential
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch
@@ -56,14 +57,14 @@ class MultiZoomSelfAttention(nn.Module):
         att_dim = out_features if att_dim is None else att_dim
 
         for in_zoom in embedders.keys():
-            self.emb_layers[in_zoom] = LinEmbLayer(in_features, [in_features], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+            self.emb_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
 
         for q_zoom in q_zooms:
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(out_features, out_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(out_features, out_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
 
-            self.q_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_q else IdentityLayer()
-            self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out else IdentityLayer()
+            self.q_layers[str(q_zoom)] = get_layer(att_dim, out_features, layer_confs=layer_confs) if not common_q else IdentityLayer()
+            self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
 
         self.omit_mask_zooms = []
         for kv_zoom in kv_zooms:
@@ -179,6 +180,230 @@ class MultiZoomSelfAttention(nn.Module):
             x_q = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs)
 
             x_zooms[int(zoom)] = x_zooms[int(zoom)] + x_q #q[k].reshape(x_zooms[int(zoom)].shape)
+        
+            x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
+
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.mlps[zoom](x_mlp, emb=emb, sample_configs=sample_configs[int(zoom)])
+
+            x_zooms[int(zoom)] = self.out_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
+
+
+        return x_zooms
+
+
+class MultiZoomFieldAttention(nn.Module):
+  
+    def __init__(self, 
+                 grid_layer: GridLayer,
+                 in_features: int,
+                 out_features: int,
+                 q_zooms: int,
+                 kv_zooms: int,
+                 mult: int=1,
+                 dropout: float=0.0,
+                 num_heads: int=1,
+                 rank = 16,
+                 contract_zooms = True,
+                 contract_channels = True,
+                 att_dim=None,
+                 n_head_channels: int=32, 
+                 share_zoom_proj = False,
+                 share_zoom_proj_qkv = True,
+                 embedders: Dict[str, EmbedderSequential] = {},
+                 with_nh = True,
+                 var_att = False,
+                 layer_confs: Dict = {},
+                 layer_confs_emb= {}) -> None: 
+        
+        super().__init__()
+        
+        layer_confs_kv = copy.deepcopy(layer_confs)
+        layer_confs_kv['bias'] = True
+
+        self.with_nh = with_nh
+
+        self.n_groups = layer_confs.get('n_groups',1)
+        self.emb_layers = nn.ModuleDict()
+        self.mlp_emb_layers = nn.ModuleDict()
+        self.q_layers = nn.ModuleDict()
+        self.kv_layers = nn.ModuleDict()
+        self.mlps = nn.ModuleDict()
+        self.out_layers = nn.ModuleDict()
+       # self.gammas = nn.ParameterDict()
+
+        att_dim = out_features if att_dim is None else att_dim
+
+        att_zoom = grid_layer.zoom
+
+        zooms = [zoom for zoom in range(att_zoom+1, max(q_zooms + kv_zooms)+1)]
+        zoom_diff_att = (max(q_zooms + kv_zooms)-att_zoom)
+
+        for in_zoom in embedders.keys():
+            self.emb_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb)
+
+
+        if share_zoom_proj:
+
+            if share_zoom_proj_qkv:
+                n_dim_max = [4]*zoom_diff_att
+                self.zoom_projections_q =  get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=zooms, contract=contract_zooms)
+                self.zoom_projections_kv = self.zoom_projections_q
+            else:
+                n_dim_max = [4]*zoom_diff_att
+                self.zoom_projections_q = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(q_zooms)+1)], contract=contract_zooms)
+                self.zoom_projections_kv = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(kv_zooms)+1)], contract=contract_zooms)
+
+        else:
+            if share_zoom_proj_qkv:
+                self.zoom_projections = nn.ParameterDict({str(zoom): get_cp_tensors([4]*(int(zoom) - att_zoom), [4]*(int(zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for zoom in sorted(self.emb_layers.keys())})
+                self.zoom_projections_kv = self.zoom_projections_q = self.zoom_projections
+            else:
+                self.zoom_projections_q = nn.ParameterDict({str(q_zoom): get_cp_tensors([4]*(int(q_zoom) - att_zoom), [4]*(int(q_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for q_zoom in sorted(q_zooms)})
+                self.zoom_projections_kv = nn.ParameterDict({str(kv_zoom): get_cp_tensors([4]*(int(kv_zoom) - att_zoom), [4]*(int(kv_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for kv_zoom in sorted(kv_zooms)})
+
+        if share_zoom_proj:
+            self.get_tensors_fun = self.get_tensors_shared
+
+        else:
+            self.get_tensors_fun = self.get_tensors 
+
+        self.channel_projections_q = nn.ParameterDict()
+        self.gammas = nn.ParameterDict()
+        self.contract_fun_q = None # contract fun_q
+        self.eq_q = {} #q equation
+        self.shapes_q = {} 
+
+        for q_zoom in q_zooms:
+            self.shapes_q[q_zoom] = (*[4]*(q_zoom - att_zoom), in_features)
+            self.channel_projections_q[str(q_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
+            self.eq_q[q_zoom] = get_cp_equation(1+q_zoom-att_zoom, n_groups=self.n_groups, contract_feats=contract_zooms, contract_channel=contract_channels)  
+
+            self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(att_dim, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
+            self.mlps[str(q_zoom)] = MLP_fac(att_dim, att_dim, mult, dropout, layer_confs=layer_confs, gamma=True) 
+
+            self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if in_features!=out_features else IdentityLayer() 
+            self.gammas[str(q_zoom)] = nn.Parameter(torch.ones(in_features)*1e-6,requires_grad=True)
+
+
+        self.channel_projections_k = nn.ParameterDict()
+        self.channel_projections_v = nn.ParameterDict()
+        
+        self.contract_fun_kv = None # contract fun_q
+        self.eq_kv = {} #q equation
+        self.shapes_kv = {}
+        self.shapes_kv_out = {}
+        self.omit_mask_zooms = []
+
+        for kv_zoom in kv_zooms:
+            self.shapes_kv[kv_zoom] = (grid_layer.adjc.shape[1] ,*[4]*(kv_zoom - att_zoom), in_features) if with_nh else (*[4]*(kv_zoom - att_zoom), in_features)
+            self.shapes_kv_out[kv_zoom] = (grid_layer.adjc.shape[1] ,-1, n_head_channels) if with_nh else (-1, n_head_channels)
+            self.channel_projections_k[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
+            self.channel_projections_v[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
+
+            self.eq_kv[kv_zoom] = get_cp_equation(1+kv_zoom-att_zoom, n_groups=self.n_groups, contract_feats=contract_zooms, contract_channel=contract_channels, nh_dim=True)  
+        
+
+        self.n_head_channels = n_head_channels
+        self.attention = SelfAttention(in_features, in_features, num_heads=num_heads, dropout=dropout, cross=True, qkv_proj=False)
+
+        self.grid_layer = grid_layer
+        self.max_zoom = int(max(list(embedders.keys())))
+
+        assert out_features==in_features,"Module does not support differen in and out features"
+
+        if not var_att:
+            self.pattern = 'b v t n NH H -> (b v t) NH n H'
+            self.kv_pattern = 'b v t n m NH H -> (b v t) NH (n m) H' if with_nh else self.pattern
+            self.reverse = '(b v t) NH n H -> b v t n NH H'
+        else:
+            self.pattern = 'b v t n NH H -> (b t) NH (v n) H'
+            self.kv_pattern = 'b v t n m NH H -> (b t) NH (v n m) H' if with_nh else self.pattern
+            self.reverse = '(b t) NH (v n) H -> b v t n NH H'
+
+
+    def get_tensors_shared(self, zoom_projections, zoom, emb={}):
+     
+        tensors = [self.get_tensor(tensor, emb=emb) for zoom_p, tensor in zoom_projections.items() if int(zoom_p)<=int(zoom)]
+
+        return tensors
+
+
+    def get_tensors(self,zoom_projections, zoom, emb={}):
+
+        tensors = [self.get_tensor(tensor, emb=emb) for tensor in zoom_projections[zoom]]
+
+        return tensors
+
+    def get_tensor(self, tensor, emb):
+        if self.n_groups==1:
+            return tensor
+        else:
+            return tensor[emb['GroupEmbedder']]
+
+
+    def forward(self, x_zooms, mask_zooms=None, emb=None, sample_configs={}):        
+
+        zoom_att = self.grid_layer.zoom
+
+        q = []
+        k = []
+        v = []
+        n_p = []
+    #    mask = []
+        x_zooms_emb = {}
+
+        for zoom, emb_layer in self.emb_layers.items():
+            x_zooms_emb[int(zoom)] = emb_layer(x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
+
+        for zoom, channel_proj in self.channel_projections_q.items():
+            q_ = get_matching_time_patch(x_zooms_emb[int(zoom)], int(zoom), self.max_zoom, sample_configs)
+
+            q_factors = self.get_tensors_fun(self.zoom_projections_q, zoom, emb=emb)
+            q_ = q_.view(*q_.shape[:3],-1,*self.shapes_q[int(zoom)])
+
+            q_ = torch.einsum(self.eq_q[int(zoom)], q_, *q_factors, self.get_tensor(channel_proj,emb=emb))
+
+            q_ = q_.reshape(*q_.shape[:4],-1, self.n_head_channels)
+
+            n_p.append(q_.shape[-2])
+            q.append(q_)
+
+        for zoom in self.channel_projections_k.keys():
+            kv_, mask_ = self.grid_layer.get_nh(x_zooms_emb[int(zoom)], **sample_configs[int(zoom)], with_nh=self.with_nh, mask=mask_zooms[int(zoom)] if len(mask_zooms)>0 else None)
+            kv_ = get_matching_time_patch(kv_, int(zoom), self.max_zoom, sample_configs)
+            
+            kv_factors = self.get_tensors_fun(self.zoom_projections_kv, zoom, emb=emb)
+            kv_ = kv_.view(*kv_.shape[:3],-1,*self.shapes_kv[int(zoom)])
+
+            k_ = torch.einsum(self.eq_kv[int(zoom)], kv_, *kv_factors, self.get_tensor(self.channel_projections_k[zoom],emb=emb))
+            v_ = torch.einsum(self.eq_kv[int(zoom)], kv_, *kv_factors, self.get_tensor(self.channel_projections_v[zoom],emb=emb))
+
+            k_ = k_.reshape(*kv_.shape[:4],*self.shapes_kv_out[int(zoom)])
+            v_ = v_.reshape(*kv_.shape[:4],*self.shapes_kv_out[int(zoom)])
+
+            k.append(k_)
+            v.append(v_)
+
+        q = torch.concat(q, dim=-2)
+        k = torch.concat(k, dim=-2)
+        v = torch.concat(v, dim=-2)
+
+        b,va,t,n,N,H = q.shape
+        q = rearrange(q, self.pattern, H=self.n_head_channels)
+        k = rearrange(k, self.kv_pattern, H=self.n_head_channels)
+        v = rearrange(v, self.kv_pattern, H=self.n_head_channels)
+
+        q = safe_scaled_dot_product_attention(q, k, v)
+
+        q = rearrange(q, self.reverse, b=b, v=va, t=t, NH=N, H=H)
+
+        q = q.split(n_p, dim=-2)
+
+        for k, zoom in enumerate(self.mlps.keys()):
+            
+            x_q = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,self.shapes_q[int(zoom)][-1]), int(zoom), self.max_zoom, sample_configs)
+
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[str(zoom)]* x_q #q[k].reshape(x_zooms[int(zoom)].shape)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 

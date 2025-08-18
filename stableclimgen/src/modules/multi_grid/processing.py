@@ -12,7 +12,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention
+from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention
 from .mg_base import NHConv,ResNHConv#,get_weight_matrix,get_einsum_subscripts
 
 class MG_SingleBlock(nn.Module):
@@ -146,7 +146,8 @@ class MG_MultiBlock(nn.Module):
                  kv_zooms:List|int = -1,
                  layer_confs={},
                  layer_confs_emb={},
-                 use_mask = False
+                 use_mask = False,
+                 type=''
                  ) -> None:
         super().__init__()
         
@@ -198,25 +199,46 @@ class MG_MultiBlock(nn.Module):
         min_zoom = min([layer_settings.get("att_zoom",min_zoom), min_zoom])
         grid_layer = grid_layers[str(min_zoom)]
 
-
-
-        block = MultiZoomSelfAttention(grid_layer,
+        
+        if type=='field_att':
+            block = MultiZoomFieldAttention(grid_layer,
                                 in_features,
                                 out_features,
                                 q_zooms,
                                 kv_zooms,
                                 mult = layer_settings.get("mlp_mult",1),
                                 num_heads = layer_settings.get("num_heads",1),
-                                n_head_channels = layer_settings.get("n_head_channels",None),
-                                compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
+                                n_head_channels= layer_settings.get("n_head_channels",16),
+                                share_zoom_proj = layer_settings.get("share_zoom_proj",False),
+                                share_zoom_proj_qkv = layer_settings.get("share_zoom_proj_qkv",False),
                                 with_nh= layer_settings.get("with_nh",True),
                                 var_att= layer_settings.get("var_att",False),
-                                common_kv = layer_settings.get("common_kv",False),
-                                common_q = layer_settings.get("common_q",False),
+                                rank=layer_settings.get("rank",16),
+                                contract_zooms=layer_settings.get("contract_zooms",True),
+                                contract_channels=layer_settings.get("contract_channels",True),
                                 embedders=embedders,
                                 layer_confs=layer_confs,
                                 layer_confs_emb=layer_confs_emb
                                 )
+        else:
+            block = MultiZoomSelfAttention(grid_layer,
+                                    in_features,
+                                    out_features,
+                                    q_zooms,
+                                    kv_zooms,
+                                    mult = layer_settings.get("mlp_mult",1),
+                                    num_heads = layer_settings.get("num_heads",1),
+                                    n_head_channels = layer_settings.get("n_head_channels",None),
+                                    compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
+                                    with_nh= layer_settings.get("with_nh",True),
+                                    var_att= layer_settings.get("var_att",False),
+                                    common_kv = layer_settings.get("common_kv",False),
+                                    common_q = layer_settings.get("common_q",False),
+                                    embedders=embedders,
+                                    layer_confs=layer_confs,
+                                    layer_confs_emb=layer_confs_emb
+                                    )
+
         self.block = block
 
     def generate_zoom(self, in_shape, zoom, zoom_patch_sample=-1, n_past_ts=0, n_future_ts=0, **kwargs):

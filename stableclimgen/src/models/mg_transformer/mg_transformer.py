@@ -10,7 +10,7 @@ from ...modules.base import LinEmbLayer,MLP_fac
 
 from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding,DecodeLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig
 
 from ...modules.embedding.embedder import get_embedder
 
@@ -116,6 +116,24 @@ class MG_Transformer(MG_base_model):
                      layer_confs=layer_confs,
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
+            
+            elif isinstance(block_conf, MGFieldAttentionConfig):
+                layer_settings = block_conf.layer_settings
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MG_MultiBlock(
+                     self.grid_layers,
+                     in_zooms,
+                     check_get([block_conf,{'out_zooms':in_zooms}], "out_zooms"),
+                     layer_settings,
+                     in_features,
+                     block_conf.out_features,
+                     q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
+                     kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
+                     layer_confs=layer_confs,
+                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
+                     type='field_att')
                 
             self.Blocks[block_key] = block     
 

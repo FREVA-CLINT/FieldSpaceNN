@@ -243,3 +243,74 @@ class SpatiaFacLayer(nn.Module):
         x = x.reshape(x_dims_out)
 
         return self.return_fcn(x)
+
+
+def get_cp_tensor(in_features, out_features, rank, n_groups=1, init='std_scale', std=0.1, contract=True):
+    
+    if contract:
+        c_dims = [n_groups, in_features, out_features, rank]
+
+    elif in_features==out_features:
+        c_dims = [n_groups, out_features, rank]
+
+    else:
+        ValueError("in_features != out_features with no contraction")
+
+    weight = torch.empty(c_dims)
+    nn.init.normal_(weight)
+
+    if init=='std_scale' and not contract:
+        weight = (1 + std*weight)/math.sqrt(rank)
+
+    elif init=='std_scale' and contract:
+        weight = (1 + std*weight)/math.sqrt(rank * in_features)
+        
+    return nn.Parameter(weight, requires_grad=True)
+
+
+def get_cp_tensors(in_features, out_features, rank, n_groups=1, keys=[], contract=True, init='std_scale',std=0.1):
+    
+    if len(keys)==0:
+        tensors = nn.ParameterList()
+        for in_f, out_f in zip(in_features,out_features):
+            tensors.append(get_cp_tensor(in_f, out_f, rank, n_groups=n_groups,contract=contract, init=init, std=std))
+    else:
+        tensors = nn.ParameterDict()
+        for key,in_f, out_f in zip(keys,in_features,out_features):
+            tensors[str(key)] = get_cp_tensor(in_f, out_f, rank, n_groups=n_groups,contract=contract, init=init, std=std)
+    
+    return tensors
+
+
+    
+def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True, nh_dim=False):
+
+    x_letters =  iter("adefgijklmopqruwxyz")
+    tensor_letters = iter("ABCDEFGHIJKLMNOPQSTUVWXYZ") 
+    
+    x_in_subscript = 'bvtn' if not nh_dim else 'bvtnh'
+    x_out_subscript = 'bvtn' if not nh_dim else 'bvtnh'
+    
+    tensors_subscripts = []
+    for k in range(n_dims):
+        subs = '' if n_groups==1 else 'bv'
+
+        if contract_feats and k<(n_dims-1) or contract_channel:
+            subs_in = next(tensor_letters)
+            subs_out = next(tensor_letters)
+            x_in_subscript += subs_in
+            x_out_subscript += subs_out
+
+            subs += subs_in + subs_out + 'R'
+        else:
+            subs_in_out  = next(x_letters)
+            x_in_subscript += subs_in_out
+            x_out_subscript += subs_in_out
+            subs += subs_in_out + 'R'
+
+        tensors_subscripts.append(subs)
+    
+    lhs = f','.join([x_in_subscript] + tensors_subscripts)
+    equation = f'{lhs}->{x_out_subscript}'
+
+    return equation
