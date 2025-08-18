@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from ..modules.grids.grid_layer import GridLayer
-from .factorization import TuckerLayer
+from .factorization import SpatiaFacLayer
 
 
 class IdentityLayer(nn.Module):
@@ -174,7 +174,7 @@ def get_layer(
 
       #  contract_features = [layer_confs['rank_feat']!=0 if k <(len(in_features)-1) else layer_confs['rank_channel']!=0  for k in in_features] if contract_features is None else contract_features
 
-        layer = TuckerLayer(
+        layer = SpatiaFacLayer(
             in_features,
             out_features,
             **layer_confs)
