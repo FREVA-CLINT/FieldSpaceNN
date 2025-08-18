@@ -304,8 +304,7 @@ class MultiZoomFieldAttention(nn.Module):
         
 
         self.n_head_channels = n_head_channels
-        self.attention = SelfAttention(in_features, in_features, num_heads=num_heads, dropout=dropout, cross=True, qkv_proj=False)
-
+        
         self.grid_layer = grid_layer
         self.max_zoom = int(max(list(embedders.keys())))
 
