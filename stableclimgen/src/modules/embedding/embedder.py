@@ -186,8 +186,7 @@ class MGEmbedder(BaseEmbedder):
     def forward(self, mg_emb_var, sample_configs={},**kwargs):
 
         embs_zooms, var_indices = mg_emb_var
-        if len(self.get_patch_fcns.keys())==4:
-            pass
+
         embs_out = 0
         for zoom_proc in self.get_patch_fcns.keys():
             get_emb_fcn = self.get_emb_fcns[zoom_proc]

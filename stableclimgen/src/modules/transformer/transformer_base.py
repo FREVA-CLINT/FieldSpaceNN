@@ -98,11 +98,11 @@ class SelfAttention(nn.Module):
         if qkv_proj:
             self.q_proj = nn.Linear(in_features, in_features, bias=False)
             self.kv_proj = nn.Linear(in_features, in_features, bias=False)
-            self.out_layer = nn.Linear(in_features, out_features, bias=True) if in_features!=out_features else nn.Identity()
         else:
             self.q_proj = nn.Identity()
             self.kv_proj = nn.Identity()
-            self.out_layer = nn.Identity()
+        
+        self.out_layer = nn.Linear(in_features, out_features, bias=True) if in_features!=out_features else nn.Identity()
 
         self.proj_fcn = self.proj_xkv if cross else self.proj_x
 

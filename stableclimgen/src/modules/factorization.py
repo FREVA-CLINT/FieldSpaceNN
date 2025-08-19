@@ -227,7 +227,7 @@ class SpatiaFacLayer(nn.Module):
         x_dims_in = x_shape + [-1] + self.in_features 
         x_dims_out = x_shape + [-1] + self.out_features 
 
-        x = x.view(x_dims_in)
+        x = x.reshape(x_dims_in)
         
         lhs = [self.subscripts['x_in'], self.subscripts['core'], *self.subscripts['factors']]
         

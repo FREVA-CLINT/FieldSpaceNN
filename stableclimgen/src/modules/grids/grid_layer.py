@@ -164,8 +164,6 @@ class GridLayer(nn.Module):
         # Get neighborhood indices and adjacency mask
         adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
         
-        if adjc_mask.sum()/adjc_mask.numel() > 0.98:
-            pass
        # x_shape = x.shape
        # x = x.reshape(*x_shape[:3],-1)
         # Gather neighborhood data

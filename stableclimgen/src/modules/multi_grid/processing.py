@@ -178,8 +178,10 @@ class MG_MultiBlock(nn.Module):
             kv_zooms = in_zooms
 
         
+        compression_zooms = layer_settings.get("compression_zooms",{})
 
-        zooms_embedders = torch.tensor(q_zooms + kv_zooms).unique() 
+        zooms_embedders = torch.tensor(q_zooms + kv_zooms + list(compression_zooms.values())).unique() 
+
 
         embedders = {}
 
@@ -195,9 +197,9 @@ class MG_MultiBlock(nn.Module):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
-        min_zoom = (min(q_zooms + kv_zooms))  
-        min_zoom = min([layer_settings.get("att_zoom",min_zoom), min_zoom])
-        grid_layer = grid_layers[str(min_zoom)]
+        att_zoom = (min(q_zooms + kv_zooms))  
+        att_zoom = min([layer_settings.get("att_zoom",att_zoom), att_zoom])
+        grid_layer = grid_layers[str(att_zoom)]
 
         
         if type=='field_att':
@@ -221,23 +223,28 @@ class MG_MultiBlock(nn.Module):
                                 layer_confs_emb=layer_confs_emb
                                 )
         else:
-            block = MultiZoomSelfAttention(grid_layer,
-                                    in_features,
-                                    out_features,
-                                    q_zooms,
-                                    kv_zooms,
-                                    mult = layer_settings.get("mlp_mult",1),
-                                    num_heads = layer_settings.get("num_heads",1),
-                                    n_head_channels = layer_settings.get("n_head_channels",None),
-                                    compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
-                                    with_nh= layer_settings.get("with_nh",True),
-                                    var_att= layer_settings.get("var_att",False),
-                                    common_kv = layer_settings.get("common_kv",False),
-                                    common_q = layer_settings.get("common_q",False),
-                                    embedders=embedders,
-                                    layer_confs=layer_confs,
-                                    layer_confs_emb=layer_confs_emb
-                                    )
+            block = MultiZoomSelfAttention(
+                        grid_layers,
+                        att_zoom,
+                        in_features,
+                        out_features,
+                        q_zooms,
+                        kv_zooms,
+                        mult = layer_settings.get("mlp_mult",1),
+                        num_heads = layer_settings.get("num_heads",1),
+                        n_head_channels = layer_settings.get("n_head_channels",None),
+                        compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
+                        compression_zooms=layer_settings.get("compression_zooms",{}),
+                        att_dim=layer_settings.get('att_dim', None),
+                        with_nh= layer_settings.get("with_nh",True),
+                        var_att= layer_settings.get("var_att",False),
+                        common_kv = layer_settings.get("common_kv",False),
+                        common_q = layer_settings.get("common_q",False),
+                        embedders=embedders,
+                        layer_confs=layer_confs,
+                        layer_confs_emb=layer_confs_emb
+                        )
+
 
         self.block = block
 

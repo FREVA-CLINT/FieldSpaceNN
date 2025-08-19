@@ -610,9 +610,22 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
             return x_zoom, mask_zoom
         else:
             return x_zoom, None
-        
 
-def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12):
+def get_sample_configs(sample_configs_zoom, zoom):
+    if zoom in sample_configs_zoom:
+        return sample_configs_zoom[zoom]
+    
+    else:
+        for zoom_s in range(zoom+1, max(sample_configs_zoom.keys())+1):
+            if zoom_s in sample_configs_zoom.keys():
+                break
+        
+        cfgs = {'zoom_patch_sample': sample_configs_zoom[zoom_s]['zoom_patch_sample'],
+                'patch_index': sample_configs_zoom[zoom_s]['patch_index'] // (4**(zoom_s-zoom))}
+        return cfgs
+
+
+def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12, add=False):
     if zoom_h == zoom_target:
         return x_s
 
@@ -670,7 +683,11 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
             expand_shape[3] = 1
             patch_index_exp = patch_index.view(view_shape).expand(expand_shape)
 
-            x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter(3, patch_index_exp, x_s)
+            if add:
+                x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter_add(3, patch_index_exp, x_s)
+            else:
+                x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter(3, patch_index_exp, x_s)
+
 
         x_h_ = x_h_.view(b, nv, nt, n, *c)
 

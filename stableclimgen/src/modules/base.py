@@ -153,7 +153,8 @@ def get_layer(
         layer = LinearLayer(
                 in_features,
                 out_features,
-                bias=bias
+                bias=bias,
+                skip_dims = skip_dims
                 )
     elif fac_mode=='Tucker':
     
@@ -187,7 +188,7 @@ class LinearLayer(nn.Module):
                  in_features: int|List, 
                  out_features: int|List,
                  bias=False,
-                 nh_dim=None,
+                 skip_dims=None,
                  **kwargs):
 
         super().__init__()
@@ -199,23 +200,34 @@ class LinearLayer(nn.Module):
             out_features = [out_features]
 
        # self.out_features = int(torch.tensor(out_features).prod())
-
-        self.layer = nn.Linear(int(torch.tensor(in_features).prod()), int(torch.tensor(out_features).prod()), bias=bias)
-
         self.in_features = in_features
         self.out_features = out_features
+        
+        self.in_shapes = in_features
+        self.out_shapes = out_features
 
-        if nh_dim is not None:
-            self.in_features = [nh_dim] + self.in_features
-            self.out_features = [nh_dim] + self.out_features
+        if skip_dims is not None:
+            self.in_features  = []
+            self.out_features = []
+            for skip_dim, in_feat, out_feat in zip(skip_dims, in_features, out_features):
+                if not skip_dim:
+                    self.in_features.append(in_feat)
+                    self.out_features.append(out_feat)
+
+        self.in_features = [int(torch.tensor(self.in_features).prod())]
+        self.out_features = [int(torch.tensor(self.out_features).prod())]
+
+        self.layer = nn.Linear(self.in_features[0], self.out_features[0], bias=bias)
+
+
 
     def forward(self, x, **kwargs):
         x_dims = x.shape[:4]
 
-        x = x.view(*x_dims, *self.in_features)
+        x = x.view(*x_dims, -1, *self.in_features)
         x = self.layer(x)
-        x = x.view(*x_dims, *self.out_features)
-        
+        x = x.view(*x_dims[:-1], -1, *self.out_shapes)
+
         return x
 
 

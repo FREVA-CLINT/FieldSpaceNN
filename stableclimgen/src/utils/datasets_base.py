@@ -269,7 +269,7 @@ class BaseDataset(Dataset):
             data_g = data_g[:,:,patch_indices]
             mask = mask[:,:,patch_indices]
 
-        drop_mask = 1 - mask[...,[0]]
+        drop_mask = torch.logical_not(mask[...,[0]]) if mask.dtype==torch.bool else  1 - mask[...,[0]]
 
         data_time = torch.tensor(ds["time"].values).float()
 
