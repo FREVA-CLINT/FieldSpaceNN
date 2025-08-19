@@ -190,6 +190,9 @@ class MultiZoomSelfAttention(nn.Module):
         if mask[0] is not None:
             mask = torch.concat(mask, dim=-2)
             mask = rearrange(mask, self.nh_mask_pattern)
+
+            all_masked = mask.all(dim=-1,keepdim=True)
+            mask[all_masked.expand_as(mask)] = False
         else:
             mask = None
 
@@ -198,12 +201,11 @@ class MultiZoomSelfAttention(nn.Module):
         q = rearrange(q, self.pattern)
         kv = rearrange(kv, self.kv_pattern)
 
-        all_masked = mask.all(dim=-1,keepdim=True)
-        mask[all_masked.expand_as(mask)] = False
-
+        
         q = self.attention(q, kv, mask=mask)
 
-        q.masked_fill_(all_masked[...,0],0)
+        if mask is not None:
+            q.masked_fill_(all_masked[...,0],0)
 
         q = rearrange(q, self.reverse_pattern, b=b, t=t, s=s, n=n, v=v) 
 
@@ -280,12 +282,16 @@ class MGCompressionAttention(nn.Module):
         q = rearrange(q, self.pattern)
         x = rearrange(x, self.kv_pattern)
 
-        all_masked = mask.all(dim=-1,keepdim=True)
-        mask[all_masked.expand_as(mask)] = False
+        if mask is not None:
+            all_masked = mask.all(dim=-1,keepdim=True)
+            mask[all_masked.expand_as(mask)] = False
 
         att_out = self.attention(q, x, mask=mask)
-        
-        att_out.masked_fill_(all_masked[...,0],0)
+
+        if mask is not None:
+            all_masked = mask.all(dim=-1,keepdim=True)
+            mask[all_masked.expand_as(mask)] = False
+            att_out.masked_fill_(all_masked[...,0],0)
 
         att_out = rearrange(att_out, self.reverse_pattern, b=b, t=t, s=s, n=n, v=v, c=c) 
 
