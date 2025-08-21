@@ -22,8 +22,8 @@ model:
   mgrids: ${mgrids}
   in_zooms: [3,4,6]
   mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
-  in_features: 2
-  out_features: 2
+  in_features: 1
+  out_features: 1
   n_head_channels: 16
   learn_residual: false
   layer_confs_emb:
@@ -153,7 +153,7 @@ model:
           embed_mode: "sum"
     "output":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [2,2,2]
+      out_features: [1,1,1]
       layer_settings:
         type: 'mlp'
     "conservative": 

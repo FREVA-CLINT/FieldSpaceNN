@@ -1,9 +1,12 @@
 defaults:
-  - trainer: mgno_transformer
+  - trainer: mg_transformer
   - logger: wandb
   - model: mg_vae
   - mgrids: healpix
   - dataloader: zarr_healpix
+  - data_split: default
+  - data_zooms: default
+  - data_variables: default
   - hydra: default
   - embedding: default
   - _self_
