@@ -9,7 +9,7 @@ from ..mg_transformer.mg_base_model import MG_base_model
 from .confs import MGQuantConfig
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
-    MGCoordinateEmbeddingConfig
+    MGCoordinateEmbeddingConfig, MGFieldAttentionConfig
 from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embedding
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
 from ...modules.vae.quantization import Quantization
@@ -138,7 +138,27 @@ class MG_VAE(MG_base_model):
                 kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
                 layer_confs=layer_confs,
                 layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
-                use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
+                use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
+                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"))
+
+        elif isinstance(block_conf, MGFieldAttentionConfig):
+            layer_settings = block_conf.layer_settings
+            layer_settings['layer_confs'] = check_get([block_conf, kwargs, defaults], "layer_confs")
+
+            block = MG_MultiBlock(
+                self.grid_layers,
+                in_zooms,
+                check_get([block_conf, {'out_zooms': in_zooms}], "out_zooms"),
+                layer_settings,
+                in_features,
+                block_conf.out_features,
+                q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
+                kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
+                layer_confs=layer_confs,
+                layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
+                use_mask=check_get([block_conf, kwargs, {"use_mask": False}], "use_mask"),
+                type='field_att',
+                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"))
         return block
 
     def encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
