@@ -12,11 +12,13 @@ class HealPixLoader(BaseDataset):
     def __init__(self, 
                  data_dict,
                  sampling_zooms,
+                 sampling_zooms_collate=None,
                  **kwargs
                  ):
         
         self.data_dict = data_dict
         self.sampling_zooms = sampling_zooms
+        self.sampling_zooms_collate = sampling_zooms_collate
 
         self.indices = {}
         for zoom, sampling in sampling_zooms.items():

@@ -139,7 +139,7 @@ class LightningMGModel(pl.LightningModule):
         return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
     
     def training_step(self, batch, batch_idx):
-        sample_configs = self.trainer.train_dataloader.dataset.sampling_zooms
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -159,8 +159,7 @@ class LightningMGModel(pl.LightningModule):
     
 
     def validation_step(self, batch, batch_idx):
-        
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -186,7 +185,7 @@ class LightningMGModel(pl.LightningModule):
 
 
     def predict_step(self, batch, batch_idx):
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
