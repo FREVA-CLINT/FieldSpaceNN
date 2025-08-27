@@ -147,7 +147,8 @@ class MG_MultiBlock(nn.Module):
                  layer_confs={},
                  layer_confs_emb={},
                  use_mask = False,
-                 type=''
+                 type='',
+                 init_missing_zooms="zeros"
                  ) -> None:
         super().__init__()
         
@@ -155,12 +156,7 @@ class MG_MultiBlock(nn.Module):
         self.out_zooms = out_zooms
         self.use_mask = use_mask
 
-        self.zero_zooms_gen = nn.ParameterDict()
-
-        for zoom in out_zooms:
-            if zoom not in in_zooms:
-                self.zero_zooms_gen[str(zoom)] = nn.Parameter(torch.zeros((1,1,1,12*4**zoom,1)), requires_grad=False)
-
+        self.init_missing_zooms = torch.zeros if init_missing_zooms == "zeros" else torch.randn
 
         self.blocks = nn.ModuleDict()
 
@@ -248,10 +244,10 @@ class MG_MultiBlock(nn.Module):
 
         self.block = block
 
-    def generate_zoom(self, in_shape, zoom, zoom_patch_sample=-1, n_past_ts=0, n_future_ts=0, **kwargs):
+    def generate_zoom(self, in_shape, zoom, device, zoom_patch_sample=-1, n_past_ts=0, n_future_ts=0, **kwargs):
         nt = n_past_ts + n_future_ts + 1
 
-        x_zoom = self.zero_zooms_gen[str(zoom)]
+        x_zoom = self.init_missing_zooms((1,1,1,12*4**zoom,1)).to(device)
 
         if zoom_patch_sample > -1:
             x_zoom = x_zoom.view(1,1,1,12*4**zoom_patch_sample,-1,1)[:,:,:,0]
@@ -263,7 +259,7 @@ class MG_MultiBlock(nn.Module):
 
         for zoom in self.out_zooms:
             if zoom not in x_zooms.keys():
-                x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, **sample_configs[zoom])
+                x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, x_zooms[list(x_zooms.keys())[0]].device, **sample_configs[zoom])
                 x_zooms[zoom] = x
     
         x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
