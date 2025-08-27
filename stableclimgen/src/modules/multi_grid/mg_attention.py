@@ -213,9 +213,7 @@ class MultiZoomSelfAttention(nn.Module):
 
         for k, zoom in enumerate(self.q_layers.keys()):
 
-            x_q = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs)
-
-            x_zooms[int(zoom)] = x_zooms[int(zoom)] + x_q #q[k].reshape(x_zooms[int(zoom)].shape)
+            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 

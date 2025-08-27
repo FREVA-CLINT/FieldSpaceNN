@@ -23,6 +23,39 @@ class MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
     
+class NHInt_loss(nn.Module):
+    def __init__(self, grid_layer):
+        super().__init__()
+        self.grid_layer: GridLayer = grid_layer
+        self.eps = 1e-6
+
+    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
+
+        target_nh, _ = self.grid_layer.get_nh(target, **sample_configs)
+    
+        loss = (output_nh.abs().sum(dim=-2) - target_nh.abs().sum(dim=-2)).abs().mean()
+
+        return loss
+    
+class NHVar_loss(nn.Module):
+    def __init__(self, grid_layer):
+        super().__init__()
+        self.grid_layer: GridLayer = grid_layer
+        self.eps = 1e-6
+
+    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
+
+        target_nh, _ = self.grid_layer.get_nh(target, **sample_configs)
+        
+        out_logstd = 0.5 * torch.log((output_nh).var(dim=-2) + self.eps)
+        tgt_logstd = 0.5 * torch.log((target_nh).var(dim=-2) + self.eps)
+
+        loss = (out_logstd - tgt_logstd).abs().mean()
+
+        return loss
+    
 class GNLL_loss(nn.Module):
     def __init__(self, grid_layer=None):
         super().__init__()
@@ -94,7 +127,7 @@ class Grad_loss(nn.Module):
         loss = self.loss_fcn(nh_diff_output, nh_diff_target)
         return loss
 
-class NH_loss(nn.Module):
+class NHTV_loss(nn.Module):
     def __init__(self, grid_layer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
@@ -104,19 +137,4 @@ class NH_loss(nn.Module):
 
 
         loss = (((output_nh[...,[0],:] - output_nh[...,1:,:]))**2).mean().sqrt()
-        return loss
-
-class NH_loss_rel(nn.Module):
-    def __init__(self, grid_layer):
-        super().__init__()
-        self.grid_layer: GridLayer = grid_layer
-
-    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
-        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
-        
-        nh_rel = ((output_nh[...,[0],:] - output_nh[...,1:,:])/output_nh[...,[0],:]).abs()
-        nh_rel = nh_rel[nh_rel>=torch.quantile(nh_rel, 0.98)]
-
-        nh_rel = nh_rel.clamp(max=1)
-        loss = (nh_rel).mean()
         return loss

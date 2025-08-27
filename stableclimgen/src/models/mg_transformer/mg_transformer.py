@@ -8,11 +8,12 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding,DecodeLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding,DecodeLayer,MFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig
 
 from ...modules.embedding.embedder import get_embedder
+from ...modules.grids.grid_utils import decode_zooms
 
 from .confs import defaults
 
@@ -27,6 +28,7 @@ class MG_Transformer(MG_base_model):
                  out_features: int=1,
                  mg_emb_confs: dict={},
                  with_global_gamma=True,
+                 decoder_settings= {},
                  **kwargs
                  ) -> None: 
         
@@ -43,7 +45,6 @@ class MG_Transformer(MG_base_model):
 
         self.out_features = out_features
         self.predict_var = predict_var
-
 
         if len(mg_emb_confs)>0:
             self.mg_emeddings = nn.ParameterDict()
@@ -134,6 +135,18 @@ class MG_Transformer(MG_base_model):
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
                      type='field_att')
+            
+            elif isinstance(block_conf, FieldLayerConfig):
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MFieldLayer(
+                     in_features,
+                     block_conf.out_features,
+                     in_zooms,
+                     self.grid_layers,
+                     N = block_conf.N,
+                     embed_confs=check_get([block_conf,kwargs,{"embed_confs": {}}], "embed_confs"),
+                     layer_confs=layer_confs) 
                 
             self.Blocks[block_key] = block     
 
@@ -144,13 +157,27 @@ class MG_Transformer(MG_base_model):
         
         self.learn_residual = check_get([kwargs,defaults], "learn_residual")
 
-        if self.learn_residual and with_global_gamma:
-            self.gamma = nn.Parameter(torch.ones(1)*1e-6, requires_grad=True)
+        if len(decoder_settings)==0:
+            self.decoder = DiffDecoder()
+        
         else:
-            self.register_buffer('gamma', torch.ones(1), persistent=False)
+            self.decoder = MFieldLayer(
+                in_features,
+                decoder_settings['out_features'],
+                in_zooms,
+                self.grid_layers,
+                with_nh = decoder_settings.get('with_nh', True),
+                embed_confs = decoder_settings.get('embed_confs', {}),
+                N = decoder_settings.get('N', 2),
+                kmin = decoder_settings.get('kmin', 0),
+                kmax = decoder_settings.get('kmin', 0.5),
+                layer_confs = decoder_settings.get('layer_confs', {}))
+        
+    def decode(self, x_zooms:Dict[str, torch.Tensor], sample_configs: Dict, out_zoom: int=None, emb={}):
+        return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom)
 
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
+    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None, out_zoom=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -182,10 +209,15 @@ class MG_Transformer(MG_base_model):
             # Process input through the block
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
+        x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
+
+        if self.learn_residual and len(x_zooms.keys())==1:
+            x_zooms_res = decode_zooms(x_zooms_res, sample_configs=sample_configs, out_zoom=list(x_zooms.keys())[0])
+
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
                 x, x_var = x.chunk(2,dim=-1) 
-                x = x_zooms_res[zoom] + self.gamma*x
+                x = x_zooms_res[zoom] + x
                 x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
 
         elif self.predict_var:
@@ -195,6 +227,17 @@ class MG_Transformer(MG_base_model):
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + self.gamma * x_zooms[zoom]
-   
+                x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
+
         return x_zooms
+
+class DiffDecoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x_zooms: dict, sample_configs: Dict, out_zoom: int = None, **kwargs):
+
+        if out_zoom is None:
+            return x_zooms
+        
+        return decode_zooms(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom)

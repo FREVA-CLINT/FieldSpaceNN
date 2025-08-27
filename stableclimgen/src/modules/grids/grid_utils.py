@@ -821,7 +821,7 @@ def encode_zooms(x: torch.Tensor, in_zoom: int, out_zooms:int, apply_diff=True, 
     return x_zooms, mask_zooms
 
 
-def decode_zooms(x_zooms: dict, out_zoom: int, sample_configs):
+def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
     """
     Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
 
@@ -845,4 +845,4 @@ def decode_zooms(x_zooms: dict, out_zoom: int, sample_configs):
 
         x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
 
-    return x
+    return {out_zoom: x}

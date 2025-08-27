@@ -101,3 +101,20 @@ class MGFieldAttentionConfig:
                     setattr(self, input_kw, value_kw)
             else:
                 setattr(self, input, value)
+
+class FieldLayerConfig:
+    def __init__(self, 
+                 N: int,
+                 kmin: float=0,
+                 kmax: float=0.5,
+                 wave_number_learned: bool=False,
+                 with_nh=True,
+                 **kwargs):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
+                setattr(self, input, value)

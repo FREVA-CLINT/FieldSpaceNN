@@ -7,11 +7,14 @@ import torch
 import torch.nn as nn
 
 import copy
-from ..base import get_layer, IdentityLayer, LinEmbLayer
+from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac
 from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
 from ...modules.embedding.embedding_layers import RandomFourierLayer
+from ...modules.embedding.embedder import EmbedderSequential,MGEmbedder
 
-from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch,estimate_healpix_cell_radius_rad, decode_zooms
+from ...modules.embedding.embedder import get_embedder
+
+from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch,estimate_healpix_cell_radius_rad, decode_zooms, get_distance_angle,get_sample_configs
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
@@ -268,6 +271,191 @@ class ConservativeLayer(nn.Module):
 
         return x_zooms
 
+
+class MFieldLayer(nn.Module):
+  
+    def __init__(self,
+                 in_features: List,
+                 out_features: List,
+                 in_zooms: List[int],
+                 grid_layers: GridLayer,
+                 with_nh=True,
+                 embed_confs={},
+                 N = 2,
+                 kmin = 0,
+                 kmax= 0.5,
+                 layer_confs = {}
+                ) -> None: 
+      
+        super().__init__()
+
+        self.proj_layers = nn.ModuleDict()
+        self.out_zooms = in_zooms
+        self.with_nh = with_nh
+        self.in_features = in_features
+        self.out_features = out_features
+        
+        zooms_sorted = [int(t) for t in torch.tensor(in_zooms).sort(descending=True).values]
+        
+        self.layers = nn.ModuleDict()
+        for k,zoom in enumerate(in_zooms):
+            embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=zoom)
+            self.layers[str(zoom)] = FieldLayer(
+                in_features[k], 
+                out_features[k], 
+                estimate_healpix_cell_radius_rad(12*4**zoom),
+                embedder=embedder, 
+                N=N, 
+                kmin=kmin, 
+                kmax=kmax, 
+                layer_confs=layer_confs)
+
+        self.cons_dict = dict(zip(zooms_sorted[:-1],zooms_sorted[1:]))
+        self.cons_dict[zooms_sorted[-1]] = zooms_sorted[-1]
+
+        self.in_zooms = in_zooms
+        self.grid_layers = grid_layers
+
+        
+    
+    def get_coordinates(self, in_zoom, out_zoom, sample_configs, coordinates_out=None):
+        coordinates = self.grid_layers[str(in_zoom)].get_coordinates(**sample_configs[in_zoom])
+        
+        if self.with_nh:
+            coordinates_in, mask_nh = self.grid_layers[str(in_zoom)].get_nh(coordinates.unsqueeze(dim=1),**sample_configs[in_zoom], with_nh=True)
+        else:
+            coordinates_in = coordinates.unsqueeze(dim=1)
+        
+        if coordinates_out is None and out_zoom==in_zoom:
+            coordinates_out = coordinates.unsqueeze(dim=1).unsqueeze(dim=-2)
+
+        elif out_zoom != in_zoom:
+            coordinates_out = self.grid_layers[str(out_zoom)].get_coordinates(**sample_configs[out_zoom]).unsqueeze(dim=1)
+            coordinates_out = coordinates_out.view(*coordinates_out.shape[:2], -1, 4**(out_zoom-in_zoom),2)
+
+        coordinates_in = coordinates_in.unsqueeze(dim=-2)
+        coordinates_out = coordinates_out.unsqueeze(dim=-3)
+
+        dphi, dtheta = get_distance_angle(coordinates_in[...,0],coordinates_in[...,1], coordinates_out[...,0], coordinates_out[...,1], base='cartesian')
+
+        return dphi, dtheta
+    
+
+    def forward(self, x_zooms, emb={}, sample_configs={}, out_zoom=None, **kwargs):
+        
+        decode = out_zoom is not None
+
+        #sample_cfg = get_sample_configs(sample_configs, self.zoom)
+        x_out = 0
+
+        zooms = sorted(list(x_zooms.keys()), reverse=True)
+
+        for zoom in zooms:
+           # zoom_in = zooms[k]
+           # zoom_out = zooms[k] if zoom_out is None else zoom_out
+
+            out_zoom_ = zoom if out_zoom is None else out_zoom
+            dphi, dtheta = self.get_coordinates(zoom, out_zoom_, sample_configs=sample_configs)
+
+            if self.with_nh:
+                x, _ = self.grid_layers[str(zoom)].get_nh(x_zooms[zoom],**sample_configs[zoom], with_nh=True)
+            else:
+                x = x_zooms[zoom].unsqueeze(dim=-2)
+
+            x = self.layers[str(zoom)](x, dphi, dtheta, emb=emb, sample_configs=sample_configs[zoom])
+
+            if decode:
+                x_out += x
+            else:
+                x_zooms[zoom] = x
+        
+        if decode:
+            return {out_zoom: x}
+        else:
+            return x_zooms
+    
+
+class FieldLayer(nn.Module):
+  
+    def __init__(self,
+                 in_features,
+                 out_features,
+                 grid_dist,
+                 N = 2,
+                 kmin = 0,
+                 kmax = 0.5,
+                 embedder:EmbedderSequential=None,
+                 layer_confs = {},
+                 **kwargs
+                ) -> None: 
+      
+        super().__init__() 
+
+        self.N = N
+        self.kmin = kmin
+        self.kmax = kmax
+        self.grid_dist = grid_dist
+
+        self.proj_layer_c = get_layer([1, in_features], [N*4, out_features], layer_confs=layer_confs) if in_features!=out_features else IdentityLayer()
+
+
+        if embedder is not None:
+            self.emb_layer = embedder.embedders['MGEmbedder'] if embedder is not None else None
+
+            self.wavenumber_mlp = MLP_fac(in_features=embedder.get_out_channels, out_features=N*4, layer_confs=layer_confs)
+            self.encode_fcn = self.enc_angles_learned
+        else:
+            self.encode_fcn = self.enc_angles
+        # different activation
+       # self.wave_number_activation = nn.Sigmoid()
+
+    
+    def enc_angles(self, phi, theta, **kwargs):
+        feats = []
+        for k in torch.linspace(self.kmin, self.kmax, self.N):
+            feats += [torch.sin(k*phi), torch.cos(k*phi),
+                    torch.sin(k*theta), torch.cos(k*theta)]
+        return torch.stack(feats, dim=-1)
+    
+    def enc_angles_learned(self, phi, theta, emb, sample_configs):
+        #mg_embeddings -> k_numbers
+        
+        embs = self.emb_layer(emb['MGEmbedder'], sample_configs=sample_configs)
+
+        wave_numbers = self.wavenumber_mlp(embs, emb=emb, sample_configs=sample_configs)
+
+        wave_numbers = wave_numbers.clamp(min=0, max=1)
+        c = wave_numbers.shape[-1]
+        
+        c1 = torch.cos(torch.pi * wave_numbers[...,:c//4].unsqueeze(dim=-2).unsqueeze(dim=-2)*phi.unsqueeze(dim=1).unsqueeze(dim=-1)/self.grid_dist)
+        c2 = torch.sin(torch.pi * wave_numbers[...,c//4:c//2].unsqueeze(dim=-2).unsqueeze(dim=-2)*phi.unsqueeze(dim=1).unsqueeze(dim=-1)/self.grid_dist)
+        c3 = torch.cos(torch.pi * wave_numbers[...,c//2:3*c//4].unsqueeze(dim=-2).unsqueeze(dim=-2)*theta.unsqueeze(dim=1).unsqueeze(dim=-1)/self.grid_dist)
+        c4 = torch.sin(torch.pi * wave_numbers[...,3*c//4:].unsqueeze(dim=-2).unsqueeze(dim=-2)*theta.unsqueeze(dim=1).unsqueeze(dim=-1)/self.grid_dist)
+
+
+        return torch.concat((c1,c2,c3,c4), dim=-1)
+
+
+    def forward(self, x, dphi, dtheta, emb={}, sample_configs=None):
+        
+        
+        # get frequencies
+       # out = self.enc_angles(dphi, dtheta, self.N)
+
+        out = self.encode_fcn(dphi, dtheta, emb=emb, sample_configs=sample_configs)
+
+        b,v,t,n,nh,n_out,c = out.shape
+
+        b,v,t,n,nh,c = x.shape
+
+        x_out = self.proj_layer_c(x, emb=emb, sample_configs=sample_configs)
+
+        x_out = (x_out.view(b,v,t,n,nh,1,out.shape[-1],-1) * out.unsqueeze(dim=-1)).sum(dim=[-2,-4])/nh
+        
+        x_out = x_out.view(*x_out.shape[:3],-1,x_out.shape[-1])
+
+        return x_out
+        
 
 class ProjLayer(nn.Module):
   
