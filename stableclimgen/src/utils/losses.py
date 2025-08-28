@@ -138,3 +138,21 @@ class NHTV_loss(nn.Module):
 
         loss = (((output_nh[...,[0],:] - output_nh[...,1:,:]))**2).mean().sqrt()
         return loss
+    
+
+class NHTV_decay_loss(nn.Module):
+    def __init__(self, grid_layer, tau=0.2):
+        super().__init__()
+        self.grid_layer: GridLayer = grid_layer
+        self.tau = tau
+
+    def forward(self, output, target=None, sample_configs={}, mask=None,**kwargs):
+        output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
+        target_nh, _ = self.grid_layer.get_nh(target, **sample_configs)
+
+        nh_diff = (output_nh[...,[0],:] - output_nh[...,1:,:])**2
+        target_diff = (target_nh[...,[0],:] - target_nh[...,1:,:]).abs()/(target_nh[...,[0],:].abs()+1e-6)
+
+        loss = (torch.exp(-1*target_diff/self.tau)*nh_diff).mean().sqrt()
+
+        return loss
