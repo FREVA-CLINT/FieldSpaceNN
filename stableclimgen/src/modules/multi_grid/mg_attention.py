@@ -166,7 +166,7 @@ class MultiZoomSelfAttention(nn.Module):
             n = q_.shape[3] // 4**(int(zoom)-zoom_att)
 
             q_ = q_layer(q_, emb=emb, sample_configs=sample_configs[int(zoom)])
-            q_ = q_.view(*q_.shape[:3], n, -1 ,q_.shape[-1])
+            q_ = q_.reshape(*q_.shape[:3], n, -1 ,q_.shape[-1])
             n_p.append(q_.shape[-2])
             q.append(q_)
 
