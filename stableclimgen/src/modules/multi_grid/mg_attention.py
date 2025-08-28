@@ -32,6 +32,7 @@ class MultiZoomSelfAttention(nn.Module):
                  n_head_channels: int=None, 
                  embedders: Dict[str, EmbedderSequential] = {},
                  compression_dims_kv: Dict[int, int]= {},
+                 compression_dims_q: Dict[int, int]= {},
                  compression_zooms: Dict[int,int] = {},
                  with_nh = True,
                  var_att = False,
@@ -81,10 +82,20 @@ class MultiZoomSelfAttention(nn.Module):
 
         self.res_layers = nn.ModuleDict()
         for q_zoom in q_zooms:
+            in_f = out_f = []
+            if q_zoom in compression_dims_q.keys():
+                in_f = [4 for _ in compression_dims_q[q_zoom]]
+                if len(in_f) == q_zoom +1:
+                    in_f[0] = 12
+                out_f = [4 if d==-1 else d for d in compression_dims_q[q_zoom]]
+
+            in_features_q = [*in_f, att_dim]
+            out_features_q = [*out_f, att_dim]
+
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(out_features, out_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
 
-            self.q_layers[str(q_zoom)] = get_layer(att_dim, att_dim, layer_confs=layer_confs) if not common_q else IdentityLayer()
+            self.q_layers[str(q_zoom)] = get_layer(in_features_q, out_features_q, layer_confs=layer_confs) if not common_q else IdentityLayer()
            # self.res_layers_mlp[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
             
             self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
