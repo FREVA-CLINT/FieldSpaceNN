@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from ..modules.grids.grid_layer import GridLayer
-from .factorization import SpatiaFacLayer
+from .factorization import SpatiaFacLayer,CPFacLayer
 
 
 class IdentityLayer(nn.Module):
@@ -156,26 +156,16 @@ def get_layer(
                 bias=bias,
                 skip_dims = skip_dims
                 )
+
     elif fac_mode=='Tucker':
-    
-        """
         layer = SpatiaFacLayer(
             in_features,
             out_features,
-            ranks_spatial=ranks_spatial,
-            dims_spatial=dims_spatial,
-            rank_feat=rank_feat,
-            rank_vars=rank_vars,
-            rank_channel=rank_channel,
-            base=base,
-            n_groups=n_groups,
-            sum_n_zooms=sum_n_zooms,
-            bias=bias)
-        """
-
-      #  contract_features = [layer_confs['rank_feat']!=0 if k <(len(in_features)-1) else layer_confs['rank_channel']!=0  for k in in_features] if contract_features is None else contract_features
-
-        layer = SpatiaFacLayer(
+            **layer_confs)
+    
+    elif fac_mode == 'CP':
+    
+        layer = CPFacLayer(
             in_features,
             out_features,
             **layer_confs)

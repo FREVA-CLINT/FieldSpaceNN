@@ -245,6 +245,108 @@ class SpatiaFacLayer(nn.Module):
         return self.return_fcn(x)
 
 
+class CPFacLayer(nn.Module):
+    def __init__(self,
+                 in_features: List[int], 
+                 out_features: List[int], 
+                 rank: int,
+                 n_groups: int = 1,
+                 keys: List[str] = [],
+                 contract_feats: bool = True,
+                 contract_channel: bool = True,
+                 init: str = 'std_scale',
+                 std: float = 0.1,
+                 bias: bool = False,
+                 skip_dims=None,
+                 **kwargs):
+        """
+        CPFacLayer initializes one CP tensor per (in_features, out_features) pair.
+        - Uses get_cp_tensors internally.
+        - Can optionally use keys for ParameterDict.
+        """
+
+        super().__init__()
+        self.n_groups = n_groups
+        # Handle single int inputs
+        if isinstance(in_features, int):
+            in_features = [in_features]
+        if isinstance(out_features, int):
+            out_features = [out_features]
+
+        assert len(in_features) == len(out_features), "`in_features` and `out_features` must be same length"
+        if keys:
+            assert len(keys) == len(in_features), "`keys` must match length of `in_features` and `out_features`"
+
+        if skip_dims is not None:
+            pass
+        # CP tensors (using your get_cp_tensors function)
+        in_features_f =[] 
+        out_features_f = []
+        for k,in_feats in enumerate(in_features):
+            skip = skip_dims[k] if skip_dims is not None else False
+            if k < len(in_features)-1 and not skip:
+                in_features_f.append(in_feats)
+                out_features_f.append(out_features[k])
+
+        cp_tensors = get_cp_tensors(
+            in_features=in_features_f,
+            out_features=out_features_f,
+            rank=rank,
+            n_groups=n_groups,
+            keys=keys,
+            contract=contract_feats,
+            init=init,
+            std=std
+        )
+
+        cp_tensor = get_cp_tensor(
+            in_features=in_features[-1],
+            out_features=out_features[-1],
+            rank=rank,
+            n_groups=n_groups,
+            contract=contract_channel,
+            init=init,
+            std=std
+        )
+        
+        cp_tensors.append(cp_tensor)
+
+        self.cp_tensors = cp_tensors
+        self.in_feats = in_features
+        self.out_feats = out_features
+
+        # Optional: bias per output tensor
+        """
+        if bias:
+            if keys:
+                self.bias = nn.ParameterDict({
+                    str(k): nn.Parameter(torch.zeros(out_f)) for k, out_f in zip(keys, out_features)
+                })
+            else:
+                self.bias = nn.ParameterList([
+                    nn.Parameter(torch.zeros(out_f)) for out_f in out_features
+                ])
+        else:
+            self.bias = None
+        """
+        self.equation = get_cp_equation(len(in_features), n_groups=n_groups, contract_feats=contract_feats, contract_channel=contract_channel, skip_dims=skip_dims)
+
+    def get_tensors(self, emb):
+        return [self.get_tensor(tensor, emb) for tensor in self.cp_tensors]
+
+    def get_tensor(self, tensor, emb):
+        if self.n_groups==1:
+            return tensor
+        else:
+            return tensor[emb['GroupEmbedder']]
+
+    def forward(self, x, emb={}, sample_configs={}):
+        x = x.view(*x.shape[:3],-1,*self.in_feats)
+        x = torch.einsum(self.equation, x, *self.get_tensors(emb))
+
+        x = x.view(*x.shape[:3],-1,*self.out_feats)
+        return x
+
 def get_cp_tensor(in_features, out_features, rank, n_groups=1, init='std_scale', std=0.1, contract=True):
     
     if contract:
@@ -283,7 +385,7 @@ def get_cp_tensors(in_features, out_features, rank, n_groups=1, keys=[], contrac
 
 
     
-def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True, nh_dim=False):
+def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True, nh_dim=False, skip_dims=None):
 
     x_letters =  iter("adefgijklmopqruwxyz")
     tensor_letters = iter("ABCDEFGHIJKLMNOPQSTUVWXYZ") 
@@ -294,22 +396,31 @@ def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True
     tensors_subscripts = []
     for k in range(n_dims):
         subs = '' if n_groups==1 else 'bv'
+        skip = skip_dims[k] if skip_dims is not None else False
 
-        if contract_feats and k<(n_dims-1) or contract_channel:
-            subs_in = next(tensor_letters)
-            subs_out = next(tensor_letters)
-            x_in_subscript += subs_in
-            x_out_subscript += subs_out
+        if skip:
+            sub = next(tensor_letters)
+            x_in_subscript += sub
+            x_out_subscript += sub
 
-            subs += subs_in + subs_out + 'R'
         else:
-            subs_in_out  = next(x_letters)
-            x_in_subscript += subs_in_out
-            x_out_subscript += subs_in_out
-            subs += subs_in_out + 'R'
+            if contract_feats and k<(n_dims-1) or contract_channel:
+                subs_in = next(tensor_letters)
+                subs_out = next(tensor_letters)
+                x_in_subscript += subs_in
+                x_out_subscript += subs_out
 
-        tensors_subscripts.append(subs)
-    
+                subs += subs_in + subs_out + 'R'
+            else:
+                subs_in_out  = next(x_letters)
+                x_in_subscript += subs_in_out
+                x_out_subscript += subs_in_out
+                subs += subs_in_out + 'R'
+
+        if not skip:
+            tensors_subscripts.append(subs)
+
+
     lhs = f','.join([x_in_subscript] + tensors_subscripts)
     equation = f'{lhs}->{x_out_subscript}'
 
