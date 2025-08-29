@@ -362,10 +362,10 @@ def get_cp_tensor(in_features, out_features, rank, n_groups=1, init='std_scale',
     nn.init.normal_(weight)
 
     if init=='std_scale' and not contract:
-        weight = (1 + std*weight)/math.sqrt(rank)
+        weight = (1 + std*weight)/math.sqrt(rank + out_features)
 
     elif init=='std_scale' and contract:
-        weight = (1 + std*weight)/math.sqrt(rank * in_features)
+        weight = (1 + std*weight)/math.sqrt(rank * in_features + out_features)
         
     return nn.Parameter(weight, requires_grad=True)
 
