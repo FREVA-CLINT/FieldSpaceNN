@@ -2,6 +2,7 @@ from typing import List,Dict
 from einops import rearrange
 import copy
 
+import math
 import torch
 import torch.nn as nn
 
@@ -15,6 +16,67 @@ from ...modules.embedding.embedder import EmbedderSequential,MGEmbedder
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch, get_sample_configs
 
     
+class FilmLoRA(nn.Module):
+
+    def __init__(self, in_features, out_features, n_heads=4, embedder=None, rank=32, scale_limit=0.25, use_lora=True, head_gate=False, layer_confs={}, layer_confs_emb={}):
+        super().__init__()
+        self.in_features = in_features
+        self.use_lora = use_lora
+        self.out_features = out_features
+        self.embedder = embedder
+   
+
+
+        e_dim = embedder.get_out_channels
+        self.rank = rank
+        self.scale_limit = scale_limit
+        self.head_gate = head_gate
+
+        # LN and FiLM
+
+        self.film = get_layer([e_dim], [in_features[-1]*2], layer_confs=layer_confs_emb)
+
+        # base linear projection
+        self.base = get_layer(in_features, out_features, layer_confs=layer_confs, bias=False)
+
+        if use_lora:
+            self.U = get_layer(in_features, [*out_features[:-1], rank], layer_confs=layer_confs, bias=False)
+            self.V = get_layer([*in_features[:-1], rank], out_features, layer_confs=layer_confs, bias=False)
+            self.a = get_layer([e_dim], [rank], layer_confs=layer_confs_emb, bias=True)
+
+        if head_gate:
+            self.g = get_layer([e_dim], [n_heads], layer_confs=layer_confs_emb, bias=True)
+
+
+    def forward(self, x, emb={}, sample_configs={}):
+        
+        e = self.embedder(emb, sample_configs)
+        g, b = self.film(e, emb=emb, sample_configs=sample_configs).chunk(2, dim=-1)
+
+        scale = 1.0 + self.scale_limit * torch.tanh(g)
+        shift = self.scale_limit * torch.tanh(b)
+        
+        x = x * scale + shift
+
+        delta = 0
+        if self.use_lora:
+
+            xU = self.U(x, emb=emb, sample_configs=sample_configs)
+            z  = xU * self.a(e, emb=emb, sample_configs=sample_configs)                          
+            
+            delta = self.V(z, emb=emb, sample_configs=sample_configs)
+        
+        x = self.base(x, emb=emb, sample_configs=sample_configs)
+
+        x = x + delta
+        # rearrange, then gate
+
+        if self.head_gate:
+            g = (1.0 + self.scale_limit * torch.tanh(self.g(e, emb=emb, sample_configs=sample_configs))).unsqueeze(-1)
+            x = (x.view(*x.shape[:-1],g.shape[-2],-1) * g).view(*x.shape[:-1],-1)
+
+        return x
+
 
 class MultiZoomSelfAttention(nn.Module):
   
@@ -34,6 +96,7 @@ class MultiZoomSelfAttention(nn.Module):
                  compression_dims_kv: Dict[int, int]= {},
                  compression_dims_q: Dict[int, int]= {},
                  compression_zooms: Dict[int,int] = {},
+                 qkv_emb_projection_settings = {},
                  with_nh = True,
                  var_att = False,
                  common_kv = False,
@@ -63,6 +126,7 @@ class MultiZoomSelfAttention(nn.Module):
        # self.gammas = nn.ParameterDict()
 
         att_dim = out_features if att_dim is None else att_dim
+        self.num_heads = num_heads if not n_head_channels else in_features // n_head_channels
 
         self.CA_layers = nn.ModuleDict()
         for in_zoom, out_zoom in compression_zooms.items():
@@ -72,13 +136,18 @@ class MultiZoomSelfAttention(nn.Module):
                                    embedder_q=embedders[str(out_zoom)],
                                    n_head_channels=n_head_channels,
                                    var_att=var_att,
+                                   qkv_emb_projection_settings=qkv_emb_projection_settings,
                                    layer_confs=layer_confs,
                                    layer_confs_emb=layer_confs_emb
                                    )
-
+        
         for in_zoom in embedders.keys():
             if int(in_zoom) in q_zooms+kv_zooms: 
-                self.emb_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                if len(qkv_emb_projection_settings)==0:
+                    self.emb_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                else:
+                    self.emb_layers[in_zoom] = IdentityLayer()
+ 
 
         self.res_layers = nn.ModuleDict()
         for q_zoom in q_zooms:
@@ -92,13 +161,15 @@ class MultiZoomSelfAttention(nn.Module):
             in_features_q = [*in_f, att_dim]
             out_features_q = [*out_f, att_dim]
 
+            if len(qkv_emb_projection_settings)==0:
+                self.q_layers[str(q_zoom)] = get_layer(in_features_q, out_features_q, layer_confs=layer_confs) if not common_q else IdentityLayer()
+            else:
+                self.q_layers[str(q_zoom)] = FilmLoRA(in_features_q, out_features_q, self.num_heads, embedder=embedders[str(q_zoom)], **qkv_emb_projection_settings, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
+
+            self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
+
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(out_features, out_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
-
-            self.q_layers[str(q_zoom)] = get_layer(in_features_q, out_features_q, layer_confs=layer_confs) if not common_q else IdentityLayer()
-           # self.res_layers_mlp[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
-            
-            self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if not common_out and in_features!=out_features else IdentityLayer()
 
 
         self.omit_mask_zooms = []
@@ -111,42 +182,32 @@ class MultiZoomSelfAttention(nn.Module):
 
                 self.omit_mask_zooms.append(kv_zoom)
 
-            if with_nh:
-                nh_dim = grid_layer.adjc.shape[1] if with_nh else None
-                in_features_kv = [nh_dim, *in_f, att_dim]
-                out_features_kv = [nh_dim, *out_f, 2*att_dim]
-                layer_confs_ = layer_confs.copy()
-                layer_confs_['skip_dims'] = [True, *[False]*len(out_f), False]
+            layer_confs_ = layer_confs
+            in_features_kv = [*in_f, att_dim]
+            out_features_kv = [*out_f, 2*att_dim]
+
+            if len(qkv_emb_projection_settings)==0:
+                self.kv_layers[str(kv_zoom)] = get_layer(in_features_kv, out_features_kv, layer_confs=layer_confs_,bias=True) if not common_q else IdentityLayer()
             else:
-                layer_confs_ = layer_confs
-                in_features_kv = [*in_f, att_dim]
-                out_features_kv = [*out_f, 2*att_dim]
-
-            self.kv_layers[str(kv_zoom)] = get_layer(in_features_kv, out_features_kv, layer_confs=layer_confs_,bias=True) if not common_kv else IdentityLayer()
-
+                self.kv_layers[str(kv_zoom)] = FilmLoRA(in_features_kv, out_features_kv, self.num_heads, embedder=embedders[str(kv_zoom)], **qkv_emb_projection_settings, layer_confs=layer_confs_, layer_confs_emb=layer_confs_emb)
    
-        self.common_q_layer = get_layer(in_features, in_features, bias=False, layer_confs=layer_confs) if common_q else IdentityLayer()
-        self.common_kv_layer = get_layer(in_features, [2*in_features], bias=True, layer_confs=layer_confs) if common_kv else IdentityLayer()
-
-        num_heads = num_heads if not n_head_channels else in_features // n_head_channels
-        self.attention = SelfAttention(att_dim, in_features, num_heads=num_heads, dropout=dropout, cross=True, qkv_proj=False)
-
+       
         self.grid_layer = grid_layer
         self.max_zoom = int(max(list(embedders.keys())))
 
         assert out_features==in_features,"Module does not support differen in and out features"
 
         if not var_att:
-            self.pattern = 'b v t s n c -> (b v t s) (n) c'
-            self.kv_pattern = 'b v t s n kv c -> (b v t s) (n) (kv c)'
-            self.nh_mask_pattern = 'b v t s n 1 -> (b v t s) 1 1 n'
-            self.reverse_pattern = '(b v t s) n c -> b v t s n c'
+            self.pattern = 'b v t (s n) (NH H) -> (b v t s) NH n H'
+            self.kv_pattern = 'b v t (s n) m (NH H) -> (b v t s) NH (n m) H' if with_nh else self.pattern
+            self.mask_pattern = 'b v t (s n) m 1 -> (b v t s) 1 1 (n m)' if with_nh else self.pattern
+            self.reverse = '(b v t s) NH n H -> b v t (s n) (NH H)'
         else:
-            self.pattern = 'b v t s n c -> (b t s) (v n) c'
-            self.kv_pattern = 'b v t s n kv c -> (b t s) (v n) (kv c)'
-            self.nh_mask_pattern = 'b v t s n 1 -> (b t s) 1 1 (v n)'
-            self.reverse_pattern = '(b t s) (v n) c -> b v t s n c'
-
+            self.pattern = 'b v t (s n) (NH H) -> (b t s) NH (v n) H'
+            self.kv_pattern = 'b v t (s n) m (NH H) -> (b t s) NH (v n m) H' if with_nh else self.pattern
+            self.mask_pattern = 'b v t (s n) m 1 -> (b t s) 1 1 (v n m)' if with_nh else self.pattern
+            self.reverse = '(b t s) NH (v n) H-> b v t s n (NH H)'
+        
     def forward(self, x_zooms, mask_zooms=None, emb=None, sample_configs={}):        
 
         zoom_att = self.grid_layer.zoom
@@ -163,24 +224,28 @@ class MultiZoomSelfAttention(nn.Module):
         
         for zoom, q_layer in self.q_layers.items():
             q_ = get_matching_time_patch(x_zooms_emb[int(zoom)], int(zoom), self.max_zoom, sample_configs)
-            n = q_.shape[3] // 4**(int(zoom)-zoom_att)
+            b,v,t,N,f = q_.shape
+            n = 4**(int(zoom)-zoom_att)
 
             q_ = q_layer(q_, emb=emb, sample_configs=sample_configs[int(zoom)])
-            q_ = q_.reshape(*q_.shape[:3], n, -1 ,q_.shape[-1])
-            n_p.append(q_.shape[-2])
+            q_ = rearrange(q_, self.pattern, b=b, v=v, n=n, NH=self.num_heads)
+            
+            n_p.append(n)
             q.append(q_)
 
         for zoom, kv_layer in self.kv_layers.items():
             #operating_zoom = self.att_zoom if zoom not in self.CA_layers.keys() else self.CA_layers[zoom].zoom
-            kv_, mask_ = self.grid_layers[str(self.att_zoom)].get_nh(x_zooms_emb[int(zoom)], **sample_configs[int(zoom)], with_nh=self.with_nh, mask=mask_zooms[int(zoom)] if len(mask_zooms)>0 else None)
+            kv_ = kv_layer(x_zooms_emb[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
+
+            kv_, mask_ = self.grid_layers[str(self.att_zoom)].get_nh(kv_, **sample_configs[int(zoom)], with_nh=self.with_nh, mask=mask_zooms[int(zoom)] if len(mask_zooms)>0 else None)
             kv_ = get_matching_time_patch(kv_, int(zoom), self.max_zoom, sample_configs)
             
-            n = kv_.shape[3]
-            kv_ = kv_layer(kv_, emb=emb, sample_configs=sample_configs[int(zoom)])
-            kv_ = kv_.reshape(*kv_.shape[:3],n,-1,kv_.shape[-1])
-            
+            s = kv_.shape[3]
+            kv_ = kv_.view(*kv_.shape[:4],-1, kv_.shape[-1]) 
+
             if mask_ is not None and int(zoom) not in self.omit_mask_zooms:
                 mask_ = get_matching_time_patch(mask_, int(zoom), self.max_zoom, sample_configs)
+
             elif zoom not in self.CA_layers.keys():
                 mask_ = torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
 
@@ -188,43 +253,37 @@ class MultiZoomSelfAttention(nn.Module):
                 kv_ = self.CA_layers[zoom](kv_, emb=emb, mask=mask_, sample_configs=sample_configs)[0]
                 mask_ = torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
 
+            kv_ = rearrange(kv_, self.kv_pattern, b=b, v=v, s=s, NH=self.num_heads)
+
+            if mask is not None:
+                mask_ = rearrange(mask_, self.mask_pattern, b=b, v=v, s=s)
+
             kv.append(kv_)
             mask.append(mask_)
 
-        kv = torch.concat(kv, dim=-2)
-        q = torch.concat(q, dim=-2)
-
-        q = self.common_q_layer(q, sample_configs=sample_configs[int(zoom)], emb=emb)
-        kv_shape = kv.shape[:-1]
-        kv = self.common_kv_layer(kv, sample_configs=sample_configs[int(zoom)], emb=emb).view(*kv_shape,2,-1)
+        K, V = torch.concat(kv, dim=-2).chunk(2, dim=-1)
+        Q = torch.concat(q, dim=-2)
 
         if mask[0] is not None:
-            mask = torch.concat(mask, dim=-2)
-            mask = rearrange(mask, self.nh_mask_pattern)
+            mask = torch.concat(mask, dim=-1)
 
             all_masked = mask.all(dim=-1,keepdim=True)
             mask[all_masked.expand_as(mask)] = False
         else:
             mask = None
 
-        b, v, t, s, n, c = q.shape
+        Q = safe_scaled_dot_product_attention(Q, K, V, mask=mask)
 
-        q = rearrange(q, self.pattern)
-        kv = rearrange(kv, self.kv_pattern)
+#        if mask is not None:
+ #           Q.masked_fill_(all_masked.expand_as(Q),0)
 
-        
-        q = self.attention(q, kv, mask=mask)
+        Q = rearrange(Q, self.reverse, b=b, t=t, s=s, v=v) 
+        Q = Q.split(n_p, dim=-2)
 
-        if mask is not None:
-            q.masked_fill_(all_masked[...,0],0)
-
-        q = rearrange(q, self.reverse_pattern, b=b, t=t, s=s, n=n, v=v) 
-
-        q = q.split(n_p, dim=-2)
 
         for k, zoom in enumerate(self.q_layers.keys()):
 
-            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
+            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], Q[k].reshape(*Q[k].shape[:3],-1,Q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
@@ -244,6 +303,7 @@ class MGCompressionAttention(nn.Module):
                  with_nh = True,
                  var_att = False,
                  n_head_channels = 16,
+                 qkv_emb_projection_settings = {},
                  layer_confs: Dict = {},
                  layer_confs_emb= {}) -> None: 
         
@@ -252,7 +312,11 @@ class MGCompressionAttention(nn.Module):
         assert 'MGEmbedder' in embedder_q.embedders.keys(), 'MGEmbedder is required for compression attention'
         self.emb_layerq = embedder_q.embedders['MGEmbedder']
         self.zoom = embedder_q.embedders['MGEmbedder'].zoom
-        self.emb_proj =  get_layer([embedder_q.get_out_channels], [features], layer_confs=layer_confs_emb)
+
+        if len(qkv_emb_projection_settings)==0:
+            self.emb_proj =  get_layer([embedder_q.get_out_channels], [features], layer_confs=layer_confs_emb)
+        else:
+            self.emb_proj = FilmLoRA(features, features, embedder=embedder_q, **qkv_emb_projection_settings, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
 
         self.attention = SelfAttention(features,features, num_heads=features//n_head_channels,qkv_proj=False,cross=True)
 

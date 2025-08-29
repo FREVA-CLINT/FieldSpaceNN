@@ -36,6 +36,9 @@ def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk
 
     safe_chunk_size = chunk_size // H
 
+    if mask is not None:
+        mask = mask==False if mask.dtype==torch.bool else 1-mask
+
     if B <= safe_chunk_size:
         return scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=is_causal
@@ -159,8 +162,6 @@ class SelfAttention(nn.Module):
         :param mask: Optional mask tensor for attention.
         :return: Output tensor after applying attention mechanism.
         """
-        if mask is not None:
-            mask = mask==False if mask.dtype==torch.bool else 1-mask
         return safe_scaled_dot_product_attention(q, k, v, mask=mask, is_causal=self.is_causal)
 
 
