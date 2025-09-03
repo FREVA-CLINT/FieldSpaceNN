@@ -7,10 +7,11 @@ from stableclimgen.src.modules.distributions.distributions import DiagonalGaussi
 from ..mg_transformer.confs import defaults
 from ..mg_transformer.mg_base_model import MG_base_model
 from .confs import MGQuantConfig
+from ..mg_transformer.mg_transformer import DiffDecoder
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
     MGCoordinateEmbeddingConfig, MGFieldAttentionConfig
-from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embedding
+from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embedding, MFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
 from ...modules.vae.quantization import Quantization
 from ...utils.helpers import check_get
@@ -27,6 +28,7 @@ class MG_VAE(MG_base_model):
                  out_features: int=1,
                  mg_emb_confs: dict={},
                  distribution: str = "gaussian",
+                 decoder_settings = {},
                  **kwargs
                  ) -> None: 
         
@@ -90,6 +92,22 @@ class MG_VAE(MG_base_model):
             in_zooms = block.out_zooms
 
         block.out_features = [in_features[0]]
+
+        if len(decoder_settings) == 0:
+            self.decoder = DiffDecoder()
+
+        else:
+            self.decoder = MFieldLayer(
+                in_features,
+                decoder_settings['out_features'],
+                in_zooms,
+                self.grid_layers,
+                with_nh=decoder_settings.get('with_nh', True),
+                embed_confs=decoder_settings.get('embed_confs', {}),
+                N=decoder_settings.get('N', 2),
+                kmin=decoder_settings.get('kmin', 0),
+                kmax=decoder_settings.get('kmin', 0.5),
+                layer_confs=decoder_settings.get('layer_confs', {}))
 
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
@@ -161,7 +179,7 @@ class MG_VAE(MG_base_model):
                 init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"))
         return block
 
-    def encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
+    def vae_encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
 
         for k, block in enumerate(self.encoder_blocks.values()):
@@ -171,7 +189,7 @@ class MG_VAE(MG_base_model):
         posterior_zooms = {int(zoom): self.get_distribution(x) for zoom, x in x_zooms.items()}
         return posterior_zooms
 
-    def decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
+    def vae_decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 
         for k, block in enumerate(self.decoder_blocks.values()):
@@ -179,8 +197,11 @@ class MG_VAE(MG_base_model):
 
         return x_zooms
 
+    def decode(self, x_zooms:Dict[str, torch.Tensor], sample_configs: Dict, out_zoom: int=None, emb={}):
+        return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom)
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None):
+
+    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None, out_zoom=None):
 
         """
         Forward pass for the ICON_Transformer model.
@@ -198,11 +219,12 @@ class MG_VAE(MG_base_model):
         assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
-        posterior_zooms = self.encode(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+        posterior_zooms = self.vae_encode(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
         z_zooms = {int(zoom): x.sample() for zoom, x in posterior_zooms.items()}
 
-        dec = self.decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+        dec = self.vae_decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+        dec = self.decoder(dec, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
 
         return dec, posterior_zooms
 
