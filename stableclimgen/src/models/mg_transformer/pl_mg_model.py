@@ -338,5 +338,5 @@ class LightningMGModel(pl.LightningModule):
 
 
     def prepare_emb(self, emb=None, sample_configs={}):
-        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_configs)
+        emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["GroupEmbedder"])
         return emb

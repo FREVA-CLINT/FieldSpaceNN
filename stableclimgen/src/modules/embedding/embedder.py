@@ -70,13 +70,14 @@ class CoordinateEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, layer_confs={}, **kwargs) -> None:
+    def __init__(self, name: str, in_channels: int, embed_dim: int, wave_length: float=1.0, wave_length_2: float=None, zoom=None, zoom_max=None, layer_confs={}, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "s", "c"]
 
         self.zoom = zoom
+        self.zoom_max = zoom_max
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2)
@@ -86,7 +87,7 @@ class CoordinateEmbedder(BaseEmbedder):
         coordinates, var_indices = coordinates_emb
 
         sample_configs = kwargs.get('sample_configs', {'zoom': self.zoom})
-        zoom_diff = int(sample_configs['zoom'][0] - self.zoom)
+        zoom_diff = int(self.zoom_max - min(sample_configs['zoom_lvl'], self.zoom))
 
         coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
         coord_emb = self.embedding_fn(coordinates)

@@ -41,6 +41,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        emb = self.prepare_emb(emb, sample_configs)
 
         loss, loss_dict, _, _, posterior_zooms = self.get_losses(source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', post=True)
 
@@ -64,6 +65,9 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         max_zoom = max(target.keys())
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        emb = self.prepare_emb(emb, sample_configs)
+        print(sample_configs)
+
         loss, loss_dict, output, output_comp, posterior_zooms = self.get_losses(source, target, sample_configs, mask_zooms=mask,
                                                                  emb=emb, prefix='val', post=True)
 
