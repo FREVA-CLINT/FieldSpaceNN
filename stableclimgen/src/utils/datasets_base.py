@@ -215,7 +215,8 @@ class BaseDataset(Dataset):
 
         time_indices = np.arange(time_idx-n_past_timesteps, time_idx + n_future_timesteps + 1, 1)
         isel_dict = {"time": time_indices}
-        patch_dim = [d for d in ds.dims if "cell" in d or "ncells" in d][0]
+        patch_dim = [d for d in ds.dims if "cell" in d or "ncells" in d]
+        patch_dim = patch_dim[0] if patch_dim else None
 
         nt = 1 + n_past_timesteps + n_future_timesteps
 
@@ -233,19 +234,24 @@ class BaseDataset(Dataset):
             post_map = mapping_zoom > zoom
             if post_map:
                 indices = mapping['indices'][...,[0]].reshape(-1,4**(mapping_zoom-zoom))
-                isel_dict[patch_dim] = indices.view(-1)
+                if patch_dim:
+                    isel_dict[patch_dim] = indices.view(-1)
 
             else:
                 indices = mapping['indices'][...,[0]]
                 mask = mask[:,:,patch_indices]
-                isel_dict[patch_dim] = indices[patch_indices].view(-1)
+                if patch_dim:
+                    isel_dict[patch_dim] = indices[patch_indices].view(-1)
                 if drop_mask_ is not None:
                     drop_mask_ = drop_mask[:,:,patch_indices]                       
-            
+
             ds = ds.isel(isel_dict)
-            
+
             for i, variable in enumerate(variables):
-                data = torch.tensor(ds[variable].values).view(nt, -1,1)
+                values = ds[variable].values
+                if not patch_dim:
+                    values = values.reshape(nt, -1)[:, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
+                data = torch.tensor(values).view(nt, -1,1)
                 data = self.var_normalizers[variable].normalize(data)
                 data_g.append(data) 
 
@@ -258,12 +264,10 @@ class BaseDataset(Dataset):
 
         if drop_mask_ is not None:
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
-
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask.expand_as(data_g), binarize_mask=self.output_binary_mask)
 
-        if post_map:
-            data_g = data_g[:,:,patch_indices]
-            mask = mask[:,:,patch_indices]
+        data_g = data_g[:,:,patch_indices]
+        mask = mask[:,:,patch_indices]
 
         drop_mask = torch.logical_not(mask[...,[0]]) if mask.dtype==torch.bool else  1 - mask[...,[0]]
 

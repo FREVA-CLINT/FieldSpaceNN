@@ -35,6 +35,9 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
     
     elif grid_type == 'lonlat':
         lon, lat = 'lon', 'lat'
+
+    elif grid_type == 'longitudelatitude':
+        lon, lat = 'longitude', 'latitude'
     
     if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
         zoom = get_zoom_from_npix(len(ds.cell))
@@ -48,7 +51,7 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
 
-        if grid_type=='lonlat':
+        if grid_type=='lonlat' or grid_type =='longitudelatitude':
             lons, lats = torch.meshgrid((lons.deg2rad(),lats.deg2rad()), indexing='xy')
             lons = lons.reshape(-1)
             lats = lats.reshape(-1)
@@ -70,6 +73,9 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
 def get_grid_type_from_var(ds:xr.Dataset, variable:str) -> dict:
     dims = ds[variable].dims
     spatial_dim = dims[-1]
+
+    if 'longitude' in spatial_dim or 'latitude' in spatial_dim:
+        return 'longitudelatitude'
 
     if 'lon' in spatial_dim or 'lat' in spatial_dim:
         return 'lonlat'
