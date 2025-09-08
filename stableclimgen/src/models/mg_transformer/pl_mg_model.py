@@ -220,14 +220,14 @@ class LightningMGModel(pl.LightningModule):
 
 
     def predict_step(self, batch, batch_idx):
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        output = self(source.copy(), sample_configs=sample_configs, mask=mask, emb=emb)
+        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
-        output = self.model.vae_decode(output, sample_configs, out_zoom=max(output.keys()), emb=emb)
-        mask =self.model.vae_decode(mask, sample_configs, out_zoom=max(mask.keys()), emb=emb)
+        output = self.model.decode(output, sample_configs, out_zoom=max(output.keys()), emb=emb)
+        mask =self.model.decode(mask, sample_configs, out_zoom=max(mask.keys()), emb=emb)
 
         if hasattr(self.model,'predict_var') and self.model.predict_var:
             output, output_var = output.chunk(2, dim=-1)

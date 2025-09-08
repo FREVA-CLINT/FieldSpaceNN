@@ -48,13 +48,14 @@ def train(cfg: DictConfig) -> None:
         else:
             logger: WandbLogger = instantiate(cfg.logger)
     elif "MLFlowLogger" in cfg.logger['_target_']:
-        mlflow.enable_system_metrics_logging()
-        mlflow.set_tracking_uri(cfg.logger.tracking_uri)
-        mlflow.set_experiment(cfg.project_name)
-        mlflow.start_run(run_name=cfg.run_name, run_id=cfg.logger.run_id, tags={"user": getpass.getuser()})
-        if not hasattr(cfg.logger, "run_id") or not cfg.logger.run_id:
-            cfg.logger.run_id = mlflow.active_run().info.run_id
-        mlflow.log_params(OmegaConf.to_container(cfg, resolve=True))
+        if rank_zero_only.rank == 0:
+            mlflow.enable_system_metrics_logging()
+            mlflow.set_tracking_uri(cfg.logger.tracking_uri)
+            mlflow.set_experiment(cfg.project_name)
+            mlflow.start_run(run_name=cfg.run_name, run_id=cfg.logger.run_id, tags={"user": getpass.getuser()})
+            if not hasattr(cfg.logger, "run_id") or not cfg.logger.run_id:
+                cfg.logger.run_id = mlflow.active_run().info.run_id
+            mlflow.log_params(OmegaConf.to_container(cfg, resolve=True))
         logger: MLFlowLogger = instantiate(cfg.logger)
 
     if rank_zero_only.rank == 0:

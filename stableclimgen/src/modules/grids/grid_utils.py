@@ -15,6 +15,26 @@ def get_zoom_from_npix(npix):
     except ValueError:
         return None
 
+def get_lon_lat_names(grid_type):
+    if grid_type == 'cell':
+        lon, lat = 'clon', 'clat'
+
+    elif grid_type == 'vertex':
+        lon, lat = 'vlon', 'vlat'
+
+    elif grid_type == 'edge':
+        lon, lat = 'elon', 'elat'
+
+    elif grid_type == 'lonlat':
+        lon, lat = 'lon', 'lat'
+
+    elif grid_type == 'longitudelatitude':
+        lon, lat = 'longitude', 'latitude'
+
+    else:
+        lon, lat = 'vlon', 'vlat'
+    return lon, lat
+
 def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_type:str=None, target='torch'):
     """
     :param ds: Input Xarray Dataset to read data from
@@ -24,20 +44,7 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
 
     :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
     """
-    if grid_type == 'cell':
-        lon, lat = 'clon', 'clat'
-
-    elif grid_type == 'vertex':
-        lon, lat = 'vlon', 'vlat'
-
-    elif grid_type == 'edge':
-        lon, lat = 'elon', 'elat'
-    
-    elif grid_type == 'lonlat':
-        lon, lat = 'lon', 'lat'
-
-    elif grid_type == 'longitudelatitude':
-        lon, lat = 'longitude', 'latitude'
+    lon, lat = get_lon_lat_names(grid_type)
     
     if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
         zoom = get_zoom_from_npix(len(ds.cell))

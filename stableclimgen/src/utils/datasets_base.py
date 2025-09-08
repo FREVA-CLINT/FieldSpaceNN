@@ -143,7 +143,6 @@ class BaseDataset(Dataset):
         self.grid_types = np.unique(grid_types)
 
         self.grid_types_vars = invert_dict(self.vars_grid_types)
-
         for var, gtype in zip(all_variables, grid_types):
             self.grid_types_vars[gtype].append(var)
 
@@ -222,9 +221,8 @@ class BaseDataset(Dataset):
 
         data_g = []
         for grid_type, variables_grid_type in self.grid_types_vars.items():
-
             variables = [var for var in variables_sample if var in variables_grid_type]
-            
+
             mapping = mapping[grid_type] 
 
             patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
@@ -256,7 +254,7 @@ class BaseDataset(Dataset):
                 data_g.append(data) 
 
         data_g = torch.stack(data_g, dim=0)
-        
+
         _, counts = np.unique(group_ids_sample, return_counts=True)
 
         data_g = data_g.split(counts.tolist(), dim=0)
