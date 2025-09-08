@@ -164,7 +164,8 @@ def test(cfg: DictConfig) -> None:
                                       timesteps,
                                       cfg.output_path.replace(".pt", ".nc"),
                                       dimensions,
-                                      reference_nc_path)
+                                      reference_nc_path,
+                                      run_id=cfg.logger.run_id if "MLFlowLogger" in cfg.logger['_target_'] else cfg.logger.id)
 
 if __name__ == "__main__":
     test()
