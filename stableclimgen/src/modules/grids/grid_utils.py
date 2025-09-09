@@ -5,6 +5,8 @@ import math
 import healpy as hp
 from typing import Dict
 
+from scipy.interpolate import griddata
+
 radius_earth= 6371
 
 def get_zoom_from_npix(npix):
@@ -859,3 +861,52 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
         x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
 
     return {out_zoom: x}
+
+
+def remap_healpix_to_any(output, variables, indices, lat_dim, lon_dim):
+    output_remapped = {}
+    for var in variables:
+        s = 3
+        leading_dims = output[var].shape[:s]
+        trailing_dims = output[var].shape[s + 1:]
+
+        output_flat_shape = leading_dims + (lat_dim * lon_dim,) + trailing_dims
+        output_rem = torch.full(output_flat_shape, float('nan'), dtype=output[var].dtype,
+                                device=output[var].device)
+
+        map_shape = [1] * output[var].dim()
+        map_shape[s] = output[var].shape[s]
+        map_reshaped = indices.view(map_shape)
+
+        expanded_map = map_reshaped.expand(output[var].shape)
+        output_rem.scatter_(s, expanded_map, output[var])
+
+        output_grid_nan = output_rem.reshape(leading_dims + (lat_dim, lon_dim) + trailing_dims)
+
+        tensor_np = output_grid_nan.float().cpu().numpy()
+        interpolated_tensor_np = np.copy(tensor_np)
+
+        it = np.nditer(tensor_np[..., 0, 0, :], flags=['multi_index'], op_flags=['readonly'])
+
+        while not it.finished:
+            idx = it.multi_index
+            grid_2d = tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]]
+
+            if np.isnan(grid_2d).any():
+                y, x = np.mgrid[0:lat_dim, 0:lon_dim]
+                valid_mask = ~np.isnan(grid_2d)
+                if not np.any(valid_mask):
+                    it.iternext()
+                    continue
+
+                points = np.array([y[valid_mask], x[valid_mask]]).T
+                values = grid_2d[valid_mask]
+
+                interpolated_grid = griddata(points, values, (y, x), method='nearest')
+                interpolated_tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]] = interpolated_grid
+
+            it.iternext()
+
+        output_remapped[var] = torch.from_numpy(interpolated_tensor_np).to(output[var].device).reshape(
+            output_flat_shape)
+    return output_remapped

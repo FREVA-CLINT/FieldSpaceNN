@@ -333,7 +333,7 @@ class TransformerBlock(EmbedBlock):
             else:
                 #qkv_proj = len(layer_confs) == 0
                 q_layer = get_layer(att_dim, [att_dim], layer_confs=layer_confs) 
-                kv_layer = get_layer(att_dim, [2, att_dim], layer_confs=layer_confs, bias=True) 
+                kv_layer = get_layer([1, att_dim], [2, att_dim], layer_confs=layer_confs, bias=True)
                 out_layer = get_layer(att_dim, out_features_list[i], layer_confs=layer_confs, bias=True) if att_dim != out_features_list[i] else IdentityLayer()
 
                 cross = False

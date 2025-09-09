@@ -223,20 +223,14 @@ class LightningMGModel(pl.LightningModule):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
+        max_zoom = max(target.keys())
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
 
-        output = self.model.decode(output, sample_configs, out_zoom=max(output.keys()), emb=emb)
-        mask =self.model.decode(mask, sample_configs, out_zoom=max(mask.keys()), emb=emb)
-
-        if hasattr(self.model,'predict_var') and self.model.predict_var:
-            output, output_var = output.chunk(2, dim=-1)
-        else:
-            output_var = None
+        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
+                           out_zoom=max_zoom)
 
         output = {'output': output,
-                'output_var': output_var,
-                'mask': mask}
+                  'mask': mask}
         return output
     
 

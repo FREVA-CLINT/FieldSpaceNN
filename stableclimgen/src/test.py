@@ -14,7 +14,7 @@ import xarray as xr
 
 from stableclimgen.src.modules.grids.grid_utils import get_lon_lat_names
 from stableclimgen.src.utils.datasets_base import BaseDataset
-from stableclimgen.src.utils.file_export import save_tensor_as_netcdf
+from stableclimgen.src.utils.file_export import save_tensor_as_netcdf, remap_healpix_to_any, export_healpix_to_netcdf
 from stableclimgen.src.utils.pl_data_module import DataModule
 from stableclimgen.src.utils.helpers import load_from_state_dict
 import healpy as hp
@@ -93,79 +93,13 @@ def test(cfg: DictConfig) -> None:
 
     output = dict(zip(target_variables, output.split(1, dim=1)))
     torch.save(output, cfg.output_path)
-    mask = dict(zip(target_variables, mask.split(1, dim=1)))
+    mask = dict(zip(target_variables, (1-mask).split(1, dim=1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
     if hasattr(cfg, "save_netcdf") and cfg.save_netcdf:
-        output_remapped = {}
-        # get mapping
-        for grid_type, variables_grid_type in test_dataset.grid_types_vars.items():
-            variables = set(variables_grid_type)
-            indices = test_dataset.mapping[max_zoom][grid_type]['indices'][...,[0]]
-            lat_dim, lon_dim = 36, 72 # TODO: get dimensions from nc dataset
-            for var in variables:
-                s = 3
-                leading_dims = output[var].shape[:s]
-                trailing_dims = output[var].shape[s + 1:]
-
-                output_flat_shape = leading_dims + (lat_dim * lon_dim,) + trailing_dims
-                output_rem = torch.full(output_flat_shape, float('nan'), dtype=output[var].dtype,
-                                        device=output[var].device)
-
-                map_shape = [1] * output[var].dim()
-                map_shape[s] = output[var].shape[s]
-                map_reshaped = indices.view(map_shape)
-
-                expanded_map = map_reshaped.expand(output[var].shape)
-                output_rem.scatter_(s, expanded_map, output[var])
-
-                output_grid_nan = output_rem.reshape(leading_dims + (lat_dim, lon_dim) + trailing_dims)
-
-                tensor_np = output_grid_nan.float().cpu().numpy()
-                interpolated_tensor_np = np.copy(tensor_np)
-
-                it = np.nditer(tensor_np[..., 0, 0, :], flags=['multi_index'], op_flags=['readonly'])
-
-                while not it.finished:
-                    idx = it.multi_index
-                    grid_2d = tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]]
-
-                    if np.isnan(grid_2d).any():
-                        y, x = np.mgrid[0:lat_dim, 0:lon_dim]
-                        valid_mask = ~np.isnan(grid_2d)
-                        if not np.any(valid_mask):
-                            it.iternext()
-                            continue
-
-                        points = np.array([y[valid_mask], x[valid_mask]]).T
-                        values = grid_2d[valid_mask]
-
-                        interpolated_grid = griddata(points, values, (y, x), method='nearest')
-                        interpolated_tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]] = interpolated_grid
-
-                    it.iternext()
-
-                output_remapped[var] = torch.from_numpy(interpolated_tensor_np).to(output[var].device).reshape(
-                    output_flat_shape)
-
-
-        reference_nc_path = test_dataset.data_dict['target'][max_zoom]['files'][0]
-
-        if test_dataset.sample_timesteps:
-            timesteps = xr.open_dataset(reference_nc_path, decode_times=False)["time"][test_dataset.sample_timesteps]
-        else:
-            timesteps = xr.open_dataset(reference_nc_path, decode_times=False)["time"][:]
-
-        if ".nc" in reference_nc_path:
-            for grid_type, variables_grid_type in test_dataset.grid_types_vars.items():
-                lon, lat = get_lon_lat_names(grid_type)
-                dimensions = ('time', lat, lon)
-                save_tensor_as_netcdf({key: value for key, value in output_remapped.items() if key in variables_grid_type},
-                                      timesteps,
-                                      cfg.output_path.replace(".pt", ".nc"),
-                                      dimensions,
-                                      reference_nc_path,
-                                      run_id=cfg.logger.run_id if "MLFlowLogger" in cfg.logger['_target_'] else cfg.logger.id)
+        export_healpix_to_netcdf(test_dataset, max_zoom, output, mask,
+                                 cfg.logger.run_id if "MLFlowLogger" in cfg.logger['_target_'] else cfg.logger.id,
+                                 cfg.output_path)
 
 if __name__ == "__main__":
     test()

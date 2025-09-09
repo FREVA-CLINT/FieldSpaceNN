@@ -1,5 +1,45 @@
 import xarray as xr
 
+from stableclimgen.src.modules.grids.grid_utils import get_lon_lat_names, remap_healpix_to_any
+
+
+def export_healpix_to_netcdf(test_dataset, max_zoom, output, mask, run_id, filename):
+    output_remapped = {}
+    # get mapping
+    for grid_type, variables_grid_type in test_dataset.grid_types_vars.items():
+        variables = set(variables_grid_type)
+        indices = test_dataset.mapping[max_zoom][grid_type]['indices'][..., [0]]
+        lat_dim, lon_dim = 36, 72  # TODO: get dimensions from nc dataset
+
+        output_remapped = remap_healpix_to_any(output, variables, indices, lat_dim, lon_dim)
+        mask_remapped = remap_healpix_to_any(mask, variables, indices, lat_dim, lon_dim)
+
+    reference_nc_path = test_dataset.data_dict['target'][max_zoom]['files'][0]
+
+    if test_dataset.sample_timesteps:
+        timesteps = xr.open_dataset(reference_nc_path, decode_times=False)["time"][test_dataset.sample_timesteps]
+    else:
+        timesteps = xr.open_dataset(reference_nc_path, decode_times=False)["time"][:]
+
+    if ".nc" in reference_nc_path:
+        for grid_type, variables_grid_type in test_dataset.grid_types_vars.items():
+            lon, lat = get_lon_lat_names(grid_type)
+            dimensions = ('time', lat, lon)
+            save_tensor_as_netcdf(
+                {key: value for key, value in output_remapped.items() if key in variables_grid_type},
+                timesteps,
+                filename.replace(".pt", ".nc"),
+                dimensions,
+                reference_nc_path,
+                run_id=run_id)
+            save_tensor_as_netcdf(
+                {key: value for key, value in mask_remapped.items() if key in variables_grid_type},
+                timesteps,
+                filename.replace(".pt", "_mask.nc"),
+                dimensions,
+                reference_nc_path,
+                run_id=run_id)
+
 def save_tensor_as_netcdf(data, timesteps, output_path, dims, reference_nc_path=None, run_id=None):
     with xr.open_dataset(reference_nc_path) as ref_ds:
         # Create a new dataset, copying only static variables (those without a 'time' dim)
