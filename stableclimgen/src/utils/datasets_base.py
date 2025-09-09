@@ -264,8 +264,9 @@ class BaseDataset(Dataset):
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask.expand_as(data_g), binarize_mask=self.output_binary_mask)
 
-        data_g = data_g[:,:,patch_indices]
-        mask = mask[:,:,patch_indices]
+        if post_map:
+            data_g = data_g[:, :, patch_indices]
+            mask = mask[:, :, patch_indices]
 
         drop_mask = torch.logical_not(mask[...,[0]]) if mask.dtype==torch.bool else  1 - mask[...,[0]]
 
