@@ -121,7 +121,7 @@ def test(cfg: DictConfig) -> None:
 
                 output_grid_nan = output_rem.reshape(leading_dims + (lat_dim, lon_dim) + trailing_dims)
 
-                tensor_np = output_grid_nan.cpu().numpy()
+                tensor_np = output_grid_nan.float().cpu().numpy()
                 interpolated_tensor_np = np.copy(tensor_np)
 
                 it = np.nditer(tensor_np[..., 0, 0, :], flags=['multi_index'], op_flags=['readonly'])

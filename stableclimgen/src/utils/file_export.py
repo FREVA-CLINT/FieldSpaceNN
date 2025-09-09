@@ -19,7 +19,7 @@ def save_tensor_as_netcdf(data, timesteps, output_path, dims, reference_nc_path=
         # Add the new/updated variables as DataArrays
         for var_name, tensor in data.items():
             da = xr.DataArray(
-                data=tensor.cpu().view(tuple(len(output_ds[dim]) for dim in dims)).numpy(),
+                data=tensor.float().cpu().view(tuple(len(output_ds[dim]) for dim in dims)).numpy(),
                 dims=dims,
                 coords={dim: output_ds[dim] for dim in dims}
             )
