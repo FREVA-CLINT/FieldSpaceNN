@@ -95,17 +95,17 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
     def _predict_step(self, source, target, patch_index_zooms, mask, emb):
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-
+        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        output = self(source.copy(), sample_configs=sample_configs, mask=mask, emb=emb)
+        emb = self.prepare_emb(emb, sample_configs)
+
+        max_zoom = max(target.keys())
 
         if self.mode == "encode_decode":
-            outputs, posterior = self.model(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+            outputs, posterior = self.model(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
         elif self.mode == "encode":
-            outputs = self.model.vae_encode(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+            outputs = self.model.vae_encode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
         elif self.mode == "decode":
-            outputs = self.model.vae_decode(source, sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+            outputs = self.model.vae_decode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
 
-        outputs = decode_zooms(outputs, max(outputs.keys()))
         return outputs
