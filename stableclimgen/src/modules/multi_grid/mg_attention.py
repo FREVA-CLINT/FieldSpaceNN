@@ -223,7 +223,7 @@ class MultiZoomSelfAttention(nn.Module):
             self.pattern = 'b v t (s n) (NH H) -> (b v t s) NH n H'
             self.kv_pattern = 'b v t (s n) m (NH H) -> (b v t s) NH (n m) H' if with_nh else self.pattern
             self.mask_pattern = 'b v t (s n) m 1 -> (b v t s) 1 1 (n m)' if with_nh else self.pattern
-            self.reverse = '(b v t s) NH n H -> b v t (s n) (NH H)'
+            self.reverse = '(b v t s) NH n H -> b v t s n (NH H)'
         else:
             self.pattern = 'b v t (s n) (NH H) -> (b t s) NH (v n) H'
             self.kv_pattern = 'b v t (s n) m (NH H) -> (b t s) NH (v n m) H' if with_nh else self.pattern
@@ -298,8 +298,8 @@ class MultiZoomSelfAttention(nn.Module):
 
 #        if mask is not None:
  #           Q.masked_fill_(all_masked.expand_as(Q),0)
+        Q = rearrange(Q, self.reverse, b=b, t=t, s=s, v=v)
 
-        Q = rearrange(Q, self.reverse, b=b, t=t, s=s, v=v) 
         Q = Q.split(n_p, dim=-2)
 
 

@@ -140,14 +140,18 @@ class LightningMGModel(pl.LightningModule):
 
     def forward(self, x, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None) -> torch.Tensor:
         return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=out_zoom)
-    
-    def get_losses(self, source, target, sample_configs, mask_zooms=None, emb=None, prefix=''):
-        
+
+    def get_losses(self, source, target, sample_configs, mask_zooms=None, emb=None, prefix='', post=False):
+
         loss_dict_total = {}
         total_loss = 0
+        posterior = None
 
         if self.loss_zooms.has_elements:
-            output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+            if post:
+                output, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+            else:
+                output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
             loss, loss_dict = self.loss_zooms(output, target, mask=mask_zooms, sample_configs=sample_configs, prefix=f'{prefix}/')
             total_loss += loss
@@ -159,7 +163,12 @@ class LightningMGModel(pl.LightningModule):
 
             max_zoom = max(target.keys())
             target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-            output_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=max_zoom)
+
+            if post:
+                output_comp, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb,
+                                   out_zoom=max_zoom)
+            else:
+                output_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=max_zoom)
 
             loss, loss_dict = self.loss_composed(output_comp, target_comp, mask=mask_zooms, sample_configs=sample_configs, prefix=f'{prefix}/composed_')
             total_loss += loss
@@ -167,8 +176,10 @@ class LightningMGModel(pl.LightningModule):
         else:
             output_comp = None
 
-
-        return total_loss, loss_dict_total, output, output_comp
+        if post:
+            return total_loss, loss_dict_total, output, output_comp, posterior
+        else:
+            return total_loss, loss_dict_total, output, output_comp
 
 
     def training_step(self, batch, batch_idx):
@@ -194,7 +205,7 @@ class LightningMGModel(pl.LightningModule):
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         
-        loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val')
+        loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val', post=False)
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -209,32 +220,29 @@ class LightningMGModel(pl.LightningModule):
 
 
     def predict_step(self, batch, batch_idx):
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         source, target, patch_index_zooms, mask, emb = batch
 
+        max_zoom = max(target.keys())
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        output = self(source.copy(), sample_configs=sample_configs, mask=mask, emb=emb)
 
-        output = self.model.decode(output, sample_configs, out_zoom=max(output.keys()), emb=emb)
-        mask =self.model.decode(mask, sample_configs, out_zoom=max(mask.keys()), emb=emb)
-
-        if hasattr(self.model,'predict_var') and self.model.predict_var:
-            output, output_var = output.chunk(2, dim=-1)
-        else:
-            output_var = None
+        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
+                           out_zoom=max_zoom)
 
         output = {'output': output,
-                'output_var': output_var,
-                'mask': mask}
+                  'mask': mask}
         return output
     
 
     def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch, output_comp=None):
 
         save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
-        os.makedirs(save_dir, exist_ok=True)  
+        os.makedirs(save_dir, exist_ok=True)
 
-        save_paths_zooms = healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}", emb=emb)
+        save_paths = []
+
+        if output is not None:
+            save_paths += healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}", emb=emb)
     
         max_zoom = max(self.model.in_zooms)
 
@@ -247,9 +255,8 @@ class LightningMGModel(pl.LightningModule):
             output_p = output_comp
 
         mask = {max_zoom: mask[max_zoom]} if mask is not None else None
-        save_paths = healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
+        save_paths += healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
 
-        save_paths+=save_paths_zooms
         for k, save_path in enumerate(save_paths):
             if isinstance(self.logger, WandbLogger):
                 self.logger.log_image(f"plots/{os.path.basename(save_path).replace('.png','')}", [save_path])
@@ -327,5 +334,5 @@ class LightningMGModel(pl.LightningModule):
 
 
     def prepare_emb(self, emb=None, sample_configs={}):
-        emb['CoordinateEmbedder'] = self.model.grid_layer_max.get_coordinates(**sample_configs)
+        emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["GroupEmbedder"])
         return emb

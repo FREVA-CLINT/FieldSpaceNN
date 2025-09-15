@@ -5,6 +5,8 @@ import math
 import healpy as hp
 from typing import Dict
 
+from scipy.interpolate import griddata
+
 radius_earth= 6371
 
 def get_zoom_from_npix(npix):
@@ -15,6 +17,26 @@ def get_zoom_from_npix(npix):
     except ValueError:
         return None
 
+def get_lon_lat_names(grid_type):
+    if grid_type == 'cell':
+        lon, lat = 'clon', 'clat'
+
+    elif grid_type == 'vertex':
+        lon, lat = 'vlon', 'vlat'
+
+    elif grid_type == 'edge':
+        lon, lat = 'elon', 'elat'
+
+    elif grid_type == 'lonlat':
+        lon, lat = 'lon', 'lat'
+
+    elif grid_type == 'longitudelatitude':
+        lon, lat = 'longitude', 'latitude'
+
+    else:
+        lon, lat = 'vlon', 'vlat'
+    return lon, lat
+
 def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_type:str=None, target='torch'):
     """
     :param ds: Input Xarray Dataset to read data from
@@ -24,17 +46,7 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
 
     :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
     """
-    if grid_type == 'cell':
-        lon, lat = 'clon', 'clat'
-
-    elif grid_type == 'vertex':
-        lon, lat = 'vlon', 'vlat'
-
-    elif grid_type == 'edge':
-        lon, lat = 'elon', 'elat'
-    
-    elif grid_type == 'lonlat':
-        lon, lat = 'lon', 'lat'
+    lon, lat = get_lon_lat_names(grid_type)
     
     if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
         zoom = get_zoom_from_npix(len(ds.cell))
@@ -48,7 +60,7 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
 
-        if grid_type=='lonlat':
+        if grid_type=='lonlat' or grid_type =='longitudelatitude':
             lons, lats = torch.meshgrid((lons.deg2rad(),lats.deg2rad()), indexing='xy')
             lons = lons.reshape(-1)
             lats = lats.reshape(-1)
@@ -70,6 +82,9 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
 def get_grid_type_from_var(ds:xr.Dataset, variable:str) -> dict:
     dims = ds[variable].dims
     spatial_dim = dims[-1]
+
+    if 'longitude' in spatial_dim or 'latitude' in spatial_dim:
+        return 'longitudelatitude'
 
     if 'lon' in spatial_dim or 'lat' in spatial_dim:
         return 'lonlat'
@@ -846,3 +861,52 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
         x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
 
     return {out_zoom: x}
+
+
+def remap_healpix_to_any(output, variables, indices, lat_dim, lon_dim):
+    output_remapped = {}
+    for var in variables:
+        s = 3
+        leading_dims = output[var].shape[:s]
+        trailing_dims = output[var].shape[s + 1:]
+
+        output_flat_shape = leading_dims + (lat_dim * lon_dim,) + trailing_dims
+        output_rem = torch.full(output_flat_shape, float('nan'), dtype=output[var].dtype,
+                                device=output[var].device)
+
+        map_shape = [1] * output[var].dim()
+        map_shape[s] = output[var].shape[s]
+        map_reshaped = indices.view(map_shape)
+
+        expanded_map = map_reshaped.expand(output[var].shape)
+        output_rem.scatter_(s, expanded_map, output[var])
+
+        output_grid_nan = output_rem.reshape(leading_dims + (lat_dim, lon_dim) + trailing_dims)
+
+        tensor_np = output_grid_nan.float().cpu().numpy()
+        interpolated_tensor_np = np.copy(tensor_np)
+
+        it = np.nditer(tensor_np[..., 0, 0, :], flags=['multi_index'], op_flags=['readonly'])
+
+        while not it.finished:
+            idx = it.multi_index
+            grid_2d = tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]]
+
+            if np.isnan(grid_2d).any():
+                y, x = np.mgrid[0:lat_dim, 0:lon_dim]
+                valid_mask = ~np.isnan(grid_2d)
+                if not np.any(valid_mask):
+                    it.iternext()
+                    continue
+
+                points = np.array([y[valid_mask], x[valid_mask]]).T
+                values = grid_2d[valid_mask]
+
+                interpolated_grid = griddata(points, values, (y, x), method='nearest')
+                interpolated_tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]] = interpolated_grid
+
+            it.iternext()
+
+        output_remapped[var] = torch.from_numpy(interpolated_tensor_np).to(output[var].device).reshape(
+            output_flat_shape)
+    return output_remapped
