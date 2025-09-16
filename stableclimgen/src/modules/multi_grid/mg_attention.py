@@ -18,7 +18,7 @@ from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_pat
     
 class FilmLoRA(nn.Module):
 
-    def __init__(self, in_features, out_features, n_heads=4, embedder=None, rank=32, scale_limit=0.25, use_lora=True, head_gate=False, layer_confs={}, layer_confs_emb={}):
+    def __init__(self, in_features, out_features, n_heads=4, embedder=None, rank=32, scale_limit=0.25, use_lora=True, head_gate=False, layer_confs={}, layer_confs_emb={}, scale_activation='tanh'):
         super().__init__()
         self.in_features = in_features
         self.use_lora = use_lora
@@ -47,16 +47,38 @@ class FilmLoRA(nn.Module):
         if head_gate:
             self.g = get_layer([e_dim], [n_heads], layer_confs=layer_confs_emb, bias=True)
 
+        if scale_activation == 'tanh':
+            self.affine_fcn = self.affine_tanh
+
+        elif scale_activation == 'sigmoid':
+            self.affine_fcn = self.affine_sigmoid
+        
+        else:
+            self.affine_fcn = self.affine
+
+    def affine(self, x, g, b):
+        return x * g + b
+    
+    def affine_sigmoid(self, x, g, b):
+        scale = self.scale_limit * torch.sigmoid(g)
+        shift = self.scale_limit * torch.sigmoid(b) - 0.5
+        
+        x = x * scale + shift
+        return x
+    
+    def affine_tanh(self, x, g, b):
+        scale = 1.0 + self.scale_limit * torch.tanh(g)
+        shift = self.scale_limit * torch.tanh(b)
+        
+        x = x * scale + shift
+        return x
 
     def forward(self, x, emb={}, sample_configs={}):
         
         e = self.embedder(emb, sample_configs)
         g, b = self.film(e, emb=emb, sample_configs=sample_configs).chunk(2, dim=-1)
 
-        scale = 1.0 + self.scale_limit * torch.tanh(g)
-        shift = self.scale_limit * torch.tanh(b)
-        
-        x = x * scale + shift
+        x = self.affine_fcn(x, g, b)
 
         delta = 0
         if self.use_lora:
@@ -316,7 +338,7 @@ class MGCompressionAttention(nn.Module):
         if len(qkv_emb_projection_settings)==0:
             self.emb_proj =  get_layer([embedder_q.get_out_channels], [features], layer_confs=layer_confs_emb)
         else:
-            self.emb_proj = FilmLoRA(features, features, embedder=embedder_q, **qkv_emb_projection_settings, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
+            self.emb_proj = FilmLoRA([embedder_q.get_out_channels], [features], embedder=embedder_q, **qkv_emb_projection_settings, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
 
         self.attention = SelfAttention(features,features, num_heads=features//n_head_channels,qkv_proj=False,cross=True)
 
