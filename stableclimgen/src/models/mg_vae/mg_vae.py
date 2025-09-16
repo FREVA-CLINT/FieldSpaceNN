@@ -78,7 +78,7 @@ class MG_VAE(MG_base_model):
 
         self.bottleneck_zooms = in_zooms
 
-        quant_out_feat = [2 * feat for feat in quant_config.out_features]
+        quant_out_feat = [(1+(self.distribution=="gaussian")) * feat for feat in quant_config.out_features]
         self.quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, in_features,
                                                           quant_out_feat, **kwargs)
         self.post_quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, quant_config.out_features,
@@ -157,7 +157,8 @@ class MG_VAE(MG_base_model):
                 layer_confs=layer_confs,
                 layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                 use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
-                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"))
+                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
+                residual=check_get([block_conf, {'residual': False}], "residual"))
 
         elif isinstance(block_conf, MGFieldAttentionConfig):
             layer_settings = block_conf.layer_settings

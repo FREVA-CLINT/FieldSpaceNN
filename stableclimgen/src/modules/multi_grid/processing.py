@@ -148,13 +148,15 @@ class MG_MultiBlock(nn.Module):
                  layer_confs_emb={},
                  use_mask = False,
                  type='',
-                 init_missing_zooms="zeros"
+                 init_missing_zooms="zeros",
+                 residual=False
                  ) -> None:
         super().__init__()
         
         self.out_features = [out_features]*len(out_zooms)
         self.out_zooms = out_zooms
         self.use_mask = use_mask
+        self.residual = residual
 
         self.init_missing_zooms = torch.zeros if init_missing_zooms == "zeros" else torch.randn
 
@@ -263,8 +265,15 @@ class MG_MultiBlock(nn.Module):
             if zoom not in x_zooms.keys():
                 x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, x_zooms[list(x_zooms.keys())[0]].device, **sample_configs[zoom])
                 x_zooms[zoom] = x
-    
+
+        if self.residual:
+            x_res_zooms = x_zooms.copy()
+
         x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
+
+        if self.residual:
+            for zoom in x_zooms.keys():
+                x_zooms[zoom] = x_zooms[zoom] + x_res_zooms[zoom]
 
         x_zooms_out = {}
         for zoom in self.out_zooms:

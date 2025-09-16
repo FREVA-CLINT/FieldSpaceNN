@@ -545,14 +545,14 @@ class NHConv(nn.Module):
         layer_confs_ = copy.deepcopy(layer_confs)
         layer_confs_['ranks_spatial'] = rank_spatial_dict
 
-        self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], out_features, layer_confs=layer_confs_)
+        self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], [1, out_features], layer_confs=layer_confs_)
 
-    
+
     def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
 
         x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
 
-        x = self.layer(x_nh, emb=emb, sample_configs=sample_configs)
+        x = self.layer(x_nh, emb=emb, sample_configs=sample_configs).squeeze(4)
 
         return x
     

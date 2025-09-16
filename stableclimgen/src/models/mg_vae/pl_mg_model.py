@@ -46,7 +46,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         loss, loss_dict, _, _, posterior_zooms = self.get_losses(source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', post=True)
 
         # Compute KL divergence loss
-        if self.kl_weight != 0.0:
+        if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
             kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
             loss = loss + self.kl_weight * kl_loss
@@ -71,7 +71,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
                                                                  emb=emb, prefix='val', post=True)
 
         # Compute KL divergence loss
-        if self.kl_weight != 0.0:
+        if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
             kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
             kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
             loss = loss + self.kl_weight * kl_loss
