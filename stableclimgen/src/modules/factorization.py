@@ -53,7 +53,7 @@ class SpatiaFacLayer(nn.Module):
                  rank_feat: int = None,
                  rank_channel: int = None,
                  skip_dims: List=None,
-                 rank_vars = None,
+                 rank_groups = None,
                  n_groups = 1,
                  bias = False,
                  sum_n_zooms: int=0,
@@ -80,7 +80,7 @@ class SpatiaFacLayer(nn.Module):
 
         self.sum_n_zooms = sum_n_zooms
         
-        factorize_vars = rank_vars is not None
+        factorize_vars = rank_groups is not None
 
         self.subscripts = {
             'factors': [],
@@ -94,8 +94,8 @@ class SpatiaFacLayer(nn.Module):
         # variables -----
         scale = 0
         if factorize_vars and n_groups>1:
-            self.factor_vars = get_fac_matrix(n_groups, rank_vars)
-            core_dims.append(rank_vars)
+            self.factor_vars = get_fac_matrix(n_groups, rank_groups)
+            core_dims.append(rank_groups)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core
 
@@ -250,6 +250,7 @@ class CPFacLayer(nn.Module):
                  in_features: List[int], 
                  out_features: List[int], 
                  rank: int,
+                 rank_groups: int = None,
                  n_groups: int = 1,
                  keys: List[str] = [],
                  contract_feats: bool = True,

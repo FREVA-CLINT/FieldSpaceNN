@@ -640,7 +640,7 @@ def get_sample_configs(sample_configs_zoom, zoom):
         return cfgs
 
 
-def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12, add=False):
+def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12):
     if zoom_h == zoom_target:
         return x_s
 
@@ -698,10 +698,7 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
             expand_shape[3] = 1
             patch_index_exp = patch_index.view(view_shape).expand(expand_shape)
 
-            if add:
-                x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter_add(3, patch_index_exp, x_s)
-            else:
-                x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter(3, patch_index_exp, x_s)
+            x_h_[:, :, t_range] = x_h_[:, :, t_range].scatter(3, patch_index_exp, x_s)
 
 
         x_h_ = x_h_.view(b, nv, nt, n, *c)

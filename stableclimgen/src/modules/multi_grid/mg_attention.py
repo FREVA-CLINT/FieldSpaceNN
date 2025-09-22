@@ -192,7 +192,7 @@ class MultiZoomSelfAttention(nn.Module):
 
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(out_features, out_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
-            self.gammas[str(q_zoom)] = nn.Parameter(torch.randn(in_features) * 1e-6, requires_grad=True)
+            self.gammas[str(q_zoom)] = nn.Parameter(torch.ones(in_features)*1e-6,requires_grad=True)
 
 
         self.omit_mask_zooms = []
@@ -302,10 +302,8 @@ class MultiZoomSelfAttention(nn.Module):
         Q = Q.split(n_p, dim=-2)
 
         for k, zoom in enumerate(self.q_layers.keys()):
-            
-            q = self.gammas[zoom] * Q[k]
 
-            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], q.reshape(*q.shape[:3],-1,q.shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], Q[k].reshape(*Q[k].shape[:3],-1,Q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
@@ -605,7 +603,7 @@ class MultiZoomFieldAttention(nn.Module):
 
         for k, zoom in enumerate(self.mlps.keys()):
             
-            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,self.shapes_q[int(zoom)][-1]), int(zoom), self.max_zoom, sample_configs, add=True)
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,self.shapes_q[int(zoom)][-1]), int(zoom), self.max_zoom, sample_configs)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
