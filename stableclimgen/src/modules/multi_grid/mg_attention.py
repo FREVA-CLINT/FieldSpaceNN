@@ -145,7 +145,7 @@ class MultiZoomSelfAttention(nn.Module):
         self.mlps = nn.ModuleDict()
        # self.res_layers_mlp = nn.ModuleDict()
         self.out_layers = nn.ModuleDict()
-       # self.gammas = nn.ParameterDict()
+        self.gammas = nn.ParameterDict()
 
         att_dim = out_features if att_dim is None else att_dim
         self.num_heads = num_heads if not n_head_channels else in_features // n_head_channels
@@ -192,6 +192,7 @@ class MultiZoomSelfAttention(nn.Module):
 
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(in_features, out_features, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(out_features, out_features, mult, dropout, layer_confs=layer_confs, gamma=True) 
+            self.gammas[str(q_zoom)] = nn.Parameter(torch.randn(in_features) * 1e-6, requires_grad=True)
 
 
         self.omit_mask_zooms = []
@@ -296,16 +297,15 @@ class MultiZoomSelfAttention(nn.Module):
 
         Q = safe_scaled_dot_product_attention(Q, K, V, mask=mask)
 
-#        if mask is not None:
- #           Q.masked_fill_(all_masked.expand_as(Q),0)
         Q = rearrange(Q, self.reverse, b=b, t=t, s=s, v=v)
 
         Q = Q.split(n_p, dim=-2)
 
-
         for k, zoom in enumerate(self.q_layers.keys()):
+            
+            q = self.gammas[zoom] * Q[k]
 
-            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], Q[k].reshape(*Q[k].shape[:3],-1,Q[k].shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
+            x_zooms[int(zoom)] = insert_matching_time_patch(x_zooms[int(zoom)], q.reshape(*q.shape[:3],-1,q.shape[-1]), int(zoom), self.max_zoom, sample_configs, add=True)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
