@@ -101,7 +101,7 @@ class SpatiaFacLayer(nn.Module):
 
             sub_c = next(core_letters)
             self.subscripts['core'] = sub_c
-            self.subscripts['factors'].append(['bv' + sub_c])
+            self.subscripts['factors'].append('bv' + sub_c)
 
         elif n_groups>1:
             core_dims.append(n_groups)

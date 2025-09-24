@@ -235,15 +235,18 @@ class MG_MultiBlock(nn.Module):
                         compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
                         compression_zooms=layer_settings.get("compression_zooms",{}),
                         qkv_emb_projection_settings=layer_settings.get("qkv_emb_projection_settings",{}),
-                        att_dim=layer_settings.get('att_dim', None),
-                        with_nh= layer_settings.get("with_nh",True),
-                        var_att= layer_settings.get("var_att",False),
-                        common_kv = layer_settings.get("common_kv",False),
-                        common_q = layer_settings.get("common_q",False),
+                        att_dim = layer_settings.get('att_dim', None),
+                        with_nh = layer_settings.get("with_nh",True),
+                        var_att = layer_settings.get("var_att",False),
                         embedders=embedders,
+                        common_affine = layer_settings.get('common_affine', True),
+                        lora = layer_settings.get('lora', False),
+                        head_gate = layer_settings.get('head_gate', False),
+                        head_gate_scale_limit = layer_settings.get('head_gate_scale_limit', 1.),
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb
                         )
+
 
 
         self.block = block

@@ -42,7 +42,8 @@ class BaseDataset(Dataset):
                  deterministic=False,
                  output_binary_mask=False,
                  output_differences=True,
-                 dropout_zooms=None
+                 dropout_zooms=None,
+                 apply_diff = True
                  ):
         
         super(BaseDataset, self).__init__()
@@ -59,6 +60,7 @@ class BaseDataset(Dataset):
         self.output_differences = output_differences
         self.output_binary_mask = output_binary_mask
         self.mask_zooms = mask_zooms
+        self.apply_diff = apply_diff
 
         self.variables = [v['variables'] for v in self.data_dict['variables'].values()]
         self.var_groups = [g for g in self.data_dict['variables'].keys()]
@@ -400,9 +402,12 @@ class BaseDataset(Dataset):
         for zoom in self.sampling_zooms.keys():
             patch_index_zooms[zoom] = torch.tensor(self.index_map[zoom][index][-1])
 
-
-        data_source = apply_zoom_diff(source_zooms, self.sampling_zooms)
-        data_target = apply_zoom_diff(target_zooms, self.sampling_zooms)
+        if self.apply_diff:
+            data_source = apply_zoom_diff(source_zooms, self.sampling_zooms)
+            data_target = apply_zoom_diff(target_zooms, self.sampling_zooms)
+        else:
+            data_source = source_zooms
+            data_target = target_zooms
 
         for zoom in data_source.keys():
             if mask_mapping_zooms[zoom].dtype == torch.float:
