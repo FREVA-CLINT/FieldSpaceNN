@@ -18,9 +18,10 @@ class BatchReshapeAllocator:
         # Use the default collate function to create the initial batch.
         # This will stack the tensors from __getitem__ along a new dimension.
         # The shape will be (batch_size, n, C, H, W).
-        data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data = default_collate(batch)
 
         if self.dataset.sampling_zooms_collate is not None:
+            data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data = default_collate(batch)
+
             # spatial collate
             n_patch = None
             for zoom in data_target_zooms.keys():
@@ -73,7 +74,10 @@ class BatchReshapeAllocator:
                                                                  n_patch=n_patch, n_steps=n_steps)
             if n_patch is not None:
                 embed_data["GroupEmbedder"] = embed_data["GroupEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
-        return data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data
+
+            return data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data
+        else:
+            return default_collate(batch)
 
 
 class DataModule(LightningDataModule):
