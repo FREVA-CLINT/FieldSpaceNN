@@ -19,7 +19,7 @@ class BatchReshapeAllocator:
         # This will stack the tensors from __getitem__ along a new dimension.
         # The shape will be (batch_size, n, C, H, W).
 
-        if self.dataset.sampling_zooms_collate is not None:
+        if hasattr(self.dataset, "sampling_zooms_collate") and self.dataset.sampling_zooms_collate is not None:
             data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data = default_collate(batch)
 
             # spatial collate
