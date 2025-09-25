@@ -73,8 +73,8 @@ class MG_VAE(MG_base_model):
 
         if sample_gamma:
             self.gammas = nn.ParameterDict()
-            for zoom in self.bottleneck_zooms:
-                self.gammas[str(zoom)] = nn.Parameter(torch.ones(in_features[-1]) * 1e-6, requires_grad=True)
+            for i, zoom in enumerate(self.bottleneck_zooms):
+                self.gammas[str(zoom)] = nn.Parameter(torch.ones(quant_config.out_features[i]) * 1e-6, requires_grad=True)
         else:
             self.gammas = None
 
