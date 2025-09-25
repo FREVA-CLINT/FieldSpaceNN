@@ -160,8 +160,6 @@ class MG_MultiBlock(nn.Module):
 
         self.init_missing_zooms = torch.zeros if init_missing_zooms == "zeros" else torch.randn
 
-        self.blocks = nn.ModuleDict()
-
         if isinstance(in_features, (List,ListConfig)) and len(set(in_features)) > 1:
             raise ValueError("features of levels should be the same.")
         elif isinstance(in_features, (int)):
@@ -199,7 +197,8 @@ class MG_MultiBlock(nn.Module):
         att_zoom = min([layer_settings.get("att_zoom",att_zoom), att_zoom])
         grid_layer = grid_layers[str(att_zoom)]
 
-        
+        new_zooms = [out_zoom for out_zoom in out_zooms if out_zoom not in in_zooms]
+
         if type=='field_att':
             block = MultiZoomFieldAttention(grid_layer,
                                 in_features,
@@ -228,6 +227,7 @@ class MG_MultiBlock(nn.Module):
                         out_features,
                         q_zooms,
                         kv_zooms,
+                        new_zooms=new_zooms,
                         mult = layer_settings.get("mlp_mult",1),
                         num_heads = layer_settings.get("num_heads",1),
                         n_head_channels = layer_settings.get("n_head_channels",None),
@@ -264,10 +264,10 @@ class MG_MultiBlock(nn.Module):
 
     def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
 
-        for zoom in self.out_zooms:
-            if zoom not in x_zooms.keys():
-                x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, x_zooms[list(x_zooms.keys())[0]].device, **sample_configs[zoom])
-                x_zooms[zoom] = x
+       # for zoom in self.out_zooms:
+       #     if zoom not in x_zooms.keys():
+        #        x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, x_zooms[list(x_zooms.keys())[0]].device, **sample_configs[zoom])
+        #        x_zooms[zoom] = x
 
         if self.residual:
             x_res_zooms = x_zooms.copy()

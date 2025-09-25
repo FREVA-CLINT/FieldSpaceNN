@@ -11,7 +11,7 @@ from ..mg_transformer.mg_transformer import DiffDecoder
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
     MGCoordinateEmbeddingConfig, MGFieldAttentionConfig
-from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embedding, MFieldLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embeddings, MFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
 from ...modules.vae.quantization import Quantization
 from ...utils.helpers import check_get
@@ -50,15 +50,7 @@ class MG_VAE(MG_base_model):
         self.distribution = distribution
 
         if len(mg_emb_confs)>0:
-            self.mg_emeddings = nn.ParameterDict()
-
-            for zoom, features, n_groups, init_method in zip(mg_emb_confs['zooms'],mg_emb_confs['features'],mg_emb_confs["n_groups"],mg_emb_confs['init_methods']):
-            
-                self.mg_emeddings[str(zoom)] = get_mg_embedding(
-                    self.grid_layers[str(zoom)],
-                    features,
-                    n_groups,
-                    init_mode=init_method)
+            self.mg_emeddings = get_mg_embeddings(mg_emb_confs, self.grid_layers)
         else:
             self.mg_emeddings = None
 

@@ -18,6 +18,35 @@ class IdentityLayer(nn.Module):
     def forward(self, x, **kwargs):
         return x
 
+class EmbIdLayer(nn.Module):
+    def __init__(self,
+                 out_features,
+                 embedder,
+                 layer_confs_emb: dict={},
+                 spatial_dim_count=1
+                ) -> None: 
+         
+        super().__init__()
+
+        self.embedder = embedder
+        self.spatial_dim_count = spatial_dim_count
+
+        if isinstance(out_features, list):
+            out_features_ = out_features[-1]
+        else:
+            out_features_ = out_features
+        
+        self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
+
+    def forward(self, emb, sample_configs={}):
+        
+        emb_ = self.embedder(emb, sample_configs)
+        shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
+
+        shift = shift.view(*shift.shape[:3], -1, shift.shape[-1])
+
+        return shift
+
 class LinEmbLayer(nn.Module):
     def __init__(self,
                  in_features,

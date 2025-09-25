@@ -7,7 +7,7 @@ import torch.nn as nn
 from torch import ModuleDict
 
 from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
-from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch
+from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch,RelativeCoordinateManager
 from ...utils.helpers import expand_tensor
 from ..base import get_layer,IdentityLayer,MLP_fac
 
@@ -96,6 +96,43 @@ class CoordinateEmbedder(BaseEmbedder):
         return coord_emb
     
 
+class Embedding_interpolator(nn.Module):
+    def __init__(self,  
+                grid_layer_in:GridLayer, 
+                grid_layer_out: GridLayer):
+    
+        super().__init__()
+
+        self.with_nh = grid_layer_in.zoom<grid_layer_out.zoom
+        self.grid_layer = grid_layer_in
+        self.rcm = RelativeCoordinateManager(grid_layer_in,
+                        grid_layer_out,
+                        nh_in=self.with_nh,
+                        ref='in' if self.with_nh else 'out',
+                        precompute=True,
+                        coord_system='polar')
+
+        # could add a relative position bias here
+
+    def forward(self, e, sample_configs={}, **kwargs):
+
+        rel_dists = self.rcm(sample_configs=sample_configs)[0]
+
+        if self.with_nh:
+            mask = get_nh_idx_of_patch(self.grid_layer.adjc, **sample_configs, return_local=False)[1]
+            rel_dists = rel_dists + (mask.unsqueeze(dim=-2) * 1e10)
+
+       # else:
+       #     rel_dists = rel_dists
+        
+        weights = 1/(1e-20+rel_dists)
+        
+        weights = weights/weights.sum(dim=-1,keepdim=True)
+        
+        e_inter = (e.view(*e.shape[:3],-1,1,weights.shape[-1],e.shape[-1])*weights.unsqueeze(dim=-1).unsqueeze(dim=1).unsqueeze(dim=2)).sum(dim=-2)
+
+        return e_inter.view(*e_inter.shape[:3],-1,e_inter.shape[-1])
+
 class MGEmbedder(BaseEmbedder):
     """
     A neural network module to embed longitude and latitude coordinates.
@@ -104,7 +141,7 @@ class MGEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, layer_confs={}, **kwargs) -> None:
+    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, gamma=True, spatial_interpolation=True,layer_confs={}, **kwargs) -> None:
 
         in_channels = mg_emb_confs['features'][0]
 
@@ -127,6 +164,8 @@ class MGEmbedder(BaseEmbedder):
         self.get_emb_fcns = {}
 
         self.grid_layers = nn.ModuleDict()
+        self.gammas = nn.ParameterDict()
+
         for zoom_proc_idx in zooms_proc_idx:
             zoom_proc = emb_zooms[zoom_proc_idx]
             self.grid_layers[str(zoom_proc)] = grid_layers[str(zoom_proc)]
@@ -139,22 +178,39 @@ class MGEmbedder(BaseEmbedder):
             else:
                 get_emb_fcn = self.get_embeddings_from_var_idx
 
+
             if zoom == zoom_proc:
-                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels != embed_dim else IdentityLayer()
+                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels!=embed_dim else IdentityLayer()
                 get_patch_fcn = self.get_patch
+
+    #            if gamma and len(zooms_proc_idx)>0:
+    #               self.gammas[str(zoom_proc)] = nn.Parameter(torch.ones(embed_dim)*1e-6, requires_grad=True)
 
             elif zoom > zoom_proc:
-                nh_dim = grid_layers[str(zoom_proc)].adjc.shape[-1]
-                layer = get_layer([nh_dim, *[1]*int((zoom -zoom_proc) -1) , in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
                 get_patch_fcn = self.get_patch_nh
 
+                if spatial_interpolation:
+                    layer = Embedding_interpolator(grid_layers[str(zoom_proc)],
+                                grid_layers[str(zoom)])
+                else:
+                    nh_dim = grid_layers[str(zoom_proc)].adjc.shape[-1]
+                    layer = get_layer([nh_dim, *[1]*int((zoom -zoom_proc) -1) , in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
+
             else:
-                layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [*[1]*int((zoom_proc-zoom)), embed_dim], layer_confs=layer_confs)
                 get_patch_fcn = self.get_patch
+
+                if spatial_interpolation:
+                    layer = Embedding_interpolator(grid_layers[str(zoom_proc)],
+                                grid_layers[str(zoom)])
+                else:
+                    layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [*[1]*int((zoom_proc-zoom)), embed_dim], layer_confs=layer_confs)
+
+    
 
             self.get_emb_fcns[zoom_proc] = get_emb_fcn
             self.get_patch_fcns[zoom_proc] = get_patch_fcn
             self.layers[str(zoom_proc)] = layer
+
 
 
     def get_embeddings(self, mg_emb, var_indices):
@@ -200,10 +256,12 @@ class MGEmbedder(BaseEmbedder):
             embs = self.layers[str(zoom_proc)](embs, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
 
             embs = embs.reshape(*embs.shape[:3],-1,embs.shape[-1])
-
+            
             embs_out = embs_out + embs
 
         return embs_out
+
+
 
 class DensityEmbedder(BaseEmbedder):
     """

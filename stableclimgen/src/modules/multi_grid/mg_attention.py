@@ -6,7 +6,7 @@ import math
 import torch
 import torch.nn as nn
 
-from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac
+from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac, EmbIdLayer
 from ..factorization import get_cp_tensor,get_cp_tensors, get_cp_equation
 
 from ...modules.grids.grid_layer import GridLayer
@@ -79,8 +79,9 @@ class MultiZoomSelfAttention(nn.Module):
                  att_zoom: int,
                  in_features: int,
                  out_features: int,
-                 q_zooms: int,
-                 kv_zooms: int,
+                 q_zooms: List,
+                 kv_zooms: List,
+                 new_zooms: List=[],
                  mult: int=1,
                  dropout: float=0.0,
                  num_heads: int=1,
@@ -149,10 +150,13 @@ class MultiZoomSelfAttention(nn.Module):
         for in_zoom in embedders.keys():
             if int(in_zoom) in q_zooms+kv_zooms: 
                 #if len(qkv_emb_projection_settings)==0:
-                if common_affine:
-                    self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                if int(in_zoom) in new_zooms:
+                    self.qkv_affine_layers[in_zoom] = EmbIdLayer([att_dim], embedder=embedders[in_zoom], layer_confs_emb=layer_confs_emb)
                 else:
-                    self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                    if common_affine:
+                        self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                    else:
+                        self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, layer_norm=True, layer_confs_emb=layer_confs_emb) 
  
 
         self.res_layers = nn.ModuleDict()
@@ -249,8 +253,10 @@ class MultiZoomSelfAttention(nn.Module):
         x_zooms_emb = {}
 
         for zoom, emb_layer in self.qkv_affine_layers.items():
-            x_zooms_emb[int(zoom)] = emb_layer(x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
-
+            if int(zoom) in x_zooms.keys():
+                x_zooms_emb[int(zoom)] = emb_layer(x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
+            else:
+                x_zooms_emb[int(zoom)] = emb_layer(emb, sample_configs=sample_configs[int(zoom)])
         
         for zoom, q_layer in self.q_projection_layers.items():
 
@@ -326,7 +332,10 @@ class MultiZoomSelfAttention(nn.Module):
             
             q = self.out_attention_layers[zoom](Q[k].reshape(*Q[k].shape[:3],-1,Q[k].shape[-1]), emb=emb, sample_configs=sample_configs)
 
-            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q, int(zoom), self.max_zoom, sample_configs)
+            if int(zoom) in x_zooms.keys():
+                x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q, int(zoom), self.max_zoom, sample_configs)
+            else:
+                x_zooms[int(zoom)] = q * self.gammas[zoom]
         
             x_mlp = self.mlp_affine_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 

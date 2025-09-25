@@ -23,7 +23,7 @@ def get_nh_idx_of_patch(adjc, patch_index=0, zoom_patch_sample=-1, return_local=
         adjc_mask = (adjc_patch < index_range[0].view(-1,1,1)) | (adjc_patch >= index_range[1].view(-1,1,1))
     else:
         adjc_patch = adjc.clone().unsqueeze(dim=0)
-        adjc_mask = (adjc_patch < 0) | (adjc_patch >= adjc_patch.shape[0])
+        adjc_mask = (adjc_patch < 0) | (adjc_patch >= adjc_patch.shape[1])
 
     
     ind = torch.where(adjc_mask)
@@ -252,16 +252,25 @@ class GridLayer(nn.Module):
             return get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=return_local)
 
 
-    def get_coordinates(self, patch_index=None, zoom_patch_sample=None, **kwargs):
+    def get_coordinates(self, patch_index=None, zoom_patch_sample=None, with_nh=False, **kwargs):
         
-        if patch_index is not None:
+        if patch_index is not None and not with_nh:
             indices = get_idx_of_patch(
                                     self.adjc,
                                     patch_index, 
                                     zoom_patch_sample,
                                     return_local=False)
+        elif patch_index is not None and with_nh:
+            indices = get_nh_idx_of_patch(
+                                    self.adjc,
+                                    patch_index, 
+                                    zoom_patch_sample,
+                                    return_local=False)[0]
+        elif with_nh:
+            indices = self.adjc.unsqueeze(dim=0)
+
         else:
-            indices = self.adjc[:,0].unsqueeze(dim=0)
+            indices = self.adjc[:,[0]].unsqueeze(dim=0)
 
         return self.coordinates[indices]
 
@@ -410,14 +419,6 @@ class RelativeCoordinateManager(nn.Module):
                                     base=self.coord_system, periodic_fov=None,
                                     rotate_coords=self.rotate_coord_system
                                 )
-
-        if self.seq_lvl == -1:
-            coordinates_rel = (coordinates_rel[0].view(b, seq_dim_out_total,  -1, n_nh_in),
-                            coordinates_rel[1].view(b, seq_dim_out_total,  -1, n_nh_in))
-            #pass
-        else:
-            coordinates_rel = (coordinates_rel[0].view(b, -1, 1),
-                            coordinates_rel[1].view(b, -1, 1))
         
         return coordinates_rel
     
@@ -435,12 +436,14 @@ class RelativeCoordinateManager(nn.Module):
             coordinates_rel = self.coordinates_rel
 
             c_shape = coordinates_rel.shape
-            
-            if sample_configs is not None:
-                indices = self.grid_layer_out.get_idx_of_patch(**sample_configs)
+                        
+            if self.ref == 'in':
+                indices = self.grid_layer_in.get_idx_of_patch(**sample_configs)
                 coordinates_rel = coordinates_rel[0,indices].view(*indices.shape[:2],*c_shape[2:])
             else:
-                coordinates_rel = coordinates_rel.view(1,-1,*c_shape[2:])
+                indices = self.grid_layer_out.get_idx_of_patch(**sample_configs)
+                coordinates_rel = coordinates_rel[0,indices].view(*indices.shape[:2],*c_shape[2:])
+      
 
             coordinates_rel = (coordinates_rel[...,0],
                            coordinates_rel[...,1])
@@ -702,3 +705,20 @@ class Interpolator(nn.Module):
             density = None
 
         return x, density
+    
+"""
+class Interpolator_downscale(nn.Module):
+
+    def __init__(self,  
+                grid_layers, 
+                input_zoom: int=0, 
+                target_zoom: int=0, 
+                precompute = True,
+                nh_inter=3,
+                power=2,
+                cutoff_dist_zoom=None,
+                cutoff_dist=None,
+                input_coords=None,
+                input_dists=None
+                ) -> None
+"""

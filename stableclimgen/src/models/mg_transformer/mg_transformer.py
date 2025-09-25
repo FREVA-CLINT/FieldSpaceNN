@@ -8,7 +8,7 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embedding,DecodeLayer,MFieldLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
 from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig
 
@@ -47,15 +47,7 @@ class MG_Transformer(MG_base_model):
         self.predict_var = predict_var
 
         if len(mg_emb_confs)>0:
-            self.mg_emeddings = nn.ParameterDict()
-
-            for zoom, features, n_groups, init_method in zip(mg_emb_confs['zooms'],mg_emb_confs['features'],mg_emb_confs["n_groups"],mg_emb_confs['init_methods']):
-            
-                self.mg_emeddings[str(zoom)] = get_mg_embedding(
-                    self.grid_layers[str(zoom)],
-                    features,
-                    n_groups,
-                    init_mode=init_method)
+            self.mg_emeddings = get_mg_embeddings(mg_emb_confs, self.grid_layers)
         else:
             self.mg_emeddings = None
 
