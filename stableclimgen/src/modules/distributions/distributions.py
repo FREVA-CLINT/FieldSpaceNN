@@ -35,7 +35,7 @@ class DiracDistribution(AbstractDistribution):
         """
         self.mean = mean
 
-    def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, noise: torch.Tensor = None, gamma: torch.Tensor = None) -> torch.Tensor:
         """
         Return the fixed mean as a sample.
         """
@@ -75,7 +75,7 @@ class DiagonalGaussianDistribution(AbstractDistribution):
         if self.deterministic:
             self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
-    def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, noise: torch.Tensor = None, gamma: torch.Tensor = None) -> torch.Tensor:
         """
         Generate a sample from the distribution.
 
@@ -85,8 +85,11 @@ class DiagonalGaussianDistribution(AbstractDistribution):
         if noise is None:
             noise = torch.randn(self.mean.shape)
 
+        if not torch.is_tensor(gamma):
+            gamma = torch.ones_like(self.mean)
+
         # Sample using reparameterization trick
-        x = self.mean + self.std * noise.to(device=self.parameters.device)
+        x = self.mean + self.std * noise.to(device=self.parameters.device) * gamma.to(device=self.parameters.device)
         return x
 
     def kl(self, other: 'DiagonalGaussianDistribution' = None) -> torch.Tensor:

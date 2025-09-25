@@ -29,6 +29,7 @@ class MG_VAE(MG_base_model):
                  mg_emb_confs: dict={},
                  distribution: str = "gaussian",
                  decoder_settings = {},
+                 sample_gamma = False,
                  **kwargs
                  ) -> None: 
         
@@ -77,6 +78,13 @@ class MG_VAE(MG_base_model):
             in_zooms = block.out_zooms
 
         self.bottleneck_zooms = in_zooms
+
+        if sample_gamma:
+            self.gammas = nn.ParameterDict()
+            for zoom in self.bottleneck_zooms:
+                self.gammas[str(zoom)] = nn.Parameter(torch.ones(in_features[-1]) * 1e-6, requires_grad=True)
+        else:
+            self.gammas = None
 
         quant_out_feat = [(1+(self.distribution=="gaussian")) * feat for feat in quant_config.out_features]
         self.quantize = self.create_encoder_decoder_block(quant_config, self.bottleneck_zooms, in_features,
@@ -222,7 +230,7 @@ class MG_VAE(MG_base_model):
 
         posterior_zooms = self.vae_encode(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        z_zooms = {int(zoom): x.sample() for zoom, x in posterior_zooms.items()}
+        z_zooms = {int(zoom): x.sample(gamma=self.gammas[str(zoom)] if self.gammas else None) for zoom, x in posterior_zooms.items()}
 
         dec = self.vae_decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
         dec = self.decoder(dec, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
