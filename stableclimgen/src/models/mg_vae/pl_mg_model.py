@@ -21,7 +21,8 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
                  weight_decay=0,
                  decomposed_loss = True,
                  n_samples=1, max_batchsize=-1,
-                 mode="encode_decode"):
+                 mode="encode_decode",
+                 diff_input=True):
         
         super().__init__(
             model,  # Main VAE model
@@ -34,6 +35,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
         self.mode = mode
+        self.diff_input = diff_input
 
     
     def training_step(self, batch, batch_idx):
@@ -43,7 +45,12 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         emb = self.prepare_emb(emb, sample_configs)
 
-        loss, loss_dict, _, _, posterior_zooms = self.get_losses(source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', post=True)
+        if not self.diff_input:
+            new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max(target.keys()))
+        else:
+            new_source = source
+
+        loss, loss_dict, _, _, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', post=True)
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
@@ -67,7 +74,12 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         emb = self.prepare_emb(emb, sample_configs)
 
-        loss, loss_dict, output, output_comp, posterior_zooms = self.get_losses(source, target, sample_configs, mask_zooms=mask,
+        if not self.diff_input:
+            new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max_zoom)
+        else:
+            new_source = source
+
+        loss, loss_dict, output, output_comp, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask,
                                                                  emb=emb, prefix='val', post=True)
 
         # Compute KL divergence loss
@@ -82,8 +94,8 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
 
         if batch_idx == 0 and rank_zero_only.rank==0:
             if output_comp is None:
-                output_comp, _ = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
-                                   out_zoom=max_zoom)
+                output_comp, _ = self(new_source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
+                                      out_zoom=max_zoom)
 
             self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch, output_comp=output_comp)
 
