@@ -100,7 +100,8 @@ class MultiZoomSelfAttention(nn.Module):
                  head_gate = False,
                  head_gate_scale_limit = 1.,
                  layer_confs: Dict = {},
-                 layer_confs_emb= {}) -> None: 
+                 layer_confs_emb= {},
+                 composed_residual=False) -> None:
         
         super().__init__()
         
@@ -163,7 +164,6 @@ class MultiZoomSelfAttention(nn.Module):
                         self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, layer_norm=True, layer_confs_emb=layer_confs_emb) 
  
 
-        self.res_layers = nn.ModuleDict()
         for q_zoom in q_zooms:
             in_f = out_f = []
 
@@ -237,6 +237,10 @@ class MultiZoomSelfAttention(nn.Module):
         self.grid_layer = grid_layer
         self.max_zoom = int(max(list(embedders.keys())))
 
+        self.composed_residual = composed_residual
+        if composed_residual:
+            self.composed_residual_layer = ComposedResidual(att_dim, embedders, kv_zooms, q_zooms, layer_confs)
+
         assert out_features==in_features,"Module does not support differen in and out features"
 
         if not var_att:
@@ -259,6 +263,9 @@ class MultiZoomSelfAttention(nn.Module):
         mask = []
         n_p = []
         x_zooms_emb = {}
+
+        if self.composed_residual:
+            x_zooms_res = self.composed_residual_layer(x_zooms, emb, sample_configs)
 
         for zoom, emb_layer in self.qkv_affine_layers.items():
             if int(zoom) in x_zooms.keys():
@@ -343,10 +350,13 @@ class MultiZoomSelfAttention(nn.Module):
             
             q = self.out_attention_layers[zoom](Q[k].reshape(*Q[k].shape[:3],-1,Q[k].shape[-1]), emb=emb, sample_configs=sample_configs)
 
-            if int(zoom) in x_zooms.keys():
-                x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q, int(zoom), self.max_zoom, sample_configs)
+            if self.composed_residual:
+                x_zooms[int(zoom)] = x_zooms_res[int(zoom)] + q * self.gammas[zoom]
             else:
-                x_zooms[int(zoom)] = q * self.gammas[zoom]
+                if int(zoom) in x_zooms.keys():
+                    x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q, int(zoom), self.max_zoom, sample_configs)
+                else:
+                    x_zooms[int(zoom)] = q * self.gammas[zoom]
         
             x_mlp = self.mlp_affine_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
@@ -357,6 +367,35 @@ class MultiZoomSelfAttention(nn.Module):
 
         return x_zooms
 
+
+class ComposedResidual(nn.Module):
+    def __init__(self, features, embedders, in_zooms, out_zooms, layer_confs, *args, **kwargs):
+
+        super().__init__(*args, **kwargs)
+        self.lin_layers = nn.ModuleDict()
+        self.in_zooms = in_zooms
+        self.out_zooms = out_zooms
+
+        for out_zoom in out_zooms:
+            linear_layer = LinEmbLayer(features*len(in_zooms), features, layer_confs=layer_confs, embedder=embedders[str(out_zoom)])
+            self.lin_layers[str(out_zoom)] = linear_layer
+
+    def forward(self, x_zooms, emb=None, sample_configs={}):
+        x_res_zooms = {}
+        for out_zoom in self.out_zooms:
+            res_tensor = []
+            for in_zoom in x_zooms.keys():
+                b, v, t, N, f = x_zooms[in_zoom].shape
+                if in_zoom > out_zoom:
+                    res = x_zooms[in_zoom].view(b, v, t, -1, 4**(in_zoom-out_zoom), f).mean(-2)
+                elif in_zoom < out_zoom:
+                    res = x_zooms[in_zoom].repeat(1, 1, 1, 4**(out_zoom - in_zoom), 1)
+                else:
+                    res = x_zooms[in_zoom]
+                res_tensor.append(res)
+            res_tensor = torch.cat(res_tensor, dim=-1)
+            x_res_zooms[out_zoom] = self.lin_layers[str(out_zoom)](res_tensor, emb=emb, sample_configs=sample_configs[int(out_zoom)])
+        return x_res_zooms
 
 class MGCompressionAttention(nn.Module):
   
