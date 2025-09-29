@@ -122,7 +122,7 @@ class MG_VAE(MG_base_model):
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
                 layer_confs=layer_confs,
-                zooms=check_get([block_conf, kwargs, {"zooms": None}], "zooms"),
+                out_zooms=check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
                 layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                 use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
 

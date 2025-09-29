@@ -51,6 +51,7 @@ class LinEmbLayer(nn.Module):
     def __init__(self,
                  in_features,
                  out_features,
+                 bias_only = False,
                  layer_norm = False,
                  identity_if_equal = False,
                  layer_confs: dict={},
@@ -60,6 +61,8 @@ class LinEmbLayer(nn.Module):
                 ) -> None: 
          
         super().__init__()
+
+        in_features = out_features if in_features is None else in_features
 
         self.embedder = embedder
         self.spatial_dim_count = spatial_dim_count
@@ -75,9 +78,12 @@ class LinEmbLayer(nn.Module):
             in_features_ = in_features
 
         if self.embedder is not None:
-            self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
-         
-            self.forward_fcn = self.forward_w_embedding
+            if bias_only:
+                self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [1, out_features_], layer_confs=layer_confs_emb)
+                self.forward_fcn = self.forward_w_shift
+            else:
+                self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
+                self.forward_fcn = self.forward_w_shift_scale
         else:
             self.forward_fcn = self.forward_wo_embedding
 
@@ -91,7 +97,24 @@ class LinEmbLayer(nn.Module):
         else:
             self.layer = get_layer(in_features_, out_features_, layer_confs=layer_confs)
 
-    def forward_w_embedding(self, x, emb=None, sample_configs={}):
+    def forward_w_shift(self, x, emb=None, sample_configs={}):
+        
+        if x is None:
+            x = 0
+        else:
+            x = self.forward_wo_embedding(x, emb=emb, sample_configs=sample_configs)
+
+        emb_ = self.embedder(emb, sample_configs)
+        shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
+
+        n = shift.shape[-1]
+        shift = shift.view(*shift.shape[:3], -1, n)
+
+        x = x + shift
+
+        return x
+    
+    def forward_w_shift_scale(self, x, emb=None, sample_configs={}):
         
         x = self.forward_wo_embedding(x, emb=emb, sample_configs=sample_configs)
 

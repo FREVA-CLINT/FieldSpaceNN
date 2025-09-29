@@ -23,7 +23,7 @@ class MG_SingleBlock(nn.Module):
                  layer_settings: Dict,
                  in_features_list: List[int],
                  out_features_list: List[int],
-                 zooms = None,
+                 out_zooms = None,
                  layer_confs = {},
                  layer_confs_emb={},
                  use_mask=False
@@ -31,31 +31,34 @@ class MG_SingleBlock(nn.Module):
       
         super().__init__()
 
+        out_zooms = in_zooms if out_zooms is None else out_zooms 
+
         self.in_zooms = in_zooms
         self.out_features = out_features_list
-        self.out_zooms = in_zooms
+        self.out_zooms = out_zooms
 
         self.blocks = nn.ModuleDict()
         self.use_mask = use_mask
 
-        zooms = in_zooms if zooms is None else zooms 
 
-        if not (len(zooms) == len(out_features_list)):
+        if not (len(out_zooms) == len(out_features_list)):
             warnings.warn(
-                f"Length mismatch: zooms({len(zooms)}), "
+                f"Length mismatch: zooms({len(out_zooms)}), "
                 f"in_features_list({len(in_features_list)}), "
                 f"out_features_list({len(out_features_list)})"
             )
 
         k = 0
-        for zoom, in_features, out_features in zip(zooms, in_features_list, out_features_list):
+        for k, (zoom, out_features) in enumerate(zip(out_zooms, out_features_list)):
             
+            in_features = in_features_list[k] if k <= len(in_features_list) -1 else None
+
             type = layer_settings.get('type','TransformerBlock')
 
             embedders = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers,zoom=zoom)
 
             if type == 'TransformerBlock':
-                seq_length = layer_settings.get('seq_lengths', [10]*len(in_zooms))[k]
+                seq_length = layer_settings.get('seq_lengths', [10]*len(out_zooms))[k]
                 zoom_block = max([zoom - seq_length,0])
                 
                 block = TransformerBlock(
@@ -100,11 +103,17 @@ class MG_SingleBlock(nn.Module):
             elif type == 'linear':
                 ranks_spatial = layer_settings.get('ranks_spatial', [])
 
+                bias_only = zoom not in in_zooms
+
+                if layer_settings.get('identity_if_equal', False):
+                    pass
+
                 block = LinEmbLayer(
                     in_features,
                     out_features, 
+                    bias_only = bias_only,
                     layer_norm=False, 
-                    identity_if_equal=False,
+                    identity_if_equal=layer_settings.get('identity_if_equal', False),
                     embedder=embedders,
                     layer_confs=layer_confs,
                     layer_confs_emb=layer_confs_emb)
@@ -124,7 +133,7 @@ class MG_SingleBlock(nn.Module):
     def forward(self, x_zooms: Dict, sample_configs={},  emb=None, mask_zooms={}, **kwargs):
 
         for zoom, block in self.blocks.items():
-            x = x_zooms[int(zoom)]
+            x = x_zooms[int(zoom)] if int(zoom) in x_zooms.keys() else None
 
             x = block(x, emb=emb, sample_configs=sample_configs[int(zoom)], mask=mask_zooms[int(zoom)] if self.use_mask else None)
 
@@ -242,6 +251,7 @@ class MG_MultiBlock(nn.Module):
                         embedders=embedders,
                         common_affine = layer_settings.get('common_affine', True),
                         lora = layer_settings.get('lora', False),
+                        film = layer_settings.get('film', False),
                         head_gate = layer_settings.get('head_gate', False),
                         head_gate_scale_limit = layer_settings.get('head_gate_scale_limit', 1.),
                         composed_residual = layer_settings.get('composed_residual', False),
