@@ -43,7 +43,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         source, target, patch_index_zooms, mask, emb = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        emb = self.prepare_emb(emb, sample_configs)
+      #  emb = self.prepare_emb(emb, sample_configs)
 
         if not self.diff_input:
             new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max(target.keys()))
@@ -72,7 +72,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         max_zoom = max(target.keys())
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        emb = self.prepare_emb(emb, sample_configs)
+      #  emb = self.prepare_emb(emb, sample_configs)
 
         if not self.diff_input:
             new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max_zoom)
@@ -109,7 +109,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
     def _predict_step(self, source, target, patch_index_zooms, mask, emb):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        emb = self.prepare_emb(emb, sample_configs)
+       # emb = self.prepare_emb(emb, sample_configs)
 
         max_zoom = max(target.keys())
 

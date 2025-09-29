@@ -36,7 +36,7 @@ def merge_sampling_dicts(sample_configs, patch_index_zooms):
     for z in range(max(sample_configs.keys())):
         if z not in sample_configs.keys():
             sample_configs[z] = sample_configs[min(sample_configs.keys())]
-            
+
     for key, value in patch_index_zooms.items():
         if key in sample_configs:
             sample_configs[key]['patch_index'] = value
@@ -340,7 +340,7 @@ class LightningMGModel(pl.LightningModule):
    #         if param.grad is None:
    #             print(f"Parameter with no gradient: {name}")
 
-
-    def prepare_emb(self, emb=None, sample_configs={}):
-        emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["GroupEmbedder"])
-        return emb
+    #TODO fix
+   # def prepare_emb(self, emb=None, sample_configs={}):
+   #     emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["GroupEmbedder"])
+   #     return emb
