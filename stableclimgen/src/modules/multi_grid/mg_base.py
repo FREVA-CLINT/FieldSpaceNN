@@ -98,7 +98,7 @@ def get_mg_embedding(
         wavelength=1,
         wavelength_min=None,
         wavelength_max=None,
-        random_rotation=True,
+        random_rotation=False,
         amplitude=1):
     
     coords = grid_layer_emb.get_coordinates()       
