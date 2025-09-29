@@ -244,6 +244,7 @@ class MG_MultiBlock(nn.Module):
                         lora = layer_settings.get('lora', False),
                         head_gate = layer_settings.get('head_gate', False),
                         head_gate_scale_limit = layer_settings.get('head_gate_scale_limit', 1.),
+                        composed_residual = layer_settings.get('composed_residual', False),
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb
                         )
