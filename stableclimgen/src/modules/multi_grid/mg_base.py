@@ -110,7 +110,7 @@ def get_mg_embedding(
     
     elif 'fourier_sphere' == init_mode:
         fourier_layer = RandomFourierLayer(in_features=2, n_neurons=features, wave_length=2*wavelength*torch.pi)
-        embs = amplitude*fourier_layer(coords)
+        embs = amplitude*fourier_layer(coords).squeeze(dim=-2)
 
     elif 'fourier' == init_mode:
 

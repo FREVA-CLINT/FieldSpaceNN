@@ -97,8 +97,9 @@ class MultiZoomSelfAttention(nn.Module):
                  var_att = False,
                  common_affine = True,
                  lora = False,
+                 film = False,
                  head_gate = False,
-                 head_gate_scale_limit = 1.,
+                 head_gate_scale_limit = .5,
                  layer_confs: Dict = {},
                  layer_confs_emb= {},
                  composed_residual=False) -> None:
@@ -159,7 +160,7 @@ class MultiZoomSelfAttention(nn.Module):
                     self.qkv_affine_layers[in_zoom] = IdentityLayer()
                 else:
                     if common_affine:
-                        self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom], layer_norm=True, layer_confs_emb=layer_confs_emb) 
+                        self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[in_zoom] if film else None, layer_norm=True, layer_confs_emb=layer_confs_emb) 
                     else:
                         self.qkv_affine_layers[in_zoom] = LinEmbLayer(in_features, [att_dim], layer_confs=layer_confs, identity_if_equal=True, layer_norm=True, layer_confs_emb=layer_confs_emb) 
  
@@ -174,7 +175,7 @@ class MultiZoomSelfAttention(nn.Module):
             out_features_q = [*out_f, att_dim]
 
             if not common_affine:
-                self.q_affine_layers[str(q_zoom)] = LinEmbLayer(att_dim, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_confs_emb=layer_confs_emb) 
+                self.q_affine_layers[str(q_zoom)] = LinEmbLayer(att_dim, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)] if film else None, layer_confs_emb=layer_confs_emb) 
             else:
                 self.q_affine_layers[str(q_zoom)] = IdentityLayer() 
 
@@ -194,7 +195,7 @@ class MultiZoomSelfAttention(nn.Module):
 
             self.gammas[str(q_zoom)] = nn.Parameter(torch.ones(in_features)*1e-6,requires_grad=True)
 
-            self.mlp_affine_layers[str(q_zoom)] = LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
+            self.mlp_affine_layers[str(q_zoom)] = LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)] if film else None, layer_norm=True, layer_confs_emb=layer_confs_emb)
 
             self.out_attention_layers[str(q_zoom)] = get_layer(att_dim, in_features, layer_confs=layer_confs) if att_dim!=in_features else IdentityLayer()
 
@@ -220,7 +221,7 @@ class MultiZoomSelfAttention(nn.Module):
             layer_confs_ = layer_confs
 
             if not common_affine:
-                self.kv_affine_layers[str(kv_zoom)] = LinEmbLayer(att_dim, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(kv_zoom)], layer_confs_emb=layer_confs_emb) 
+                self.kv_affine_layers[str(kv_zoom)] = LinEmbLayer(att_dim, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(kv_zoom)] if film else None, layer_confs_emb=layer_confs_emb) 
             else:
                 self.kv_affine_layers[str(kv_zoom)] = IdentityLayer() 
 
