@@ -3,6 +3,7 @@ import math
 from scipy.special import sph_harm_y
 import string
 
+from einops import rearrange
 import torch
 import torch.nn as nn
 
@@ -646,8 +647,14 @@ class ResConv(nn.Module):
         grid_layer_out = grid_layer_in if grid_layer_out is None else grid_layer_out
 
         
-        self.norm1 = nn.LayerNorm(in_features)
-        self.norm2 = nn.LayerNorm(out_features)
+       # self.norm1 = nn.LayerNorm(in_features)
+       # self.norm2 = nn.LayerNorm(out_features)
+
+        self.norm1 = nn.GroupNorm(32, in_features)
+        self.norm2 = nn.GroupNorm(32, out_features)
+
+        self.pattern_norm = 'b v t s f -> (b v t) f s'
+        self.pattern_unnorm = '(b v t) f s -> b v t s f'   
 
         self.activation = nn.SiLU()
         
@@ -675,8 +682,12 @@ class ResConv(nn.Module):
         sample_configs_out = sample_configs if len(sample_configs_out)==0 else sample_configs_out
 
         x_res = self.skip_layer(x)
+        
+        b, v, t, s, f = x.shape
 
+        x = rearrange(x, self.pattern_norm)
         x = self.norm1(x)
+        x = rearrange(x, self.pattern_unnorm, b=b, v=v, t=t, s=s, f=f)
 
         x = self.activation(x)
 
@@ -686,7 +697,11 @@ class ResConv(nn.Module):
 
         x = self.emb_layer(x, emb=emb, sample_configs=sample_configs_out)
 
+        b, v, t, s, f = x.shape
+
+        x = rearrange(x, self.pattern_norm)
         x = self.norm2(x)
+        x = rearrange(x, self.pattern_unnorm, b=b, v=v, t=t, s=s, f=f)
 
         x = self.activation(x)
 
