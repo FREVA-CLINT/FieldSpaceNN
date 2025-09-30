@@ -10,8 +10,8 @@ from .confs import MGQuantConfig
 from ..mg_transformer.mg_transformer import DiffDecoder
 from ...modules.embedding.embedder import get_embedder
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
-    MGCoordinateEmbeddingConfig, MGFieldAttentionConfig
-from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embeddings, MFieldLayer
+    MGCoordinateEmbeddingConfig, MGFieldAttentionConfig, Conv_EncoderDecoderConfig
+from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embeddings, MFieldLayer, Conv_EncoderDecoder
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
 from ...modules.vae.quantization import Quantization
 from ...utils.helpers import check_get
@@ -178,7 +178,24 @@ class MG_VAE(MG_base_model):
                 use_mask=check_get([block_conf, kwargs, {"use_mask": False}], "use_mask"),
                 type='field_att',
                 init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"))
+        
+        elif isinstance(block_conf, Conv_EncoderDecoderConfig):
+            layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
+
+            block = Conv_EncoderDecoder(
+                self.grid_layers,
+                in_zooms,
+                zoom_map = block_conf.zoom_map,
+                in_features_list = in_features,
+                out_zooms = check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
+                aggregation=check_get([block_conf, kwargs, {"aggregation": "sum"}], "aggregation"),
+                use_skip_conv=check_get([block_conf, kwargs, {"use_skip_conv": False}], "use_skip_conv"),
+                layer_confs=layer_confs
+            )
+        
         return block
+
+
 
     def vae_encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
         emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])

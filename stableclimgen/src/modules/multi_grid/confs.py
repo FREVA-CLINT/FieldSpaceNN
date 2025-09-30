@@ -35,6 +35,19 @@ class MGDiffEncoderConfig(MGEncoderConfig):
     pass
 
 
+class Conv_EncoderDecoderConfig:
+    def __init__(self, 
+                 zoom_map: Dict[int,int],
+                 layer_settings: Dict={},
+                 **kwargs):
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            elif input != 'self':
+                setattr(self, input, value)
+
 class MGDecoderConfig:
     def __init__(self, 
                  out_zoom: int,

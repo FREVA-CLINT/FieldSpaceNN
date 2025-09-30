@@ -14,7 +14,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from ...modules.grids.grid_utils import decode_zooms
 
 from ...utils.visualization import healpix_plot_zooms_var
-from ...utils.losses import MSE_loss,GNLL_loss,NHVar_loss,NHTV_loss,NHInt_loss,L1_loss,NHTV_decay_loss
+from ...utils.losses import MSE_loss,GNLL_loss,NHVar_loss,NHTV_loss,NHInt_loss,L1_loss,NHTV_decay_loss,MSE_Hole_loss
 
 
 def check_empty(x):
@@ -111,7 +111,7 @@ class MGMultiLoss(nn.Module):
             # Level-specific losses
             if level_key in self.level_loss_fcns:
                 for loss_fcn in self.level_loss_fcns[level_key]:
-                    loss = loss_fcn['fcn'](out, tgt, mask=mask, sample_configs=sample_configs[level_key])
+                    loss = loss_fcn['fcn'](out, tgt, mask=mask[level_key], sample_configs=sample_configs[level_key])
                     name = f"{prefix}level{level_key}_{loss_fcn['fcn']._get_name()}"
                     loss_dict[name] = loss.item()
                     total_loss += loss_fcn['lambda'] * loss

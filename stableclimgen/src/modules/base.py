@@ -264,11 +264,11 @@ class LinearLayer(nn.Module):
 
 
     def forward(self, x, **kwargs):
-        x_dims = x.shape[:-len(self.in_features)]
+        x_dims = x.shape[:-(len(self.in_features) + 1)]
 
         x = x.view(*x_dims, -1, *self.in_features)
         x = self.layer(x)
-        x = x.view(*x_dims[:-1], -1, *self.out_shapes)
+        x = x.view(*x.shape[:3], -1, x.shape[-1])
 
         return x
 

@@ -13,7 +13,7 @@ from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
 from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention
-from .mg_base import NHConv, ResNHConv, FieldLayer#,get_weight_matrix,get_einsum_subscripts
+from .mg_base import Conv, ResConv, FieldLayer#,get_weight_matrix,get_einsum_subscripts
 
 class MG_SingleBlock(nn.Module):
   
@@ -78,26 +78,28 @@ class MG_SingleBlock(nn.Module):
                             layer_confs_emb=layer_confs_emb
                         )
                     
-            elif type == 'nh_conv':
+            elif type == 'conv':
                 ranks_spatial = layer_settings.get('ranks_spatial', [])
 
-                block = NHConv(
+                block = Conv(
                     grid_layers[str(zoom)],
                     in_features,
                     out_features,
                     ranks_spatial=ranks_spatial,
                     layer_confs=layer_confs
-                )
-            
-            elif type == 'res_nh_conv':
+                    )
+                
+            elif type == 'res_conv':
                 ranks_spatial = layer_settings.get('ranks_spatial', [])
 
-                block = ResNHConv(
+                block = ResConv(
                     grid_layers[str(zoom)],
                     in_features,
                     out_features,
                     ranks_spatial=ranks_spatial,
-                    layer_confs=layer_confs
+                    layer_confs=layer_confs,
+                    layer_confs_emb=layer_confs_emb,
+                    embedder=embedders
                 )
 
             elif type == 'linear':

@@ -521,15 +521,16 @@ class ProjLayer(nn.Module):
     def __init__(self,
                  in_features,
                  out_features,
-                 zoom_diff
+                 in_zoom,
+                 out_zoom=None
                 ) -> None: 
       
         super().__init__() 
 
-        self.zoom_diff = zoom_diff
+        self.zoom_diff = 0 if out_zoom is None else out_zoom - in_zoom
         self.lin_layer = nn.Linear(in_features, out_features, bias=True) if in_features!= out_features else nn.Identity()
 
-    def get_sum_residual(self, x, mask=None):
+    def get_sum_residual(self, x, mask=None, **kwargs):
         if self.zoom_diff < 0:
             x = x.view(*x.shape[:3], -1, 4**(-1*self.zoom_diff), x.shape[-1])
 
@@ -546,7 +547,10 @@ class ProjLayer(nn.Module):
             #x = x.unsqueeze(dim=-2).repeat_interleave(4**(self.zoom_diff), dim=-2)
             x = x.unsqueeze(dim=-2).expand(-1,-1,-1,-1,4**(self.zoom_diff),-1)
             x = x.reshape(*x.shape[:3],-1,x.shape[-1])
-            
+        
+        else:
+            x = x
+
         return x
 
     def forward(self, x, mask=None, **kwargs):
@@ -583,7 +587,7 @@ class IWD_ProjLayer(nn.Module):
         return x
     
 
-class NHConv(nn.Module):
+class Conv(nn.Module):
     """
     Rearranges input to make the variable dimension centric before applying a function, then reverses it.
 
@@ -591,7 +595,7 @@ class NHConv(nn.Module):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, grid_layer: GridLayer, in_features, out_features, ranks_spatial=[], layer_confs={}):
+    def __init__(self, grid_layer: GridLayer, in_features, out_features, ranks_spatial=[], layer_confs={}, out_zoom=None):
         super().__init__()
         self.grid_layer = grid_layer
         
@@ -604,19 +608,31 @@ class NHConv(nn.Module):
         layer_confs_ = copy.deepcopy(layer_confs)
         layer_confs_['ranks_spatial'] = rank_spatial_dict
 
-        self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], [1, out_features], layer_confs=layer_confs_)
+        if out_zoom is None or out_zoom==self.grid_layer.in_zoom:
+            self.layer = get_layer([self.grid_layer.adjc.shape[1], in_features], [1, out_features], layer_confs=layer_confs_)
+            self.with_nh = True
 
+        elif out_zoom > self.grid_layer.in_zoom:
+            self.layer = get_layer([1, in_features], [4**(out_zoom - self.grid_layer.in_zoom), out_features], layer_confs=layer_confs_)
+            self.with_nh = False
+
+        else:
+            self.layer = get_layer([4**(self.grid_layer.in_zoom - out_zoom), in_features], [1, out_features], layer_confs=layer_confs_)
+            self.with_nh = False
 
     def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
+        
+        if self.with_nh:
+            x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
+            x = self.layer(x_nh, emb=emb, sample_configs=sample_configs)
+        else:
+            x = self.layer(x, emb=emb, sample_configs=sample_configs)
 
-        x_nh, mask_nh = self.grid_layer.get_nh(x, **sample_configs, with_nh=True, mask=mask)
-
-        x = self.layer(x_nh, emb=emb, sample_configs=sample_configs).squeeze(4)
+        x = x.view(*x.shape[:3],-1,x.shape[-1])
 
         return x
     
-
-class ResNHConv(nn.Module):
+class ResConv(nn.Module):
     """
     Rearranges input to make the variable dimension centric before applying a function, then reverses it.
 
@@ -624,41 +640,181 @@ class ResNHConv(nn.Module):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, grid_layer: GridLayer, in_features, out_features, ranks_spatial=[], layer_confs={}):
+    def __init__(self, grid_layer_in: GridLayer, in_features, out_features, grid_layer_out=None, ranks_spatial=[], layer_confs={}, layer_confs_emb={}, embedder: EmbedderSequential=None, use_skip_conv=False):
         super().__init__()
 
-        self.layer1 = NHConv(grid_layer, in_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
-        self.layer2 = NHConv(grid_layer, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
+        grid_layer_out = grid_layer_in if grid_layer_out is None else grid_layer_out
+
         
         self.norm1 = nn.LayerNorm(in_features)
         self.norm2 = nn.LayerNorm(out_features)
 
         self.activation = nn.SiLU()
         
-        self.skip_layer = LinEmbLayer(in_features, out_features, identity_if_equal=True)
+        if (grid_layer_out is None) or (grid_layer_out.zoom == grid_layer_in.zoom) or not use_skip_conv:
+            self.skip_layer = ProjLayer(in_features, out_features, in_zoom=grid_layer_in.zoom, out_zoom=grid_layer_out.zoom)
+            self.updownconv = ProjLayer(in_features, in_features, in_zoom=grid_layer_in.zoom, out_zoom=grid_layer_out.zoom)
+            in_features_conv = in_features
+        else:
+            self.skip_layer = Conv(grid_layer_out, in_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs, out_zoom=grid_layer_out.zoom)
+            self.updownconv = Conv(grid_layer_out, in_features, in_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs, out_zoom=grid_layer_out.zoom)
+            in_features_conv = in_features
+
+        if embedder is not None:
+            self.emb_layer = LinEmbLayer(in_features, out_features, identity_if_equal=True, embedder=embedder, layer_confs_emb=layer_confs_emb)
+        else:
+            self.emb_layer = IdentityLayer()
     
-    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
+        self.conv1 = Conv(grid_layer_out, in_features_conv, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
+        self.conv2 = Conv(grid_layer_out, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)  
+
+    def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, 
+                sample_configs: Dict={}, sample_configs_in: Dict = {}, sample_configs_out: Dict={}) -> torch.Tensor:
         
+        sample_configs_in = sample_configs if len(sample_configs_in)==0 else sample_configs_in
+        sample_configs_out = sample_configs if len(sample_configs_out)==0 else sample_configs_out
+
         x_res = self.skip_layer(x)
 
         x = self.norm1(x)
 
         x = self.activation(x)
 
-        x = self.layer1(x, emb=emb, sample_configs=sample_configs)
+        x = self.updownconv(x, emb=emb, sample_configs=sample_configs_in)
+
+        x = self.conv1(x, emb=emb, sample_configs=sample_configs_out)
+
+        x = self.emb_layer(x, emb=emb, sample_configs=sample_configs_out)
 
         x = self.norm2(x)
 
         x = self.activation(x)
 
-        x = self.layer2(x, emb=emb, sample_configs=sample_configs)
+        x = self.conv2(x, emb=emb, sample_configs=sample_configs_out)
 
         x = x + x_res
 
         return x
     
 
-class UpDownLayer(nn.Module):
+class Conv_EncoderDecoder(nn.Module):
+  
+    def __init__(self,
+                 grid_layers,
+                 in_zooms,
+                 zoom_map: Dict[int,List],
+                 in_features_list,
+                 out_zooms: List=None,
+                 aggregation = 'sum',
+                 layer_confs: dict={},
+                 use_skip_conv=False
+                ) -> None: 
+      
+        super().__init__()
+
+        self.aggregation = aggregation
+        self.out_zooms = in_zooms if out_zooms is None else out_zooms
+        self.out_features = in_features_list
+        
+        feature_dict = dict(zip(in_zooms, in_features_list))
+
+        self.out_features = []
+        for out_zoom in self.out_zooms:
+            if out_zoom in feature_dict.keys():
+                features_out = feature_dict[out_zoom] if aggregation == 'sum' else 2*feature_dict[out_zoom]
+            else:
+                features_out = feature_dict[zoom_map[out_zoom][0]]
+            self.out_features.append(features_out)
+        
+        self.out_layers = nn.ModuleDict()
+        for out_zoom, input_zooms in zoom_map.items():
+            for in_zoom in input_zooms:
+                
+                in_layers = nn.ModuleDict()
+                out_features = feature_dict[out_zoom] if out_zoom in feature_dict.keys() else feature_dict[in_zoom]
+
+                if in_zoom == out_zoom:
+                    layer = IdentityLayer()
+                else:
+                    layer = ResConv(grid_layers[str(in_zoom)],
+                                    feature_dict[in_zoom],
+                                    out_features,
+                                    grid_layer_out=grid_layers[str(out_zoom)],
+                                    layer_confs=layer_confs,
+                                    use_skip_conv=use_skip_conv)
+
+                in_layers[str(in_zoom)] = layer
+
+            self.out_layers[str(out_zoom)] = in_layers
+
+        self.aggregation = aggregation
+
+
+    def forward(self, x_zooms, emb=None, sample_configs={},**kwargs):
+        
+        for out_zoom, layers in self.out_layers.items():
+            x_out = [] if int(out_zoom) not in x_zooms.keys() else [x_zooms[int(out_zoom)]]
+
+            for in_zoom, layer in layers.items():  
+                x = layer(x_zooms[int(in_zoom)], emb=emb, sample_configs_in=sample_configs[int(in_zoom)], sample_configs_out=sample_configs[int(out_zoom)])
+                x_out.append(x)
+
+            if self.aggregation == 'sum':
+                x = torch.stack(x_out, dim=-1).sum(dim=-1)
+        
+            else:
+                x = torch.cat(x_out, dim=-1)
+
+            x_zooms[int(out_zoom)] = x
+
+        x_zooms_out = {}
+        for out_zoom in self.out_zooms:
+            x_zooms_out[out_zoom] = x_zooms[out_zoom]
+
+        return x_zooms_out
+
+class UpDownConvLayer(nn.Module):
+   
+
+    def __init__(self, in_features, out_features, in_zoom = None, out_zoom = None, with_nh=False, layer_confs={}):
+        super().__init__()
+
+        
+        self.out_features = out_features
+
+        if not isinstance(out_features, list):
+            out_features = [out_features]
+
+        if not isinstance(in_features, list):
+            in_features = [in_features]
+        
+        if with_nh: 
+            in_features = [self.grid_layer.adjc.shape[1]] + in_features
+
+        if out_zoom is not None:
+            zoom_diff = out_zoom - in_zoom
+
+            if zoom_diff > 0:
+                out_features = [4]*zoom_diff + out_features 
+
+            elif zoom_diff < 0:
+                in_features = [4] * abs(zoom_diff) + in_features
+
+        self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
+
+        self.proj_layer = ProjLayer(in_features, out_features, zoom_diff=out_zoom-in_zoom)
+    
+
+    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
+        
+                
+        x = self.layer(x, emb=emb, sample_configs=sample_configs)
+
+        x = x.reshape(*x.shape[:3],-1,self.out_features)
+
+        return x
+
+class UpDownNHConvLayer(nn.Module):
    
 
     def __init__(self, grid_layer: GridLayer, in_features, out_features, in_zoom = None, out_zoom = None, with_nh=False, layer_confs={}):

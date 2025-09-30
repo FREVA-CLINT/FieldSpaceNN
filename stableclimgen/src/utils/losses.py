@@ -23,6 +23,16 @@ class MSE_loss(nn.Module):
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
     
+class MSE_masked_loss(nn.Module):
+    def __init__(self, grid_layer=None):
+        super().__init__()
+
+        self.loss_fcn = torch.nn.MSELoss() 
+
+    def forward(self, output, target, mask, **kwargs):
+        loss = self.loss_fcn(output, target.view(output.shape))
+        return loss
+    
 class NHInt_loss(nn.Module):
     def __init__(self, grid_layer):
         super().__init__()
@@ -73,11 +83,15 @@ class MSE_Hole_loss(nn.Module):
 
         self.loss_fcn = torch.nn.MSELoss() 
 
-    def forward(self, output, target, mask=None, sample_configs={},**kwargs):
+    def forward(self, output, target, mask=None, **kwargs):
         if mask is not None:
-            mask = mask.view(output.shape)
-            target = target.view(output.shape)[mask]
-            output = output[mask]
+            if mask.dtype != torch.bool:
+                target = target.view(output.shape) * mask
+                output = output * mask
+            else:
+                mask = mask.view(output.shape)
+                target = target.view(output.shape)[mask.expand_as(output)]
+                output = output[mask.expand_as(output)]
         loss = self.loss_fcn(output, target.view(output.shape))
         return loss
 
