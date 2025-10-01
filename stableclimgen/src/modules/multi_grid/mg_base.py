@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 import copy
-from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac
+from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac, LayerNorm
 from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
 from ...modules.embedding.embedding_layers import RandomFourierLayer
 from ...modules.embedding.embedder import EmbedderSequential,MGEmbedder
@@ -646,12 +646,8 @@ class ResConv(nn.Module):
 
         grid_layer_out = grid_layer_in if grid_layer_out is None else grid_layer_out
 
-        
-       # self.norm1 = nn.LayerNorm(in_features)
-       # self.norm2 = nn.LayerNorm(out_features)
-
-        self.norm1 = nn.GroupNorm(32, in_features)
-        self.norm2 = nn.GroupNorm(32, out_features)
+        self.norm1 = LayerNorm(in_features, n_groups=layer_confs.get("n_groups",1))
+        self.norm2 = LayerNorm(out_features, n_groups=layer_confs.get("n_groups",1))
 
         self.pattern_norm = 'b v t s f -> (b v t) f s'
         self.pattern_unnorm = '(b v t) f s -> b v t s f'   
@@ -685,9 +681,7 @@ class ResConv(nn.Module):
         
         b, v, t, s, f = x.shape
 
-        x = rearrange(x, self.pattern_norm)
-        x = self.norm1(x)
-        x = rearrange(x, self.pattern_unnorm, b=b, v=v, t=t, s=s, f=f)
+        x = self.norm1(x, emb=emb)
 
         x = self.activation(x)
 
@@ -699,9 +693,7 @@ class ResConv(nn.Module):
 
         b, v, t, s, f = x.shape
 
-        x = rearrange(x, self.pattern_norm)
-        x = self.norm2(x)
-        x = rearrange(x, self.pattern_unnorm, b=b, v=v, t=t, s=s, f=f)
+        x = self.norm2(x, emb=emb)
 
         x = self.activation(x)
 
@@ -787,133 +779,3 @@ class Conv_EncoderDecoder(nn.Module):
             x_zooms_out[out_zoom] = x_zooms[out_zoom]
 
         return x_zooms_out
-
-class UpDownConvLayer(nn.Module):
-   
-
-    def __init__(self, in_features, out_features, in_zoom = None, out_zoom = None, with_nh=False, layer_confs={}):
-        super().__init__()
-
-        
-        self.out_features = out_features
-
-        if not isinstance(out_features, list):
-            out_features = [out_features]
-
-        if not isinstance(in_features, list):
-            in_features = [in_features]
-        
-        if with_nh: 
-            in_features = [self.grid_layer.adjc.shape[1]] + in_features
-
-        if out_zoom is not None:
-            zoom_diff = out_zoom - in_zoom
-
-            if zoom_diff > 0:
-                out_features = [4]*zoom_diff + out_features 
-
-            elif zoom_diff < 0:
-                in_features = [4] * abs(zoom_diff) + in_features
-
-        self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
-
-        self.proj_layer = ProjLayer(in_features, out_features, zoom_diff=out_zoom-in_zoom)
-    
-
-    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
-        
-                
-        x = self.layer(x, emb=emb, sample_configs=sample_configs)
-
-        x = x.reshape(*x.shape[:3],-1,self.out_features)
-
-        return x
-
-class UpDownNHConvLayer(nn.Module):
-   
-
-    def __init__(self, grid_layer: GridLayer, in_features, out_features, in_zoom = None, out_zoom = None, with_nh=False, layer_confs={}):
-        super().__init__()
-
-        in_zoom = grid_layer.zoom if in_zoom is None else in_zoom
-
-        self.grid_layer = grid_layer
-
-        self.out_features = out_features
-
-        if not isinstance(out_features, list):
-            out_features = [out_features]
-
-        if not isinstance(in_features, list):
-            in_features = [in_features]
-        
-        if with_nh: 
-            in_features = [self.grid_layer.adjc.shape[1]] + in_features
-
-        if out_zoom is not None:
-            zoom_diff = out_zoom - in_zoom
-
-            if zoom_diff > 0:
-                out_features = [4]*zoom_diff + out_features 
-
-            elif zoom_diff < 0:
-                in_features = [4] * abs(zoom_diff) + in_features
-
-        self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
-    
-
-    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
-        
-        x, mask_nh = self.grid_layer.get_nh(x, **sample_configs)
-        
-        x = self.layer(x, emb=emb, sample_configs=sample_configs)
-
-        x = x.reshape(*x.shape[:3],-1,self.out_features)
-
-        return x
-
-
-class Res_UpDownLayer(nn.Module):
-   
-
-    def __init__(self, grid_layers: Dict, in_features, out_features, in_zoom, out_zoom, with_nh=False, ranks_spatial=[], layer_confs={}, interpolator_confs={}):
-        super().__init__()
-
-        self.grid_layer_in = grid_layers[str(in_zoom)]
-        self.grid_layer_out = grid_layers[str(out_zoom)]
-
-        self.up_down_conv = UpDownLayer(self.grid_layer_in, in_features, out_features, out_zoom=out_zoom, with_nh=True, layer_confs=layer_confs)
-        self.nh_conv = NHConv(self.grid_layer_out, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)
-
-        self.norm1 = nn.LayerNorm(in_features)
-        self.norm2 = nn.LayerNorm(out_features)
-
-        self.out_features = out_features
-
-        self.activation = nn.SiLU()
-        
-        self.skip_layer = LinEmbLayer(in_features, out_features, identity_if_equal=True)
-
-        #self.proj_layer = IWD_ProjLayer(grid_layers, in_zoom, out_zoom, interpolator_confs=interpolator_confs)
-        self.proj_layer = ProjLayer(1, 1, zoom_diff=out_zoom-in_zoom)
-
-
-    def forward(self, x: torch.Tensor, emb= None, sample_configs: Dict = {}) -> torch.Tensor:
-
-        x_res = self.skip_layer(self.proj_layer(x, sample_configs=sample_configs), emb=emb, sample_configs=sample_configs)
-        
-        x = self.norm1(x)
-
-        x = self.activation(x)
-
-        x = self.up_down_conv(x, emb=emb, sample_configs=sample_configs)
-
-        x = self.norm2(x)
-
-        x = self.activation(x)
-
-        x = self.nh_conv(x, emb=emb, sample_configs=sample_configs)
-
-        x = x + x_res
-
-        return x

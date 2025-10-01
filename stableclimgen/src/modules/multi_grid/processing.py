@@ -105,20 +105,16 @@ class MG_SingleBlock(nn.Module):
             elif type == 'linear':
                 ranks_spatial = layer_settings.get('ranks_spatial', [])
 
-                bias_only = zoom not in in_zooms
-
-                if layer_settings.get('identity_if_equal', False):
-                    pass
-
                 block = LinEmbLayer(
                     in_features,
                     out_features, 
-                    bias_only = bias_only,
                     layer_norm=False, 
                     identity_if_equal=layer_settings.get('identity_if_equal', False),
                     embedder=embedders,
                     layer_confs=layer_confs,
                     layer_confs_emb=layer_confs_emb)
+                
+                self.out_features[k] = block.out_features
                 
             elif type == 'mlp':
 
