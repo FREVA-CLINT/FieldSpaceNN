@@ -34,6 +34,7 @@ class BaseDataset(Dataset):
                  lazy_load=True,
                  mask_zooms=None,
                  p_dropout=0,
+                 p_dropout_all=0,
                  p_drop_groups=0,
                  n_drop_groups=-1,
                  random_p = False,
@@ -42,7 +43,6 @@ class BaseDataset(Dataset):
                  deterministic=False,
                  output_binary_mask=False,
                  output_differences=True,
-                 dropout_zooms=None,
                  apply_diff = True
                  ):
         
@@ -61,6 +61,10 @@ class BaseDataset(Dataset):
         self.output_binary_mask = output_binary_mask
         self.mask_zooms = mask_zooms
         self.apply_diff = apply_diff
+        
+        self.p_dropout_all_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()]))
+        self.p_dropout_all = p_dropout_all
+
 
         self.variables = [v['variables'] for v in self.data_dict['variables'].values()]
         self.var_groups = [g for g in self.data_dict['variables'].keys()]
@@ -264,6 +268,7 @@ class BaseDataset(Dataset):
 
         if drop_mask_ is not None:
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
+        
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask.expand_as(data_g), binarize_mask=self.output_binary_mask)
 
         if post_map:
@@ -327,8 +332,9 @@ class BaseDataset(Dataset):
             variables_sample += self.variables[k]
             group_ids_sample += [k]*len(self.variables[k])
 
+        hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
 
-        if self.single_source and self.p_dropout > 0:
+        if self.single_source and hr_dopout:
             nt = 1 + self.max_time_step_future + self.max_time_step_past
             drop_mask_input = self.get_mask(len(group_indices), 
                                             nt, 
@@ -408,6 +414,16 @@ class BaseDataset(Dataset):
         else:
             data_source = source_zooms
             data_target = target_zooms
+
+        if not hr_dopout and self.p_dropout_all > 0:
+            drop = False
+            for zoom in sorted(self.p_dropout_all_zooms.keys()):
+                if self.p_dropout_all_zooms[zoom] > 0 and not drop:
+                    drop = torch.rand(1) < self.p_dropout_all_zooms[zoom]
+                
+                if drop:
+                    mask_mapping_zooms[zoom] = torch.ones_like(mask_mapping_zooms[zoom], dtype=mask_mapping_zooms[zoom].dtype)
+                
 
         for zoom in data_source.keys():
             if mask_mapping_zooms[zoom].dtype == torch.float:
