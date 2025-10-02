@@ -1,8 +1,7 @@
 _target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
-decomposed_loss: true
 lambda_loss_dict:
-  MSE_loss: 1
-  NH_loss: 0
+  zooms:
+    MSE_loss: 1
 weight_decay: 0
 lr_groups:
   default:
@@ -17,40 +16,36 @@ model:
   mgrids: ${mgrids}
   mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
   in_zooms: [3,4,6]
-  in_features: 2
-  out_features: 2
+  in_features: 1
+  out_features: 1
   lift_features: 1
   n_head_channels: 15
   learn_residual: false
-  with_global_gamma: false
   use_mask: true
   layer_confs_emb:
     n_groups: 1
+    aggregation: 'shift_scale'
   block_configs:
     "input":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [128,128,128]
-      zooms: [3,4,6]
+      out_zooms: [3,4,6]
       layer_settings:
         type: 'linear'
+        embed_confs:
+          embed_names: ['DensityEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
     "0":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [128,128,128]
       zooms: [3,4,6]
       layer_settings:
         type: "TransformerBlock"
-        blocks: ["t","mlp","vsnh","mlp"]
-        seq_lengths: [10,2]
+        blocks: ["s","mlp","vsnh","mlp"]
+        seq_lengths: [10,3,3]
         n_head_channels: 32
         mlp_mult: 2
-        embed_confs:
-          embed_names:
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-            - ["MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
     "8":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
       out_features: 128
@@ -61,13 +56,9 @@ model:
         common_kv: false
         n_head_channels: 32
         mlp_mult: 2
-        embed_confs:
-          embed_names: [ "MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
     "output":
       _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [2,2,2]
+      out_features: [1,1,1]
       zooms: [3,4,6]
       layer_settings:
         type: 'mlp'

@@ -180,7 +180,7 @@ class MGEmbedder(BaseEmbedder):
 
 
             if zoom == zoom_proc:
-                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs) if in_channels!=embed_dim else IdentityLayer()
+                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs)
                 get_patch_fcn = self.get_patch
 
     #            if gamma and len(zooms_proc_idx)>0:
@@ -281,7 +281,7 @@ class DensityEmbedder(BaseEmbedder):
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = RandomFourierLayer(in_features=self.in_channels, n_neurons=self.embed_dim, wave_length=wave_length, wave_length_2=wave_length_2)
-        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs,gamma=False) 
+        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs, gamma=False) 
     
     def forward(self, density_emb, **kwargs):
         density, var_indices = density_emb

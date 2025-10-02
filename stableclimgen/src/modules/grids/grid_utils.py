@@ -589,6 +589,7 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
     If mask is provided, performs masked averaging.
     """
     if in_zoom == out_zoom:
+        mask = mask.bool() if (binarize_mask and mask is not None) else mask
         return x, mask
 
     scale_factor = 4 ** abs(in_zoom - out_zoom)
@@ -621,7 +622,7 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
         x_zoom = x.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
         if mask is not None:
             mask_zoom = mask.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
-            mask_zoom = mask_zoom * 1. if not binarize_mask else mask
+            mask_zoom = mask_zoom * 1. if not binarize_mask else mask.bool()
             return x_zoom, mask_zoom
         else:
             return x_zoom, None

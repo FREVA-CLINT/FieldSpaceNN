@@ -117,13 +117,12 @@ class MG_VAE(MG_base_model):
 
             block = MG_SingleBlock(
                 self.grid_layers,
-                in_zooms,
+                check_get([block_conf, kwargs, {"out_zooms": in_zooms}], "out_zooms"),
                 layer_settings,
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
                 layer_confs=layer_confs,
-                out_zooms=check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
-                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
                 use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
 
         elif isinstance(block_conf, MGConservativeConfig):

@@ -1,10 +1,13 @@
 dataset:
   _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
   norm_dict: ${run_dir}/input/norm_dict.json
-  p_dropout: 0.7
+  p_dropout: 0.98
+  random_p: false
+  p_dropout_all: 0.4
   n_sample_groups: -1
   output_binary_mask: false
-  sampling_zooms:
+  apply_diff: true
+  sampling_zooms_collate:
     3:
       n_past_ts: 0
       n_future_ts: 0
@@ -17,19 +20,25 @@ dataset:
       n_past_ts: 0
       n_future_ts: 0
       zoom_patch_sample: -1
-  dropout_zooms:
+  sampling_zooms:
     3:
-      p_dropout: 0.5
-      p_drop_full: 0
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 0
     4:
-      p_dropout: 0.5
-      p_drop_full: 0
-    5:
-      p_dropout: 0.5
-      p_drop_full: 0
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 0.5
+    6:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 1.0
 
 datamodule:
   _target_: stableclimgen.src.utils.pl_data_module.DataModule
-  batch_size: 1
+  batch_size: 2
   num_workers: 0
   use_costum_ddp_sampler: false
