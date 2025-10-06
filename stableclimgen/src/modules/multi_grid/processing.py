@@ -19,10 +19,11 @@ class MG_SingleBlock(nn.Module):
   
     def __init__(self,
                  grid_layers: Dict[str,GridLayer],
-                 zooms: List[int],
+                 in_zooms: List[int],
                  layer_settings: Dict,
                  in_features_list: List[int],
                  out_features_list: List[int],
+                 zooms: List[int]=None,
                  layer_confs = {},
                  layer_confs_emb={},
                  use_mask=False,
@@ -31,9 +32,10 @@ class MG_SingleBlock(nn.Module):
       
         super().__init__()
 
+        zooms = in_zooms if zooms is None else zooms
 
         self.out_features = out_features_list
-        self.out_zooms = zooms
+        self.out_zooms = in_zooms
 
         self.blocks = nn.ModuleDict()
         self.use_mask = use_mask
