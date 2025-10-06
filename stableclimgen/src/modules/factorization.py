@@ -94,7 +94,7 @@ class SpatiaFacLayer(nn.Module):
         # variables -----
         scale = 0
         if factorize_vars and n_groups>1:
-            self.factor_vars = get_fac_matrix(n_groups, rank_groups)
+            self.factor_vars = get_fac_matrix(n_groups, rank_groups, init_ones=True)
             core_dims.append(rank_groups)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core
@@ -169,8 +169,8 @@ class SpatiaFacLayer(nn.Module):
                 core_dims.append(rank)
                 core_dims.append(rank)
 
-                self.factors.append(get_fac_matrix(f_in, rank, init_ones=False))
-                self.factors.append(get_fac_matrix(f_out, rank, init_ones=False))
+                self.factors.append(get_fac_matrix(f_in, rank, init_ones=True))
+                self.factors.append(get_fac_matrix(f_out, rank, init_ones=True))
 
         self.in_features = in_features
         self.out_features = out_features

@@ -237,6 +237,7 @@ class MG_MultiBlock(nn.Module):
                         n_head_channels = layer_settings.get("n_head_channels",None),
                         compression_dims_q =layer_settings.get("compression_dims_q",{}),
                         compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
+                        pooling_dims_kv=layer_settings.get("pooling_dims_kv",{}),
                         compression_zooms=layer_settings.get("compression_zooms",{}),
                         cross_mode=layer_settings.get("cross_mode",False),
                         qkv_emb_projection_settings=layer_settings.get("qkv_emb_projection_settings",{}),

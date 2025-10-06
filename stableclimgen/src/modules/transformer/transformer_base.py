@@ -334,7 +334,7 @@ class TransformerBlock(EmbedBlock):
                 #qkv_proj = len(layer_confs) == 0
                 q_layer = get_layer(att_dim, [att_dim], layer_confs=layer_confs) 
                 kv_layer = get_layer([1, att_dim], [2, att_dim], layer_confs=layer_confs, bias=True)
-                out_layer = get_layer(att_dim, out_features_list[i], layer_confs=layer_confs, bias=True) if att_dim != out_features_list[i] else IdentityLayer()
+                #out_layer = get_layer(att_dim, out_features_list[i], layer_confs=layer_confs, bias=True) if att_dim != out_features_list[i] else IdentityLayer()
 
                 cross = False
                 # Select rearrangement function based on block type
@@ -356,7 +356,7 @@ class TransformerBlock(EmbedBlock):
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                trans_block = rearrange_fn(SelfAttention(att_dim, att_dim, n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, out_layer=out_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
+                trans_block = rearrange_fn(SelfAttention(att_dim, out_features_list[i], n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
      
             lin_emb_layers.append(LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb, spatial_dim_count=spatial_dim_count))
 

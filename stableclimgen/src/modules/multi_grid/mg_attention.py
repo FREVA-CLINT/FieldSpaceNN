@@ -72,6 +72,30 @@ class HeadGate(nn.Module):
 
         return x
 
+class PoolingLayer(nn.Module):
+
+    def __init__(self, n_pool):
+        super().__init__()
+        self.n_pool = n_pool
+
+    def forward(self, x: torch.tensor, emb={}, sample_configs={}, mask=None):
+        
+        if isinstance(self.n_pool, float):
+            n_pool = int(x.shape[-2] * self.n_pool)
+        else:
+            n_pool = self.n_pool
+
+        r = (x - x.mean(dim=-2, keepdim=True)).norm(p=2, dim=-1)
+
+        keepids = r.topk(k=n_pool, dim=-1).indices
+
+        x = torch.gather(x, dim=-2, index=keepids.unsqueeze(dim=-1).expand(*[-1]*(x.dim()-1),x.shape[-1]))
+
+        if mask is not None:
+            mask = torch.gather(mask, dim=-2, index=keepids.unsqueeze(dim=-1))
+
+        return x, mask
+
 class MultiZoomSelfAttention(nn.Module):
   
     def __init__(self, 
@@ -89,6 +113,7 @@ class MultiZoomSelfAttention(nn.Module):
                  n_head_channels: int=None, 
                  embedders: Dict[str, EmbedderSequential] = {},
                  compression_dims_kv: Dict[int, int]= {},
+                 pooling_dims_kv: Dict[int, int]= {},
                  compression_dims_q: Dict[int, int]= {},
                  compression_zooms: Dict[int,int] = {},
                  qkv_emb_projection_settings = {},
@@ -136,19 +161,26 @@ class MultiZoomSelfAttention(nn.Module):
         att_dim = out_features if att_dim is None else att_dim
         self.num_heads = num_heads if not n_head_channels else in_features // n_head_channels
 
-        self.CA_layers = nn.ModuleDict()
-        for in_zoom, out_zoom in compression_zooms.items():
+        compression_zooms_comb = {}
+        compression_zooms_comb.update(compression_zooms)
+        compression_zooms_comb.update(pooling_dims_kv)
 
-            self.CA_layers[str(in_zoom)] = MGCompressionAttention(
-                                   features=att_dim,
-                                   embedder_q=embedders[str(out_zoom)],
-                                   n_head_channels=n_head_channels,
-                                   head_gate=head_gate,
-                                   head_gate_scale_limit=head_gate_scale_limit,
-                                   qkv_emb_projection_settings=qkv_emb_projection_settings,
-                                   layer_confs=layer_confs,
-                                   layer_confs_emb=layer_confs_emb
-                                   )
+        self.CA_layers = nn.ModuleDict()
+        for in_zoom, comp_dim in compression_zooms_comb.items():
+            
+            if in_zoom in compression_zooms.keys():
+                self.CA_layers[str(in_zoom)] = MGCompressionAttention(
+                                    features=att_dim,
+                                    embedder_q=embedders[str(comp_dim)],
+                                    n_head_channels=n_head_channels,
+                                    head_gate=head_gate,
+                                    head_gate_scale_limit=head_gate_scale_limit,
+                                    qkv_emb_projection_settings=qkv_emb_projection_settings,
+                                    layer_confs=layer_confs,
+                                    layer_confs_emb=layer_confs_emb
+                                    )
+            elif in_zoom in pooling_dims_kv.keys():
+                self.CA_layers[str(in_zoom)] = PoolingLayer(n_pool=comp_dim)
         
         for in_zoom in embedders.keys():
             if int(in_zoom) in q_zooms+kv_zooms: 
@@ -171,7 +203,7 @@ class MultiZoomSelfAttention(nn.Module):
             if q_zoom in compression_dims_q.keys():
                 in_f, out_f = get_compression_dims(compression_dims_q[q_zoom], q_zoom)
 
-            in_features_q = [*in_f, att_dim]
+            in_features_q =  [*in_f, att_dim]
             out_features_q = [*out_f, att_dim]
 
             if not common_affine:
@@ -210,15 +242,21 @@ class MultiZoomSelfAttention(nn.Module):
                 in_f, out_f = get_compression_dims(compression_dims_kv[kv_zoom], kv_zoom)
                 self.omit_mask_zooms.append(kv_zoom)
 
-                in_features_comp_kv = [*in_f, att_dim]
-                out_features_comp_kv = [*out_f, 2*att_dim]
+                in_features_comp_kv = [*in_f, grid_layer.adjc.shape[-1], 2*att_dim] if with_nh else [*in_f, 2*att_dim]
+                out_features_comp_kv = [*out_f, grid_layer.adjc.shape[-1], 2*att_dim] if with_nh else [*out_f, 2*att_dim]
+
+                skip_dims = [False for _ in in_features_comp_kv]
+                if with_nh:
+                    skip_dims[-2] = True
                 
-                self.kv_compression_layers[str(kv_zoom)] = get_layer(in_features_comp_kv, out_features_comp_kv, layer_confs=layer_confs)
+                layer_confs_ = layer_confs.copy()
+                layer_confs_['rank_channel'] = 0
+                layer_confs_['skip_dims'] = skip_dims
+
+                self.kv_compression_layers[str(kv_zoom)] = get_layer(in_features_comp_kv, out_features_comp_kv, layer_confs=layer_confs_)
 
             else:
                 self.kv_compression_layers[str(kv_zoom)] = IdentityLayer()
-
-            layer_confs_ = layer_confs
 
             if not common_affine:
                 self.kv_affine_layers[str(kv_zoom)] = LinEmbLayer(att_dim, [att_dim], layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(kv_zoom)] if film else None, layer_confs_emb=layer_confs_emb) 
@@ -228,7 +266,7 @@ class MultiZoomSelfAttention(nn.Module):
             if lora:
                 self.kv_projection_layers[str(kv_zoom)] =LoRA([att_dim], [2 * att_dim], embedder=embedders[str(kv_zoom)], **qkv_emb_projection_settings, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
             else:
-                self.kv_projection_layers[str(kv_zoom)] = get_layer(att_dim, [2 * att_dim], layer_confs=layer_confs_,bias=True) 
+                self.kv_projection_layers[str(kv_zoom)] = get_layer(att_dim, [2 * att_dim], layer_confs=layer_confs,bias=True) 
    
             if head_gate:
                 self.kv_headgate_layers[str(kv_zoom)] = HeadGate(self.num_heads, embedder=embedders[str(kv_zoom)], scale_limit=head_gate_scale_limit)
@@ -319,8 +357,7 @@ class MultiZoomSelfAttention(nn.Module):
                 mask_ = torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
 
             if zoom in self.CA_layers.keys():
-                kv_ = self.CA_layers[zoom](kv_, emb=emb, mask=mask_, sample_configs=sample_configs)[0]
-                mask_ = torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
+                kv_, mask_ = self.CA_layers[zoom](kv_, emb=emb, mask=mask_, sample_configs=sample_configs)
 
             kv_ = rearrange(kv_, self.kv_pattern, b=b, v=v, s=s, NH=self.num_heads)
 

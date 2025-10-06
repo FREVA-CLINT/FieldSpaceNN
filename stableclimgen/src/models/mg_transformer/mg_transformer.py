@@ -8,9 +8,9 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer,Conv_EncoderDecoder
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig
 
 from ...modules.embedding.embedder import get_embedder
 from ...modules.grids.grid_utils import decode_zooms
@@ -130,7 +130,20 @@ class MG_Transformer(MG_base_model):
                      type='field_att',
                      init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
                      residual=check_get([block_conf, kwargs,{"residual": False}], "residual"))
-                
+
+            elif isinstance(block_conf, Conv_EncoderDecoderConfig):
+                layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
+
+                block = Conv_EncoderDecoder(
+                    self.grid_layers,
+                    in_zooms,
+                    zoom_map = block_conf.zoom_map,
+                    in_features_list = in_features,
+                    out_zooms = check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
+                    aggregation=check_get([block_conf, kwargs, {"aggregation": "sum"}], "aggregation"),
+                    use_skip_conv=check_get([block_conf, kwargs, {"use_skip_conv": False}], "use_skip_conv"),
+                    layer_confs=layer_confs
+                )
             self.Blocks[block_key] = block     
 
             in_features = block.out_features
