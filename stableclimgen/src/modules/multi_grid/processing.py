@@ -25,7 +25,8 @@ class MG_SingleBlock(nn.Module):
                  out_features_list: List[int],
                  layer_confs = {},
                  layer_confs_emb={},
-                 use_mask=False
+                 use_mask=False,
+                 n_head_channels=16
                 ) -> None: 
       
         super().__init__()
@@ -63,8 +64,8 @@ class MG_SingleBlock(nn.Module):
                             out_features,
                             layer_settings['blocks'],
                             seq_lengths=seq_length,
-                            num_heads=layer_settings.get('num_heads', 2),
-                            n_head_channels=layer_settings.get('n_head_channels', None),
+                            num_heads=layer_settings.get('num_heads', None),
+                            n_head_channels=layer_settings.get('n_head_channels', n_head_channels),
                             att_dims=layer_settings.get('att_dims', None),
                             mlp_mult=layer_settings.get('mlp_mult', 1),
                             dropout=layer_settings.get('dropout', 1),
@@ -153,7 +154,8 @@ class MG_MultiBlock(nn.Module):
                  use_mask = False,
                  type='',
                  init_missing_zooms="zeros",
-                 residual=False
+                 residual=False,
+                 n_head_channels=16
                  ) -> None:
         super().__init__()
         
@@ -211,7 +213,7 @@ class MG_MultiBlock(nn.Module):
                                 kv_zooms,
                                 mult = layer_settings.get("mlp_mult",1),
                                 num_heads = layer_settings.get("num_heads",1),
-                                n_head_channels= layer_settings.get("n_head_channels",16),
+                                n_head_channels= layer_settings.get("n_head_channels",n_head_channels),
                                 share_zoom_proj = layer_settings.get("share_zoom_proj",False),
                                 share_zoom_proj_qkv = layer_settings.get("share_zoom_proj_qkv",False),
                                 with_nh= layer_settings.get("with_nh",True),
@@ -233,8 +235,8 @@ class MG_MultiBlock(nn.Module):
                         kv_zooms,
                         new_zooms=new_zooms,
                         mult = layer_settings.get("mlp_mult",1),
-                        num_heads = layer_settings.get("num_heads",1),
-                        n_head_channels = layer_settings.get("n_head_channels",None),
+                        num_heads = layer_settings.get("num_heads",None),
+                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
                         compression_dims_q =layer_settings.get("compression_dims_q",{}),
                         compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
                         pooling_dims_kv=layer_settings.get("pooling_dims_kv",{}),

@@ -71,7 +71,8 @@ class MG_Transformer(MG_base_model):
                      block_conf.out_features,
                      layer_confs=layer_confs,
                      layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
-                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"))
+                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
+                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
                         
             elif isinstance(block_conf, MGConservativeConfig):
                 block = ConservativeLayer(in_zooms,
@@ -109,7 +110,8 @@ class MG_Transformer(MG_base_model):
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
                      init_missing_zooms=check_get([block_conf, kwargs,{"init_missing_zooms": "zeros"}], "init_missing_zooms"),
-                     residual=check_get([block_conf, kwargs,{"residual": False}], "residual"))
+                     residual=check_get([block_conf, kwargs,{"residual": False}], "residual"),
+                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
             
             elif isinstance(block_conf, MGFieldAttentionConfig):
                 layer_settings = block_conf.layer_settings
@@ -129,7 +131,8 @@ class MG_Transformer(MG_base_model):
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
                      type='field_att',
                      init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
-                     residual=check_get([block_conf, kwargs,{"residual": False}], "residual"))
+                     residual=check_get([block_conf, kwargs,{"residual": False}], "residual"),
+                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
 
             elif isinstance(block_conf, Conv_EncoderDecoderConfig):
                 layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")

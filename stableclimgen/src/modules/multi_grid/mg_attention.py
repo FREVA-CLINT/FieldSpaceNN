@@ -108,9 +108,9 @@ class MultiZoomSelfAttention(nn.Module):
                  new_zooms: List=[],
                  mult: int=1,
                  dropout: float=0.0,
-                 num_heads: int=1,
+                 num_heads: int=None,
                  att_dim=None,
-                 n_head_channels: int=None, 
+                 n_head_channels: int=16, 
                  embedders: Dict[str, EmbedderSequential] = {},
                  compression_dims_kv: Dict[int, int]= {},
                  pooling_dims_kv: Dict[int, int]= {},
@@ -159,7 +159,7 @@ class MultiZoomSelfAttention(nn.Module):
         self.gammas = nn.ParameterDict()
 
         att_dim = out_features if att_dim is None else att_dim
-        self.num_heads = num_heads if not n_head_channels else in_features // n_head_channels
+        self.num_heads = num_heads if num_heads else in_features // n_head_channels
 
         compression_zooms_comb = {}
         compression_zooms_comb.update(compression_zooms)
@@ -172,7 +172,7 @@ class MultiZoomSelfAttention(nn.Module):
                 self.CA_layers[str(in_zoom)] = MGCompressionAttention(
                                     features=att_dim,
                                     embedder_q=embedders[str(comp_dim)],
-                                    n_head_channels=n_head_channels,
+                                    n_heads=self.num_heads,
                                     head_gate=head_gate,
                                     head_gate_scale_limit=head_gate_scale_limit,
                                     qkv_emb_projection_settings=qkv_emb_projection_settings,
@@ -235,12 +235,12 @@ class MultiZoomSelfAttention(nn.Module):
             
             self.out_layers[str(q_zoom)] = get_layer(in_features, out_features, layer_confs=layer_confs) if in_features!=out_features else IdentityLayer()
 
-        self.omit_mask_zooms = []
+       #self.omit_mask_zooms = []
         for kv_zoom in kv_zooms:
             
             if kv_zoom in compression_dims_kv.keys():
                 in_f, out_f = get_compression_dims(compression_dims_kv[kv_zoom], kv_zoom)
-                self.omit_mask_zooms.append(kv_zoom)
+                #self.omit_mask_zooms.append(kv_zoom)
 
                 in_features_comp_kv = [*in_f, grid_layer.adjc.shape[-1], 2*att_dim] if with_nh else [*in_f, 2*att_dim]
                 out_features_comp_kv = [*out_f, grid_layer.adjc.shape[-1], 2*att_dim] if with_nh else [*out_f, 2*att_dim]
@@ -347,14 +347,14 @@ class MultiZoomSelfAttention(nn.Module):
             s = kv_.shape[3]
 
             kv_ = self.kv_compression_layers[zoom](kv_, emb=emb, sample_configs=sample_configs)
-
+            
             kv_ = kv_.view(*kv_.shape[:4],-1, kv_.shape[-1]) 
-
-            if mask_ is not None and int(zoom) not in self.omit_mask_zooms:
-                mask_ = get_matching_time_patch(mask_, int(zoom), self.max_zoom, sample_configs)
-
-            elif zoom not in self.CA_layers.keys():
+            
+            if not isinstance(self.kv_compression_layers[zoom],IdentityLayer):
                 mask_ = torch.zeros_like(kv_[...,[0]], dtype=torch.bool, device=kv_.device)
+            
+            elif mask_ is not None:
+                mask_ = get_matching_time_patch(mask_, int(zoom), self.max_zoom, sample_configs)
 
             if zoom in self.CA_layers.keys():
                 kv_, mask_ = self.CA_layers[zoom](kv_, emb=emb, mask=mask_, sample_configs=sample_configs)
@@ -441,7 +441,7 @@ class MGCompressionAttention(nn.Module):
                  features: int,
                  embedder_q: EmbedderSequential=None,
                  with_nh = True,
-                 n_head_channels = 16,
+                 n_heads = 16,
                  head_gate=False,
                  head_gate_scale_limit=1.0,
                  qkv_emb_projection_settings = {},
@@ -449,19 +449,17 @@ class MGCompressionAttention(nn.Module):
                  layer_confs_emb= {}) -> None: 
         
         super().__init__()
-
+        
+        self.n_heads = n_heads
         assert 'MGEmbedder' in embedder_q.embedders.keys(), 'MGEmbedder is required for compression attention'
         self.emb_layerq = embedder_q.embedders['MGEmbedder']
         self.zoom = embedder_q.embedders['MGEmbedder'].zoom
 
-        self.n_head_channels = n_head_channels
 
         self.emb_proj =  get_layer([embedder_q.get_out_channels], [features], layer_confs=layer_confs_emb)
 
-        self.num_channels = int(features // n_head_channels)
-
         if head_gate:
-            self.headgate_layer = HeadGate(self.num_channels, embedder=embedder_q, scale_limit=head_gate_scale_limit)
+            self.headgate_layer = HeadGate(self.n_heads, embedder=embedder_q, scale_limit=head_gate_scale_limit)
         else:
             self.headgate_layer = IdentityLayer()
 
@@ -519,6 +517,9 @@ class MGCompressionAttention(nn.Module):
 
         shape = att_out.shape
         att_out = self.out_proj(att_out, emb=emb, sample_configs=sample_cfg)
+
+        if mask_out is not None:
+            mask_out = mask_out.expand(*shape[:-1],1)
 
         return att_out.view(*shape[:-1],-1), mask_out
 
