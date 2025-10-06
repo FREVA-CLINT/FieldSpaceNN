@@ -495,8 +495,8 @@ class MGCompressionAttention(nn.Module):
 
         b, v, t, s, n, c = q.shape
 
-        Q = rearrange(q, self.pattern, NH=self.num_channels)
-        x = rearrange(x, self.pattern, NH=self.num_channels)
+        Q = rearrange(q, self.pattern, NH=self.n_heads)
+        x = rearrange(x, self.pattern, NH=self.n_heads)
 
         K, V = x.chunk(2,dim=-1)
 

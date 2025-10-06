@@ -37,7 +37,7 @@ def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk
     safe_chunk_size = chunk_size // H
 
     if mask is not None:
-        mask = mask==False if mask.dtype==torch.bool else 1-mask
+        mask = mask==False if mask.dtype==torch.bool else mask
 
     if B <= safe_chunk_size:
         return scaled_dot_product_attention(
