@@ -117,7 +117,7 @@ class MG_VAE(MG_base_model):
 
             block = MG_SingleBlock(
                 self.grid_layers,
-                check_get([block_conf, kwargs, {"out_zooms": in_zooms}], "out_zooms"),
+                check_get([block_conf, kwargs, {"zooms": in_zooms}], "zooms"),
                 layer_settings,
                 in_features,
                 out_features if out_features is not None else block_conf.out_features,
