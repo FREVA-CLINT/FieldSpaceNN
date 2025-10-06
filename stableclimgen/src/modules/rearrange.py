@@ -62,7 +62,7 @@ class RearrangeBlock(EmbedBlock):
         else:
             b, v, t, g, c = x.shape
 
-        q = self.proj_layer_q(x, emb=emb)
+        q = self.proj_layer_q(x, emb=emb).view(*x.shape[:dim-1],-1)
         kv = self.proj_layer_kv(x, emb=emb).view(*x.shape[:dim-1],-1)
         x = torch.concat((q,kv), dim=-1)
         

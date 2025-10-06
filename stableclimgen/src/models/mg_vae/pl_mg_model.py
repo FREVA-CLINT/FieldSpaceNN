@@ -116,7 +116,8 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         if self.mode == "encode_decode":
             outputs, posterior = self.model(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
         elif self.mode == "encode":
-            outputs = self.model.vae_encode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+            output_samples = self.model.vae_encode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
+            outputs = {int(zoom): x.sample(gamma=self.model.gammas[str(zoom)] if self.model.gammas else None) for zoom, x in output_samples.items()}
         elif self.mode == "decode":
             outputs = self.model.vae_decode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
 
