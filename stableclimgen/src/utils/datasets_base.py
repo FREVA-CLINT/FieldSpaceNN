@@ -275,7 +275,7 @@ class BaseDataset(Dataset):
             data_g = data_g[:, :, patch_indices]
             mask = mask[:, :, patch_indices]
 
-        drop_mask = torch.logical_not(mask[...,[0]]) if mask.dtype==torch.bool else  1 - mask[...,[0]]
+        drop_mask = torch.logical_not(mask[...,[0]]) if mask.dtype==torch.bool else mask[...,[0]]
 
         data_time = torch.tensor(ds["time"].values).float()
 
@@ -421,13 +421,16 @@ class BaseDataset(Dataset):
                 if self.p_dropout_all_zooms[zoom] > 0 and not drop:
                     drop = torch.rand(1) < self.p_dropout_all_zooms[zoom]
                 
-                if drop:
-                    mask_mapping_zooms[zoom] = torch.ones_like(mask_mapping_zooms[zoom], dtype=mask_mapping_zooms[zoom].dtype)
+                if drop and mask_mapping_zooms[zoom].dtype==torch.bool:
+                    mask_mapping_zooms[zoom] = torch.ones_like(mask_mapping_zooms[zoom], dtype=bool)
+
+                elif drop:
+                    mask_mapping_zooms[zoom] = torch.zeros_like(mask_mapping_zooms[zoom], dtype=mask_mapping_zooms[zoom].dtype)
                 
 
         for zoom in data_source.keys():
             if mask_mapping_zooms[zoom].dtype == torch.float:
-                mask_zoom = mask_mapping_zooms[zoom] == 1
+                mask_zoom = mask_mapping_zooms[zoom] == 0
             else:
                 mask_zoom = mask_mapping_zooms[zoom]
             data_source[zoom][mask_zoom.expand_as(data_source[zoom])] = 0

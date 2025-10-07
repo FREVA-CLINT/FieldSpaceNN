@@ -205,6 +205,9 @@ class MG_Transformer(MG_base_model):
        
         if self.learn_residual:
             x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
+        
+        if self.masked_residual:
+            mask_res = mask_zooms.copy()
 
         for k, block in enumerate(self.Blocks.values()):
             # Process input through the block
@@ -241,7 +244,7 @@ class MG_Transformer(MG_base_model):
                 elif mask_zooms[zoom].dtype == torch.bool:
                     x_zooms[zoom] = (1 - 1.*mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x_zooms[zoom]
                 else:
-                    x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_zooms[zoom]) * x_zooms[zoom]
+                    x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_res[zoom]) * x_zooms[zoom]
 
         return x_zooms
 
