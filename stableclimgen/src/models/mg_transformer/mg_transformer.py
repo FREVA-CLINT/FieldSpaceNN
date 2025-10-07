@@ -204,7 +204,7 @@ class MG_Transformer(MG_base_model):
        # x_zooms = self.encoder(x_zooms, emb=emb, sample_configs=sample_configs)
        
         if self.learn_residual:
-            x_zooms_res = {k: v.clone() for k, v in x_zooms.items()}
+            x_zooms_res = x_zooms.copy()
         
         if self.masked_residual:
             mask_res = mask_zooms.copy()
@@ -213,7 +213,7 @@ class MG_Transformer(MG_base_model):
             # Process input through the block
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
+        
 
         if self.learn_residual and len(x_zooms.keys())==1:
             x_zooms_res = decode_zooms(x_zooms_res, sample_configs=sample_configs, out_zoom=list(x_zooms.keys())[0])
@@ -246,6 +246,8 @@ class MG_Transformer(MG_base_model):
                 else:
                     x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_res[zoom]) * x_zooms[zoom]
 
+        x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
+        
         return x_zooms
 
 class DiffDecoder(nn.Module):
