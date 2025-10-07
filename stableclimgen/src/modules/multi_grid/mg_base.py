@@ -670,7 +670,11 @@ class ResConv(nn.Module):
     
         self.conv1 = Conv(grid_layer_out, in_features_conv, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
         self.conv2 = Conv(grid_layer_out, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)  
-        self.gamma = nn.Parameter(torch.ones(out_features)*1e-6, requires_grad=True)
+
+        self.with_gamma = with_gamma
+
+        if with_gamma:
+            self.gamma = nn.Parameter(torch.ones(out_features)*1e-6, requires_grad=True)
 
     def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, 
                 sample_configs: Dict={}, sample_configs_in: Dict = {}, sample_configs_out: Dict={}) -> torch.Tensor:
@@ -700,7 +704,10 @@ class ResConv(nn.Module):
 
         x = self.conv2(x, emb=emb, sample_configs=sample_configs_out)
 
-        x = x + self.gamma * x_res
+        if self.with_gamma:
+            x = x + self.gamma * x_res
+        else:
+            x = x + x_res
 
         return x
     
