@@ -155,7 +155,8 @@ class MG_Transformer(MG_base_model):
 
         block.out_features = [in_features[0]]
         
-        self.learn_residual = check_get([kwargs,defaults], "learn_residual")
+        self.masked_residual = check_get([kwargs, defaults], "masked_residual")
+        self.learn_residual = check_get([kwargs, defaults], "learn_residual") if not self.masked_residual else True
 
         if len(decoder_settings)==0:
             self.decoder = DiffDecoder()
@@ -217,7 +218,14 @@ class MG_Transformer(MG_base_model):
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
                 x, x_var = x.chunk(2,dim=-1) 
-                x = x_zooms_res[zoom] + x
+
+                if not self.masked_residual:
+                    x = x_zooms_res[zoom] + x
+                elif mask_zooms[zoom].dtype == torch.bool:
+                    x = (1 - mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x
+                else:
+                    x = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_zooms[zoom]) * x
+
                 x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
 
         elif self.predict_var:
@@ -227,7 +235,13 @@ class MG_Transformer(MG_base_model):
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
+
+                if not self.masked_residual:
+                    x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
+                elif mask_zooms[zoom].dtype == torch.bool:
+                    x_zooms[zoom] = (1 - 1.*mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x_zooms[zoom]
+                else:
+                    x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_zooms[zoom]) * x_zooms[zoom]
 
         return x_zooms
 

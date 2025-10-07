@@ -14,7 +14,8 @@ defaults = {
     'p_dropout': 0,
     'layer_type': 'Dense',
     'interpolate_input': True,
-    'learn_residual': True,
+    'learn_residual': False,
+    'masked_residual': False,
     'with_residual': False,
     'aggregation': 'linear'
 }
