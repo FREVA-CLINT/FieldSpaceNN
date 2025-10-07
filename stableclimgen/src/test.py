@@ -63,10 +63,6 @@ def test(cfg: DictConfig) -> None:
         npix = hp.nside2npix(2 ** max_zoom)
         n_patches = npix // 4**(max_zoom - sampling)
 
-    target_variables = []
-    for grid_type, variables_grid_type in test_dataset.grid_types_vars.items():
-        target_variables += list(set(variables_grid_type))
-
     # Aggregate outputs from multiple devices
     output = torch.cat([batch["output"][max_zoom] for batch in predictions], dim=0)
     mask = torch.cat([batch["mask"][max_zoom] for batch in predictions], dim=0)
@@ -81,19 +77,21 @@ def test(cfg: DictConfig) -> None:
     if 'output_var' in predictions[0].keys() and predictions[0]['output_var'] is not None:
         output_var = torch.cat([batch["output_var"] for batch in predictions], dim=0)
         output_var = rearrange(output_var, "(b2 b1) v t n ... -> b2 v t (b1 n) ... ", b1=n_patches)
+        
+        for g, vars in enumerate(test_dataset.variables):
+            for k,var in enumerate(vars):
+                output_var[:,g,...,k]= test_dataset.var_normalizers[var].denormalize_var(output_var[:, g,...,k], data=output[:, g,...,k])
 
-        for k, var in enumerate(target_variables):
-            output_var[:, k] = test_dataset.var_normalizers[var].denormalize_var(output_var[:, k], data=output[:, k])
-
-        output_var = dict(zip(target_variables, output_var.split(1, dim=-1)))
+        output_var = dict(zip(test_dataset.var_groups, output_var.split(1, dim=-1)))
         torch.save(output_var, cfg.output_path.replace(".pt", "_var.pt"))
 
-    for k, var in enumerate(target_variables):
-        output[:,k] = test_dataset.var_normalizers[var].denormalize(output[:, k])
+    for g, vars in enumerate(test_dataset.variables):
+        for k,var in enumerate(vars):
+            output[:,g,...,k]= test_dataset.var_normalizers[var].denormalize(output[:, g,...,k])
 
-    output = dict(zip(target_variables, output.split(1, dim=1)))
+    output = dict(zip(test_dataset.var_groups, output.split(1, dim=1)))
     torch.save(output, cfg.output_path)
-    mask = dict(zip(target_variables, (1-mask).split(1, dim=1)))
+    mask = dict(zip(test_dataset.var_groups, (1-mask).split(1, dim=1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
     if hasattr(cfg, "save_netcdf") and cfg.save_netcdf:
