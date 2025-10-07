@@ -68,7 +68,7 @@ class BaseDataset(Dataset):
 
         self.variables = [v['variables'] for v in self.data_dict['variables'].values()]
         self.var_groups = [g for g in self.data_dict['variables'].keys()]
-        self.var_tot_depths = [len(v['depths']) for v in self.data_dict['variables'].values()]
+        self.var_tot_depths = [int(np.sum(np.array(v['depths']))) for v in self.data_dict['variables'].values()]
 
        # self.depths = [v['depths'] for v in self.data_dict['variables'].values()]
 

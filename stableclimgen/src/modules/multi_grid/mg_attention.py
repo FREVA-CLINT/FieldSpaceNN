@@ -293,7 +293,7 @@ class MultiZoomSelfAttention(nn.Module):
             self.mask_pattern = 'b v t (s n) m 1 -> (b t s) 1 1 (v n m)' if with_nh else self.pattern
             self.reverse = '(b t s) NH (v n) H-> b v t s n (NH H)'
         
-    def forward(self, x_zooms, mask_zooms=None, emb=None, sample_configs={}):        
+    def forward(self, x_zooms, mask_zooms={}, emb=None, sample_configs={}):        
 
         zoom_att = self.grid_layer.zoom
 
@@ -361,7 +361,7 @@ class MultiZoomSelfAttention(nn.Module):
 
             kv_ = rearrange(kv_, self.kv_pattern, b=b, v=v, s=s, NH=self.num_heads)
 
-            if mask is not None:
+            if mask_ is not None:
                 mask_ = rearrange(mask_, self.mask_pattern, b=b, v=v, s=s)
 
             kv.append(kv_)
