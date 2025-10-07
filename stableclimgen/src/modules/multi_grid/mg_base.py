@@ -705,7 +705,7 @@ class ResConv(nn.Module):
         x = self.conv2(x, emb=emb, sample_configs=sample_configs_out)
 
         if self.with_gamma:
-            x = x + self.gamma * x_res
+            x = self.gamma * x + x_res
         else:
             x = x + x_res
 
