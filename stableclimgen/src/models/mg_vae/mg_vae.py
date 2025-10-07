@@ -193,6 +193,7 @@ class MG_VAE(MG_base_model):
                 out_zooms = check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
                 aggregation=check_get([block_conf, kwargs, {"aggregation": "sum"}], "aggregation"),
                 use_skip_conv=check_get([block_conf, kwargs, {"use_skip_conv": False}], "use_skip_conv"),
+                with_gamma=check_get([block_conf, kwargs, {"with_gamma": False}], "with_gamma"),
                 layer_confs=layer_confs
             )
         

@@ -146,6 +146,7 @@ class MG_Transformer(MG_base_model):
                     out_zooms = check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
                     aggregation=check_get([block_conf, kwargs, {"aggregation": "sum"}], "aggregation"),
                     use_skip_conv=check_get([block_conf, kwargs, {"use_skip_conv": False}], "use_skip_conv"),
+                    with_gamma=check_get([block_conf, kwargs, {"with_gamma": False}], "with_gamma"),
                     layer_confs=layer_confs
                 )
             self.Blocks[block_key] = block     
@@ -156,6 +157,7 @@ class MG_Transformer(MG_base_model):
         block.out_features = [in_features[0]]
         
         self.masked_residual = check_get([kwargs, defaults], "masked_residual")
+        self.masked_residual_learned = check_get([kwargs, defaults], "masked_residual_learned")
         self.learn_residual = check_get([kwargs, defaults], "learn_residual") if not self.masked_residual else True
 
         if len(decoder_settings)==0:
@@ -247,7 +249,7 @@ class MG_Transformer(MG_base_model):
                     x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_res[zoom]) * x_zooms[zoom]
 
         x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
-        
+
         return x_zooms
 
 class DiffDecoder(nn.Module):

@@ -641,7 +641,7 @@ class ResConv(nn.Module):
     :param spatial_dim_count: Determines the number of spatial dimensions, adjusting the rearrangement accordingly.
     """
 
-    def __init__(self, grid_layer_in: GridLayer, in_features, out_features, grid_layer_out=None, ranks_spatial=[], layer_confs={}, layer_confs_emb={}, embedder: EmbedderSequential=None, use_skip_conv=False):
+    def __init__(self, grid_layer_in: GridLayer, in_features, out_features, grid_layer_out=None, ranks_spatial=[], layer_confs={}, layer_confs_emb={}, embedder: EmbedderSequential=None, use_skip_conv=False, with_gamma=False):
         super().__init__()
 
         grid_layer_out = grid_layer_in if grid_layer_out is None else grid_layer_out
@@ -670,6 +670,7 @@ class ResConv(nn.Module):
     
         self.conv1 = Conv(grid_layer_out, in_features_conv, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)    
         self.conv2 = Conv(grid_layer_out, out_features, out_features, ranks_spatial=ranks_spatial, layer_confs=layer_confs)  
+        self.gamma = nn.Parameter(torch.ones(out_features)*1e-6, requires_grad=True)
 
     def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, 
                 sample_configs: Dict={}, sample_configs_in: Dict = {}, sample_configs_out: Dict={}) -> torch.Tensor:
@@ -699,7 +700,7 @@ class ResConv(nn.Module):
 
         x = self.conv2(x, emb=emb, sample_configs=sample_configs_out)
 
-        x = x + x_res
+        x = x + self.gamma * x_res
 
         return x
     
@@ -714,7 +715,8 @@ class Conv_EncoderDecoder(nn.Module):
                  out_zooms: List=None,
                  aggregation = 'sum',
                  layer_confs: dict={},
-                 use_skip_conv=False
+                 use_skip_conv=False,
+                 with_gamma=False,
                 ) -> None: 
       
         super().__init__()
@@ -748,7 +750,8 @@ class Conv_EncoderDecoder(nn.Module):
                                     out_features,
                                     grid_layer_out=grid_layers[str(out_zoom)],
                                     layer_confs=layer_confs,
-                                    use_skip_conv=use_skip_conv)
+                                    use_skip_conv=use_skip_conv,
+                                    with_gamma=with_gamma)
 
                 in_layers[str(in_zoom)] = layer
 

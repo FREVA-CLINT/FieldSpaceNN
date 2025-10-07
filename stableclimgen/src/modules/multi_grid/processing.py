@@ -99,6 +99,7 @@ class MG_SingleBlock(nn.Module):
                     ranks_spatial=ranks_spatial,
                     layer_confs=layer_confs,
                     layer_confs_emb=layer_confs_emb,
+                    with_gamma=layer_settings.get('with_gamma',False),
                     embedder=embedders
                 )
 
