@@ -534,7 +534,7 @@ class MultiZoomFieldAttention(nn.Module):
                  kv_zooms: int,
                  mult: int=1,
                  dropout: float=0.0,
-                 num_heads: int=1,
+                 num_heads: int=None,
                  rank = 16,
                  contract_zooms = True,
                  contract_channels = True,
@@ -668,7 +668,7 @@ class MultiZoomFieldAttention(nn.Module):
 
     def get_tensor(self, tensor, emb):
         if self.n_groups==1:
-            return tensor
+            return tensor[0]
         else:
             return tensor[emb['GroupEmbedder']]
 

@@ -614,11 +614,15 @@ class Conv(nn.Module):
             self.with_nh = True
 
         elif out_zoom > self.grid_layer.in_zoom:
-            self.layer = get_layer([1, in_features], [4**(out_zoom - self.grid_layer.in_zoom), out_features], layer_confs=layer_confs_)
+            out_dims = [4] * (out_zoom - self.grid_layer.in_zoom)
+            in_dims = [1] * len(out_dims)
+            self.layer = get_layer([*in_dims, in_features], [*out_dims, out_features], layer_confs=layer_confs_)
             self.with_nh = False
 
         else:
-            self.layer = get_layer([4**(self.grid_layer.in_zoom - out_zoom), in_features], [1, out_features], layer_confs=layer_confs_)
+            in_dims = [4] * (self.grid_layer.in_zoom * out_zoom)
+            out_dims = [1] * len(out_dims)
+            self.layer = get_layer([*in_dims, in_features], [*out_dims, out_features], layer_confs=layer_confs_)
             self.with_nh = False
 
     def forward(self, x: torch.Tensor, emb: Dict = None, mask: torch.Tensor = None, sample_configs: Dict = {}) -> torch.Tensor:
