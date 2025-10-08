@@ -157,7 +157,6 @@ class MG_Transformer(MG_base_model):
         block.out_features = [in_features[0]]
         
         self.masked_residual = check_get([kwargs, defaults], "masked_residual")
-        self.masked_residual_learned = check_get([kwargs, defaults], "masked_residual_learned")
         self.learn_residual = check_get([kwargs, defaults], "learn_residual") if not self.masked_residual else True
 
         if len(decoder_settings)==0:
