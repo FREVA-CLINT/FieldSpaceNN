@@ -536,12 +536,15 @@ class MultiZoomFieldAttention(nn.Module):
                  dropout: float=0.0,
                  num_heads: int=None,
                  rank = 16,
-                 contract_zooms = True,
-                 contract_channels = True,
+                 contract_zooms_kv = True,
+                 contract_zooms_q = False,
+                 rotate_q = False,
+                 contract_channels_kv = True,
+                 contract_channels_q = True,
                  att_dim=None,
                  n_head_channels: int=32, 
-                 share_zoom_proj = False,
-                 share_zoom_proj_qkv = True,
+                 share_zoom_proj = True,
+                 share_zoom_proj_qkv = False,
                  embedders: Dict[str, EmbedderSequential] = {},
                  with_nh = True,
                  var_att = False,
@@ -579,20 +582,27 @@ class MultiZoomFieldAttention(nn.Module):
 
             if share_zoom_proj_qkv:
                 n_dim_max = [4]*zoom_diff_att
-                self.zoom_projections_q =  get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=zooms, contract=contract_zooms)
+                self.zoom_projections_q =  get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=zooms, contract=contract_zooms_q)
                 self.zoom_projections_kv = self.zoom_projections_q
             else:
                 n_dim_max = [4]*zoom_diff_att
-                self.zoom_projections_q = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(q_zooms)+1)], contract=contract_zooms)
-                self.zoom_projections_kv = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(kv_zooms)+1)], contract=contract_zooms)
+                if rotate_q:
+                    self.zoom_projections_q = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(q_zooms)+1)], contract=contract_zooms_q)
+                else:
+                    self.zoom_projections_q = {}
+
+                self.zoom_projections_kv = get_cp_tensors(n_dim_max, n_dim_max, rank=rank, n_groups=self.n_groups, keys=[zoom for zoom in range(att_zoom+1, max(kv_zooms)+1)], contract=contract_zooms_kv)
 
         else:
             if share_zoom_proj_qkv:
-                self.zoom_projections = nn.ParameterDict({str(zoom): get_cp_tensors([4]*(int(zoom) - att_zoom), [4]*(int(zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for zoom in sorted(self.emb_layers.keys())})
+                self.zoom_projections = nn.ParameterDict({str(zoom): get_cp_tensors([4]*(int(zoom) - att_zoom), [4]*(int(zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms_kv) for zoom in sorted(self.emb_layers.keys())})
                 self.zoom_projections_kv = self.zoom_projections_q = self.zoom_projections
             else:
-                self.zoom_projections_q = nn.ParameterDict({str(q_zoom): get_cp_tensors([4]*(int(q_zoom) - att_zoom), [4]*(int(q_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for q_zoom in sorted(q_zooms)})
-                self.zoom_projections_kv = nn.ParameterDict({str(kv_zoom): get_cp_tensors([4]*(int(kv_zoom) - att_zoom), [4]*(int(kv_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms) for kv_zoom in sorted(kv_zooms)})
+                if rotate_q:
+                    self.zoom_projections_q = nn.ParameterDict({str(q_zoom): get_cp_tensors([4]*(int(q_zoom) - att_zoom), [4]*(int(q_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms_q) for q_zoom in sorted(q_zooms)})
+                else:
+                    self.zoom_projections_q = {}
+                self.zoom_projections_kv = nn.ParameterDict({str(kv_zoom): get_cp_tensors([4]*(int(kv_zoom) - att_zoom), [4]*(int(kv_zoom) - att_zoom), rank=rank, n_groups=self.n_groups, contract=contract_zooms_kv) for kv_zoom in sorted(kv_zooms)})
 
         if share_zoom_proj:
             self.get_tensors_fun = self.get_tensors_shared
@@ -604,12 +614,17 @@ class MultiZoomFieldAttention(nn.Module):
         self.gammas = nn.ParameterDict()
         self.contract_fun_q = None # contract fun_q
         self.eq_q = {} #q equation
-        self.shapes_q = {} 
+        self.shapes_q_in = {} 
+        self.shapes_q_out = {} 
 
         for q_zoom in q_zooms:
-            self.shapes_q[q_zoom] = (*[4]*(q_zoom - att_zoom), in_features)
-            self.channel_projections_q[str(q_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
-            self.eq_q[q_zoom] = get_cp_equation(1+q_zoom-att_zoom, n_groups=self.n_groups, contract_feats=contract_zooms, contract_channel=contract_channels)  
+            self.shapes_q_in[q_zoom] = (*[4]*(q_zoom - att_zoom), in_features) if rotate_q else (in_features,)
+            self.shapes_q_out[q_zoom] = (*[4]*(q_zoom - att_zoom), out_features) 
+            self.channel_projections_q[str(q_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels_q, std=1.) 
+            self.eq_q[q_zoom] = get_cp_equation(1+q_zoom-att_zoom if rotate_q else 1, 
+                                                n_groups=self.n_groups, 
+                                                contract_feats=contract_zooms_q, 
+                                                contract_channel=contract_channels_q)  
 
             self.mlp_emb_layers[str(q_zoom)] = LinEmbLayer(att_dim, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[str(q_zoom)], layer_norm=True, layer_confs_emb=layer_confs_emb)
             self.mlps[str(q_zoom)] = MLP_fac(att_dim, att_dim, mult, dropout, layer_confs=layer_confs, gamma=True) 
@@ -630,10 +645,10 @@ class MultiZoomFieldAttention(nn.Module):
         for kv_zoom in kv_zooms:
             self.shapes_kv[kv_zoom] = (grid_layer.adjc.shape[1] ,*[4]*(kv_zoom - att_zoom), in_features) if with_nh else (*[4]*(kv_zoom - att_zoom), in_features)
             self.shapes_kv_out[kv_zoom] = (grid_layer.adjc.shape[1] ,-1, n_head_channels) if with_nh else (-1, n_head_channels)
-            self.channel_projections_k[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
-            self.channel_projections_v[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels, std=1.) 
+            self.channel_projections_k[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels_kv, std=1.) 
+            self.channel_projections_v[str(kv_zoom)] =  get_cp_tensor(in_features, out_features, rank=rank, n_groups=self.n_groups, contract=contract_channels_kv, std=1.) 
 
-            self.eq_kv[kv_zoom] = get_cp_equation(1+kv_zoom-att_zoom, n_groups=self.n_groups, contract_feats=contract_zooms, contract_channel=contract_channels, nh_dim=True)  
+            self.eq_kv[kv_zoom] = get_cp_equation(1+kv_zoom-att_zoom, n_groups=self.n_groups, contract_feats=contract_zooms_kv, contract_channel=contract_channels_kv, nh_dim=True)  
         
 
         self.n_head_channels = n_head_channels
@@ -691,9 +706,11 @@ class MultiZoomFieldAttention(nn.Module):
             q_ = get_matching_time_patch(x_zooms_emb[int(zoom)], int(zoom), self.max_zoom, sample_configs)
 
             q_factors = self.get_tensors_fun(self.zoom_projections_q, zoom, emb=emb)
-            q_ = q_.view(*q_.shape[:3],-1,*self.shapes_q[int(zoom)])
+            q_ = q_.view(*q_.shape[:3],-1,*self.shapes_q_in[int(zoom)])
 
             q_ = torch.einsum(self.eq_q[int(zoom)], q_, *q_factors, self.get_tensor(channel_proj,emb=emb))
+
+            q_ = q_.view(*q_.shape[:3],-1,*self.shapes_q_out[int(zoom)])
 
             q_ = q_.reshape(*q_.shape[:4],-1, self.n_head_channels)
 
@@ -733,7 +750,7 @@ class MultiZoomFieldAttention(nn.Module):
 
         for k, zoom in enumerate(self.mlps.keys()):
             
-            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,self.shapes_q[int(zoom)][-1]), int(zoom), self.max_zoom, sample_configs)
+            x_zooms[int(zoom)] = x_zooms[int(zoom)] + self.gammas[zoom] * insert_matching_time_patch(x_zooms[int(zoom)], q[k].reshape(*q[k].shape[:3],-1,self.shapes_q_out[int(zoom)][-1]), int(zoom), self.max_zoom, sample_configs)
         
             x_mlp = self.mlp_emb_layers[zoom](x_zooms[int(zoom)], emb=emb, sample_configs=sample_configs[int(zoom)])
 
