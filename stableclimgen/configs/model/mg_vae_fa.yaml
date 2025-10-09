@@ -1,0 +1,60 @@
+_target_: stableclimgen.src.models.mg_vae.pl_mg_model.LightningMGVAEModel
+kl_weight: 1.0e-10
+lambda_loss_dict:
+  zooms:
+    MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.001
+    warmup: 0
+model:
+  _target_: stableclimgen.src.models.mg_vae.mg_vae.MG_VAE
+  mgrids: ${mgrids}
+  in_zooms: [1,3,4]
+  in_features: 1
+  out_features: 1
+  n_head_channels: 16
+  learn_residual: false
+  encoder_block_configs:
+    input:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [1,1,1]
+      out_zooms: [1,3,4]
+      layer_settings:
+        type: 'linear'
+        identity_if_equal: true
+    down_1:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      in_zooms: [1,3,4]
+      target_zooms: [1,2]
+      out_zooms: [1,2]
+      field_zoom: 0
+      with_nh: false
+      type: 'mlp'
+      mult: 2
+  decoder_block_configs:
+    trans_1:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      in_zooms: [1,2]
+      target_zooms: [3,4]
+      out_zooms: [1,3,4]
+      field_zoom: 1
+      with_nh: true
+      type: 'mlp'
+      mult: 2
+    output:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [1,1,1]
+      zooms: [1,3,4]
+      layer_settings:
+        type: 'linear'
+        identity_if_equal: true
+  quant_config:
+    _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+    out_features:
+    - 1
+    - 1
+    layer_settings:
+      type: linear
+      identity_if_equal: true
