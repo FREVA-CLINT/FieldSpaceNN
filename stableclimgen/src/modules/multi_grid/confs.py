@@ -115,6 +115,40 @@ class MGFieldAttentionConfig:
             else:
                 setattr(self, input, value)
 
+
+class MGFieldLayerConfig:
+    def __init__(self, 
+                 in_zooms: List,
+                 target_zooms: List,
+                 field_zoom: int,
+                 out_zooms: List=None,
+                 with_nh: bool = False,
+                 mult: int = 2,
+                 type: str ='linear',
+                 **kwargs):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
+                setattr(self, input, value)
+
+
+class MGChannelAttentionConfig:
+    def __init__(self, 
+                 layer_settings: List,
+                 **kwargs):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
+                setattr(self, input, value)
+
 class FieldLayerConfig:
     def __init__(self, 
                  N: int,

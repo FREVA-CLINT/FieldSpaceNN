@@ -386,7 +386,7 @@ def get_cp_tensors(in_features, out_features, rank, n_groups=1, keys=[], contrac
 
 
     
-def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True, nh_dim=False, skip_dims=None):
+def get_cp_equation(n_dims, n_groups=1, contract_feats=True, contract_channel=True, nh_dim=False, skip_dims=None):
 
     x_letters =  iter("adefgijklmopqruwxyz")
     tensor_letters = iter("ABCDEFGHIJKLMNOPQSTUVWXYZ") 
@@ -405,7 +405,7 @@ def get_cp_equation(n_dims, n_groups=1, contract_feats=-1, contract_channel=True
             x_out_subscript += sub
 
         else:
-            if contract_feats and k<(n_dims-1) or contract_channel:
+            if (contract_feats) or (contract_channel and k==n_dims-1):
                 subs_in = next(tensor_letters)
                 subs_out = next(tensor_letters)
                 x_in_subscript += subs_in

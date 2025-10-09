@@ -8,9 +8,9 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer,Conv_EncoderDecoder
+from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer,Conv_EncoderDecoder,MGFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig,MGChannelAttentionConfig,MGFieldLayerConfig
 
 from ...modules.embedding.embedder import get_embedder
 from ...modules.grids.grid_utils import decode_zooms
@@ -134,6 +134,44 @@ class MG_Transformer(MG_base_model):
                      init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
                      residual=check_get([block_conf, kwargs,{"residual": False}], "residual"),
                      n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
+            
+            elif isinstance(block_conf, MGChannelAttentionConfig):
+                layer_settings = block_conf.layer_settings
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MG_MultiBlock(
+                     self.grid_layers,
+                     in_zooms,
+                     check_get([block_conf,{'out_zooms':in_zooms}], "out_zooms"),
+                     layer_settings,
+                     in_features=1,
+                     out_features=in_features,
+                     q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
+                     kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
+                     layer_confs=layer_confs,
+                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
+                     type='channel_att',
+                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
+
+                block.out_features = in_features
+
+            elif isinstance(block_conf, MGFieldLayerConfig):
+        
+                layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MGFieldLayer(
+                        self.grid_layers[str(block_conf.field_zoom)],
+                        block_conf.in_zooms,
+                        block_conf.target_zooms,
+                        block_conf.field_zoom,
+                        out_zooms=block_conf.out_zooms,
+                        mult = block_conf.mult,
+                        with_nh = block_conf.with_nh,
+                        type= block_conf.type,
+                        layer_confs=layer_confs)
+                
+                block.out_features = in_features
 
             elif isinstance(block_conf, Conv_EncoderDecoderConfig):
                 layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")

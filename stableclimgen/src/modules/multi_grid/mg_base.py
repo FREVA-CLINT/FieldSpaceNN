@@ -19,6 +19,82 @@ from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_pat
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
+def combine_zooms(x_zooms, out_zoom, zooms=None):
+    zooms = list(x_zooms.keys()) if zooms is None else zooms
+    x_out = []
+    for zoom in zooms:
+        x = x_zooms[zoom]
+        x = x.view(*x.shape[:3],-1, 4**(zoom - out_zoom),x.shape[-1])
+        x_out.append(x)
+    return torch.concat(x_out, dim=-2)
+
+
+class MGFieldLayer(nn.Module):
+  
+    def __init__(self, 
+                 grid_layer,
+                 in_zooms: List,
+                 target_zooms: List,
+                 field_zoom: int,
+                 out_zooms: List=None,
+                 type = 'linear',
+                 mult: int=2,
+                 with_nh=False,
+                 layer_confs: Dict={}) -> None: 
+        
+        super().__init__()
+
+        self.with_nh = with_nh
+        self.out_zooms = out_zooms
+        self.grid_layer = grid_layer
+        self.in_zooms = in_zooms
+        self.field_zoom = field_zoom
+        self.n_channels_in = {}
+        for zoom in in_zooms:
+            self.n_channels_in[zoom] = 4**(zoom - field_zoom)
+
+        self.n_channels_out = {}
+        for zoom in target_zooms:
+            self.n_channels_out[zoom] = 4**(zoom - field_zoom)
+
+        in_features = sum(self.n_channels_in.values()) * grid_layer.adjc.shape[1] if with_nh else sum(self.n_channels_in.values())
+        out_features = sum(self.n_channels_out.values())
+
+        if type == 'linear':
+            self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
+        else: 
+            self.layer = MLP_fac(in_features, out_features, mult=mult)
+
+        self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
+        self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
+
+    def forward(self, x_zooms, emb=None, sample_configs={}, **kwargs):
+        
+        b,nv,t,_,f = x_zooms[list(self.n_channels_in.keys())[0]].shape
+
+        x = combine_zooms(x_zooms, out_zoom=self.field_zoom, zooms=self.in_zooms)
+
+        x = rearrange(x, self.pattern_channel)
+
+        if self.with_nh:
+            x, _ = self.grid_layer.get_nh(x, **sample_configs[self.grid_layer.zoom], with_nh=True, mask=None)
+
+        x = self.layer(x, emb=emb, sample_configs=sample_configs[self.field_zoom])
+
+        x = x.split(tuple(self.n_channels_out.values()), dim=-1)
+        
+        for k, (zoom, n) in enumerate(self.n_channels_out.items()):
+            x_zooms[zoom] = rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv)
+
+        if self.out_zooms is None:
+            return x_zooms
+        else:
+            x_zooms_out = {}
+            for zoom in self.out_zooms:
+                x_zooms_out[zoom] = x_zooms[zoom]
+            return x_zooms_out
+
+
 class LinearReductionLayer(nn.Module):
   
     def __init__(self, 

@@ -12,7 +12,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention
+from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiChanneldAttention
 from .mg_base import Conv, ResConv, FieldLayer#,get_weight_matrix,get_einsum_subscripts
 
 class MG_SingleBlock(nn.Module):
@@ -185,17 +185,11 @@ class MG_MultiBlock(nn.Module):
         
         compression_zooms = layer_settings.get("compression_zooms",{})
 
-        zooms_embedders = torch.tensor(q_zooms + kv_zooms + list(compression_zooms.values())).unique() 
-
+        zooms_qkv = torch.tensor(q_zooms + kv_zooms + list(compression_zooms.values())).unique() 
 
         embedders = {}
 
-        for k, zoom in enumerate(zooms_embedders):
-            #if zoom not in in_zooms:
-            #    raise ValueError(f"Zoom level {zoom} at index {k} of q_zooms not found in in_zooms")
-            
-            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
-            embedders[str(int(zoom))] = embedder
+        
             
         
         for k, zoom in enumerate(kv_zooms):
@@ -209,6 +203,11 @@ class MG_MultiBlock(nn.Module):
         new_zooms = [out_zoom for out_zoom in out_zooms if out_zoom not in in_zooms]
 
         if type=='field_att':
+
+            for k, zoom in enumerate(zooms_qkv):
+                embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
+                embedders[str(int(zoom))] = embedder
+
             block = MultiZoomFieldAttention(grid_layer,
                                 in_features,
                                 out_features,
@@ -230,7 +229,35 @@ class MG_MultiBlock(nn.Module):
                                 layer_confs=layer_confs,
                                 layer_confs_emb=layer_confs_emb
                                 )
+        elif type == 'channel_att':
+            
+            field_zoom = layer_settings.get("field_zoom", att_zoom)
+
+            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
+
+            block = MultiChanneldAttention(
+                        grid_layers[str(field_zoom)],
+                        grid_layers[str(att_zoom)],
+                        q_zooms,
+                        kv_zooms,
+                        mult = layer_settings.get("mlp_mult",1),
+                        att_dim = layer_settings.get("att_dim",None),
+                        num_heads = layer_settings.get("num_heads",None),
+                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
+                        with_nh_field = layer_settings.get("with_nh_field",True),
+                        with_nh_att = layer_settings.get("with_nh_att",False),
+                        var_att = layer_settings.get("var_att",True),
+                        embedder=embedder,
+                        layer_confs=layer_confs,
+                        layer_confs_emb=layer_confs_emb
+                        )
+            
+
         else:
+            for k, zoom in enumerate(zooms_qkv):
+                embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
+                embedders[str(int(zoom))] = embedder
+
             block = MultiZoomSelfAttention(
                         grid_layers,
                         att_zoom,
@@ -261,6 +288,7 @@ class MG_MultiBlock(nn.Module):
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb
                         )
+        
 
 
 

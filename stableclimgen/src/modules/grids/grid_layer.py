@@ -222,7 +222,7 @@ class GridLayer(nn.Module):
         elif with_nh:
             x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
 
-        else:
+        elif zoom_patch_sample !=-1:
             indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
 
             if mask is not None:

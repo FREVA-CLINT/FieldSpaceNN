@@ -16,6 +16,7 @@ defaults = {
     'interpolate_input': True,
     'learn_residual': False,
     'masked_residual': False,
+    'masked_residual_learned': True,
     'with_residual': False,
     'aggregation': 'linear'
 }
