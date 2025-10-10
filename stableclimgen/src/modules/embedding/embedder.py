@@ -141,9 +141,10 @@ class MGEmbedder(BaseEmbedder):
     :param in_channels: Number of input coordinate features (default is 2).
     """
 
-    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, gamma=True, spatial_interpolation=True,layer_confs={}, **kwargs) -> None:
+    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, gamma=True, spatial_interpolation=True, layer_confs={}, **kwargs) -> None:
 
         in_channels = mg_emb_confs['features'][0]
+        diff_mode = mg_emb_confs.get("diff_mode", True)
 
         super().__init__(name, in_channels, embed_dim)
 
@@ -154,7 +155,11 @@ class MGEmbedder(BaseEmbedder):
         self.keep_dims = ["b", "v", "t", "s", "c"]
 
         emb_zooms = list(mg_emb_confs['zooms'])
-        zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom <= zoom]
+
+        if diff_mode:
+            zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom <= zoom]
+        else:
+            zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom == zoom]
         
         if len(zooms_proc_idx) == 0:
             zooms_proc_idx += [int(torch.tensor(emb_zooms).argmin())]
