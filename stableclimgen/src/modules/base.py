@@ -109,6 +109,10 @@ class EmbLayer(nn.Module):
         elif aggregation == 'shift':
             self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_shift
+        
+        elif aggregation == 'scale':
+            self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
+            self.forward_fcn = self.forward_w_scale
 
         elif aggregation == 'concat':
             self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
@@ -125,6 +129,18 @@ class EmbLayer(nn.Module):
         shift = shift.view(*shift.shape[:3], -1, n)
 
         x = x + shift
+
+        return x
+    
+    def forward_w_scale(self, x, emb=None, sample_configs={}):
+        
+        emb_ = self.embedder(emb, sample_configs)
+        scale = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
+
+        n = scale.shape[-1]
+        scale = scale.view(*scale.shape[:3], -1, n)
+
+        x = x * (1 + scale)
 
         return x
 
