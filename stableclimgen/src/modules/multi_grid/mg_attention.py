@@ -777,6 +777,10 @@ class MultiChanneldAttention(nn.Module):
                  num_heads: int=None,
                  n_head_channels: int=32, 
                  embedder: Dict[str, EmbedderSequential] = {},
+                 head_gate = False,
+                 head_gate_scale_limit = 0.5,
+                 lora = False,
+                 rank = 32,
                  with_nh_field = True,
                  with_nh_att = False,
                  var_att = False,
@@ -841,7 +845,18 @@ class MultiChanneldAttention(nn.Module):
         if not self.self_att:
             self.emb_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
 
-        self.q_projection_layer = get_layer(in_features_q, att_dim, layer_confs=layer_confs, bias=True)
+        num_heads = att_dim //n_head_channels
+
+        if head_gate:
+            self.q_headgate_layer = HeadGate(num_heads, embedder=embedder, scale_limit=head_gate_scale_limit)
+            self.kv_headgate_layer = HeadGate(num_heads, embedder=embedder, scale_limit=head_gate_scale_limit)
+        else:
+            self.q_headgate_layer = IdentityLayer()
+            self.kv_headgate_layer = IdentityLayer()
+      #  if lora:
+      #      LoRA(in_features_q, att_dim, embedder=embedder, rank=rank, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
+      #  else: 
+        self.q_projection_layer = get_layer(in_features_q, att_dim, layer_confs=layer_confs, bias=False)
         self.kv_projection_layer = get_layer(in_features_kv, 2*att_dim, layer_confs=layer_confs, bias=True)
 
         self.out_layer_att = get_layer(att_dim, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
@@ -882,14 +897,18 @@ class MultiChanneldAttention(nn.Module):
         else:
             kv = q
         
-        q = self.q_projection_layer(q, emb=emb, sample_configs=sample_configs)
+        q = self.q_projection_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
+
+        q = self.q_headgate_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
         q = q.view(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
 
         if self.with_nh_field:
             kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
 
-        kv = self.kv_projection_layer(kv, emb=emb, sample_configs=sample_configs)
+        kv = self.kv_projection_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
+
+        kv = self.kv_headgate_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
 
         mask = mask_zooms[zoom_field] if zoom_field in mask_zooms.keys() else None
     #    mask = None
