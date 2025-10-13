@@ -322,7 +322,7 @@ class GroupEmbedder(BaseEmbedder):
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims = ["b", "v" ,"t", "c"]
+        self.keep_dims = ["b", "v" ,"c"]
 
         self.embedding_fn = nn.Embedding(self.in_channels, self.embed_dim)
 
