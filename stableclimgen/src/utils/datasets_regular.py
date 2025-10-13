@@ -75,6 +75,17 @@ class ClimateDataset(Dataset):
         self.var_normalizers = {}
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
+        if "timesteps" in self.data_dict.keys():
+            self.sample_timesteps = []
+            for t in self.data_dict["timesteps"]:
+                if isinstance(t, int) or "-" not in t:
+                    self.sample_timesteps.append(int(t))
+                else:
+                    start, end = map(int, t.split("-"))
+                    self.sample_timesteps += list(range(start, end))
+            self.sample_timesteps = self.sample_timesteps
+        else:
+            self.sample_timesteps = None
         self.climate_in_files = {}
         self.climate_out_files = {}
         self.n_sample_vars = n_sample_vars
@@ -133,7 +144,7 @@ class ClimateDataset(Dataset):
                     self.climate_out_files[var] = [file] if isinstance(file, str) else file
         ds_source = xr.open_dataset(self.climate_in_files[self.variables_source[0]][0], decode_times=False)
         self.data_file_length = ds_source["time"].shape[0] - self.n_sample_timesteps + 1
-        self.len_dataset = self.data_file_length * len(self.climate_in_files[self.variables_source[0]])
+        self.len_dataset = (self.data_file_length * len(self.climate_in_files[self.variables_source[0]]) if self.sample_timesteps is None else len(self.sample_timesteps))
 
     def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor, list[str] | Tensor]:
         """
@@ -187,6 +198,9 @@ class ClimateDataset(Dataset):
         :param coords: Dict of coordinates for each dataset.
         :return: Processed data sample and coordinates for the given sequence.
         """
+
+        if self.sample_timesteps is not None:
+            seq_index = self.sample_timesteps[seq_index]
 
         data_in, coords_in, data_out, coords_out = [], [], [], []
         for i in sample_vars:
