@@ -764,7 +764,7 @@ class MultiZoomFieldAttention(nn.Module):
     
 
 
-class MultiChanneldAttention(nn.Module):
+class MultiFieldAttention(nn.Module):
   
     def __init__(self,
                  grid_layer_field: GridLayer,
@@ -781,6 +781,7 @@ class MultiChanneldAttention(nn.Module):
                  head_gate_scale_limit = 0.5,
                  lora = False,
                  rank = 32,
+                 spatial_ranks = None,
                  with_nh_field = True,
                  with_nh_att = False,
                  with_var_att = True,
@@ -856,8 +857,25 @@ class MultiChanneldAttention(nn.Module):
       #  if lora:
       #      LoRA(in_features_q, att_dim, embedder=embedder, rank=rank, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
       #  else: 
-        self.q_projection_layer = get_layer(in_features_q, att_dim, layer_confs=layer_confs, bias=False)
-        self.kv_projection_layer = get_layer(in_features_kv, 2*att_dim, layer_confs=layer_confs, bias=True)
+        fac_dim_q = min(q_zooms) // 4
+        fac_dim_kv = min(kv_zooms) // 4
+        
+        self.att_dim = att_dim
+
+        if spatial_ranks is not None:
+            in_f_q = [*spatial_ranks, in_features_q]
+            out_f_q = [*spatial_ranks, att_dim]
+            in_f_kv = [*spatial_ranks, in_features_kv]
+            out_f_kv = [*spatial_ranks, 2*att_dim]
+        else:
+            in_f_q = in_features_q
+            out_f_q = att_dim
+            in_f_kv = in_features_kv
+            out_f_kv = 2*att_dim
+
+ 
+        self.q_projection_layer = get_layer(in_f_q, out_f_q, layer_confs=layer_confs, bias=False)
+        self.kv_projection_layer = get_layer(in_f_kv, out_f_kv, layer_confs=layer_confs, bias=True)
 
         self.out_layer_att = get_layer(att_dim, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
@@ -867,17 +885,17 @@ class MultiChanneldAttention(nn.Module):
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6,requires_grad=True)    
    
         
-        if with_var_att:
-            self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
-            self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
-            self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
-        else:
-            self.pattern_channel = 'b v t N n f ->  (b v) f t N n'
-            self.pattern_channel_reverse = '(b v) f t N n ->  b v t (N n) f'
-            self.mask_pattern = 'b v t N NA f-> (b v N t) 1 1 (f NA)'
+        self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
+        self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
 
-        self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
-        self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
+        if with_var_att:
+            self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
+            self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
+            self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
+        else:
+            self.att_pattern = 'b fv t N NA (NH H)-> (b fv N t) NH (NA) H'
+            self.mask_pattern = 'b v t N NA f-> (b v N t f) 1 1 (NA)'
+            self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
 
 
     def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
@@ -903,14 +921,18 @@ class MultiChanneldAttention(nn.Module):
         
         q = self.q_projection_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
 
+        q = q.reshape(*q.shape[:3], -1, self.att_dim)
+
         q = self.q_headgate_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
-        q = q.view(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
+        q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
 
         if self.with_nh_field:
             kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
 
         kv = self.kv_projection_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
+
+        kv = kv.reshape(*kv.shape[:3], -1, 2 * self.att_dim)
 
         kv = self.kv_headgate_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
 
@@ -922,7 +944,7 @@ class MultiChanneldAttention(nn.Module):
         if self.with_nh_att:
             kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, mask=mask)
         else:
-            kv = kv.view(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
+            kv = kv.reshape(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
             mask = mask.view(*mask.shape[:3], -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
 
         b, fv, t, N, NA, C = q.shape

@@ -12,7 +12,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiChanneldAttention
+from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiFieldAttention
 from .mg_base import Conv, ResConv, FieldLayer#,get_weight_matrix,get_einsum_subscripts
 
 class MG_SingleBlock(nn.Module):
@@ -235,7 +235,7 @@ class MG_MultiBlock(nn.Module):
 
             embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
 
-            block = MultiChanneldAttention(
+            block = MultiFieldAttention(
                         grid_layers[str(field_zoom)],
                         grid_layers[str(att_zoom)],
                         q_zooms,
@@ -248,7 +248,8 @@ class MG_MultiBlock(nn.Module):
                         head_gate_scale_limit = layer_settings.get("head_gate_scale_limit",0.5),
                         with_nh_field = layer_settings.get("with_nh_field",True),
                         with_nh_att = layer_settings.get("with_nh_att",False),
-                        with_var_att= layer_settings.get("var_att", True),
+                        with_var_att= layer_settings.get("with_var_att", False),
+                        spatial_ranks = layer_settings.get("spatial_ranks",None),
                         embedder=embedder,
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb

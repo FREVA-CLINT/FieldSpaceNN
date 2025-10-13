@@ -103,7 +103,7 @@ class EmbLayer(nn.Module):
         self.out_features = out_features_
                 
         if aggregation == 'shift_scale':
-            self.embedding_layer = get_layer([self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_shift_scale
 
         elif aggregation == 'shift':
