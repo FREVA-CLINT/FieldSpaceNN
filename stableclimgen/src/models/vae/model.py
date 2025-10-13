@@ -176,12 +176,11 @@ class VAE(nn.Module):
         :return: Tuple of reconstructed tensor and posterior distribution.
         """
         # Define output shape for reconstruction
-        out_shape = x.shape[-self.dims-1:-1]
-
         if self.var_to_feat:
             v = x.shape[1]
             x = rearrange(x, "b v t w h c -> b 1 t w h (c v)")
 
+        out_shape = x.shape[-self.dims-1:-1]
         posterior = self.encode(x)
         z = posterior.sample() if sample_posterior else posterior.mode()
         dec = self.decode(z)
