@@ -841,8 +841,6 @@ class MultiFieldAttention(nn.Module):
         out_features_field = in_features_q
         att_dim = out_features_field if att_dim is None else att_dim
 
-        
-
         self.emb_layer_q = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
 
         if not self.self_att:
@@ -862,6 +860,8 @@ class MultiFieldAttention(nn.Module):
         fac_dim_q = min(q_zooms) // 4
         fac_dim_kv = min(kv_zooms) // 4
         
+        self.att_dim = att_dim
+
         if spatial_ranks is not None:
             in_f_q = [*spatial_ranks, in_features_q]
             out_f_q = [*spatial_ranks, att_dim]
@@ -922,6 +922,8 @@ class MultiFieldAttention(nn.Module):
         
         q = self.q_projection_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
 
+        q = q.reshape(*q.shape[:3], -1, self.att_dim)
+
         q = self.q_headgate_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
         q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
@@ -930,6 +932,8 @@ class MultiFieldAttention(nn.Module):
             kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
 
         kv = self.kv_projection_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
+
+        kv = kv.reshape(*kv.shape[:3], -1, 2 * self.att_dim)
 
         kv = self.kv_headgate_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
 
