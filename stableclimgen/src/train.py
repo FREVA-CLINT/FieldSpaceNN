@@ -17,7 +17,7 @@ import mlflow
 torch.manual_seed(42)
 
 
-@hydra.main(version_base=None, config_path="../configs/", config_name="mg_transformer_train")
+@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs/", config_name="mg_transformer_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
@@ -72,7 +72,7 @@ def train(cfg: DictConfig) -> None:
         # Log model config
         logger.experiment.config.update(OmegaConf.to_container(
             cfg.model, resolve=True, throw_on_missing=False
-        ))
+        ), allow_val_change=True)
 
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
     
