@@ -75,9 +75,9 @@ class ClimateDataset(Dataset):
         self.var_normalizers = {}
         self.variables_source = variables_source or data_dict["source"]["variables"]
         self.variables_target = variables_target or data_dict["target"]["variables"]
-        if "timesteps" in self.data_dict.keys():
+        if "timesteps" in data_dict.keys():
             self.sample_timesteps = []
-            for t in self.data_dict["timesteps"]:
+            for t in data_dict["timesteps"]:
                 if isinstance(t, int) or "-" not in t:
                     self.sample_timesteps.append(int(t))
                 else:
