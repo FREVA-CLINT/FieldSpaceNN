@@ -11,6 +11,7 @@ from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...utils.utils import EmbedBlockSequential
+from einops import rearrange
 
 
 class VAEBlockConfig:
@@ -74,7 +75,8 @@ class VAE(nn.Module):
                  patch_emb_size: Tuple = (1, 1),
                  patch_emb_kernel: Tuple = (1, 1),
                  concat_cond: bool = False,
-                 spatial_dim_count: int = 2):
+                 spatial_dim_count: int = 2,
+                 var_to_feat=False):
         super().__init__()
 
         in_ch = init_in_ch * (1 + concat_cond)  # Adjust input channels if concat_cond is used
@@ -128,6 +130,8 @@ class VAE(nn.Module):
         self.encoder = EmbedBlockSequential(*enc_blocks)
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
+        self.var_to_feat = var_to_feat
+
         # Define output unpatchifying layer
         self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch, dims=self.dims), spatial_dim_count, dims=self.dims)
 
@@ -172,9 +176,18 @@ class VAE(nn.Module):
         :return: Tuple of reconstructed tensor and posterior distribution.
         """
         # Define output shape for reconstruction
-        out_shape = x.shape[-self.dims-1:-1]
+        if self.var_to_feat:
+            v = x.shape[1]
+            x = rearrange(x, "b v t w h c -> b 1 t w h (c v)")
 
+        out_shape = x.shape[-self.dims-1:-1]
         posterior = self.encode(x)
         z = posterior.sample() if sample_posterior else posterior.mode()
         dec = self.decode(z)
-        return self.out(dec, out_shape=out_shape), posterior
+
+        output = self.out(dec, out_shape=out_shape)
+
+        if self.var_to_feat:
+            output = rearrange(output, "b 1 t w h (c v) -> b v t w h c", v=v)
+
+        return output, posterior

@@ -54,8 +54,10 @@ class MGFieldLayer(nn.Module):
             self.n_channels_in[zoom] = 4**(zoom - field_zoom)
 
         self.n_channels_out = {}
+        self.gammas = nn.ParameterDict()
         for zoom in target_zooms:
             self.n_channels_out[zoom] = 4**(zoom - field_zoom)
+            self.gammas[str(zoom)] = nn.Parameter(torch.ones(1) * 1e-6, requires_grad=True)
 
         in_features = sum(self.n_channels_in.values()) * grid_layer.adjc.shape[1] if with_nh else sum(self.n_channels_in.values())
         out_features = sum(self.n_channels_out.values())
@@ -84,7 +86,7 @@ class MGFieldLayer(nn.Module):
         x = x.split(tuple(self.n_channels_out.values()), dim=-1)
         
         for k, (zoom, n) in enumerate(self.n_channels_out.items()):
-            x_zooms[zoom] = rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv)
+            x_zooms[zoom] = (x_zooms[zoom] if zoom in x_zooms.keys() else 0.0) + rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv) * self.gammas[str(zoom)]
 
         if self.out_zooms is None:
             return x_zooms

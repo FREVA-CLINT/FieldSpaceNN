@@ -248,7 +248,7 @@ class MG_MultiBlock(nn.Module):
                         head_gate_scale_limit = layer_settings.get("head_gate_scale_limit",0.5),
                         with_nh_field = layer_settings.get("with_nh_field",True),
                         with_nh_att = layer_settings.get("with_nh_att",False),
-                        var_att = layer_settings.get("var_att",False),
+                        with_var_att= layer_settings.get("with_var_att", False),
                         spatial_ranks = layer_settings.get("spatial_ranks",None),
                         embedder=embedder,
                         layer_confs=layer_confs,

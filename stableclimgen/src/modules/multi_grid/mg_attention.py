@@ -766,7 +766,7 @@ class MultiZoomFieldAttention(nn.Module):
 
 class MultiFieldAttention(nn.Module):
   
-    def __init__(self, 
+    def __init__(self,
                  grid_layer_field: GridLayer,
                  grid_layer_att: GridLayer,
                  q_zooms: int,
@@ -775,7 +775,7 @@ class MultiFieldAttention(nn.Module):
                  att_dim= None,
                  dropout: float=0.0,
                  num_heads: int=None,
-                 n_head_channels: int=32, 
+                 n_head_channels: int=32,
                  embedder: Dict[str, EmbedderSequential] = {},
                  head_gate = False,
                  head_gate_scale_limit = 0.5,
@@ -784,7 +784,7 @@ class MultiFieldAttention(nn.Module):
                  spatial_ranks = None,
                  with_nh_field = True,
                  with_nh_att = False,
-                 var_att = False,
+                 with_var_att = True,
                  layer_confs: Dict = {},
                  layer_confs_emb= {}) -> None: 
         
@@ -885,18 +885,17 @@ class MultiFieldAttention(nn.Module):
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6,requires_grad=True)    
    
         
-        
         self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
         self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
 
-        if var_att:
+        if with_var_att:
             self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
             self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
             self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
         else:
             self.att_pattern = 'b fv t N NA (NH H)-> (b fv N t) NH (NA) H'
             self.mask_pattern = 'b v t N NA f-> (b v N t f) 1 1 (NA)'
-            self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'            
+            self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
 
 
     def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
