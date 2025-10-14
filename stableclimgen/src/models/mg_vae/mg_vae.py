@@ -215,6 +215,7 @@ class MG_VAE(MG_base_model):
                     out_zooms=block_conf.out_zooms,
                     mult = block_conf.mult,
                     with_nh = block_conf.with_nh,
+                    with_residual=block_conf.with_residual,
                     type= block_conf.type,
                     layer_confs=layer_confs)
             

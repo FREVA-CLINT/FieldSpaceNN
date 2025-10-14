@@ -123,6 +123,7 @@ class MGFieldLayerConfig:
                  field_zoom: int,
                  out_zooms: List=None,
                  with_nh: bool = False,
+                 with_residual: bool = False,
                  mult: int = 2,
                  type: str ='linear',
                  **kwargs):

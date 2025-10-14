@@ -50,7 +50,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         else:
             new_source = source
 
-        loss, loss_dict, _, _, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', post=True)
+        loss, loss_dict, _, _, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', mode="vae")
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
@@ -80,7 +80,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
             new_source = source
 
         loss, loss_dict, output, output_comp, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask,
-                                                                 emb=emb, prefix='val', post=True)
+                                                                 emb=emb, prefix='val', mode="vae")
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
