@@ -1,15 +1,10 @@
-import os
-
 import torch
-from stableclimgen.src.models.mg_transformer.pl_mg_model import MGMultiLoss
-
-from stableclimgen.src.modules.multi_grid.input_output import MG_Difference_Encoder, MG_Encoder
 from pytorch_lightning.utilities import rank_zero_only
 
 from .pl_mg_probabilistic import LightningProbabilisticModel
 from ..diffusion.mg_gaussian_diffusion import GaussianDiffusion
 from ..diffusion.mg_sampler import DDPMSampler, DDIMSampler
-from ..mg_transformer.pl_mg_model import LightningMGModel, check_empty
+from ..mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms
 
 
@@ -20,23 +15,13 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                  lr_groups,
                  lambda_loss_dict,
                  weight_decay=0,
-                 noise_std=0.0,
-                 composed_loss = True,
                  sampler="ddpm", n_samples=1, max_batchsize=-1, mg_encoder_config=None):
         super().__init__(
-            model,  # Main VAE model
+            model,
             lr_groups,
-            {},
-            weight_decay=weight_decay,
-            noise_std=noise_std
+            lambda_loss_dict,
+            weight_decay
         )
-
-        self.loss = MGMultiLoss(lambda_loss_dict, grid_layers=model.grid_layers, max_zoom=max(model.in_zooms))
-
-        self.composed_loss = composed_loss
-
-        # maybe create multi_grid structure here?
-        self.model = model
 
         self.gaussian_diffusion = gaussian_diffusion
         if sampler == "ddpm":
@@ -46,32 +31,25 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
 
-        if mg_encoder_config:
-            self.encoder = MG_Difference_Encoder(
-                out_zooms=mg_encoder_config.out_zooms
-            )
-        else:
-            self.encoder = None
 
-
-    def forward(self, x, diffusion_steps, coords_input, coords_output, sample_configs={}, mask=None, emb=None, dists_input=None, create_pred_xstart=False):
-        x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(x, coords_input, coords_output, sample_configs, mask, emb, dists_input)
+    def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None, pred_xstart=False):
+        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(x_zooms[max(x_zooms.keys())].shape[0],
+                                                                               x_zooms[max(x_zooms.keys())].device)
         model_kwargs = {
-            'coords_input': coords_input,
-            'coords_output': coords_output,
-            'sample_configs': sample_configs
+            'sample_configs': sample_configs,
+            'out_zoom': out_zoom
         }
-        targets, outputs, pred_xstart = self.gaussian_diffusion.training_losses(self.model, x, diffusion_steps, mask, emb, create_pred_xstart=create_pred_xstart, **model_kwargs)
-        return targets, outputs, pred_xstart
+        return self.gaussian_diffusion.training_losses(self.model, x_zooms, diffusion_steps, mask_zooms, emb, create_pred_xstart=pred_xstart, **model_kwargs)
 
     def training_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
-        max_zoom = max(target.keys())
-        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target[max_zoom].shape[0], target[max_zoom].device)
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
 
-        targets, outputs, _ = self(target, diffusion_steps, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input)
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_configs=sample_configs, prefix='train/')
+        loss, loss_dict, _, _, _ = self.get_losses(target.copy(), target, sample_configs,
+                                                                         mask_zooms=mask, emb=emb, prefix='train',
+                                                                         mode="diffusion")
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -80,20 +58,24 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
 
 
     def validation_step(self, batch, batch_idx):
-        source, target, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, _ = batch
-        coords_input, coords_output, mask, rel_dists_input = check_empty(coords_input), check_empty(coords_output), check_empty(mask), check_empty(rel_dists_input)
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        source, target, patch_index_zooms, mask, emb = batch
+
         max_zoom = max(target.keys())
-        diffusion_steps, weights = self.gaussian_diffusion.get_diffusion_steps(target[max_zoom].shape[0], target[max_zoom].device)
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        targets, outputs, pred_xstart = self(target.copy(), diffusion_steps, coords_input, coords_output, sample_configs, mask, emb, rel_dists_input, create_pred_xstart=(batch_idx == 0 and rank_zero_only))
-        loss, loss_dict = self.loss(outputs, targets, mask=mask, sample_configs=sample_configs, prefix='val/')
-
+        loss, loss_dict, output, output_comp, pred_xstart = self.get_losses(target.copy(), target, sample_configs,
+                                                                            mask_zooms=mask, emb=emb, prefix='val',
+                                                                            mode = "diffusion",
+                                                                            pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0))
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch)
+            pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+
+            self.log_tensor_plot(source, output, target, mask, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp)
 
         return loss
 

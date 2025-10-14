@@ -1,0 +1,147 @@
+_target_: stableclimgen.src.models.mg_transformer.pl_mg_diffusion_model.Lightning_MG_diffusion_transformer
+lambda_loss_dict:
+  zooms:
+    MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.001
+    warmup: 2000
+model:
+  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
+  in_zooms:
+  - 5
+  - 4
+  - 3
+  in_features: 1
+  out_features: 1
+  n_head_channels: 16
+  learn_residual: false
+  block_configs:
+    input:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 1
+      - 1
+      - 1
+      out_zooms:
+      - 5
+      - 4
+      - 3
+      layer_settings:
+        type: linear
+        identity_if_equal: true
+    att_1:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms:
+        - 5
+        - 4
+        - 3
+      kv_zooms:
+        - 5
+        - 4
+        - 3
+      layer_settings:
+        mlp_mult: 2
+        att_dim: 256
+        field_zoom: 1
+        att_zoom: 1
+        with_nh_field: true
+        with_nh_att: true
+        embed_confs:
+          embed_names:
+            - MGEmbedder
+          embed_confs: ${embedding}
+          embed_mode: sum
+    att_2:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms:
+        - 5
+        - 4
+        - 3
+      kv_zooms:
+        - 5
+        - 4
+        - 3
+      layer_settings:
+        mlp_mult: 2
+        att_dim: 256
+        field_zoom: 3
+        att_zoom: 2
+        with_nh_field: false
+        with_nh_att: false
+        with_var_att: false
+        embed_confs:
+          embed_names:
+            - MGEmbedder
+          embed_confs: ${embedding}
+          embed_mode: sum
+    att_3:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms:
+        - 5
+        - 4
+        - 3
+      kv_zooms:
+        - 5
+        - 4
+        - 3
+      layer_settings:
+        mlp_mult: 2
+        att_dim: 256
+        field_zoom: 3
+        att_zoom: 2
+        with_nh_field: false
+        with_nh_att: false
+        embed_confs:
+          embed_names:
+            - MGEmbedder
+          embed_confs: ${embedding}
+          embed_mode: sum
+    att_4:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms:
+        - 5
+        - 4
+        - 3
+      kv_zooms:
+        - 5
+        - 4
+        - 3
+      layer_settings:
+        mlp_mult: 2
+        att_dim: 256
+        field_zoom: 1
+        att_zoom: 1
+        with_nh_field: true
+        with_nh_att: true
+        with_var_att: false
+        embed_confs:
+          embed_names:
+            - MGEmbedder
+          embed_confs: ${embedding}
+          embed_mode: sum
+    output:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features:
+      - 1
+      - 1
+      - 1
+      zooms:
+      - 5
+      - 4
+      - 3
+      layer_settings:
+        type: linear
+        identity_if_equal: true
+    conservative:
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
+gaussian_diffusion:
+  _target_: stableclimgen.src.models.diffusion.mg_respace.SpacedDiffusion
+  diffusion_steps: 1000
+  diffusion_step_scheduler:
+    5: "linear"
+    4: "linear"
+    3: "linear"

@@ -149,15 +149,18 @@ class LightningMGModel(pl.LightningModule):
     def forward(self, x, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None) -> torch.Tensor:
         return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=out_zoom)
 
-    def get_losses(self, source, target, sample_configs, mask_zooms=None, emb=None, prefix='', post=False):
+    def get_losses(self, source, target, sample_configs, mask_zooms=None, emb=None, prefix='', mode="default", pred_xstart=False):
 
         loss_dict_total = {}
         total_loss = 0
         posterior = None
 
         if self.loss_zooms.has_elements:
-            if post:
+            if mode == "vae":
                 output, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+            elif mode == "diffusion":
+                target, output, pred_xstart = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms,
+                                                   emb=emb, pred_xstart=pred_xstart)
             else:
                 output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
@@ -170,22 +173,28 @@ class LightningMGModel(pl.LightningModule):
         if self.loss_composed.has_elements:
 
             max_zoom = max(target.keys())
-            target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
 
-            if post:
+            if mode == "vae":
                 output_comp, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb,
                                    out_zoom=max_zoom)
+            elif mode == "diffusion":
+                target, output_comp, pred_xstart_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms,
+                                                             emb=emb, out_zoom=max_zoom, pred_xstart=pred_xstart)
+
             else:
                 output_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=max_zoom)
 
+            target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
             loss, loss_dict = self.loss_composed(output_comp, target_comp, mask=mask_zooms, sample_configs=sample_configs, prefix=f'{prefix}/composed_')
             total_loss += loss
             loss_dict_total.update(loss_dict)
         else:
             output_comp = None
 
-        if post:
+        if mode=="vae":
             return total_loss, loss_dict_total, output, output_comp, posterior
+        elif mode=="diffusion":
+            return total_loss, loss_dict_total, output, output_comp, pred_xstart
         else:
             return total_loss, loss_dict_total, output, output_comp
 
@@ -213,7 +222,7 @@ class LightningMGModel(pl.LightningModule):
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         
-        loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val', post=False)
+        loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
