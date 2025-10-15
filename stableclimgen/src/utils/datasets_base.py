@@ -400,9 +400,6 @@ class BaseDataset(Dataset):
             time_zooms[zoom] = data_time_zoom
             mask_mapping_zooms[zoom] = drop_mask_zoom
 
-        sample_configs = self.sampling_zooms
-        for zoom in self.sampling_zooms.keys():
-            sample_configs[zoom]['patch_index'] = int(self.index_map[zoom][index][-1])
         
         patch_index_zooms = {}
         for zoom in self.sampling_zooms.keys():
