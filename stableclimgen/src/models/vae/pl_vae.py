@@ -150,7 +150,7 @@ class LightningVAE(pl.LightningModule):
             outputs = self.model.encode(target_data).sample()
         elif self.mode == "decode":
             outputs = self.model.decode(source_data)
-        return outputs
+        return {"output": outputs, "gt": target_data}
 
     def log_tensor_plot(self, gt_tensor: torch.Tensor, in_tensor: torch.Tensor, rec_tensor: torch.Tensor,
                         target_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
