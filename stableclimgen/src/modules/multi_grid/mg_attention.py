@@ -781,6 +781,7 @@ class MultiFieldAttention(nn.Module):
                  head_gate_scale_limit = 0.5,
                  lora = False,
                  rank = 32,
+                 factorize_dim = -1,
                  spatial_ranks = None,
                  with_nh_field = True,
                  with_nh_att = False,
@@ -789,7 +790,13 @@ class MultiFieldAttention(nn.Module):
                  layer_confs_emb= {}) -> None: 
         
         super().__init__()
-        
+
+        if grid_layer_att.zoom <= 0 and with_nh_att:
+            with_nh_att = False
+            self.global_att = True
+        else:
+            self.global_att = False
+
         layer_confs_kv = copy.deepcopy(layer_confs)
         layer_confs_kv['bias'] = True
 
@@ -810,6 +817,8 @@ class MultiFieldAttention(nn.Module):
        # self.gammas = nn.ParameterDict()
 
         #att_dim = out_features if att_dim is None else att_dim
+        
+
         self.q_zooms = q_zooms
         self.kv_zooms = kv_zooms
         
@@ -854,24 +863,40 @@ class MultiFieldAttention(nn.Module):
         else:
             self.q_headgate_layer = IdentityLayer()
             self.kv_headgate_layer = IdentityLayer()
-      #  if lora:
-      #      LoRA(in_features_q, att_dim, embedder=embedder, rank=rank, layer_confs=layer_confs, layer_confs_emb=layer_confs_emb)
-      #  else: 
-        fac_dim_q = min(q_zooms) // 4
-        fac_dim_kv = min(kv_zooms) // 4
-        
+
+        n_f = math.log(in_features_q, factorize_dim) if factorize_dim > -1 else 1
+
+        if factorize_dim > -1 and abs(round(n_f) - n_f) > 1e-10:
+            Warning('number of features doesnt match factorize_dim. Factorization is not applied')
+
+        if factorize_dim > -1 and abs(round(n_f) - n_f) < 1e-10:
+            n_f = int(n_f)
+            in_features_q = [4]*n_f
+            in_features_kv = [*[4]*n_f,1] if not with_nh_field else [*[4]*n_f,9,1]
+            out_dim_q = in_features_q
+            out_dim_kv = [*[4]*n_f,2] if not with_nh_field else [*[4]*n_f,1,2]
+            att_dim = int(torch.tensor(out_dim_q).prod())
+
+            io_features_mlp = in_features_q
+        else:
+            in_features_kv = [in_features_kv]
+            in_features_q = [in_features_q]
+            out_dim_q = [att_dim] 
+            out_dim_kv = [2*att_dim]
+            io_features_mlp = out_features_field
+
         self.att_dim = att_dim
 
         if spatial_ranks is not None:
-            in_f_q = [*spatial_ranks, in_features_q]
-            out_f_q = [*spatial_ranks, att_dim]
-            in_f_kv = [*spatial_ranks, in_features_kv]
-            out_f_kv = [*spatial_ranks, 2*att_dim]
+            in_f_q = [*spatial_ranks, *in_features_q]
+            out_f_q = [*spatial_ranks, *out_dim_q]
+            in_f_kv = [*spatial_ranks, *in_features_kv]
+            out_f_kv = [*spatial_ranks, *out_dim_kv]
         else:
             in_f_q = in_features_q
-            out_f_q = att_dim
+            out_f_q = out_dim_q
             in_f_kv = in_features_kv
-            out_f_kv = 2*att_dim
+            out_f_kv = out_dim_kv
 
  
         self.q_projection_layer = get_layer(in_f_q, out_f_q, layer_confs=layer_confs, bias=False)
@@ -880,7 +905,7 @@ class MultiFieldAttention(nn.Module):
         self.out_layer_att = get_layer(att_dim, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
         self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
-        self.mlp = MLP_fac(out_features_field, out_features_field, mult, dropout, layer_confs=layer_confs, gamma=True) 
+        self.mlp = MLP_fac(io_features_mlp, io_features_mlp, mult, dropout, layer_confs=layer_confs, gamma=True) 
         
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6,requires_grad=True)    
    
@@ -925,7 +950,10 @@ class MultiFieldAttention(nn.Module):
 
         q = self.q_headgate_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
-        q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
+        if self.global_att:
+            q = q.reshape(*q.shape[:3], 1, -1, q.shape[-1])
+        else:
+            q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
 
         if self.with_nh_field:
             kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
@@ -943,9 +971,14 @@ class MultiFieldAttention(nn.Module):
 
         if self.with_nh_att:
             kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, mask=mask)
+        
+        elif self.global_att:
+            kv = kv.reshape(*kv.shape[:3], 1, -1, kv.shape[-1])
+            mask = mask.view(*mask.shape[:3], 1, -1, mask.shape[-1]) if mask is not None else None
         else:
             kv = kv.reshape(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
             mask = mask.view(*mask.shape[:3], -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
+
 
         b, fv, t, N, NA, C = q.shape
 
@@ -966,7 +999,7 @@ class MultiFieldAttention(nn.Module):
 
         x_mlp = self.mlp(self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)]), emb=emb, sample_configs=sample_configs[int(zoom_field)])
         
-        x = x + x_mlp
+        x = x + x_mlp.reshape_as(x)
 
         x = x.split(tuple(self.n_channels_q.values()), dim=-1)
 

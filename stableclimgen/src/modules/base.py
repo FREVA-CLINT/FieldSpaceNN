@@ -284,8 +284,14 @@ class MLP_fac(nn.Module):
       
         super().__init__() 
         
-        self.layer1 = get_layer(in_features, int(in_features * mult), layer_confs=layer_confs, bias=True)
-        self.layer2 = get_layer(int(in_features * mult), out_features, layer_confs=layer_confs, bias=True)
+        if isinstance(in_features, list):
+            out_features_1 = in_features
+        else:
+            out_features_1 = in_features*mult
+        
+
+        self.layer1 = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
+        self.layer2 = get_layer(out_features_1, out_features, layer_confs=layer_confs, bias=True)
         self.dropout = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.activation = nn.SiLU()
 
