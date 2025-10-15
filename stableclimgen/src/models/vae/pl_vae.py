@@ -21,7 +21,7 @@ class LightningVAE(pl.LightningModule):
     """
 
     def __init__(self, model: VAE, lr: float, lr_warmup: Optional[int] = None, ema_rate: float = 0.999,
-                 loss: Optional[_Loss] = None, kl_weight: float = 1e-6):
+                 loss: Optional[_Loss] = None, kl_weight: float = 1e-6, mode="encode_decode"):
         """
         Initializes the LightningVAE with model, optimizer parameters, and optional EMA and warm-up configurations.
 
@@ -43,6 +43,7 @@ class LightningVAE(pl.LightningModule):
         self.lr_warmup = lr_warmup  # Warm-up steps if applicable
         self.loss = loss or torch.nn.MSELoss()  # Use MSE if no custom loss is provided
         self.kl_weight = kl_weight  # KL divergence weighting factor
+        self.mode = mode
         self.save_hyperparameters(ignore=['model'])  # Save hyperparameters, excluding model
 
     def on_before_zero_grad(self, optimizer: Optimizer) -> None:
@@ -133,6 +134,23 @@ class LightningVAE(pl.LightningModule):
             'val/rec_loss': rec_loss.mean(),
             'val/total_loss': loss.mean()
         }, sync_dist=True)
+
+    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> None:
+        """
+        Executes a single validation step, calculating and logging validation losses, and optionally plotting reconstructions.
+
+        :param batch: A tuple containing input tensors for validation.
+        :param batch_idx: The index of the current batch.
+        """
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+
+        if self.mode == "encode_decode":
+            outputs, posterior = self(target_data, emb, mask_data)
+        elif self.mode == "encode":
+            outputs = self.model.encode(target_data).sample()
+        elif self.mode == "decode":
+            outputs = self.model.decode(source_data)
+        return outputs
 
     def log_tensor_plot(self, gt_tensor: torch.Tensor, in_tensor: torch.Tensor, rec_tensor: torch.Tensor,
                         target_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
