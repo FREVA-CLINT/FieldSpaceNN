@@ -459,7 +459,7 @@ class BaseDataset(Dataset):
             max_zoom = max(source_zooms.keys())
             source_zooms = decode_zooms(source_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
             target_zooms = decode_zooms(target_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
-            mask_zooms = decode_masks(mask_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
+         #   mask_zooms = decode_masks(mask_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
 
         sample_configs = torch.tensor([])
 
