@@ -7,7 +7,7 @@ import torch
 import xarray as xr
 from omegaconf import ListConfig
 from torch.utils.data import Dataset
-from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,encode_zooms,to_zoom, apply_zoom_diff, get_matching_time_patch
+from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,encode_zooms,to_zoom, apply_zoom_diff, get_matching_time_patch, decode_zooms,decode_masks
 
 import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
@@ -43,7 +43,8 @@ class BaseDataset(Dataset):
                  deterministic=False,
                  output_binary_mask=False,
                  output_differences=True,
-                 apply_diff = True
+                 apply_diff = True,
+                 output_max_zoom_only = False,
                  ):
         
         super(BaseDataset, self).__init__()
@@ -61,6 +62,7 @@ class BaseDataset(Dataset):
         self.output_binary_mask = output_binary_mask
         self.mask_zooms = mask_zooms
         self.apply_diff = apply_diff
+        self.output_max_zoom_only = output_max_zoom_only
         
         self.p_dropout_all_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()]))
         self.p_dropout_all = p_dropout_all
@@ -82,6 +84,7 @@ class BaseDataset(Dataset):
             else:
                 all_files.append(data['files'])
         
+        self.zoom_patch_sample = [v['zoom_patch_sample'] for v in self.sampling_zooms.values()]
         self.zoom_time_steps_past = [v['n_past_ts'] for v in self.sampling_zooms.values()]
         self.zoom_time_steps_future = [v['n_future_ts'] for v in self.sampling_zooms.values()]
         self.zooms = [z for z in self.sampling_zooms.keys()]
@@ -94,6 +97,12 @@ class BaseDataset(Dataset):
        # self.variables_target_train = variables_target_train if variables_target_train is not None else self.variables_target
 
     #    self.var_indices = dict(zip(self.variables_source_train, np.arange(len(self.variables_source_train))))
+        unique_time_steps_past = len(torch.tensor(self.zoom_time_steps_past).unique())==1
+        unique_time_steps_future = len(torch.tensor(self.zoom_time_steps_future).unique())==1
+        unique_zoom_patch_sample = len(torch.tensor(self.zoom_patch_sample).unique())==1
+
+        self.load_once = unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample
+
 
         if "timesteps" in self.data_dict.keys():
             self.sample_timesteps = []
@@ -351,6 +360,8 @@ class BaseDataset(Dataset):
         source_zooms = {}
         time_zooms = {}
         mask_mapping_zooms = {}
+
+        loaded = False
         for zoom in self.zooms:
             file_index, time_index, patch_index = self.index_map[zoom][index]
 
@@ -364,7 +375,9 @@ class BaseDataset(Dataset):
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
                 mapping_zoom = zoom
 
-            ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
+            if self.single_source and not loaded:
+                ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
+                loaded = True if self.load_once else False
 
             if drop_mask_input is not None:
                 ts_start = self.max_time_step_past - self.sampling_zooms[zoom]['n_past_ts']
@@ -438,6 +451,15 @@ class BaseDataset(Dataset):
                       'DensityEmbedder': ({k: v for k, v in mask_zooms.items()}, torch.tensor(group_indices)),
                       'TimeEmbedder': time_zooms}
         
+        if self.output_max_zoom_only:
+            sample_configs = self.sampling_zooms
+            for key, value in patch_index_zooms.items():
+                if key in sample_configs:
+                    sample_configs[key]['patch_index'] = value
+            max_zoom = max(source_zooms.keys())
+            source_zooms = decode_zooms(source_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
+            target_zooms = decode_zooms(target_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
+            mask_zooms = decode_masks(mask_zooms, sample_configs=sample_configs, out_zoom=max_zoom)
 
         sample_configs = torch.tensor([])
 

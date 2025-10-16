@@ -848,17 +848,74 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
         torch.Tensor: The reconstructed tensor at the desired out_zoom level, shape [..., 4**(in_zoom - out_zoom)*N, C]
     """
     x = 0
+    remove_batch_dim = False
     for zoom in sorted(x_zooms.keys(),reverse=True):
         if zoom > out_zoom:
             continue  # Skip higher-resolution than target
-
-        x_zoom = get_matching_time_patch(x_zooms[zoom],zoom,out_zoom, sample_configs)  # shape [..., N, C]
+        if x_zooms[zoom].ndim == 4:
+            x_zoom = x_zooms[zoom].unsqueeze(dim=0)
+            remove_batch_dim = True
+        else:
+            x_zoom = x_zooms[zoom]
+        x_zoom = get_matching_time_patch(x_zoom,zoom,out_zoom, sample_configs)  # shape [..., N, C]
         up_factor = 4 ** (out_zoom - zoom)
         x_zoom = x_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
 
         x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
+    
+    if remove_batch_dim:
+        return {out_zoom: x.squeeze(dim=0)}
+    
+    else:
+        return {out_zoom: x}
 
-    return {out_zoom: x}
+
+def decode_masks(mask_zooms: dict, sample_configs, out_zoom):
+    """
+    Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
+
+    Args:
+        x_zooms (dict): Dictionary mapping zoom levels (int) to tensors of shape [..., N, C]
+                        representing residuals or features at each zoom level.
+        in_zoom (int): The coarsest (lowest resolution) zoom level available in x_zooms.
+        out_zoom (int): The target (finest) zoom level to decode to.
+
+    Returns:
+        torch.Tensor: The reconstructed tensor at the desired out_zoom level, shape [..., 4**(in_zoom - out_zoom)*N, C]
+    """
+    mask = 0
+    norm_mask = 0
+    remove_batch_dim = False
+    is_bool = mask_zooms[max(mask_zooms.keys())].dtype == torch.bool
+
+    for zoom in sorted(mask_zooms.keys(),reverse=True):
+        if zoom > out_zoom:
+            continue  # Skip higher-resolution than target
+        if mask_zooms[zoom].ndim == 4:
+            mask_zoom = mask_zooms[zoom].unsqueeze(dim=0)
+            remove_batch_dim = True
+        else:
+            mask_zoom = mask_zooms[zoom]
+        mask_zoom = get_matching_time_patch(mask_zoom,zoom,out_zoom, sample_configs)  # shape [..., N, C]
+        up_factor = 4 ** (out_zoom - zoom)
+        mask_zoom = mask_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
+
+        mask = mask + mask_zoom.view(*mask_zoom.shape[:-3],-1,mask_zoom.shape[-1])
+
+        if not is_bool:
+            norm_mask = norm_mask + (mask_zoom.view(*mask_zoom.shape[:-3],-1,mask_zoom.shape[-1]) > 0).float()
+    
+    if is_bool:
+        mask = mask == len(mask_zooms.keys())
+    else:
+        mask = mask/norm_mask
+        mask.nan_to_num()
+
+    if remove_batch_dim:
+        return {out_zoom: mask.squeeze(dim=0)}
+    
+    else:
+        return {out_zoom: mask}
 
 
 def remap_healpix_to_any(output, variables, indices, lat_dim, lon_dim):
