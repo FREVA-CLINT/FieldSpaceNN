@@ -84,19 +84,14 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, target, mask, emb, coords_input, coords_output, sample_configs, dists_input):
-        interp_x, coords_input, coords_output, sample_configs, mask, emb, dists_input = self.prepare_inputs(target,
-                                                                                                         coords_input,
-                                                                                                         coords_output,
-                                                                                                         sample_configs,
-                                                                                                         mask, emb,
-                                                                                                         dists_input)
+    def _predict_step(self, source, target, patch_index_zooms, mask, emb):
+        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         model_kwargs = {
-            'coords_input': coords_input,
-            'coords_output': coords_output,
             'sample_configs': sample_configs
         }
+        max_zoom = max(target.keys())
 
         outputs = self.sampler.sample_loop(self.model, source, mask, progress=True, emb=emb, **model_kwargs)
-        outputs = decode_zooms(outputs, max(outputs.keys()))
+        outputs = decode_zooms(outputs.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
         return outputs
