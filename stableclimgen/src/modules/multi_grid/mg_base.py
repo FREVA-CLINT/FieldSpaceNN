@@ -11,7 +11,7 @@ import copy
 from ..base import get_layer, IdentityLayer, LinEmbLayer, MLP_fac, LayerNorm
 from ...modules.grids.grid_layer import GridLayer, Interpolator, get_nh_idx_of_patch, get_idx_of_patch
 from ...modules.embedding.embedding_layers import RandomFourierLayer
-from ...modules.embedding.embedder import EmbedderSequential,MGEmbedder
+from ...modules.embedding.embedder import EmbedderSequential
 
 from ...modules.embedding.embedder import get_embedder
 

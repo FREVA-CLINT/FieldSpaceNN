@@ -6,6 +6,8 @@ DensityEmbedder:
   in_channels: 1
   embed_dim: 64
   shared: false
+  layer_confs:
+    n_groups: 4
 UncertaintyEmbedder:
   in_channels: 1
   embed_dim: 64
@@ -36,12 +38,19 @@ MGEmbedder:
   shared: false
   in_channels: 3
   embed_dim: 64
-  mg_emb_confs:
-    zooms: [3,4,6]
-    features: [16,16,16]
-    n_groups: [1,1,1]
-    init_methods: [spherical_harmonics, spherical_harmonics, spherical_harmonics]
+  n_groups: 4
+  init_method: spherical_harmonics
   layer_confs:
-    n_groups: 3
-    rank_feat: 1
-    bias: false
+    n_groups: 4
+SharedMGEmbedder:
+  shared: false
+  in_channels: 3
+  embed_dim: 64
+  mg_emb_confs:
+    diff_mode: false
+    zooms: [1,3]
+    features: [64,64]
+    n_groups: [4,4]
+    init_methods: [spherical_harmonics,spherical_harmonics]
+  layer_confs:
+    n_groups: 4

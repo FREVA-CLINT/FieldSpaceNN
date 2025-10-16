@@ -133,7 +133,10 @@ class Embedding_interpolator(nn.Module):
 
         return e_inter.view(*e_inter.shape[:3],-1,e_inter.shape[-1])
 
-class MGEmbedder(BaseEmbedder):
+#class Mmbedder(BaseEmbedder):
+
+
+class SharedMGEmbedder(BaseEmbedder):
     """
     A neural network module to embed longitude and latitude coordinates.
 

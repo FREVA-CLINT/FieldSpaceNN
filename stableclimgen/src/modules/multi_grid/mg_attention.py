@@ -13,7 +13,7 @@ from ..factorization import get_cp_tensor,get_cp_tensors, get_cp_equation
 from ...modules.grids.grid_layer import GridLayer
 from ...modules.transformer.transformer_base import SelfAttention,safe_scaled_dot_product_attention
 
-from ...modules.embedding.embedder import EmbedderSequential,MGEmbedder
+from ...modules.embedding.embedder import EmbedderSequential
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch, get_sample_configs
 
 
