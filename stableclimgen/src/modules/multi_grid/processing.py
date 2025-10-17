@@ -13,7 +13,7 @@ from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
 from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiFieldAttention
-from .mg_base import Conv, ResConv, FieldLayer#,get_weight_matrix,get_einsum_subscripts
+from .mg_base import Conv, ResConv
 
 class MG_SingleBlock(nn.Module):
   

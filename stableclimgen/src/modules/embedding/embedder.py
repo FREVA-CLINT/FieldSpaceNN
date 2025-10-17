@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 from torch import ModuleDict
 
-from .embedding_layers import RandomFourierLayer, SinusoidalLayer, TimeScaleLayer
+from .embedding_layers import SinusoidalLayer, TimeScaleLayer, RandomFourierLayer, get_mg_embeddings
 from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch,RelativeCoordinateManager
 from ...utils.helpers import expand_tensor
-from ..base import get_layer,IdentityLayer,MLP_fac
 
+from ..base import get_layer,IdentityLayer,MLP_fac
 
 
 class BaseEmbedder(nn.Module):
@@ -135,6 +135,64 @@ class Embedding_interpolator(nn.Module):
 
 #class Mmbedder(BaseEmbedder):
 
+    
+class MGEmbedder(BaseEmbedder):
+
+
+    def __init__(self, name: str, in_channels:int, embed_dim: int, grid_layers=None, zoom=None, n_groups=1, init_method='spherical_harmonics', **kwargs) -> None:
+
+        in_channels = 2
+
+        super().__init__(name, in_channels, embed_dim)
+
+        mg_emb_confs = {}
+        mg_emb_confs['zooms'] = [zoom]
+        mg_emb_confs['features'] = [embed_dim]
+        mg_emb_confs['n_groups'] = [n_groups]
+        mg_emb_confs['init_methods'] = [init_method]
+
+        self.mg_embedding = get_mg_embeddings(mg_emb_confs,
+                                              grid_layers)[str(zoom)]
+        self.zoom = zoom
+
+        self.grid_layer = grid_layers[str(zoom)]
+        # keep batch, spatial, variable and channel dimensions
+        self.keep_dims = ["b", "v", "t", "s", "c"]
+
+        if n_groups ==1:
+            self.get_emb_fcn = self.get_embeddings
+        else:
+            self.get_emb_fcn = self.get_embeddings_from_var_idx
+        
+
+    def get_embeddings(self, var_indices):
+        return self.mg_embedding[var_indices*0]
+    
+    def get_embeddings_from_var_idx(self, var_indices):
+        return self.mg_embedding[var_indices]
+    
+
+    def get_patch(self, embs: torch.Tensor, sample_configs={}):
+    
+        idx = self.grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
+
+        idx = idx.view(idx.shape[0],1,-1,1)
+
+        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:2], idx.shape[-2], embs.shape[-1]))
+
+        return embs
+    
+    
+    def forward(self, var_indices, sample_configs={},**kwargs):
+
+        get_emb_fcn = self.get_emb_fcn
+
+        embs = get_emb_fcn(var_indices)
+        embs = self.get_patch(embs, sample_configs=sample_configs)
+        embs = embs.unsqueeze(dim=2)
+
+        return embs
+    
 
 class SharedMGEmbedder(BaseEmbedder):
     """

@@ -449,6 +449,7 @@ class BaseDataset(Dataset):
 
         embed_data = {'GroupEmbedder': torch.tensor(group_indices),
                       'DensityEmbedder': ({k: v for k, v in mask_zooms.items()}, torch.tensor(group_indices)),
+                      'MGEmbedder': torch.tensor(group_indices),
                       'TimeEmbedder': time_zooms}
         
         if self.output_max_zoom_only:
