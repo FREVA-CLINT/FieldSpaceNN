@@ -62,16 +62,23 @@ class BatchReshapeAllocator:
                     data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
                                                         "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
                                                         n_patch=n_patch, n_steps=n_steps)
-                    mask_zooms[zoom] = rearrange(mask_zooms[zoom],
-                                                 "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
-                                                 n_patch=n_patch, n_steps=n_steps)
+                    
                     patch_index_zooms[zoom] = patch_index_zooms[zoom].repeat_interleave(repeats=n_patch, dim=0)
-                    embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
+                    
+
+            for zoom in mask_zooms.keys():
+                n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
+                n_patch = nt // n_steps
+                embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
                                                                        "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
                                                                        n_patch=n_patch, n_steps=n_steps)
-                    embed_data["TimeEmbedder"][zoom] = rearrange(embed_data["TimeEmbedder"][zoom],
+                embed_data["TimeEmbedder"][zoom] = rearrange(embed_data["TimeEmbedder"][zoom],
                                                                  "b (n_patch n_steps) -> (b n_patch) n_steps",
                                                                  n_patch=n_patch, n_steps=n_steps)
+                mask_zooms[zoom] = rearrange(mask_zooms[zoom],
+                                                 "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
+                                                 n_patch=n_patch, n_steps=n_steps)
+                
             if n_patch is not None:
                 embed_data["GroupEmbedder"] = embed_data["GroupEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
 
