@@ -119,15 +119,6 @@ class MG_VAE(MG_base_model):
                                       first_feature_only=self.predict_var)
             block.out_features = in_features
 
-        elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
-            block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
-                                block_conf.features,
-                                n_groups=check_get([block_conf, kwargs, {'n_groups': 1}], "n_groups"),
-                                zooms=in_zooms,
-                                init_mode=check_get([block_conf, kwargs, {'init_mode': "fourier_sphere"}], "init_mode"),
-                                layer_confs=layer_confs
-                                )
-            block.out_zooms = in_zooms
 
         elif isinstance(block_conf, MGSelfProcessingConfig):
             layer_settings = block_conf.layer_settings
@@ -228,7 +219,8 @@ class MG_VAE(MG_base_model):
 
 
     def vae_encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
-        emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
 
         for k, block in enumerate(self.encoder_blocks.values()):
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)

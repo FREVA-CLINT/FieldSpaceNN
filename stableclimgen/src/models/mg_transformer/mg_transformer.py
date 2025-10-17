@@ -217,6 +217,7 @@ class MG_Transformer(MG_base_model):
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
         emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
 
        # x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
        # mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
