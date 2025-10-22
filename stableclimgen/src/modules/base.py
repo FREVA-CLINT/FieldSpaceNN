@@ -285,9 +285,9 @@ class MLP_fac(nn.Module):
         super().__init__() 
         
         if isinstance(in_features, list):
-            out_features_1 = in_features
+            out_features_1 = [int(in_feat*mult) for in_feat in in_features]
         else:
-            out_features_1 = in_features*mult
+            out_features_1 = int(in_features*mult)
         
 
         self.layer1 = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
