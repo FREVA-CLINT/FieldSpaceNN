@@ -32,14 +32,16 @@ class MGFieldLayer(nn.Module):
   
     def __init__(self, 
                  grid_layer,
+                 x_zooms: List,
                  in_zooms: List,
                  target_zooms: List,
                  field_zoom: int,
                  out_zooms: List=None,
+                 in_features: int=1,
+                 target_features: List=[1],
                  type = 'linear',
                  mult: int=2,
                  with_nh=False,
-                 with_residual=False,
                  layer_confs: Dict={}) -> None: 
         
         super().__init__()
@@ -50,33 +52,40 @@ class MGFieldLayer(nn.Module):
         self.in_zooms = in_zooms
         self.field_zoom = field_zoom
         self.n_channels_in = {}
+
+        self.in_features_dict = dict(zip(x_zooms, in_features))
+        self.target_features_dict = dict(zip(target_zooms, target_features))
+
+        self.out_features = [self.target_features_dict[zoom] if zoom in self.target_features_dict.keys() else self.in_features_dict[zoom] for zoom in out_zooms]
+
+        self.total_dim_in = []
+        self.n_in = {}
         for zoom in in_zooms:
-            self.n_channels_in[zoom] = 4**(zoom - field_zoom)
+            n_in = 4**(zoom - field_zoom)
+            self.n_in[zoom] = n_in
+            self.total_dim_in.append(n_in * self.in_features_dict[zoom])
 
-        self.n_channels_out = {}
-        self.with_residual = with_residual
+        self.total_dim_out = []
+        self.n_out = {}
         for zoom in target_zooms:
-            self.n_channels_out[zoom] = 4**(zoom - field_zoom)
+            n_out = 4**(zoom - field_zoom)
+            self.n_out[zoom] = n_out
+            self.total_dim_out.append(n_out * self.target_features_dict[zoom])
 
-        if self.with_residual:
-            self.gammas = nn.ParameterDict()
-            for zoom in target_zooms:
-                self.gammas[str(zoom)] = nn.Parameter(torch.ones(1) * 1e-6, requires_grad=True)
-
-        in_features = sum(self.n_channels_in.values()) * grid_layer.adjc.shape[1] if with_nh else sum(self.n_channels_in.values())
-        out_features = sum(self.n_channels_out.values())
+        in_features =  sum(self.total_dim_in) * grid_layer.adjc.shape[1] if with_nh else sum(self.total_dim_in)
+        out_features = sum(self.total_dim_out)
 
         if type == 'linear':
             self.layer = get_layer(in_features, out_features, layer_confs=layer_confs)
         else: 
             self.layer = MLP_fac(in_features, out_features, mult=mult)
 
-        self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
-        self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
+        self.pattern_channel = 'b v t N n f ->  b v t N (n f)'
+        self.pattern_channel_reverse = 'b v t N (n f) ->  b v t (N n) f'
 
     def forward(self, x_zooms, emb=None, sample_configs={}, **kwargs):
         
-        b,nv,t,_,f = x_zooms[list(self.n_channels_in.keys())[0]].shape
+        nv = x_zooms[list(self.n_in.keys())[0]].shape[1]
 
         x = combine_zooms(x_zooms, out_zoom=self.field_zoom, zooms=self.in_zooms)
 
@@ -87,13 +96,10 @@ class MGFieldLayer(nn.Module):
 
         x = self.layer(x, emb=emb, sample_configs=sample_configs[self.field_zoom])
 
-        x = x.split(tuple(self.n_channels_out.values()), dim=-1)
+        x = x.split(tuple(self.total_dim_out), dim=-1)
         
-        for k, (zoom, n) in enumerate(self.n_channels_out.items()):
-            if self.with_residual:
-                x_zooms[zoom] = (x_zooms[zoom] if zoom in x_zooms.keys() else 0.0) + rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv) * self.gammas[str(zoom)]
-            else:
-                x_zooms[zoom] = rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv)
+        for k, (zoom, n) in enumerate(self.n_out.items()):
+            x_zooms[zoom] = rearrange(x[k], self.pattern_channel_reverse, n=n, f=self.target_features_dict[zoom],v=nv)
 
         if self.out_zooms is None:
             return x_zooms

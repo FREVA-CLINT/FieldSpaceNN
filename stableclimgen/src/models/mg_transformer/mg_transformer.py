@@ -155,17 +155,17 @@ class MG_Transformer(MG_base_model):
 
                 block = MGFieldLayer(
                         self.grid_layers[str(block_conf.field_zoom)],
+                        in_zooms,
                         block_conf.in_zooms,
                         block_conf.target_zooms,
                         block_conf.field_zoom,
                         out_zooms=block_conf.out_zooms,
+                        in_features=in_features,
+                        target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                         mult = block_conf.mult,
                         with_nh = block_conf.with_nh,
-                        with_residual = block_conf.with_residual,
                         type= block_conf.type,
                         layer_confs=layer_confs)
-                
-                block.out_features = in_features
 
             elif isinstance(block_conf, Conv_EncoderDecoderConfig):
                 layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")

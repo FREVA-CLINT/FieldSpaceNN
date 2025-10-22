@@ -186,16 +186,18 @@ class MG_VAE(MG_base_model):
             layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
 
             block = MGFieldLayer(
-                    self.grid_layers[str(block_conf.field_zoom)],
-                    block_conf.in_zooms,
-                    block_conf.target_zooms,
-                    block_conf.field_zoom,
-                    out_zooms=block_conf.out_zooms,
-                    mult = block_conf.mult,
-                    with_nh = block_conf.with_nh,
-                    with_residual=block_conf.with_residual,
-                    type= block_conf.type,
-                    layer_confs=layer_confs)
+                        self.grid_layers[str(block_conf.field_zoom)],
+                        in_zooms,
+                        block_conf.in_zooms,
+                        block_conf.target_zooms,
+                        block_conf.field_zoom,
+                        out_zooms=block_conf.out_zooms,
+                        in_features=in_features,
+                        target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
+                        mult = block_conf.mult,
+                        with_nh = block_conf.with_nh,
+                        type= block_conf.type,
+                        layer_confs=layer_confs)
             
             block.out_features = in_features
         
