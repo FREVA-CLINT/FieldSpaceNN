@@ -12,7 +12,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiFieldAttention
+from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiFieldAttention,MultiFieldAttention2
 from .mg_base import Conv, ResConv
 
 class MG_SingleBlock(nn.Module):
@@ -256,6 +256,28 @@ class MG_MultiBlock(nn.Module):
                         layer_confs_emb=layer_confs_emb
                         )
             
+        elif type == 'channel_att2':
+            
+            field_zoom = layer_settings.get("field_zoom", att_zoom)
+
+            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
+
+            block = MultiFieldAttention2(
+                        grid_layers[str(field_zoom)],
+                        grid_layers[str(att_zoom)],
+                        q_zooms,
+                        kv_zooms,
+                        mult = layer_settings.get("mlp_mult",1),
+                        att_dim = layer_settings.get("att_dim",None),
+                        num_heads = layer_settings.get("num_heads",None),
+                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
+                        with_nh_field = layer_settings.get("with_nh_field",True),
+                        with_nh_att = layer_settings.get("with_nh_att",False),
+                        with_var_att= layer_settings.get("with_var_att", False),
+                        embedder=embedder,
+                        layer_confs=layer_confs,
+                        layer_confs_emb=layer_confs_emb
+                        )
 
         else:
             for k, zoom in enumerate(zooms_qkv):
