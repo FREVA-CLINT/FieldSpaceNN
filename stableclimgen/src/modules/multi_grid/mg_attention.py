@@ -905,6 +905,9 @@ class MultiFieldAttention(nn.Module):
         self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
         self.mlp = MLP_fac(io_features_mlp, io_features_mlp, mult, dropout, layer_confs=layer_confs, gamma=True) 
         
+        self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
+        self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
+
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6,requires_grad=True)    
    
         
@@ -993,11 +996,11 @@ class MultiFieldAttention(nn.Module):
 
         att_out = self.out_layer_att(att_out, emb=emb, sample_configs=sample_configs)
 
-        x = x_res + self.gamma * att_out
+        x = x_res + self.gamma * self.dropout_att(att_out)
 
         x_mlp = self.mlp(self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)]), emb=emb, sample_configs=sample_configs[int(zoom_field)])
         
-        x = x + x_mlp.reshape_as(x)
+        x = x + self.dropout_mlp(x_mlp.reshape_as(x))
 
         x = x.split(tuple(self.n_channels_q.values()), dim=-1)
 

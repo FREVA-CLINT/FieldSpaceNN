@@ -152,6 +152,7 @@ class MG_MultiBlock(nn.Module):
                  out_features: int,
                  q_zooms:List|int = -1,
                  kv_zooms:List|int = -1,
+                 dropout:float = 0,
                  layer_confs={},
                  layer_confs_emb={},
                  use_mask = False,
@@ -251,6 +252,7 @@ class MG_MultiBlock(nn.Module):
                         with_var_att= layer_settings.get("with_var_att", False),
                         factorize_dim = layer_settings.get("factorize_dim",-1),
                         spatial_ranks = layer_settings.get("spatial_ranks",None),
+                        dropout=dropout,
                         embedder=embedder,
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb
