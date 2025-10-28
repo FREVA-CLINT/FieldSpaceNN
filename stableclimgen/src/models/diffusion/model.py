@@ -89,7 +89,7 @@ class DiffusionGenerator(nn.Module):
                 else:
                     raise NotImplementedError
 
-                in_ch = out_ch
+                in_ch = out_ch if isinstance(out_ch, int) else out_ch[-1]
 
                 # Append block to encoder, decoder, or processor list
                 if block_conf.enc:
