@@ -170,7 +170,7 @@ def plot_images(
     :param in_coords: Optional coordinate tensor for input data, used for geospatial plotting.
     """
     # Move data to CPU if necessary
-    gt_data, in_data, out_data = gt_data.cpu(), in_data.cpu(), out_data.cpu()
+    gt_data, in_data, out_data = gt_data.cpu().float(), in_data.cpu().float(), out_data.cpu().float()
     if gt_coords is not None and in_coords is not None:
         gt_coords, in_coords = gt_coords.cpu(), in_coords.cpu()
 

@@ -1,62 +1,15 @@
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Tuple
 
 import torch
 import torch.nn as nn
 
-# Import necessary modules for the diffusion generator architecture
-from ...modules.embedding.patch import PatchEmbedderND, LinearUnpatchify, ConvUnpatchify
+from ..CNN.confs import CNNBlockConfig
+from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...utils.utils import EmbedBlockSequential
-from ...utils.helpers import check_value
-
-
-class DiffusionBlockConfig:
-    """
-    Configuration class for defining diffusion blocks in the model.
-
-    :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'ConvBlock', 'ResnetBlock').
-    :param ch_mult: Channel multiplier for the block.
-    :param sub_confs: Sub-configuration details specific to the block type.
-    :param enc: Whether the block is an encoder block. Default is False.
-    :param dec: Whether the block is a decoder block. Default is False.
-    """
-
-    def __init__(self, depth: int, block_type: str, ch_mult: float, sub_confs: dict, enc: bool = False,
-                 dec: bool = False, embedders: List[List[str]] = None):
-        self.depth = depth
-        self.block_type = block_type
-        self.sub_confs = sub_confs
-        self.enc = enc
-        self.dec = dec
-        self.ch_mult = ch_mult
-        self.embedders = embedders
-
-
-class PatchEmbConfig:
-    """
-    Configuration class for defining diffusion blocks in the model.
-
-    :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'ConvBlock', 'ResnetBlock').
-    :param ch_mult: Channel multiplier for the block.
-    :param sub_confs: Sub-configuration details specific to the block type.
-    :param enc: Whether the block is an encoder block. Default is False.
-    :param dec: Whether the block is a decoder block. Default is False.
-    """
-
-    def __init__(self,
-                 block_type: str = "ConvBlock",
-                 patch_emb_size: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
-                 patch_emb_kernel: tuple[int, int] | tuple[int, int, int] = (1, 1, 1),
-                 sub_confs=None):
-        self.block_type = block_type
-        self.patch_emb_size = patch_emb_size
-        self.patch_emb_kernel = patch_emb_kernel
-        self.sub_confs = sub_confs
 
 
 class DiffusionGenerator(nn.Module):
@@ -81,9 +34,10 @@ class DiffusionGenerator(nn.Module):
             self,
             init_in_ch: int,
             final_out_ch: int,
-            block_configs: List[DiffusionBlockConfig],
-            patch_emb_config: PatchEmbConfig,
+            block_configs: List[CNNBlockConfig],
             model_channels: int = 64,
+            patch_emb_size: Tuple = (1, 1),
+            patch_emb_kernel: Tuple = (1, 1),
             skip_connections: bool = False,
             concat_mask: bool = False,
             concat_cond: bool = False,
@@ -97,22 +51,25 @@ class DiffusionGenerator(nn.Module):
         self.skip_connections = skip_connections
         self.concat_mask = concat_mask
         self.concat_cond = concat_cond
-        self.dims = len(patch_emb_config.patch_emb_size)
+        self.dims = len(patch_emb_size)
 
-        # Define input patch embedding
+        # Define input patch embedding layer
         self.input_patch_embedding = RearrangeConvCentric(PatchEmbedderND(
-            in_ch, int(model_channels * block_configs[0].ch_mult), patch_emb_config.patch_emb_kernel, patch_emb_config.patch_emb_size, dims=self.dims
+            in_ch, int(model_channels), patch_emb_kernel, patch_emb_size, self.dims
         ), spatial_dim_count, dims=self.dims)
 
         # Define encoder, processor, and decoder block lists
         enc_blocks, dec_blocks, prc_blocks = [], [], []
-        in_ch = model_channels * block_configs[0].ch_mult
+        in_ch = model_channels
         in_block_ch = []
 
         # Define layers based on block configurations
         for block_conf in block_configs:
             for d in range(block_conf.depth):
-                out_ch = int(block_conf.ch_mult * model_channels)
+                # Calculate output channels based on channel multiplier
+                out_ch = block_conf.ch_mult * model_channels if isinstance(block_conf.ch_mult, int) else [
+                    ch_mult * model_channels for ch_mult in block_conf.ch_mult]
+
                 if self.skip_connections and block_conf.enc:
                     in_block_ch.append(in_ch)
                 if self.skip_connections and block_conf.dec:
@@ -147,14 +104,7 @@ class DiffusionGenerator(nn.Module):
         self.processor = EmbedBlockSequential(*prc_blocks)
         self.decoder = EmbedBlockSequential(*dec_blocks)
 
-        # Define output unpatchifying layer
-        if patch_emb_config.block_type == "ConvBlock":
-            self.out = RearrangeConvCentric(ConvUnpatchify(out_ch, final_out_ch,
-                                                           kernel_size=patch_emb_config.patch_emb_kernel, dims=self.dims),
-                                            spatial_dim_count, dims=self.dims)
-        else:
-            self.out = LinearUnpatchify(out_ch, final_out_ch, patch_emb_config.patch_emb_size,
-                                        **patch_emb_config.sub_confs, spatial_dim_count=spatial_dim_count)
+        self.out = RearrangeConvCentric(ConvUnpatchify(in_ch, final_out_ch, dims=self.dims), spatial_dim_count, dims=self.dims)
 
     def forward(
             self,

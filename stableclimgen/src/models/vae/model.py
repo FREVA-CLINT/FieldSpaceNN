@@ -4,51 +4,15 @@ import torch
 import torch.nn as nn
 
 from stableclimgen.src.modules.vae.quantization import Quantization
+from ..CNN.confs import CNNBlockConfig, QuantConfig
 from ...modules.cnn.conv import ConvBlockSequential
 from ...modules.cnn.resnet import ResBlockSequential
-from ...modules.distributions.distributions import DiagonalGaussianDistribution, AbstractDistribution
+from ...modules.distributions.distributions import AbstractDistribution
 from ...modules.embedding.patch import PatchEmbedderND, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...utils.utils import EmbedBlockSequential
 from einops import rearrange
-
-
-class VAEBlockConfig:
-    """
-    Configuration class for defining the parameters of VAE blocks.
-
-    :param depth: Number of layers in the block.
-    :param block_type: Type of block (e.g., 'ConvBlock' or 'ResnetBlock').
-    :param ch_mult: Channel multiplier for the block; can be an int or list of ints.
-    :param blocks: List of block configurations specific to the block type.
-    :param enc: Boolean indicating if this is an encoder block. Default is False.
-    :param dec: Boolean indicating if this is a decoder block. Default is False.
-    """
-
-    def __init__(self, depth: int, block_type: str, ch_mult: int | List[int], sub_confs: dict, enc: bool = False,
-                 dec: bool = False):
-        self.depth = depth
-        self.block_type = block_type
-        self.sub_confs = sub_confs
-        self.enc = enc
-        self.dec = dec
-        self.ch_mult = ch_mult
-
-
-class QuantConfig:
-    """
-    Configuration class for defining quantization parameters in the VAE model.
-
-    :param z_ch: Number of latent channels in the quantized representation.
-    :param latent_ch: Number of latent channels in the bottleneck.
-    :param block_type: Block type used in quantization (e.g., 'ConvBlock' or 'ResnetBlock').
-    """
-
-    def __init__(self, latent_ch: List[int], block_type: str, sub_confs: dict):
-        self.latent_ch = latent_ch
-        self.block_type = block_type
-        self.sub_confs = sub_confs
 
 
 class VAE(nn.Module):
@@ -69,7 +33,7 @@ class VAE(nn.Module):
     def __init__(self,
                  init_in_ch: int,
                  final_out_ch: int,
-                 block_configs: List[VAEBlockConfig],
+                 block_configs: List[CNNBlockConfig],
                  quant_config: QuantConfig,
                  model_channels: int = 64,
                  patch_emb_size: Tuple = (1, 1),

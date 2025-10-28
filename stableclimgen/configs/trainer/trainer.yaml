@@ -1,8 +1,8 @@
 _target_: lightning.Trainer
-max_epochs: 100
+max_epochs: 1000
 accelerator: "cuda"
 default_root_dir: ${run_dir}/snapshots/${project_name}/${run_name}/
-check_val_every_n_epoch: 1
+check_val_every_n_epoch: 1000
 accumulate_grad_batches: 1
 gradient_clip_val: 1.0
 callbacks:
@@ -11,7 +11,7 @@ callbacks:
     auto_insert_metric_name: false
     filename: epoch_{epoch}
     save_top_k: -1
-    every_n_epochs: 1
+    every_n_epochs: 1000
     save_last: true
   - _target_: lightning.pytorch.callbacks.LearningRateMonitor
     logging_interval: 'step'
