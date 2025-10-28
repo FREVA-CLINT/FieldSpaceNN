@@ -1,0 +1,86 @@
+_target_: stableclimgen.src.models.CNN.pl_CNN.LightningCNN
+lr_groups:
+  default:
+    lr: 5e-5
+    warmup: 2000
+model:
+  _target_: stableclimgen.src.models.diffusion.model.DiffusionGenerator
+  init_in_ch: 1
+  final_out_ch: 1
+  skip_connections: true
+  model_channels: 64
+  block_configs:
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      enc: true
+      ch_mult: 1
+      sub_confs:
+        blocks: ["down", "id", "id"]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      enc: true
+      ch_mult: 2
+      sub_confs:
+        blocks: ["down", "id", "id"]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      enc: true
+      ch_mult: 4
+      sub_confs:
+        blocks: ["down", "id", "id"]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: TransformerBlock
+      depth: 1
+      dec: false
+      ch_mult: 4
+      sub_confs:
+        blocks:
+        - s
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 2
+      ch_mult: 4
+      sub_confs:
+        blocks: ["id"]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: TransformerBlock
+      depth: 1
+      dec: false
+      ch_mult: 4
+      sub_confs:
+        blocks:
+        - s
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      ch_mult: 4
+      sub_confs:
+        blocks: ["id"]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      dec: true
+      ch_mult: 4
+      sub_confs:
+        blocks: [ "up", "id", "id" ]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      dec: true
+      ch_mult: 2
+      sub_confs:
+        blocks: [ "up", "id", "id" ]
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      dec: true
+      ch_mult: 1
+      sub_confs:
+        blocks: [ "up", "id", "id" ]
+  patch_emb_config:
+    block_type: "ConvBlock"
+    patch_emb_size: [ 1, 1 ]
+    patch_emb_kernel: [ 3, 3 ]
