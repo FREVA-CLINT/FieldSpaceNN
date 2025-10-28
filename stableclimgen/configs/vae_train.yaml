@@ -3,6 +3,7 @@ defaults:
   - logger: wandb
   - model: vae_cnn
   - dataloader: netcdf_regular
+  - data_split: regular
   - hydra: default
   - _self_
 

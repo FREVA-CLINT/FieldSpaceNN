@@ -9,15 +9,15 @@ model:
   patch_emb_size: [1, 1]
   patch_emb_kernel: [3, 3]
   block_configs:
-    - _target_: stableclimgen.src.models.vae.model.VAEBlockConfig
-      block_type: "resnet"
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
       depth: 1
       enc: true
       ch_mult: [1, 1, 1, 2, 2, 2, 2, 2, 2, 4, 4]
       sub_confs:
         blocks: [ "id", "id", "down", "id", "id", "down", "id", "id", "down", "id", "id" ]
-    - _target_: stableclimgen.src.models.vae.model.VAEBlockConfig
-      block_type: "resnet"
+    - _target_: stableclimgen.src.models.CNN.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
       depth: 1
       dec: true
       ch_mult: [ 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1 ]
@@ -25,7 +25,7 @@ model:
         blocks: [ "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id" ]
   quant_config:
     _target_: stableclimgen.src.models.vae.model.QuantConfig
-    block_type: "conv"
+    block_type: "ConvBlock"
     latent_ch: [4, 4]
     sub_confs:
       blocks: ["id", "id"]
