@@ -127,7 +127,7 @@ class DiffusionGenerator(nn.Module):
         """
 
         # Define the output shape for reconstruction
-        out_shape = x.shape[-2-self.dims:-2]
+        out_shape = x.shape[-self.dims-1:-1]
 
         # Concatenate mask and conditioning if specified
         if self.concat_mask:
