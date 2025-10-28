@@ -1,75 +1,166 @@
 import os
-from typing import Tuple, Dict
-
+from typing import Tuple, Dict, Optional, List
 import lightning.pytorch as pl
 import torch
+from cosine_warmup import CosineAnnealingWarmupRestarts
 from torch import Tensor
-from torch.optim import AdamW
-from torch.optim.lr_scheduler import LambdaLR
-
-from ..mgno_transformer import pl_mgno_base_model
-
+from torch.nn.modules.loss import _Loss
+from torch.optim import AdamW, Optimizer
+from torch.optim.lr_scheduler import LambdaLR, LRScheduler
 from pytorch_lightning.utilities import rank_zero_only
+
 from ...utils.visualization import plot_images
-import math
 
-class LightningCNNModel(pl_mgno_base_model.LightningMGNOBaseModel):
-    def __init__(self, model, lr_groups, lambda_loss_dict: dict, plot_snapshots=False):
 
-        super().__init__(model, lr_groups, lambda_loss_dict, weight_decay=0, noise_std=0, interpolator_settings=None)
+class LightningCNN(pl.LightningModule):
+    """
+    A PyTorch Lightning Module for training and validating a Variational Autoencoder (VAE) model.
+    Includes Exponential Moving Average (EMA) for stable parameter updates and a learning rate scheduler with
+    cosine annealing and warm-up restarts.
+    """
 
+    def __init__(self, model, lr: float, lr_warmup: Optional[int] = None, loss: Optional[_Loss] = None):
         """
-        Initializes the LightningDiffusionGenerator with model, diffusion process, and optimizer parameters.
+        Initializes the LightningVAE with model, optimizer parameters, and optional EMA and warm-up configurations.
 
-        :param model: The main model for generating diffusion-based images.
-        :param gaussian_diffusion: The diffusion process used for training losses.
-        :param lr: Learning rate for optimizer.
-        :param lr_warmup: Warm-up steps for learning rate. Defaults to None.
-        :param ema_rate: Rate for Exponential Moving Average of model parameters. Defaults to 0.999.
+        :param model: The VAE model to be trained.
+        :param lr: Initial learning rate for the optimizer.
+        :param lr_warmup: Optional number of warm-up steps for the learning rate scheduler.
+        :param ema_rate: Decay rate for EMA of model parameters, default is 0.999.
+        :param loss: Loss function for reconstruction; defaults to Mean Squared Error (MSE).
+        :param kl_weight: Weight for the Kullback-Leibler (KL) divergence loss term.
         """
+        super().__init__()
+        self.model = model  # Main VAE model
+        self.lr = lr  # Learning rate for optimizer
+        self.lr_warmup = lr_warmup  # Warm-up steps if applicable
+        self.loss = loss or torch.nn.MSELoss()  # Use MSE if no custom loss is provided
+        self.save_hyperparameters(ignore=['model'])  # Save hyperparameters, excluding model
 
-        self.plot_snapshots = plot_snapshots
- 
-    def forward(self, x, **kwargs) -> Tuple[Dict[str, Tensor], Tensor]:
+
+
+    def forward(self, source_data: Tensor, embeddings: Optional[Tensor] = None) -> Tuple[Tensor, Tensor]:
         """
-        Forward pass through the model for training loss computation.
+        Forward pass through the VAE model.
 
-        :param gt_data: Ground truth data.
-        :param diffusion_steps: Steps of the diffusion process.
-        :param mask: Mask data. Defaults to None.
-        :param cond_data: Conditioning data. Defaults to None.
-        :param emb: embedding dictionary
+        :param target_data: Ground truth data tensor.
+        :param embeddings: Embedding tensor, optional.
+        :param mask_data: Mask data tensor, optional.
+        :param source_data: Conditioning data tensor, optional.
+        :param coords: Coordinates data tensor, optional.
 
-        :return: Dictionary containing loss values for the training step and generated tensor.
+        :return: Tuple containing model output tensor and posterior distribution tensor.
         """
-        b, n, w, h, nv, nc = x.shape
-
-        x = x.view(b,n,w,h,1,-1)
-
-        x = self.model(x)
-
-        x = x.view(b,n,w,h,-1,1)
-
-        return x
+        return self.model(source_data, embeddings)
     
-    def log_tensor_plot(self, in_tensor: torch.Tensor, rec_tensor: torch.Tensor, gt_tensor: torch.Tensor,
-                        in_coords: torch.Tensor, gt_coords: torch.Tensor, mask, indices_dict, plot_name: str, emb, **kwargs):
-        
+
+    def training_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> Tensor:
         """
-        Logs a plot of ground truth and reconstructed tensor images for validation.
+        Executes a single training step by calculating reconstruction and KL losses, then logging the results.
+
+        :param batch: A tuple containing input tensors for model training.
+        :param batch_idx: The index of the current batch.
+
+        :return: Total calculated loss for the current batch.
+        """
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+
+        output = self(source_data, emb)
+
+        # Compute reconstruction loss
+        loss = self.loss(target_data, output)
+    
+
+        # Log individual and total losses
+        self.log("train_loss", loss.mean(), prog_bar=True, sync_dist=True)
+        self.log_dict({
+            'train/total_loss': loss.mean()
+        }, prog_bar=True, sync_dist=True)
+        return loss.mean()
+
+    def validation_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> None:
+        """
+        Executes a single validation step, calculating and logging validation losses, and optionally plotting reconstructions.
+
+        :param batch: A tuple containing input tensors for validation.
+        :param batch_idx: The index of the current batch.
+        """
+
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+
+        output = self(source_data, emb)
+
+        # Compute reconstruction loss
+        loss = self.loss(target_data, output)
+    
+        # Plot reconstruction samples on the first batch
+        if batch_idx == 0 and rank_zero_only.rank == 0:
+            self.log_tensor_plot(target_data, source_data, output, target_coords, source_coords, f"tensor_plot_{self.current_epoch}")
+
+        # Log validation losses
+        self.log("val_loss", loss.mean(), sync_dist=True)
+        self.log_dict({
+            'val/total_loss': loss.mean()
+        }, sync_dist=True)
+
+    def predict_step(self, batch: Tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx: int) -> None:
+        """
+        Executes a single validation step, calculating and logging validation losses, and optionally plotting reconstructions.
+
+        :param batch: A tuple containing input tensors for validation.
+        :param batch_idx: The index of the current batch.
+        """
+        source_data, target_data, source_coords, target_coords, mask_data, emb = batch
+
+        outputs = self(source_data, emb)
+
+        return {"output": outputs}
+
+    def log_tensor_plot(self, gt_tensor: torch.Tensor, in_tensor: torch.Tensor, rec_tensor: torch.Tensor,
+                        target_coords: torch.Tensor, in_coords: torch.Tensor, plot_name: str):
+        """
+        Logs a plot of ground truth and reconstructed tensor images for visualization.
 
         :param gt_tensor: Ground truth tensor.
+        :param in_tensor: Input tensor.
         :param rec_tensor: Reconstructed tensor.
+        :param target_coords: Ground truth coordinates tensor.
+        :param in_coords: Input coordinates tensor.
         :param plot_name: Name for the plot to be saved.
         """
-        if rank_zero_only and self.plot_snapshots:
-            save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
-            os.makedirs(save_dir, exist_ok=True)
-            plot_images(gt_tensor, in_tensor, rec_tensor, f"{plot_name}", save_dir, gt_coords, in_coords)
+        save_dir = os.path.join(self.trainer.logger.save_dir, "validation_images")
+        os.makedirs(save_dir, exist_ok=True)
+        plot_images(gt_tensor, in_tensor, rec_tensor, plot_name, save_dir, target_coords, in_coords)
 
-            for c in range(gt_tensor.shape[1]):
-                try:
-                    filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
-                    self.logger.log_image(f"plots/{plot_name}", [filename])
-                except Exception:
-                    pass
+        # Log images for each channel
+        for c in range(gt_tensor.shape[1]):
+            filename = os.path.join(save_dir, f"{plot_name}_{c}.png")
+            self.logger.log_image(f"plots/{plot_name}", [filename])
+
+    def configure_optimizers(self) -> Tuple[List[Optimizer], List[Dict[str, LRScheduler]]]:
+        """
+        Configures the optimizer and learning rate scheduler for training.
+
+        :return: A tuple containing the optimizer and scheduler configurations.
+        """
+        optimizer = AdamW(self.parameters(), lr=self.lr, weight_decay=0.0)
+
+        # Apply cosine annealing with warm-up if specified
+        if self.lr_warmup:
+            dataset = self.trainer.fit_loop._data_source.dataloader()
+            dataset_size = len(dataset)
+            steps = dataset_size * self.trainer.max_epochs // (
+                    self.trainer.accumulate_grad_batches * max(1, self.trainer.num_devices)
+            )
+            scheduler = CosineAnnealingWarmupRestarts(
+                optimizer=optimizer,
+                first_cycle_steps=steps,
+                max_lr=self.lr,
+                min_lr=1E-6,
+                warmup_steps=self.lr_warmup
+            )
+        else:
+            # Use constant learning rate if no warm-up is specified
+            scheduler = LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
+
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
