@@ -52,7 +52,7 @@ class LightningCNN(pl.LightningModule):
     cosine annealing and warm-up restarts.
     """
 
-    def __init__(self, model, lr: float, lr_warmup: Optional[int] = None, loss: Optional[_Loss] = None):
+    def __init__(self, model, lr_groups: float, loss: Optional[_Loss] = None):
         """
         Initializes the LightningVAE with model, optimizer parameters, and optional EMA and warm-up configurations.
 
@@ -66,8 +66,7 @@ class LightningCNN(pl.LightningModule):
         super().__init__()
         self.weight_decay = 0
         self.model = model  # Main VAE model
-        self.lr = lr  # Learning rate for optimizer
-        self.lr_warmup = lr_warmup  # Warm-up steps if applicable
+        self.lr_groups = lr_groups  # Learning rate for optimizer
         self.loss = loss or torch.nn.MSELoss()  # Use MSE if no custom loss is provided
         self.save_hyperparameters(ignore=['model'])  # Save hyperparameters, excluding model
 
