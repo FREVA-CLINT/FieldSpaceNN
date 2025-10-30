@@ -94,7 +94,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         emb["DiffusionStepEmbedder"] = timesteps
         model_pred_zooms = self(noisy_target_zooms, coords_input=coords_input, coords_output=coords_output, sample_configs=sample_configs,
                                 mask=mask, emb=emb, dists_input=rel_dists_input)
-        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='train/')
+        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='train/', emb=emb)
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -117,7 +117,7 @@ class Lightning_MG_diffusion_transformer(LightningMGNOBaseModel, LightningProbab
         model_pred_zooms = self(noisy_target_zooms.copy(), coords_input=coords_input, coords_output=coords_output,
                                 sample_configs=sample_configs,
                                 mask=mask, emb=emb, dists_input=rel_dists_input)
-        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='val/')
+        loss, loss_dict = self.loss(model_pred_zooms, noise_zooms, mask=mask, sample_configs=sample_configs, prefix='val/', emb=emb)
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
