@@ -336,15 +336,14 @@ class MGMultiLoss(nn.Module):
         return self.grid_layers[str(zoom)]
     
     def _select_level_item(self, container, level_key):
-        if isinstance(container, dict):
-            if level_key in container:
-                return container[level_key]
-            try:
-                return container[int(level_key)]
-            except (TypeError, ValueError, KeyError):
-                pass
-            return container.get(str(level_key), None)
-        return container
+        if level_key in container:
+            return container[level_key]
+        try:
+            return container[int(level_key)]
+        except (TypeError, ValueError, KeyError):
+            pass
+        return container.get(str(level_key), None)
+
 
     def _maybe_to_device(self, value, device):
         if torch.is_tensor(value):
