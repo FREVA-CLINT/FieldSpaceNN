@@ -247,6 +247,7 @@ class MG_MultiBlock(nn.Module):
                         n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
                         head_gate  = layer_settings.get("head_gate",False),
                         head_gate_scale_limit = layer_settings.get("head_gate_scale_limit",0.5),
+                        with_nh_field_mlp = layer_settings.get("with_nh_field_mlp",False),
                         with_nh_field = layer_settings.get("with_nh_field",True),
                         with_nh_att = layer_settings.get("with_nh_att",False),
                         with_var_att= layer_settings.get("with_var_att", False),

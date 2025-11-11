@@ -783,6 +783,7 @@ class MultiFieldAttention(nn.Module):
                  rank = 32,
                  factorize_dim = -1,
                  spatial_ranks = None,
+                 with_nh_field_mlp = False,
                  with_nh_field = True,
                  with_nh_att = False,
                  with_var_att = True,
@@ -806,6 +807,7 @@ class MultiFieldAttention(nn.Module):
 
         self.with_nh_field = with_nh_field
         self.with_nh_att = with_nh_att
+        self.with_nh_field_mlp = with_nh_field_mlp
 
         self.n_groups = layer_confs.get('n_groups',1)
         self.emb_layers = nn.ModuleDict()
@@ -867,43 +869,24 @@ class MultiFieldAttention(nn.Module):
         if factorize_dim > -1 and abs(round(n_f) - n_f) > 1e-10:
             Warning('number of features doesnt match factorize_dim. Factorization is not applied')
 
-        if factorize_dim > -1 and abs(round(n_f) - n_f) < 1e-10:
-            n_f = int(n_f)
-            in_features_q = [4]*n_f
-            in_features_kv = [*[4]*n_f,1] if not with_nh_field else [*[4]*n_f,9,1]
-            out_dim_q = in_features_q
-            out_dim_kv = [*[4]*n_f,2] if not with_nh_field else [*[4]*n_f,1,2]
-            att_dim = int(torch.tensor(out_dim_q).prod())
 
-            io_features_mlp = in_features_q
-        else:
-            in_features_kv = [in_features_kv]
-            in_features_q = [in_features_q]
-            out_dim_q = [att_dim] 
-            out_dim_kv = [2*att_dim]
-            io_features_mlp = out_features_field
+        in_features_kv = [in_features_kv]
+        in_features_q = [in_features_q]
+        out_dim_q = [att_dim] 
+        out_dim_kv = [2*att_dim]
 
         self.att_dim = att_dim
-
-        if spatial_ranks is not None:
-            in_f_q = [*spatial_ranks, *in_features_q]
-            out_f_q = [*spatial_ranks, *out_dim_q]
-            in_f_kv = [*spatial_ranks, *in_features_kv]
-            out_f_kv = [*spatial_ranks, *out_dim_kv]
-        else:
-            in_f_q = in_features_q
-            out_f_q = out_dim_q
-            in_f_kv = in_features_kv
-            out_f_kv = out_dim_kv
-
  
-        self.q_projection_layer = get_layer(in_f_q, out_f_q, layer_confs=layer_confs, bias=False)
-        self.kv_projection_layer = get_layer(in_f_kv, out_f_kv, layer_confs=layer_confs, bias=True)
+        self.q_projection_layer = get_layer(in_features_q, out_dim_q, layer_confs=layer_confs, bias=False)
+        self.kv_projection_layer = get_layer(in_features_kv, out_dim_kv, layer_confs=layer_confs, bias=True)
 
         self.out_layer_att = get_layer(att_dim, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
         self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
-        self.mlp = MLP_fac(io_features_mlp, io_features_mlp, mult, dropout, layer_confs=layer_confs, gamma=True) 
+       
+        in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field_mlp else out_features_field
+
+        self.mlp = MLP_fac(in_features_mlp, out_features_field, mult, dropout, layer_confs=layer_confs, gamma=True) 
         
         self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
@@ -998,7 +981,12 @@ class MultiFieldAttention(nn.Module):
 
         x = x_res + self.gamma * self.dropout_att(att_out)
 
-        x_mlp = self.mlp(self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)]), emb=emb, sample_configs=sample_configs[int(zoom_field)])
+        x_mlp = self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)])
+
+        if self.with_nh_field_mlp:
+            x_mlp, _ = self.grid_layer_field.get_nh(x_mlp, **sample_configs[zoom_field], with_nh=True, mask=None)
+
+        x_mlp = self.mlp(x_mlp, emb=emb, sample_configs=sample_configs[int(zoom_field)])
         
         x = x + self.dropout_mlp(x_mlp.reshape_as(x))
 
