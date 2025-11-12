@@ -543,6 +543,7 @@ class MultiFieldAttention(nn.Module):
                  rank = 32,
                  factorize_dim = -1,
                  spatial_ranks = None,
+                 with_nh_post_att = False,
                  with_nh_field_mlp = False,
                  with_nh_field = True,
                  with_nh_att = False,
@@ -569,6 +570,7 @@ class MultiFieldAttention(nn.Module):
         self.with_nh_field = with_nh_field
         self.with_nh_att = with_nh_att
         self.with_nh_field_mlp = with_nh_field_mlp
+        self.with_nh_post_att = with_nh_post_att
 
         self.n_groups = layer_confs.get('n_groups',1)
         self.emb_layers = nn.ModuleDict()
@@ -642,7 +644,8 @@ class MultiFieldAttention(nn.Module):
         self.q_projection_layer = get_layer(in_features_q, out_dim_q, layer_confs=layer_confs, bias=False)
         self.kv_projection_layer = get_layer(in_features_kv, out_dim_kv, layer_confs=layer_confs, bias=True)
 
-        self.out_layer_att = get_layer(att_dim, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
+        in_features_out = att_dim * grid_layer_field.adjc.shape[-1] if self.with_nh_post_att else att_dim
+        self.out_layer_att = get_layer(in_features_out, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
         self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=True, layer_confs_emb=layer_confs_emb)
        
@@ -738,6 +741,9 @@ class MultiFieldAttention(nn.Module):
         att_out = safe_scaled_dot_product_attention(q, k, v, mask=mask)
 
         att_out = rearrange(att_out, self.att_pattern_reverse, b=b, fv=fv, t=t, N=N, NA=NA)
+
+        if self.with_nh_post_att:
+            att_out, _ = self.grid_layer_field.get_nh(att_out, **sample_configs[zoom_field], with_nh=True, mask=None)
 
         att_out = self.out_layer_att(att_out, emb=emb, sample_configs=sample_configs)
 

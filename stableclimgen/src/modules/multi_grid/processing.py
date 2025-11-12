@@ -12,7 +12,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention,MultiZoomFieldAttention,MultiFieldAttention,MultiFieldAttention2
+from .mg_attention import MultiZoomSelfAttention,MultiFieldAttention,MultiFieldAttention2
 from .mg_base import Conv, ResConv
 
 class MG_SingleBlock(nn.Module):
@@ -251,8 +251,10 @@ class MG_MultiBlock(nn.Module):
                         with_nh_field = layer_settings.get("with_nh_field",True),
                         with_nh_att = layer_settings.get("with_nh_att",False),
                         with_var_att= layer_settings.get("with_var_att", False),
+                        with_nh_post_att = layer_settings.get("with_nh_post_att", False),
                         factorize_dim = layer_settings.get("factorize_dim",-1),
                         spatial_ranks = layer_settings.get("spatial_ranks",None),
+                        with_mlp_embedder=layer_settings.get("with_mlp_embedder",True),
                         dropout=dropout,
                         embedder=embedder,
                         layer_confs=layer_confs,
