@@ -212,7 +212,9 @@ class LinEmbLayer(nn.Module):
                  layer_confs: dict={},
                  layer_confs_emb: dict={},
                  embedder=None,
-                 spatial_dim_count=1
+                 spatial_dim_count=1,
+                 element_wise_affine=True,
+                 norm_first = False
                 ) -> None: 
          
         super().__init__()
@@ -248,8 +250,15 @@ class LinEmbLayer(nn.Module):
         else:
             self.embedding_layer = IdentityLayer()
 
+        self.forward_fcn = self.forward_post_norm
+
         if layer_norm:
-            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_groups=layer_confs.get("n_groups",1))
+            if norm_first:
+                self.layer_norm = LayerNorm(in_features, elementwise_affine=element_wise_affine, n_groups=layer_confs.get("n_groups",1))
+                self.forward_fcn = self.forward_norm_first
+            else:
+                self.layer_norm = LayerNorm(out_features_, elementwise_affine=element_wise_affine, n_groups=layer_confs.get("n_groups",1))
+                
         else:
             self.layer_norm = IdentityLayer()
 
@@ -258,8 +267,18 @@ class LinEmbLayer(nn.Module):
         else:
             self.layer = get_layer(in_features_, out_features_, layer_confs=layer_confs)
 
+    def forward_norm_first(self, x, emb=None, sample_configs={},**kwargs):
 
-    def forward(self, x, emb=None, sample_configs={},**kwargs):
+        x = x.view(*x.shape[:4 + self.spatial_dim_count-1],-1)
+        x = self.layer_norm(x, emb=emb)
+        x = self.layer(x, emb=emb, sample_configs=sample_configs)
+        
+        x = self.embedding_layer(x, emb=emb, sample_configs=sample_configs)
+
+        return x
+    
+
+    def forward_post_norm(self, x, emb=None, sample_configs={},**kwargs):
         
         x = self.layer(x, emb=emb, sample_configs=sample_configs)
         x = x.view(*x.shape[:4 + self.spatial_dim_count-1],-1)
@@ -269,6 +288,8 @@ class LinEmbLayer(nn.Module):
 
         return x
 
+    def forward(self, x, emb=None, sample_configs={},**kwargs):
+        return self.forward_fcn(x, emb=emb, sample_configs={},**kwargs)
 
     
 class MLP_fac(nn.Module):
@@ -279,7 +300,9 @@ class MLP_fac(nn.Module):
                  mult=1,
                  dropout=0,
                  layer_confs: Dict={},
-                 gamma=False
+                 gamma=False,
+                 bias=True,
+                 single_layer=False
                 ) -> None: 
       
         super().__init__() 
@@ -289,9 +312,12 @@ class MLP_fac(nn.Module):
         else:
             out_features_1 = int(in_features*mult)
         
-
-        self.layer1 = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
-        self.layer2 = get_layer(out_features_1, out_features, layer_confs=layer_confs, bias=True)
+        if single_layer:
+            self.layer1 = IdentityLayer()
+            self.layer2 = get_layer(in_features, out_features, layer_confs=layer_confs, bias=bias)
+        else:
+            self.layer1 = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=bias)
+            self.layer2 = get_layer(out_features_1, out_features, layer_confs=layer_confs, bias=bias)
         self.dropout = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.activation = nn.SiLU()
 
