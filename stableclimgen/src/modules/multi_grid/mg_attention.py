@@ -612,10 +612,11 @@ class MultiFieldAttention(nn.Module):
 
         out_features_field = in_features_q
         att_dim = out_features_field if att_dim is None else att_dim
-
+        
+        in_features_q = in_features_q * grid_layer_field.adjc.shape[-1] if self.with_nh_field else in_features_q
         self.norm_layer = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, layer_norm=True, element_wise_affine=affine_norm, layer_confs_emb=layer_confs_emb)
 
-        if not self.self_att or self.with_nh_field:
+        if not self.self_att:
             apply_layer_norm = in_features_kv > 1
             self.norm_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, layer_norm=apply_layer_norm, element_wise_affine=affine_norm, layer_confs_emb=layer_confs_emb)
 
@@ -682,20 +683,19 @@ class MultiFieldAttention(nn.Module):
 
         x_res = x
 
+        if self.with_nh_field:
+            x, _ = self.grid_layer_field.get_nh(x, **sample_configs[zoom_field], with_nh=True, mask=None)
+
+        q = self.norm_layer(x, emb=emb, sample_configs=sample_configs[zoom_field])   
+
         if not self.self_att:
             kv = combine_zooms(x_zooms, zoom_field, self.kv_zooms)
             kv = rearrange(kv, self.pattern_channel)
-        else:
-            kv = x
-        
-        q = self.norm_layer(x, emb=emb, sample_configs=sample_configs[zoom_field])
 
-        if self.with_nh_field:
-            kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=True, mask=None)
-
-        if hasattr(self, 'norm_layer_kv'):
+            if self.with_nh_field:
+                kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=True, mask=None)
+            
             kv = self.norm_layer_kv(kv, emb=emb, sample_configs=sample_configs[zoom_field])
-    
         else:
             kv = q
 
