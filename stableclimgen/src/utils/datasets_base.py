@@ -45,6 +45,7 @@ class BaseDataset(Dataset):
                  output_differences=True,
                  apply_diff = True,
                  output_max_zoom_only = False,
+                 normalize_data = True
                  ):
         
         super(BaseDataset, self).__init__()
@@ -179,6 +180,7 @@ class BaseDataset(Dataset):
                     mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
+
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
@@ -190,7 +192,7 @@ class BaseDataset(Dataset):
             self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
                 norm_dict[var]['stats'],
                 norm_dict[var]['normalizer'])
-
+        self.normalize_data = normalize_data
         self.len_dataset = max([idx_map.shape[0] for idx_map in self.index_map.values()])
     
     def get_indices_from_patch_idx(self, patch_idx):
@@ -265,7 +267,8 @@ class BaseDataset(Dataset):
                 if not patch_dim:
                     values = values.reshape(nt, -1)[:, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
                 data = torch.tensor(values).view(nt, -1,1)
-                data = self.var_normalizers[variable].normalize(data)
+                if self.normalize_data:
+                    data = self.var_normalizers[variable].normalize(data)
                 data_g.append(data) 
 
         data_g = torch.stack(data_g, dim=0)
