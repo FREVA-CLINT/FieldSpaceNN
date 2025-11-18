@@ -116,7 +116,7 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         else:
             for zoom in self.model.in_zooms:
                 sample_configs[zoom] = sample_configs[max(sample_configs.keys())]
-            for zoom in sample_configs.keys():
+            for zoom in source.keys():
                 if zoom not in self.model.in_zooms:
                     sample_configs.pop(zoom, None)
         print(sample_configs)
