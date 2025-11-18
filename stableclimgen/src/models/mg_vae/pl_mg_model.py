@@ -112,9 +112,14 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         if self.mode != "decode":
             source, _ = self.prepare_missing_zooms(source, sample_configs)
             mask, _ = self.prepare_missing_zooms(mask)
-
-        target, sample_configs = self.prepare_missing_zooms(target)
-
+            target, sample_configs = self.prepare_missing_zooms(target)
+        else:
+            for zoom in self.model.in_zooms:
+                sample_configs[zoom] = sample_configs[max(sample_configs.keys())]
+            for zoom in sample_configs.keys():
+                if zoom not in self.model.in_zooms:
+                    sample_configs.pop(zoom, None)
+        print(sample_configs)
         max_zoom = max(target.keys())
 
         if self.mode == "encode_decode":
