@@ -102,9 +102,6 @@ class BaseDataset(Dataset):
         unique_time_steps_future = len(torch.tensor(self.zoom_time_steps_future).unique())==1
         unique_zoom_patch_sample = len(torch.tensor(self.zoom_patch_sample).unique())==1
 
-        self.load_once = unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample
-
-
         if "timesteps" in self.data_dict.keys():
             self.sample_timesteps = []
             for t in self.data_dict["timesteps"]:
@@ -180,6 +177,7 @@ class BaseDataset(Dataset):
                     mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
+        self.load_once = unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
 
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
@@ -259,7 +257,6 @@ class BaseDataset(Dataset):
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
                 if drop_mask_ is not None:
                     drop_mask_ = drop_mask[:,:,patch_indices]                       
-
             ds = ds.isel(isel_dict)
 
             for i, variable in enumerate(variables):
