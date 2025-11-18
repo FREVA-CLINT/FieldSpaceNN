@@ -116,8 +116,8 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         else:
             for zoom in self.model.in_zooms:
                 sample_configs[zoom] = sample_configs[max(sample_configs.keys())]
-        print(sample_configs)
-        max_zoom = max(target.keys())
+
+        max_zoom = max(self.model.in_zooms)
 
         if self.mode == "encode_decode":
             outputs, posterior = self.model(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
