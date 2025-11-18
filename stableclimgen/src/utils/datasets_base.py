@@ -378,7 +378,7 @@ class BaseDataset(Dataset):
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
                 mapping_zoom = zoom
 
-            if self.single_source and not loaded:
+            if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
                 loaded = True if self.load_once else False
 
