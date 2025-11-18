@@ -393,7 +393,7 @@ class BaseDataset(Dataset):
                                                                  time_index, 
                                                                  patch_index, 
                                                                  variables_sample, 
-                                                                 self.mapping[max(self.zooms)], 
+                                                                 self.mapping[mapping_zoom],
                                                                  mapping_zoom, 
                                                                  zoom, 
                                                                  group_ids_sample=np.array(group_ids_sample), 
@@ -404,7 +404,7 @@ class BaseDataset(Dataset):
                                                 time_index, 
                                                 patch_index, 
                                                 variables_sample, 
-                                                self.mapping[max(self.zooms)], 
+                                                self.mapping[mapping_zoom],
                                                 mapping_zoom, 
                                                 zoom, 
                                                 group_ids_sample=np.array(group_ids_sample))
