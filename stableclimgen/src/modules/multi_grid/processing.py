@@ -251,6 +251,8 @@ class MG_MultiBlock(nn.Module):
                         with_nh_field = layer_settings.get("with_nh_field",True),
                         with_nh_att = layer_settings.get("with_nh_att",False),
                         with_var_att= layer_settings.get("with_var_att", False),
+                        with_time_att= layer_settings.get("with_time_att", False),
+                        time_seq_len= layer_settings.get("time_seq_len", 1),
                         with_nh_post_att = layer_settings.get("with_nh_post_att", False),
                         factorize_dim = layer_settings.get("factorize_dim",-1),
                         spatial_ranks = layer_settings.get("spatial_ranks",None),

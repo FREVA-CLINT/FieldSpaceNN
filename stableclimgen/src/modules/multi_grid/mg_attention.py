@@ -548,6 +548,8 @@ class MultiFieldAttention(nn.Module):
                  with_nh_field = True,
                  with_nh_att = False,
                  with_var_att = True,
+                 with_time_att = False,
+                 time_seq_len = 1,
                  with_mlp_embedder = True,
                  layer_confs: Dict = {},
                  layer_confs_emb= {}) -> None: 
@@ -662,10 +664,18 @@ class MultiFieldAttention(nn.Module):
         self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
         self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
 
+        self.with_time_att = with_time_att
+        self.time_seq_len = time_seq_len
+
         if with_var_att:
             self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
             self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
             self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
+        elif with_time_att:
+            assert with_var_att == False
+            self.att_pattern = 'b fv (tb t) N NA (NH H)-> (b fv N tb) NH (t NA) H'
+            self.mask_pattern = 'b v (tb t) N NA f-> (b v N tb f) 1 1 (t NA)'
+            self.att_pattern_reverse = '(b fv N tb) NH (t NA) H -> b fv (tb t) (N NA) (NH H)'
         else:
             self.att_pattern = 'b fv t N NA (NH H)-> (b fv N t) NH (NA) H'
             self.mask_pattern = 'b v t N NA f-> (b v N t f) 1 1 (NA)'
@@ -730,13 +740,15 @@ class MultiFieldAttention(nn.Module):
 
 
         b, fv, t, N, NA, C = q.shape
+        if self.with_time_att:
+            t = self.time_seq_len
 
         k,v = kv.chunk(2, dim=-1)
-        q = rearrange(q, self.att_pattern, H=self.n_head_channels)
-        k = rearrange(k, self.att_pattern, H=self.n_head_channels)
-        v = rearrange(v, self.att_pattern, H=self.n_head_channels)
+        q = rearrange(q, self.att_pattern, H=self.n_head_channels, t=t)
+        k = rearrange(k, self.att_pattern, H=self.n_head_channels, t=t)
+        v = rearrange(v, self.att_pattern, H=self.n_head_channels, t=t)
 
-        mask = rearrange(mask, self.mask_pattern) if mask is not None else None
+        mask = rearrange(mask, self.mask_pattern, t=t) if mask is not None else None
 
         att_out = safe_scaled_dot_product_attention(q, k, v, mask=mask)
 
