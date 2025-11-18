@@ -467,7 +467,7 @@ class LightningMGModel(pl.LightningModule):
         max_zoom = max(target.keys())
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-        
+
         loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val')
 
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
@@ -495,6 +495,20 @@ class LightningMGModel(pl.LightningModule):
         output = {'output': output,
                   'mask': mask}
         return output
+
+    def prepare_missing_zooms(self, x_zooms, sample_configs=None):
+        max_zoom = max(x_zooms.keys())
+        print(sample_configs)
+        print(x_zooms[max_zoom].shape)
+        for zoom in self.model.in_zooms:
+            if zoom not in x_zooms.keys():
+                x_zooms[zoom] = torch.zeros(1, 1, 1, 1, 1).expand(*x_zooms[max_zoom].shape[:3],
+                                                                  int(x_zooms[max_zoom].shape[3] * 4**(zoom - max_zoom)),
+                                                                  x_zooms[max_zoom].shape[4]).to(x_zooms[max_zoom].device)
+                print(x_zooms[max_zoom].shape, x_zooms[zoom].shape)
+                if sample_configs is not None:
+                    sample_configs[zoom] = sample_configs[max_zoom]
+        return x_zooms, sample_configs
     
 
     def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch, output_comp=None):
