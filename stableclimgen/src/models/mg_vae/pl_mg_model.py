@@ -109,9 +109,10 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        source, sample_configs = self.prepare_missing_zooms(source, sample_configs)
-        target, _ = self.prepare_missing_zooms(target)
-        mask, _ = self.prepare_missing_zooms(mask)
+        if self.mode != "decode":
+            source, sample_configs = self.prepare_missing_zooms(source, sample_configs)
+            target, _ = self.prepare_missing_zooms(target)
+            mask, _ = self.prepare_missing_zooms(mask)
 
         max_zoom = max(target.keys())
 
