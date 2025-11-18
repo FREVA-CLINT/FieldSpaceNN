@@ -232,6 +232,9 @@ class MG_VAE(MG_base_model):
         return posterior_zooms
 
     def vae_decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None):
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
+
         x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 
         for k, block in enumerate(self.decoder_blocks.values()):
