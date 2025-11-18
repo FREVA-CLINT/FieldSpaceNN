@@ -498,14 +498,11 @@ class LightningMGModel(pl.LightningModule):
 
     def prepare_missing_zooms(self, x_zooms, sample_configs=None):
         max_zoom = max(x_zooms.keys())
-        print(sample_configs)
-        print(x_zooms[max_zoom].shape)
         for zoom in self.model.in_zooms:
             if zoom not in x_zooms.keys():
                 x_zooms[zoom] = torch.zeros(1, 1, 1, 1, 1).expand(*x_zooms[max_zoom].shape[:3],
                                                                   int(x_zooms[max_zoom].shape[3] * 4**(zoom - max_zoom)),
                                                                   x_zooms[max_zoom].shape[4]).to(x_zooms[max_zoom].device)
-                print(x_zooms[max_zoom].shape, x_zooms[zoom].shape)
                 if sample_configs is not None:
                     sample_configs[zoom] = sample_configs[max_zoom]
         return x_zooms, sample_configs
