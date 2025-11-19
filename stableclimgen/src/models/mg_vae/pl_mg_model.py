@@ -110,9 +110,9 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         if self.mode != "decode":
-            source, _ = self.prepare_missing_zooms(source, sample_configs)
+            source, sample_configs = self.prepare_missing_zooms(source, sample_configs)
             mask, _ = self.prepare_missing_zooms(mask)
-            target, sample_configs = self.prepare_missing_zooms(target)
+            target, _ = self.prepare_missing_zooms(target)
         else:
             for zoom in self.model.in_zooms:
                 sample_configs[zoom] = sample_configs[max(sample_configs.keys())]
