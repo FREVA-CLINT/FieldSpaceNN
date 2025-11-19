@@ -120,15 +120,13 @@ class BaseDataset(Dataset):
             self.time_steps_files.append(len(ds.time))
 
         self.index_map = dict(zip(self.zooms, [[] for _ in self.zooms]))
-        time_idx_global = self.max_time_step_past
         for file_idx, num_timesteps in enumerate(self.time_steps_files):
-            if file_idx == len(self.time_steps_files) - 1:
-                num_timesteps -= self.max_time_step_future
+            num_timesteps -= self.max_time_step_future
 
-            start_idx = self.max_time_step_past if file_idx == 0 else 0
+            start_idx = self.max_time_step_past
 
             for time_idx in range(start_idx, num_timesteps):
-                if self.sample_timesteps is None or time_idx_global in self.sample_timesteps:
+                if self.sample_timesteps is None or time_idx in self.sample_timesteps:
                     for zoom in self.zooms:
                         for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
                             if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
@@ -138,8 +136,6 @@ class BaseDataset(Dataset):
 
                             self.index_map[zoom].append((file_idx, time_idx, region_idx_zoom))
                 
-                time_idx_global += 1
-
         self.index_map = {z: np.array(idx_map) for z, idx_map in self.index_map.items()}
 
         all_variables = []
@@ -364,7 +360,6 @@ class BaseDataset(Dataset):
         loaded = False
         for zoom in self.zooms:
             file_index, time_index, patch_index = self.index_map[zoom][index]
-
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
