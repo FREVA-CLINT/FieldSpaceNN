@@ -75,7 +75,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         if batch_idx == 0 and rank_zero_only.rank==0:
             pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
 
-            self.log_tensor_plot(source, output, target, mask, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp)
+            self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp)
 
         return loss
 
