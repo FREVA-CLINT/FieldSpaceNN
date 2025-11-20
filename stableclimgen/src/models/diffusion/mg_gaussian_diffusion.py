@@ -545,7 +545,7 @@ class GaussianDiffusion:
                 x_input_zooms = torch.cat([x_t_zooms, model_kwargs.pop('condition')], dim=-1)
             else:
                 x_input_zooms = x_t_zooms
-            model_output = model(x_input_zooms.copy(), emb=emb.copy(), mask=mask_zooms.copy(), **model_kwargs)
+            model_output = model(x_input_zooms.copy(), emb=emb.copy(), mask_zooms=mask_zooms.copy(), **model_kwargs)
 
             # Determine the target for the MSE loss based on model_mean_type
             if self.model_mean_type == ModelMeanType.PREVIOUS_X:
