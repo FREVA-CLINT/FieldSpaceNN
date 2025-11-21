@@ -179,13 +179,23 @@ class BaseDataset(Dataset):
             norm_dict = json.load(json_file)
 
         self.var_normalizers = {}
-        for var in all_variables:
-            norm_class = norm_dict[var]['normalizer']['class']
-            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-
-            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
-                norm_dict[var]['stats'],
-                norm_dict[var]['normalizer'])
+        for zoom in self.zooms:
+            self.var_normalizers[zoom] = {}
+            for var in all_variables:
+                if int(list(norm_dict[var].keys())[0]) in self.zooms:
+                    print("hey", var, zoom)
+                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                        norm_dict[var][str(zoom)]['stats'],
+                        norm_dict[var][str(zoom)]['normalizer'])
+                else:
+                    print("hey", var, zoom)
+                    norm_class = norm_dict[var]['normalizer']['class']
+                    assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                        norm_dict[var]['stats'],
+                        norm_dict[var]['normalizer'])
         self.normalize_data = normalize_data
         self.len_dataset = max([idx_map.shape[0] for idx_map in self.index_map.values()])
     
@@ -261,7 +271,7 @@ class BaseDataset(Dataset):
                     values = values.reshape(nt, -1)[:, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
                 data = torch.tensor(values).view(nt, -1,1)
                 if self.normalize_data:
-                    data = self.var_normalizers[variable].normalize(data)
+                    data = self.var_normalizers[zoom][variable].normalize(data)
                 data_g.append(data) 
 
         data_g = torch.stack(data_g, dim=0)
