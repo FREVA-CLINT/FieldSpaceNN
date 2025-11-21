@@ -15,7 +15,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                  lr_groups,
                  lambda_loss_dict,
                  weight_decay=0,
-                 sampler="ddpm", n_samples=1, max_batchsize=-1, mg_encoder_config=None):
+                 sampler="ddpm", n_samples=1, max_batchsize=-1, mg_encoder_config=None, decode_zooms=True):
         super().__init__(
             model,
             lr_groups,
@@ -30,6 +30,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             self.sampler = DDIMSampler(self.gaussian_diffusion)
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
+        self.decode_zooms = decode_zooms
 
 
     def forward(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None, pred_xstart=False):
@@ -73,7 +74,10 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+            if self.decode_zooms:
+                pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+            else:
+                pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
             self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp)
 
@@ -93,5 +97,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         max_zoom = max(target.keys())
 
         outputs = self.sampler.sample_loop(self.model, source, mask, progress=True, emb=emb, **model_kwargs)
-        outputs = decode_zooms(outputs.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+
+        if self.decode_zooms:
+            outputs = decode_zooms(outputs.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
         return outputs
