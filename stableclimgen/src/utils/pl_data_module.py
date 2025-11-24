@@ -68,6 +68,7 @@ class BatchReshapeAllocator:
 
             for zoom in mask_zooms.keys():
                 n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
+                b, nv, nt, n, nh = data_source_zooms[zoom].shape
                 n_patch = nt // n_steps
                 embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
                                                                        "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
