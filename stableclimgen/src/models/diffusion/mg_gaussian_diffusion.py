@@ -176,7 +176,8 @@ class GaussianDiffusion:
         diffusion_step_scheduler: dict | str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
         uncertainty_diffusion = False,
-        density_diffusion=False
+        density_diffusion=False,
+        separate_noise_on_zoom=True
     ):
         if model_mean_type == "epsilon":
             self.model_mean_type = ModelMeanType.EPSILON
@@ -193,6 +194,7 @@ class GaussianDiffusion:
         self.rescale_steps = rescale_timesteps
         self.clip_denoised = clip_denoised
         self.use_dynamic_clipping = use_dynamic_clipping
+        self.separate_noise_on_zoom = separate_noise_on_zoom
 
         # Use float64 for accuracy.
         if betas_zooms is None:
@@ -531,7 +533,15 @@ class GaussianDiffusion:
         **model_kwargs
     ) -> Tuple[dict, dict, dict]:
         if noise_zooms is None:
-            noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
+            if self.separate_noise_on_zoom:
+                noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
+            else:
+                max_zoom = max(gt_zooms.keys())
+                noise = torch.randn_like(gt_zooms[max_zoom])
+                noise_zooms = {}
+                for zoom in gt_zooms.keys():
+                    noise_zooms[zoom] = noise.view(*gt_zooms[zoom].shape[:3], -1, 4**(max_zoom - zoom), gt_zooms[zoom].shape[-1]).mean(dim=-2)
+
         if mask_zooms is not None:
             noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
         x_t_zooms = self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms)
