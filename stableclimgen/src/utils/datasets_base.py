@@ -45,6 +45,7 @@ class BaseDataset(Dataset):
                  output_differences=True,
                  apply_diff = True,
                  output_max_zoom_only = False,
+                 normalize_data = True
                  ):
         
         super(BaseDataset, self).__init__()
@@ -101,9 +102,6 @@ class BaseDataset(Dataset):
         unique_time_steps_future = len(torch.tensor(self.zoom_time_steps_future).unique())==1
         unique_zoom_patch_sample = len(torch.tensor(self.zoom_patch_sample).unique())==1
 
-        self.load_once = unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample
-
-
         if "timesteps" in self.data_dict.keys():
             self.sample_timesteps = []
             for t in self.data_dict["timesteps"]:
@@ -122,15 +120,13 @@ class BaseDataset(Dataset):
             self.time_steps_files.append(len(ds.time))
 
         self.index_map = dict(zip(self.zooms, [[] for _ in self.zooms]))
-        time_idx_global = self.max_time_step_past
         for file_idx, num_timesteps in enumerate(self.time_steps_files):
-            if file_idx == len(self.time_steps_files) - 1:
-                num_timesteps -= self.max_time_step_future
+            num_timesteps -= self.max_time_step_future
 
-            start_idx = self.max_time_step_past if file_idx == 0 else 0
+            start_idx = self.max_time_step_past
 
             for time_idx in range(start_idx, num_timesteps):
-                if self.sample_timesteps is None or time_idx_global in self.sample_timesteps:
+                if self.sample_timesteps is None or time_idx in self.sample_timesteps:
                     for zoom in self.zooms:
                         for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
                             if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
@@ -140,8 +136,6 @@ class BaseDataset(Dataset):
 
                             self.index_map[zoom].append((file_idx, time_idx, region_idx_zoom))
                 
-                time_idx_global += 1
-
         self.index_map = {z: np.array(idx_map) for z, idx_map in self.index_map.items()}
 
         all_variables = []
@@ -179,18 +173,28 @@ class BaseDataset(Dataset):
                     mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
+        self.load_once = unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
+
         with open(norm_dict) as json_file:
             norm_dict = json.load(json_file)
 
         self.var_normalizers = {}
-        for var in all_variables:
-            norm_class = norm_dict[var]['normalizer']['class']
-            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-
-            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
-                norm_dict[var]['stats'],
-                norm_dict[var]['normalizer'])
-
+        for zoom in self.zooms:
+            self.var_normalizers[zoom] = {}
+            for var in all_variables:
+                try:
+                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                        norm_dict[var][str(zoom)]['stats'],
+                        norm_dict[var][str(zoom)]['normalizer'])
+                except KeyError:
+                    norm_class = norm_dict[var]['normalizer']['class']
+                    assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                        norm_dict[var]['stats'],
+                        norm_dict[var]['normalizer'])
+        self.normalize_data = normalize_data
         self.len_dataset = max([idx_map.shape[0] for idx_map in self.index_map.values()])
     
     def get_indices_from_patch_idx(self, patch_idx):
@@ -257,7 +261,6 @@ class BaseDataset(Dataset):
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
                 if drop_mask_ is not None:
                     drop_mask_ = drop_mask[:,:,patch_indices]                       
-
             ds = ds.isel(isel_dict)
 
             for i, variable in enumerate(variables):
@@ -265,7 +268,8 @@ class BaseDataset(Dataset):
                 if not patch_dim:
                     values = values.reshape(nt, -1)[:, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
                 data = torch.tensor(values).view(nt, -1,1)
-                data = self.var_normalizers[variable].normalize(data)
+                if self.normalize_data:
+                    data = self.var_normalizers[zoom][variable].normalize(data)
                 data_g.append(data) 
 
         data_g = torch.stack(data_g, dim=0)
@@ -364,7 +368,6 @@ class BaseDataset(Dataset):
         loaded = False
         for zoom in self.zooms:
             file_index, time_index, patch_index = self.index_map[zoom][index]
-
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
@@ -375,7 +378,7 @@ class BaseDataset(Dataset):
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
                 mapping_zoom = zoom
 
-            if self.single_source and not loaded:
+            if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
                 loaded = True if self.load_once else False
 
@@ -390,7 +393,7 @@ class BaseDataset(Dataset):
                                                                  time_index, 
                                                                  patch_index, 
                                                                  variables_sample, 
-                                                                 self.mapping[max(self.zooms)], 
+                                                                 self.mapping[mapping_zoom],
                                                                  mapping_zoom, 
                                                                  zoom, 
                                                                  group_ids_sample=np.array(group_ids_sample), 
@@ -401,7 +404,7 @@ class BaseDataset(Dataset):
                                                 time_index, 
                                                 patch_index, 
                                                 variables_sample, 
-                                                self.mapping[max(self.zooms)], 
+                                                self.mapping[mapping_zoom],
                                                 mapping_zoom, 
                                                 zoom, 
                                                 group_ids_sample=np.array(group_ids_sample))

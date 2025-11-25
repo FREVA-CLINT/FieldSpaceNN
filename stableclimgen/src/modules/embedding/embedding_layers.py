@@ -74,7 +74,8 @@ class TimeScaleLayer(nn.Module):
             n_neurons: int = 512,
             time_scales: float = [],
             time_min: float = 0.0,
-            time_max: float = 1.0
+            time_max: float = 1.0,
+            norm_factor: float = 86400.0
     ) -> None:
         super().__init__()
 
@@ -85,18 +86,18 @@ class TimeScaleLayer(nn.Module):
 
         # The first weight (alpha) is for the linear term
         self.linear_term = nn.Linear(in_features, n_neurons // 2, bias=True)
-        self.SECONDS_PER_DAY = 86400.0
+        self.norm_factor = norm_factor
 
-    def forward(self, in_tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, time_zooms: dict) -> torch.Tensor:
         """
         Perform the forward pass of the layer, applying Random Fourier Feature transformation.
 
-        :param in_tensor: Input tensor to be transformed.
+        :param time_zooms: Input tensor to be transformed.
         :return: Transformed output tensor.
         """
-        normalized_in_tensor = (in_tensor - self.time_min) / self.time_range
+        normalized_in_tensor = (time_zooms[max(time_zooms.keys())] - self.time_min) / self.time_range
         linear_term = self.linear_term(normalized_in_tensor.unsqueeze(-1))
-        periodic_in_tensor = in_tensor.unsqueeze(-1) / self.SECONDS_PER_DAY
+        periodic_in_tensor = time_zooms[max(time_zooms.keys())].unsqueeze(-1) / self.norm_factor
         periodic_terms = torch.cat([
             torch.sin(2 * torch.pi * periodic_in_tensor / scale).repeat(1, 1, self.features_per_scale)
             for scale in self.time_scales

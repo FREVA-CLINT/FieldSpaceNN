@@ -231,12 +231,16 @@ class MG_VAE(MG_base_model):
         posterior_zooms = {int(zoom): self.get_distribution(x) for zoom, x in x_zooms.items()}
         return posterior_zooms
 
-    def vae_decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
+    def vae_decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None):
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
+
         x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 
         for k, block in enumerate(self.decoder_blocks.values()):
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
+        x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
         return x_zooms
 
     def decode(self, x_zooms:Dict[str, torch.Tensor], sample_configs: Dict, out_zoom: int=None, emb={}):
@@ -265,8 +269,7 @@ class MG_VAE(MG_base_model):
 
         z_zooms = {int(zoom): x.sample(gamma=self.gammas[str(zoom)] if self.gammas else None) for zoom, x in posterior_zooms.items()}
 
-        dec = self.vae_decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
-        dec = self.decoder(dec, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
+        dec = self.vae_decode(z_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=out_zoom)
 
         return dec, posterior_zooms
 

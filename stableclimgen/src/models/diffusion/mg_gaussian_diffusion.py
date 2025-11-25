@@ -176,7 +176,8 @@ class GaussianDiffusion:
         diffusion_step_scheduler: dict | str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
         uncertainty_diffusion = False,
-        density_diffusion=False
+        density_diffusion=False,
+        separate_noise_on_zoom=True
     ):
         if model_mean_type == "epsilon":
             self.model_mean_type = ModelMeanType.EPSILON
@@ -193,6 +194,7 @@ class GaussianDiffusion:
         self.rescale_steps = rescale_timesteps
         self.clip_denoised = clip_denoised
         self.use_dynamic_clipping = use_dynamic_clipping
+        self.separate_noise_on_zoom = separate_noise_on_zoom
 
         # Use float64 for accuracy.
         if betas_zooms is None:
@@ -268,7 +270,7 @@ class GaussianDiffusion:
         :return: A noisy version of x_start.
         """
         if noise_zooms is None:
-            noise_zooms = {int(zoom): torch.randn_like(x_start_zooms[zoom]) for zoom in x_start_zooms.keys()}
+            noise_zooms = self.generate_noise(x_start_zooms)
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], diff_steps, x_start_zooms[zoom].shape) * x_start_zooms[zoom]
                 + extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], diff_steps, x_start_zooms[zoom].shape) * noise_zooms[zoom]
@@ -531,7 +533,8 @@ class GaussianDiffusion:
         **model_kwargs
     ) -> Tuple[dict, dict, dict]:
         if noise_zooms is None:
-            noise_zooms = {int(zoom): torch.randn_like(gt_zooms[zoom]) for zoom in gt_zooms.keys()}
+            noise_zooms = self.generate_noise(gt_zooms)
+
         if mask_zooms is not None:
             noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
         x_t_zooms = self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms)
@@ -597,6 +600,18 @@ class GaussianDiffusion:
         # Linear mapping: u=0 -> t=0, u=1 -> t = num_timesteps - 1
         t_map = (uncertainty_embedding * (self.diffusion_steps - 1)).round().long()
         return t_map
+
+    def generate_noise(self, x_zooms):
+        if self.separate_noise_on_zoom:
+            noise_zooms = {int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()}
+        else:
+            max_zoom = max(x_zooms.keys())
+            noise = torch.randn_like(x_zooms[max_zoom])
+            noise_zooms = {}
+            for zoom in x_zooms.keys():
+                noise_zooms[zoom] = noise.view(*x_zooms[zoom].shape[:3], -1, 4 ** (max_zoom - zoom),
+                                               x_zooms[zoom].shape[-1]).mean(dim=-2)
+        return noise_zooms
 
 
 def extract_into_tensor(arr: Union[np.ndarray, torch.Tensor], diffusion_steps: torch.Tensor, broadcast_shape: Tuple[int, ...]) -> torch.Tensor:

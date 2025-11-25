@@ -36,7 +36,7 @@ class Sampler:
         :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: Final batch of non-differentiable samples.
         """
-        x_0_zooms = {int(zoom): torch.randn_like(input_zooms[zoom]) for zoom in input_zooms.keys()}
+        x_0_zooms = self.gaussian_diffusion.generate_noise(input_zooms)
 
         final = None
         # Progressive sampling loop
@@ -181,7 +181,7 @@ class DDPMSampler(Sampler):
             denoised_fn=denoised_fn,
             **model_kwargs
         )
-        noise_zooms = {int(zoom): torch.randn_like(x_t_zooms[zoom]) for zoom in x_t_zooms.keys()}
+        noise_zooms = self.gaussian_diffusion.generate_noise(x_t_zooms)
         nonzero_mask_zooms = {int(zoom): (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t_zooms[zoom].shape) - 1))) for zoom in x_t_zooms.keys()}
         sample_zooms = {int(zoom): out_zooms["mean"][zoom] + nonzero_mask_zooms[zoom] * torch.exp(0.5 * out_zooms["log_variance"][zoom]) * noise_zooms[zoom] for zoom in x_t_zooms.keys()}
         return {"sample": sample_zooms, "pred_xstart": out_zooms["pred_xstart"]}
@@ -235,7 +235,7 @@ class DDIMSampler(Sampler):
         alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev_zooms[zoom], diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
         sigma_zooms = {int(zoom): eta * torch.sqrt((1 - alpha_bar_prev_zooms[zoom]) / (1 - alpha_bar_zooms[zoom])) * torch.sqrt(1 - alpha_bar_zooms[zoom] / alpha_bar_prev_zooms[zoom]) for zoom in x_t_zooms.keys()}
 
-        noise_zooms = {int(zoom): torch.randn_like(x_t_zooms[zoom]) for zoom in x_t_zooms.keys()}
+        noise_zooms = self.gaussian_diffusion.generate_noise(x_t_zooms)
         mean_pred_zooms = {int(zoom): out_zooms["pred_xstart"][zoom] * torch.sqrt(alpha_bar_prev_zooms[zoom]) + torch.sqrt(1 - alpha_bar_prev_zooms[zoom] - sigma_zooms[zoom] ** 2) * eps_zooms[zoom] for zoom in x_t_zooms.keys()}
         nonzero_mask_zooms = {int(zoom): (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t_zooms[zoom].shape) - 1))) for zoom in x_t_zooms.keys()}
         sample_zooms = {int(zoom): mean_pred_zooms[zoom] + nonzero_mask_zooms[zoom] * sigma_zooms[zoom] * noise_zooms[zoom] for zoom in x_t_zooms.keys()}
