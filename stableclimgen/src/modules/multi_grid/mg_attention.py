@@ -547,7 +547,8 @@ class MultiFieldAttention(nn.Module):
                  with_mlp_embedder = True,
                  residual_learned = False,
                  layer_confs: Dict = {},
-                 layer_confs_emb= {}) -> None: 
+                 layer_confs_emb= {},
+                 update='shift') -> None: 
         
         super().__init__()
 
@@ -579,6 +580,9 @@ class MultiFieldAttention(nn.Module):
 
         self.q_zooms = q_zooms
         self.kv_zooms = kv_zooms
+
+        out_feat_fac = 1
+        out_feat_fac = 2 if update == 'scale_shift' else out_feat_fac
         
         if len(self.q_zooms) == len(self.kv_zooms):
             self.self_att = True
@@ -624,7 +628,7 @@ class MultiFieldAttention(nn.Module):
         self.kv_projection_layer = get_layer(in_features_kv, out_dim_kv, layer_confs=layer_confs, bias=True)
 
         in_features_out = att_dim * grid_layer_field.adjc.shape[-1] if self.with_nh_post_att else att_dim
-        self.out_layer_att = get_layer(in_features_out, out_features_field, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
+        self.out_layer_att = get_layer(in_features_out, out_features_field * out_feat_fac, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
         self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=True, layer_confs_emb=layer_confs_emb)
        
@@ -635,8 +639,13 @@ class MultiFieldAttention(nn.Module):
         self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
 
         residual_w_embed = False
+        self.scale_shift = False
 
-        if residual_learned and residual_embedder is None:
+        if update == 'scale_shift':
+            self.scale_shift = True
+            self.gamma_scale = nn.Parameter(torch.ones(out_features_field)*1e-6, requires_grad=True)
+
+        elif residual_learned and residual_embedder is None:
             self.gamma_res = nn.Parameter(torch.ones(out_features_field), requires_grad=True)
             self.gamma_res_mlp = nn.Parameter(torch.ones(out_features_field), requires_grad=True) 
         
@@ -648,10 +657,11 @@ class MultiFieldAttention(nn.Module):
 
             residual_learned = False
             residual_w_embed = True
+        
+            
 
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6, requires_grad=True)
-
-        self.mlp = MLP_fac(in_features_mlp, out_features_field, mult, dropout, layer_confs=layer_confs, gamma=True) 
+        self.mlp = MLP_fac(in_features_mlp, out_features_field * out_feat_fac, mult, dropout, layer_confs=layer_confs, gamma=True) 
 
 
         self.residual_w_embed = residual_w_embed
@@ -688,7 +698,7 @@ class MultiFieldAttention(nn.Module):
         q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)
 
-        x_res = q
+        x = q
 
         q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
@@ -752,32 +762,40 @@ class MultiFieldAttention(nn.Module):
         att_out = self.out_layer_att(att_out, emb=emb, sample_configs=sample_configs)
 
         if self.residual_learned:
-            x = self.gamma_res * x_res + self.gamma * self.dropout_att(att_out)
+            x = self.gamma_res * x + self.gamma * self.dropout_att(att_out)
         
         elif self.residual_w_embed:
-            emb_ = self.residual_embedder(emb, sample_configs[zoom_field]).expand(*x_res.shape[:3],-1,-1)
+            emb_ = self.residual_embedder(emb, sample_configs[zoom_field]).expand(*x.shape[:3],-1,-1)
             scale_res, scale = self.embedding_layer_res(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
-            x = self.activation(scale_res) * x_res + self.gamma * self.activation(scale) * self.dropout_att(att_out)
+            x = self.activation(scale_res) * x + self.gamma * self.activation(scale) * self.dropout_att(att_out)
+
+        elif self.scale_shift:
+            scale, shift = self.dropout_att(att_out).chunk(2,dim=-1)
+            x = x * (1 + self.gamma_scale * scale) + self.gamma * shift
 
         else:
-            x = x_res + self.gamma * self.dropout_att(att_out)
+            x = x + self.gamma * self.dropout_att(att_out)
 
         x_mlp = self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)])
 
         if self.with_nh_field_mlp:
             x_mlp, _ = self.grid_layer_field.get_nh(x_mlp, **sample_configs[zoom_field], with_nh=True, mask=None)
 
-        x_mlp = self.mlp(x_mlp, emb=emb, sample_configs=sample_configs[int(zoom_field)]).reshape_as(x)
+        x_mlp = self.dropout_mlp(self.mlp(x_mlp, emb=emb, sample_configs=sample_configs[int(zoom_field)]))
 
         if self.residual_learned:
-            x = self.gamma_res_mlp * x_res + self.dropout_mlp(x_mlp)
+            x = self.gamma_res_mlp * x + x_mlp
         
         elif self.residual_w_embed:
             scale_res, scale = self.embedding_layer_res_mlp(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
-            x = self.activation(scale_res) * x_res + self.activation(scale) * self.dropout_att(x_mlp)
+            x = self.activation(scale_res) * x + self.activation(scale) * x_mlp
+
+        elif self.scale_shift:
+            scale, shift = self.dropout_mlp(x_mlp).chunk(2,dim=-1)
+            x = x * (1 + scale) + shift
 
         else:
-            x = x_res + self.dropout_mlp(x_mlp)
+            x = x + x_mlp
 
         x = x.split(tuple(self.n_channels_q.values()), dim=-1)
 

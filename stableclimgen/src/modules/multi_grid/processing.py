@@ -231,7 +231,8 @@ class MG_MultiBlock(nn.Module):
                         residual_embedder=residual_embedder,
                         layer_confs=layer_confs,
                         layer_confs_emb=layer_confs_emb,
-                        residual_learned=layer_settings.get("residual_learned", False)
+                        residual_learned=layer_settings.get("residual_learned", False),
+                        update=layer_settings.get("update", 'shift')
                         )
             
         elif type == 'channel_att2':
