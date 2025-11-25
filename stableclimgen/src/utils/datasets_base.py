@@ -182,13 +182,13 @@ class BaseDataset(Dataset):
         for zoom in self.zooms:
             self.var_normalizers[zoom] = {}
             for var in all_variables:
-                try:
+                if str(zoom) in norm_dict[var].keys():
                     norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
                         norm_dict[var][str(zoom)]['stats'],
                         norm_dict[var][str(zoom)]['normalizer'])
-                except KeyError:
+                else:
                     norm_class = norm_dict[var]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(

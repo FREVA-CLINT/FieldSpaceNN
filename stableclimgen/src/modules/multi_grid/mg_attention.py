@@ -755,7 +755,7 @@ class MultiFieldAttention(nn.Module):
             x = self.gamma_res * x_res + self.gamma * self.dropout_att(att_out)
         
         elif self.residual_w_embed:
-            emb_ = self.residual_embedder(emb, sample_configs[zoom_field])
+            emb_ = self.residual_embedder(emb, sample_configs[zoom_field]).expand(*x_res.shape[:3],-1,-1)
             scale_res, scale = self.embedding_layer_res(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
             x = self.activation(scale_res) * x_res + self.gamma * self.activation(scale) * self.dropout_att(att_out)
 
