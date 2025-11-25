@@ -87,7 +87,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 sample_configs_p = merge_sampling_dicts(sample_configs, patch_index_zooms_p)
                 model_kwargs = {'sample_configs': sample_configs_p}
 
-                _, _, pred_xstart = self.gaussian_diffusion.training_losses(self.model, target.copy(), torch.stack([t]), mask_p.copy(), emb_p, create_pred_xstart=True, **model_kwargs)
+                _, _, pred_xstart = self.gaussian_diffusion.training_losses(self.model, target_p.copy(), torch.stack([t]), mask_p.copy(), emb_p, create_pred_xstart=True, **model_kwargs)
 
                 if self.decode_zooms:
                     pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
