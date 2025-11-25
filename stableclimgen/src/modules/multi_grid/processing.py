@@ -203,38 +203,12 @@ class MG_MultiBlock(nn.Module):
 
         new_zooms = [out_zoom for out_zoom in out_zooms if out_zoom not in in_zooms]
 
-        if type=='field_att':
-
-            for k, zoom in enumerate(zooms_qkv):
-                embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
-                embedders[str(int(zoom))] = embedder
-
-            block = MultiZoomFieldAttention(grid_layer,
-                                in_features,
-                                out_features,
-                                q_zooms,
-                                kv_zooms,
-                                mult = layer_settings.get("mlp_mult",1),
-                                num_heads = layer_settings.get("num_heads",1),
-                                n_head_channels= layer_settings.get("n_head_channels",n_head_channels),
-                                share_zoom_proj = layer_settings.get("share_zoom_proj",True),
-                                share_zoom_proj_qkv = layer_settings.get("share_zoom_proj_qkv",False),
-                                with_nh= layer_settings.get("with_nh",True),
-                                var_att= layer_settings.get("var_att",False),
-                                rank=layer_settings.get("rank",16),
-                                contract_zooms_q=layer_settings.get("contract_zooms_q",False),
-                                contract_zooms_kv=layer_settings.get("contract_zooms_kv",True),
-                                contract_channels_q=layer_settings.get("contract_channels_q",True),
-                                contract_channels_kv=layer_settings.get("contract_channels_kv",True),
-                                embedders=embedders,
-                                layer_confs=layer_confs,
-                                layer_confs_emb=layer_confs_emb
-                                )
-        elif type == 'channel_att':
+        if type == 'channel_att':
             
             field_zoom = layer_settings.get("field_zoom", att_zoom)
 
             embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
+            residual_embedder = get_embedder(**layer_settings.get('residual_embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
 
             block = MultiFieldAttention(
                         grid_layers[str(field_zoom)],
@@ -242,23 +216,20 @@ class MG_MultiBlock(nn.Module):
                         q_zooms,
                         kv_zooms,
                         mult = layer_settings.get("mlp_mult",1),
-                        att_dim = layer_settings.get("att_dim",None),
-                        num_heads = layer_settings.get("num_heads",None),
+                        att_dim = layer_settings.get("att_dim", None),
                         n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
-                        head_gate  = layer_settings.get("head_gate",False),
-                        head_gate_scale_limit = layer_settings.get("head_gate_scale_limit",0.5),
-                        with_nh_field_mlp = layer_settings.get("with_nh_field_mlp",False),
-                        with_nh_field = layer_settings.get("with_nh_field",True),
-                        with_nh_att = layer_settings.get("with_nh_att",False),
+                        with_nh_field_mlp = layer_settings.get("with_nh_field_mlp", False),
+                        with_nh_field = layer_settings.get("with_nh_field", True),
+                        with_nh_att = layer_settings.get("with_nh_att", False),
                         with_var_att= layer_settings.get("with_var_att", False),
                         with_nh_post_att = layer_settings.get("with_nh_post_att", False),
-                        factorize_dim = layer_settings.get("factorize_dim",-1),
-                        spatial_ranks = layer_settings.get("spatial_ranks",None),
-                        with_mlp_embedder=layer_settings.get("with_mlp_embedder",True),
+                        with_mlp_embedder=layer_settings.get("with_mlp_embedder", True),
                         dropout=dropout,
                         embedder=embedder,
+                        residual_embedder=residual_embedder,
                         layer_confs=layer_confs,
-                        layer_confs_emb=layer_confs_emb
+                        layer_confs_emb=layer_confs_emb,
+                        residual_learned=layer_settings.get("residual_learned", False)
                         )
             
         elif type == 'channel_att2':

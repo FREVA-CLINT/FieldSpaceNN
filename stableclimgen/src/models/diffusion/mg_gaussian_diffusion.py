@@ -449,7 +449,7 @@ class GaussianDiffusion:
     def _predict_eps_from_v(self, x_t_zooms: dict, t: torch.Tensor, v_zooms: dict) -> dict:
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
-                + extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms
+                + extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
     def _predict_v_from_eps_and_xstart(self, eps_zooms: dict, x_start_zooms: dict, t: torch.Tensor) -> dict:
