@@ -157,13 +157,13 @@ class _WrappedModel:
         self.rescale_steps = rescale_steps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x: torch.Tensor, emb: Dict, mask: torch.Tensor, **kwargs) -> torch.Tensor:
+    def __call__(self, x: torch.Tensor, emb: Dict, mask_zooms: torch.Tensor, **kwargs) -> torch.Tensor:
         """
         Call the wrapped model with rescaled diffusion steps.
 
         :param x: Input tensor.
         :param emb: Embedding tensor.
-        :param mask: Mask tensor for diffusion.
+        :param mask_zooms: Mask tensor for diffusion.
         :param cond: Conditional input tensor.
         :return: Output from the model with rescaled diffusion steps.
         """
@@ -176,4 +176,4 @@ class _WrappedModel:
         if self.rescale_steps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
         emb["DiffusionStepEmbedder"] = new_ts
-        return self.model(x, emb=emb, mask_zooms=mask, **kwargs)
+        return self.model(x, emb=emb, mask_zooms=mask_zooms, **kwargs)
