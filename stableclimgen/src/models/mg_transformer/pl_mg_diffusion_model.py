@@ -79,7 +79,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 source_p = {zoom: source[zoom][0:1] for zoom in source.keys()}
                 target_p = {zoom: target[zoom][0:1] for zoom in target.keys()}
                 mask_p = {zoom: mask[zoom][0:1] for zoom in mask.keys()}
-                emb_p = {'GroupEmbedder': emb['GroupEmbedder'].repeat_interleave(self.n_samples, dim=0),
+                emb_p = {'GroupEmbedder': emb['GroupEmbedder'][0:1],
                          'DensityEmbedder': (mask_p.copy(), emb['DensityEmbedder'][1][0:1]),
                          'TimeEmbedder': {int(zoom): emb['TimeEmbedder'][zoom][0:1] for zoom in
                                           emb['TimeEmbedder'].keys()}}
