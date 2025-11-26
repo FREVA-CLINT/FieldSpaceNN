@@ -312,7 +312,7 @@ def get_zoom_x(x, zoom_patch_sample=None, **kwargs):
     return zoom_x
 
 
-def healpix_get_adjacent_cell_indices(zoom: int, nh: int = 5):
+def healpix_get_adjacent_cell_indices(zoom: int):
     """
     Function to get neighbored cell indices for Healpix grid.
 
@@ -324,91 +324,13 @@ def healpix_get_adjacent_cell_indices(zoom: int, nh: int = 5):
     nside = 2**zoom
     npix = hp.nside2npix(nside)
 
-    global_indices = torch.arange(npix)
+    adjc = torch.tensor(hp.get_all_neighbours(nside, np.arange(npix),nest=True)).transpose(0,1)
 
-    # The first level of neighbors
-    adjcs = [global_indices.view(-1, 1)]  # List of adjacency tensors, starting with the pixel indices
-    duplicates = [torch.zeros_like(adjcs[0], dtype=torch.bool)]  # Mask for duplicates
+    adjc = torch.concat((torch.arange(npix).view(-1,1),adjc),dim=-1)
+    duplicates = adjc ==-1
 
-    visited_neighbors = torch.full((npix, 1), fill_value=-1, dtype=torch.long)
-    visited_neighbors[:, 0] = global_indices
-
-    # Iterate over each neighbor level
-    for level in range(1, nh + 1):
-        current_neighbors = []
-
-        # Find neighbors for the previous level
-        for pixel in range(npix):
-            # Get current pixel's neighbors
-            prev_neighbors = adjcs[-1][pixel].tolist()  # Previous level neighbors
-            new_neighbors = set()
-
-            for prev_pixel in prev_neighbors:
-                if prev_pixel >= 0:  # Ignore invalid entries
-                    neighbors = set(hp.get_all_neighbours(nside, prev_pixel, nest=True))
-                    neighbors.discard(-1)  # Remove invalid neighbors
-                    new_neighbors.update(neighbors)
-
-            # Remove already visited pixels
-            new_neighbors.difference_update(visited_neighbors[pixel].tolist())
-            current_neighbors.append(list(new_neighbors))
-
-        # Ensure all rows have the same length by padding with -1
-        max_len = max(len(neigh) for neigh in current_neighbors)
-        padded_neighbors = [neigh + [-1] * (max_len - len(neigh)) for neigh in current_neighbors]
-        adjc_tensor = torch.tensor(padded_neighbors, dtype=torch.long)
-
-        # Update visited pixels
-        if visited_neighbors.size(1) < max_len:
-            padding_size = max_len - visited_neighbors.size(1)
-            visited_neighbors = torch.cat([visited_neighbors, -torch.ones((npix, padding_size), dtype=torch.long)], dim=1)
-
-        # Update the visited pixels
-        visited_neighbors[:, :max_len] = adjc_tensor
-
-        # Handle duplicates
-        check_indices = torch.concat(adjcs, dim=-1).unsqueeze(dim=-2)
-        is_prev = adjc_tensor.unsqueeze(dim=-1) - check_indices == 0
-        is_prev = is_prev.sum(dim=-1) > 0
-
-        is_removed = is_prev
-        is_removed_count = is_removed.sum(dim=-1)
-
-        # Resolve duplicates by majority as in the original function
-        unique, counts = is_removed_count.unique(return_counts=True)
-        majority = unique[counts.argmax()]
-
-        for minority in unique[unique != majority]:
-            where_minority = torch.where(is_removed_count == minority)[0]
-            ind0, ind1 = torch.where(is_removed[where_minority])
-
-            ind0 = ind0.reshape(len(where_minority), -1)[:, :minority - majority].reshape(-1)
-            ind1 = ind1.reshape(len(where_minority), -1)[:, :minority - majority].reshape(-1)
-
-            is_removed[where_minority[ind0], ind1] = False
-
-        adjc_tensor = adjc_tensor[~is_removed]
-        adjc_tensor = adjc_tensor.reshape(npix, -1)
-
-        if level > 0:
-            counts = []
-            uniques = []
-            for row in adjc_tensor:
-                unique, count = row.unique(return_counts=True)
-                uniques.append(unique)
-                counts.append(len(unique))
-
-            adjc_tensor = torch.nn.utils.rnn.pad_sequence(uniques, batch_first=True, padding_value=-1)
-            duplicates_mask = adjc_tensor == -1
-        else:
-            duplicates_mask = torch.zeros_like(adjc_tensor)
-
-        adjcs.append(adjc_tensor)
-        duplicates.append(duplicates_mask)
-
-    # Concatenate results
-    adjc = torch.concat(adjcs, dim=-1)
-    duplicates = torch.concat(duplicates, dim=-1)
+    c,n = torch.where(duplicates)
+    adjc[c,n] = c
 
     return adjc, duplicates
 
@@ -450,7 +372,7 @@ def healpix_grid_to_mgrid(zoom_max:int=10, nh:int=1)->list:
     for zoom in range(zoom_max + 1):
         zooms.append(zoom)
 
-        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom, nh)
+        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom)
 
         grid_lvl = {
             "coords": healpix_pixel_lonlat_torch(zoom),
