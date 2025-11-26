@@ -508,7 +508,7 @@ class LightningMGModel(pl.LightningModule):
         return x_zooms, sample_configs
     
 
-    def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch, output_comp=None):
+    def log_tensor_plot(self, input, output, gt, mask, sample_configs, emb, current_epoch, output_comp=None, plot_name=""):
 
         save_dir = os.path.join(self.logger.save_dir if isinstance(self.logger, WandbLogger) else self.trainer.logger._tracking_uri, "validation_images")
         os.makedirs(save_dir, exist_ok=True)
@@ -516,7 +516,7 @@ class LightningMGModel(pl.LightningModule):
         save_paths = []
 
         if output is not None:
-            save_paths += healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}", emb=emb)
+            save_paths += healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}{plot_name}", emb=emb)
     
         max_zoom = max(self.model.in_zooms)
 
@@ -529,7 +529,7 @@ class LightningMGModel(pl.LightningModule):
             output_p = output_comp
 
         mask = {max_zoom: mask[max_zoom]} if mask is not None else None
-        save_paths += healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined", emb=emb)
+        save_paths += healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined{plot_name}", emb=emb)
 
         for k, save_path in enumerate(save_paths):
             if isinstance(self.logger, WandbLogger):

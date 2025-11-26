@@ -74,12 +74,27 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            if self.decode_zooms:
-                pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-            else:
-                pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
+            ts = torch.tensor([(self.gaussian_diffusion.diffusion_steps // 4) * (x+1) - 1 for x in range(4)]).to(source[max_zoom].device)
+            for t in ts:
+                source_p = {zoom: source[zoom][0:1] for zoom in source.keys()}
+                target_p = {zoom: target[zoom][0:1] for zoom in target.keys()}
+                mask_p = {zoom: mask[zoom][0:1] for zoom in mask.keys()}
+                emb_p = {'GroupEmbedder': emb['GroupEmbedder'].repeat_interleave(self.n_samples, dim=0),
+                         'DensityEmbedder': (mask_p.copy(), emb['DensityEmbedder'][1][0:1]),
+                         'TimeEmbedder': {int(zoom): emb['TimeEmbedder'][zoom][0:1] for zoom in
+                                          emb['TimeEmbedder'].keys()}}
+                patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
+                sample_configs_p = merge_sampling_dicts(sample_configs, patch_index_zooms_p)
+                model_kwargs = {'sample_configs': sample_configs_p}
 
-            self.log_tensor_plot(source, pred_xstart, target, mask, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp)
+                _, _, pred_xstart = self.gaussian_diffusion.training_losses(self.model, target_p.copy(), torch.stack([t]), mask_p.copy(), emb_p, create_pred_xstart=True, **model_kwargs)
+
+                if self.decode_zooms:
+                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                else:
+                    pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
+
+                self.log_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
 
         return loss
 
