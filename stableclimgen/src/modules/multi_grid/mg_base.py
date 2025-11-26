@@ -23,10 +23,23 @@ def combine_zooms(x_zooms, out_zoom, zooms=None):
     x_out = []
     for zoom in zooms:
         x = x_zooms[zoom]
-        x = x.view(*x.shape[:3],-1, 4**(zoom - out_zoom),x.shape[-1])
+        if zoom < out_zoom:
+            x = refine_zoom(x, zoom, out_zoom).unsqueeze(dim=-2)
+        else:
+            x = x.view(*x.shape[:3],-1, 4**(zoom - out_zoom),x.shape[-1])
         x_out.append(x)
     return torch.concat(x_out, dim=-2)
 
+
+def refine_zoom(x, in_zoom, out_zoom):
+    x = x.view(*x.shape[:3],-1, 1, x.shape[-1])
+    x = x.expand(-1,-1,-1, -1,4**(out_zoom - in_zoom),-1).reshape(*x.shape[:3],-1, x.shape[-1])
+    return x
+
+
+def coarsen_zoom(x, in_zoom, out_zoom):
+    x = x.view(*x.shape[:3],-1, 4**(in_zoom - out_zoom), x.shape[-1]).mean(dim=-2)
+    return x
 
 class MGFieldLayer(nn.Module):
   

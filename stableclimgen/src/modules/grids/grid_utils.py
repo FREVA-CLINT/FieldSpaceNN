@@ -390,7 +390,7 @@ def healpix_get_adjacent_cell_indices(zoom: int, nh: int = 5):
         adjc_tensor = adjc_tensor[~is_removed]
         adjc_tensor = adjc_tensor.reshape(npix, -1)
 
-        if level > 1:
+        if level > 0:
             counts = []
             uniques = []
             for row in adjc_tensor:

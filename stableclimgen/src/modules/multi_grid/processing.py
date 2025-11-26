@@ -13,7 +13,13 @@ from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
 from .mg_attention import MultiZoomSelfAttention,MultiFieldAttention,MultiFieldAttention2
-from .mg_base import Conv, ResConv
+from .mg_base import Conv, ResConv, refine_zoom, coarsen_zoom
+
+def invert_dict(d):
+    inverted_d = {}
+    for key, value in d.items():
+        inverted_d[value] = key
+    return inverted_d
 
 class MG_SingleBlock(nn.Module):
   
@@ -156,19 +162,15 @@ class MG_MultiBlock(nn.Module):
                  layer_confs={},
                  layer_confs_emb={},
                  use_mask = False,
-                 type='',
-                 init_missing_zooms="zeros",
-                 residual=False,
-                 n_head_channels=16
+                 n_head_channels=16,
+                 refine_zooms= {}
                  ) -> None:
         super().__init__()
         
         self.out_features = [out_features]*len(out_zooms)
-        self.out_zooms = out_zooms
+        self.out_zooms = out_zooms.copy()
         self.use_mask = use_mask
-        self.residual = residual
 
-        self.init_missing_zooms = torch.zeros if init_missing_zooms == "zeros" else torch.randn
 
         if isinstance(in_features, (List,ListConfig)) and len(set(in_features)) > 1:
             raise ValueError("features of levels should be the same.")
@@ -183,120 +185,63 @@ class MG_MultiBlock(nn.Module):
         if not isinstance(kv_zooms,(List,ListConfig)) and (kv_zooms == -1):
             kv_zooms = in_zooms
 
+        for k,zoom in enumerate(q_zooms):
+            if zoom in refine_zooms.keys():
+                q_zooms[k] = refine_zooms[zoom]
         
-        compression_zooms = layer_settings.get("compression_zooms",{})
+        for k,zoom in enumerate(kv_zooms):
+            if zoom in refine_zooms.keys():
+                kv_zooms[k] = refine_zooms[zoom]
 
-        zooms_qkv = torch.tensor(q_zooms + kv_zooms + list(compression_zooms.values())).unique() 
+        for k,zoom in enumerate(in_zooms):
+            if zoom in refine_zooms.keys():
+                in_zooms[k] = refine_zooms[zoom]
 
-        embedders = {}
-
-        
-            
-        
         for k, zoom in enumerate(kv_zooms):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
             
         att_zoom = (min(q_zooms + kv_zooms))  
         att_zoom = min([layer_settings.get("att_zoom",att_zoom), att_zoom])
-        grid_layer = grid_layers[str(att_zoom)]
 
-        new_zooms = [out_zoom for out_zoom in out_zooms if out_zoom not in in_zooms]
+        field_zoom = layer_settings.get("field_zoom", att_zoom)
 
-        if type == 'channel_att':
-            
-            field_zoom = layer_settings.get("field_zoom", att_zoom)
-
-            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
-            residual_embedder = get_embedder(**layer_settings.get('residual_embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
-
-            block = MultiFieldAttention(
-                        grid_layers[str(field_zoom)],
-                        grid_layers[str(att_zoom)],
-                        q_zooms,
-                        kv_zooms,
-                        mult = layer_settings.get("mlp_mult",1),
-                        att_dim = layer_settings.get("att_dim", None),
-                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
-                        with_nh_field_mlp = layer_settings.get("with_nh_field_mlp", False),
-                        with_nh_field = layer_settings.get("with_nh_field", True),
-                        with_nh_att = layer_settings.get("with_nh_att", False),
-                        with_var_att= layer_settings.get("with_var_att", False),
-                        with_time_att= layer_settings.get("with_time_att", False),
-                        time_seq_len= layer_settings.get("time_seq_len", 1),
-                        with_nh_post_att = layer_settings.get("with_nh_post_att", False),
-                        with_mlp_embedder=layer_settings.get("with_mlp_embedder", True),
-                        dropout=dropout,
-                        embedder=embedder,
-                        residual_embedder=residual_embedder,
-                        layer_confs=layer_confs,
-                        layer_confs_emb=layer_confs_emb,
-                        residual_learned=layer_settings.get("residual_learned", False),
-                        update=layer_settings.get("update", 'shift'),
-                        double_skip = layer_settings.get("double_skip", False)
-                        )
-            
-        elif type == 'channel_att2':
-            
-            field_zoom = layer_settings.get("field_zoom", att_zoom)
-
-            embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
-
-            block = MultiFieldAttention2(
-                        grid_layers[str(field_zoom)],
-                        grid_layers[str(att_zoom)],
-                        q_zooms,
-                        kv_zooms,
-                        mult = layer_settings.get("mlp_mult",1),
-                        att_dim = layer_settings.get("att_dim",None),
-                        num_heads = layer_settings.get("num_heads",None),
-                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
-                        with_nh_field = layer_settings.get("with_nh_field",True),
-                        with_nh_att = layer_settings.get("with_nh_att",False),
-                        with_var_att= layer_settings.get("with_var_att", False),
-                        embedder=embedder,
-                        layer_confs=layer_confs,
-                        layer_confs_emb=layer_confs_emb
-                        )
-
-        else:
-            for k, zoom in enumerate(zooms_qkv):
-                embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(zoom))
-                embedders[str(int(zoom))] = embedder
-
-            block = MultiZoomSelfAttention(
-                        grid_layers,
-                        att_zoom,
-                        in_features,
-                        out_features,
-                        q_zooms,
-                        kv_zooms,
-                        new_zooms=new_zooms,
-                        mult = layer_settings.get("mlp_mult",1),
-                        num_heads = layer_settings.get("num_heads",None),
-                        n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
-                        compression_dims_q =layer_settings.get("compression_dims_q",{}),
-                        compression_dims_kv =layer_settings.get("compression_dims_kv",{}),
-                        pooling_dims_kv=layer_settings.get("pooling_dims_kv",{}),
-                        compression_zooms=layer_settings.get("compression_zooms",{}),
-                        cross_mode=layer_settings.get("cross_mode",False),
-                        qkv_emb_projection_settings=layer_settings.get("qkv_emb_projection_settings",{}),
-                        att_dim = layer_settings.get('att_dim', None),
-                        with_nh = layer_settings.get("with_nh",True),
-                        var_att = layer_settings.get("var_att",False),
-                        embedders=embedders,
-                        common_affine = layer_settings.get('common_affine', True),
-                        lora = layer_settings.get('lora', False),
-                        film = layer_settings.get('film', False),
-                        head_gate = layer_settings.get('head_gate', False),
-                        head_gate_scale_limit = layer_settings.get('head_gate_scale_limit', 1.),
-                        composed_residual = layer_settings.get('composed_residual', False),
-                        layer_confs=layer_confs,
-                        layer_confs_emb=layer_confs_emb
-                        )
-        
+        if (min(q_zooms + kv_zooms)) < field_zoom:
+            raise ValueError(f"Zoom level {min(q_zooms + kv_zooms)} need to be refined. please indicate refine_zooms={refine_zooms}")
 
 
+        embedder = get_embedder(**layer_settings.get('embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
+        residual_embedder = get_embedder(**layer_settings.get('residual_embed_confs', {}), grid_layers=grid_layers, zoom=int(field_zoom))
+
+        block = MultiFieldAttention(
+                    grid_layers[str(field_zoom)],
+                    grid_layers[str(att_zoom)],
+                    q_zooms,
+                    kv_zooms,
+                    mult = layer_settings.get("mlp_mult",1),
+                    att_dim = layer_settings.get("att_dim", None),
+                    n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
+                    with_nh_field_mlp = layer_settings.get("with_nh_field_mlp", False),
+                    with_nh_field = layer_settings.get("with_nh_field", True),
+                    with_nh_att = layer_settings.get("with_nh_att", False),
+                    with_var_att= layer_settings.get("with_var_att", False),
+                    with_time_att= layer_settings.get("with_time_att", False),
+                    time_seq_len= layer_settings.get("time_seq_len", 1),
+                    with_nh_post_att = layer_settings.get("with_nh_post_att", False),
+                    with_mlp_embedder=layer_settings.get("with_mlp_embedder", True),
+                    dropout=dropout,
+                    embedder=embedder,
+                    residual_embedder=residual_embedder,
+                    layer_confs=layer_confs,
+                    layer_confs_emb=layer_confs_emb,
+                    residual_learned=layer_settings.get("residual_learned", False),
+                    update=layer_settings.get("update", 'shift'),
+                    double_skip = layer_settings.get("double_skip", False)
+                    )
+
+
+        self.refine_zooms = refine_zooms
+        self.coarse_zooms = invert_dict(refine_zooms)
 
         self.block = block
 
@@ -312,23 +257,18 @@ class MG_MultiBlock(nn.Module):
 
 
     def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
-
-       # for zoom in self.out_zooms:
-       #     if zoom not in x_zooms.keys():
-        #        x = self.generate_zoom(list(x_zooms.values())[0].shape, zoom, x_zooms[list(x_zooms.keys())[0]].device, **sample_configs[zoom])
-        #        x_zooms[zoom] = x
-
-        if self.residual:
-            x_res_zooms = x_zooms.copy()
+        
+        for in_zoom, out_zoom in self.refine_zooms.items():
+            x_zooms[out_zoom] = refine_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
 
         x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
 
-        if self.residual:
-            for zoom in x_zooms.keys():
-                x_zooms[zoom] = x_zooms[zoom] + x_res_zooms[zoom]
+        for in_zoom, out_zoom in self.coarse_zooms.items():
+            x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
 
         x_zooms_out = {}
         for zoom in self.out_zooms:
             x_zooms_out[zoom] = x_zooms[zoom]
 
         return x_zooms_out
+    
