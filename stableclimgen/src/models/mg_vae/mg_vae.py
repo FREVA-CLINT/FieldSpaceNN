@@ -119,47 +119,7 @@ class MG_VAE(MG_base_model):
                                       first_feature_only=self.predict_var)
             block.out_features = in_features
 
-
-        elif isinstance(block_conf, MGSelfProcessingConfig):
-            layer_settings = block_conf.layer_settings
-            layer_settings['layer_confs'] = check_get([block_conf, kwargs, defaults], "layer_confs")
-
-            block = MG_MultiBlock(
-                self.grid_layers,
-                in_zooms,
-                check_get([block_conf, {'out_zooms': in_zooms}], "out_zooms"),
-                layer_settings,
-                in_features,
-                out_features if out_features is not None else block_conf.out_features,
-                q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
-                kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
-                layer_confs=layer_confs,
-                layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
-                use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
-                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
-                residual=check_get([block_conf, {'residual': False}], "residual"),
-                n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
-
-        elif isinstance(block_conf, MGFieldAttentionConfig):
-            layer_settings = block_conf.layer_settings
-            layer_settings['layer_confs'] = check_get([block_conf, kwargs, defaults], "layer_confs")
-
-            block = MG_MultiBlock(
-                self.grid_layers,
-                in_zooms,
-                check_get([block_conf, {'out_zooms': in_zooms}], "out_zooms"),
-                layer_settings,
-                in_features,
-                block_conf.out_features,
-                q_zooms=check_get([block_conf, kwargs, {"q_zooms": -1}], "q_zooms"),
-                kv_zooms=check_get([block_conf, kwargs, {"kv_zooms": -1}], "kv_zooms"),
-                layer_confs=layer_confs,
-                layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
-                use_mask=check_get([block_conf, kwargs, {"use_mask": False}], "use_mask"),
-                type='field_att',
-                init_missing_zooms=check_get([block_conf, kwargs, {"init_missing_zooms": "zeros"}], "init_missing_zooms"),
-                n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
-        
+   
         elif isinstance(block_conf, MGChannelAttentionConfig):
                 layer_settings = block_conf.layer_settings
                 layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
@@ -176,7 +136,6 @@ class MG_VAE(MG_base_model):
                      layer_confs=layer_confs,
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
-                     type='channel_att',
                      n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
 
                 block.out_features = in_features
