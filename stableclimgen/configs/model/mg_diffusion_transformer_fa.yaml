@@ -10,7 +10,6 @@ lr_groups:
 model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
-  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
   in_zooms:
   - 5
   - 4
@@ -145,3 +144,4 @@ gaussian_diffusion:
     5: "linear"
     4: "linear"
     3: "linear"
+  separate_noise_on_zoom: false
