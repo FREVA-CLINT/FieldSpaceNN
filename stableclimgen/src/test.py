@@ -91,7 +91,7 @@ def test(cfg: DictConfig) -> None:
 
     output = dict(zip(test_dataset.var_groups, output.split(1, dim=1)))
     torch.save(output, cfg.output_path)
-    mask = dict(zip(test_dataset.var_groups, (1-mask).split(1, dim=1)))
+    mask = dict(zip(test_dataset.var_groups, (mask).split(1, dim=1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
     if hasattr(cfg, "save_netcdf") and cfg.save_netcdf:
