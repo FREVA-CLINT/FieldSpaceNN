@@ -80,14 +80,14 @@ def test(cfg: DictConfig) -> None:
         
         for g, vars in enumerate(test_dataset.variables):
             for k,var in enumerate(vars):
-                output_var[:,g,...,k]= test_dataset.var_normalizers[var].denormalize_var(output_var[:, g,...,k], data=output[:, g,...,k])
+                output_var[:,g,...,k]= test_dataset.var_normalizers[max(test_dataset.var_normalizers.keys())][var].denormalize_var(output_var[:, g,...,k], data=output[:, g,...,k])
 
         output_var = dict(zip(test_dataset.var_groups, output_var.split(1, dim=-1)))
         torch.save(output_var, cfg.output_path.replace(".pt", "_var.pt"))
 
     for g, vars in enumerate(test_dataset.variables):
         for k,var in enumerate(vars):
-            output[:,g,...,k]= test_dataset.var_normalizers[var].denormalize(output[:, g,...,k])
+            output[:,g,...,k]= test_dataset.var_normalizers[max(test_dataset.var_normalizers.keys())][var].denormalize(output[:, g,...,k])
 
     output = dict(zip(test_dataset.var_groups, output.split(1, dim=1)))
     torch.save(output, cfg.output_path)
