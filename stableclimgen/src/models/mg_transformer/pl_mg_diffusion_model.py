@@ -84,17 +84,17 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                          'TimeEmbedder': {int(zoom): emb['TimeEmbedder'][zoom][0:1] for zoom in
                                           emb['TimeEmbedder'].keys()}}
                 patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
-                sample_configs_p = merge_sampling_dicts(sample_configs, patch_index_zooms_p)
+                sample_configs_p = merge_sampling_dicts(self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms, patch_index_zooms_p)
                 model_kwargs = {'sample_configs': sample_configs_p}
 
                 _, _, pred_xstart = self.gaussian_diffusion.training_losses(self.model, target_p.copy(), torch.stack([t]), mask_p.copy(), emb_p, create_pred_xstart=True, **model_kwargs)
 
                 if self.decode_zooms:
-                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs_p, out_zoom=max_zoom)
                 else:
                     pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
-                self.log_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs, emb, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
+                self.log_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs_p, emb, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
 
         return loss
 

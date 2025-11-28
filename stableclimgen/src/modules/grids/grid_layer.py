@@ -48,7 +48,6 @@ def get_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True,**k
 
     if return_local:
         adjc_patch = adjc_patch - index_range[0].view(-1,1)
-    
     return adjc_patch
 
 
@@ -186,7 +185,6 @@ class GridLayer(nn.Module):
 
 
     def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_nh: bool=True, mask=None, **kwargs):
-        
         s, f = x.shape[-2:]
         zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
 
@@ -229,13 +227,12 @@ class GridLayer(nn.Module):
                 mask = mask[:,indices]
 
             x = x[:,indices]
-        
 
         if mask_dims is not None:
             mask = mask.view(*mask_dims, s//4**zoom_diff, -1)
 
         elif mask is not None:
-            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], -1, -1, -1, 4**zoom_diff)
+            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], x_feat_dims[2], -1, -1, 4**zoom_diff)
 
 
         x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)
