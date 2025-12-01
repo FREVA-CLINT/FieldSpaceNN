@@ -1,5 +1,6 @@
 from typing import List, Dict,Tuple,Optional
 import warnings
+import copy
 
 from omegaconf import ListConfig
 
@@ -171,7 +172,8 @@ class MG_MultiBlock(nn.Module):
         super().__init__()
         
         self.out_features = [out_features]*len(out_zooms)
-        self.out_zooms = out_zooms.copy()
+        self.out_zooms = copy.deepcopy(out_zooms)
+        in_zooms = copy.deepcopy(in_zooms)
         self.use_mask = use_mask
 
 
