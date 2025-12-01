@@ -105,7 +105,10 @@ class MG_Transformer(MG_base_model):
                      layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
                      n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"),
-                     refine_zooms=check_get([block_conf,kwargs,{"refine_zooms": {}}], "refine_zooms"))
+                     refine_zooms=check_get([block_conf,kwargs,{"refine_zooms": {}}], "refine_zooms"),
+                     rev_shift=check_get([block_conf,kwargs,{"rev_shift": True}], "rev_shift"),
+                     shift=check_get([block_conf,kwargs,{"shift": None}], "shift"),
+                     multi_shift=check_get([block_conf,kwargs,{"multi_shift": False}], "multi_shift"))
                 
 
                 block.out_features = in_features

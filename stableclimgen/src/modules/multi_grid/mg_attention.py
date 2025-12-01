@@ -690,7 +690,7 @@ class MultiFieldAttention(nn.Module):
             self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
 
 
-    def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
+    def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}, x_zoom_res=None):        
 
         zoom_field = self.grid_layer_field.zoom
         zoom_att = self.grid_layer_att.zoom
@@ -700,7 +700,11 @@ class MultiFieldAttention(nn.Module):
         q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)
 
-        x_res = q
+        if x_zoom_res is None:
+            x_res = q 
+        else: 
+            x_res = combine_zooms(x_zoom_res, zoom_field, self.q_zooms)
+            x_res = rearrange(x_res, self.pattern_channel)
 
         q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         

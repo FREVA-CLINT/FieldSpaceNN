@@ -321,6 +321,7 @@ def healpix_get_adjacent_cell_indices(zoom: int):
 
     :returns: adjacent cell indices, duplicates mask
     """
+
     nside = 2**zoom
     npix = hp.nside2npix(nside)
 
@@ -330,7 +331,15 @@ def healpix_get_adjacent_cell_indices(zoom: int):
     duplicates = adjc ==-1
 
     c,n = torch.where(duplicates)
-    adjc[c,n] = c
+    adjc[c,n] = adjc[c,0]
+
+    #adjc[c,n] = adjc[c,0]
+
+   # for k in range(adjc.shape[-1]):
+   #     counts = torch.bincount(adjc[:,k], minlength=adjc.shape[0])
+   #     missing_targets = torch.where(counts == 0)[0]
+
+    #    adjc[adjc[missing_targets,opposite_indices[k]], k] = missing_targets
 
     return adjc, duplicates
 

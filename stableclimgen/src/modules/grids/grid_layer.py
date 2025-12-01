@@ -89,6 +89,44 @@ def get_relative_positions(coords1, coords2, polar=False, periodic_fov=None):
     return distances.float(), phis.float()
 
 
+def propagate_assignments(adjc, adjc_mask, coords, nh_k=2):
+
+    shift_dir = 1 if nh_k <= 4 else -1 
+
+
+    candidates = torch.where(~adjc_mask[:, nh_k])[0]
+    missing_targets = torch.where(
+        torch.bincount(adjc[:, nh_k], minlength=adjc.shape[0]) == 0
+    )[0]
+
+    assignment_index, assignment_target = [], []
+
+    if len(missing_targets) == 0 or len(candidates) == 0:
+        return assignment_index, assignment_target
+
+    all_missing_in_candidates = False
+    while not all_missing_in_candidates and len(candidates) > 0:
+        shift = torch.ones_like(candidates)
+        shift[coords[candidates, 1] > 0] = -1
+        shift = nh_k + shift_dir*shift
+        #shift[shift==9] = 1
+        #shift[shift==0] = 8
+
+        candidates_target = adjc[candidates, shift]
+        assignment_index.append(candidates)
+        assignment_target.append(candidates_target)
+
+        candidates = torch.stack(
+            [torch.where(adjc[:, nh_k] == t)[0] for t in candidates_target]
+        ).view(-1)
+
+        all_missing_in_candidates = torch.stack([
+            ((mt - torch.stack(assignment_target)) == 0).any()
+            for mt in missing_targets
+        ]).all()
+
+    return torch.concat(assignment_index), torch.concat(assignment_target)
+
 class GridLayer(nn.Module):
     """
     A neural network module representing a grid layer with specific functionalities
@@ -108,7 +146,7 @@ class GridLayer(nn.Module):
         median_dist (torch.Tensor): Median distance in the relative coordinates.
     """
     
-    def __init__(self, zoom: int, adjc: torch.Tensor, adjc_mask: torch.Tensor, coordinates: torch.Tensor, coord_system: str = "polar", periodic_fov=None) -> None:
+    def __init__(self, zoom: int, adjc: torch.Tensor, adjc_mask: torch.Tensor, coordinates: torch.Tensor, coord_system: str = "polar", periodic_fov=None, nh_shift_indices=None) -> None:
         """
         Initializes the GridLayer with given parameters.
 
@@ -121,6 +159,31 @@ class GridLayer(nn.Module):
         """
         super().__init__()
 
+        if nh_shift_indices is None:
+            self.nh_shift_indices = {
+                'south': 8,
+                'southwest': 7,
+                'west': 6,
+                'northwest': 5,
+                'north': 4,
+                'northeast': 3,
+                'east': 2,
+                'southeast': 1
+            }
+        else:
+            self.nh_shift_indices = nh_shift_indices
+
+        self.reverse_shift = {
+            'south': 'north',
+            'north': 'south',
+            'northeast': 'southwest',
+            'southwest': 'northeast',
+            'west': 'east',
+            'east': 'west',
+            'southeast': 'northwest',
+            'northwest': 'southeast'
+        }
+
         # Initialize attributes
         self.zoom = zoom
         self.coord_system = coord_system
@@ -128,6 +191,17 @@ class GridLayer(nn.Module):
 
         # Register buffers for coordinates and adjacency information
         self.register_buffer("coordinates", coordinates, persistent=False)
+        
+        if zoom >=1:
+            for k in [2,6]:
+                i_shift, i_target = propagate_assignments(adjc, adjc_mask==False, coordinates, nh_k=k)
+                if len(i_shift)>0:
+                    adjc[i_shift, k] = i_target 
+        
+        for k in [1,3,4,5,7,8]:
+            c = torch.where(adjc_mask[:,k])[0]
+            adjc[c,k] = k -1 if k>1 else 8
+
         self.register_buffer("adjc", adjc, persistent=False)
 
         # Create mask where adjacency is false
@@ -158,7 +232,8 @@ class GridLayer(nn.Module):
         self.max_dist = dists[dists > 1e-10].max()
         self.mean_dist = dists[dists > 1e-10].mean()
         self.median_dist = dists[dists > 1e-10].median()
-        
+
+
     def get_nh_patch(self, x: torch.Tensor, patch_index: torch.Tensor=None, zoom_patch_sample: torch.Tensor=None, mask: torch.Tensor = None) -> tuple:
 
         # Get neighborhood indices and adjacency mask
@@ -183,6 +258,26 @@ class GridLayer(nn.Module):
             mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)#.repeat_interleave(x.shape[-1], dim=-1)
         
         return x, mask
+
+    def apply_shift(self, x, shift_direction, patch_index=0, zoom_patch_sample=-1, reverse=False, mask=None, **kwargs):
+        x, mask = self.get_nh(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask, **kwargs)
+
+        x = x.view(*x.shape[:4],self.adjc.shape[-1],-1,x.shape[-1])
+
+        if reverse:
+            index = self.nh_shift_indices[self.reverse_shift[shift_direction]]
+        else:
+            index = self.nh_shift_indices[shift_direction]
+
+        x = x[:,:,:,:,index].reshape(*x.shape[:3],-1,x.shape[-1])
+
+        if mask is not None:
+            mask = mask.view(*mask.shape[:4],self.adjc.shape[-1],-1,mask.shape[-1])
+            mask = mask[:,:,:,:,index].view(*mask.shape[:3],-1,mask.shape[-1])
+
+        return x, mask
+    
+   # def apply_reverse_shift(self, x, indices):
 
 
     def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_nh: bool=True, mask=None, **kwargs):

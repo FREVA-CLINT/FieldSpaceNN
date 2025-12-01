@@ -163,7 +163,10 @@ class MG_MultiBlock(nn.Module):
                  layer_confs_emb={},
                  use_mask = False,
                  n_head_channels=16,
-                 refine_zooms= {}
+                 refine_zooms= {},
+                 shift = None,
+                 rev_shift = True,
+                 multi_shift = False
                  ) -> None:
         super().__init__()
         
@@ -200,7 +203,9 @@ class MG_MultiBlock(nn.Module):
         for k, zoom in enumerate(kv_zooms):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
-            
+        
+        self.qkv_zooms = torch.tensor(q_zooms + kv_zooms).unique().tolist()
+
         att_zoom = (min(q_zooms + kv_zooms))  
         att_zoom = min([layer_settings.get("att_zoom",att_zoom), att_zoom])
 
@@ -239,7 +244,18 @@ class MG_MultiBlock(nn.Module):
                     double_skip = layer_settings.get("double_skip", False)
                     )
 
+        self.grid_layers = grid_layers
+        self.multi_shift = multi_shift
+        self.field_zoom = field_zoom
 
+        if shift and rev_shift:
+            self.fwd_fcn = self.forward_with_rev_shift
+        elif shift:
+            self.fwd_fcn = self.forward_with_shift
+        else:
+            self.fwd_fcn = self.forward_
+        
+        self.window_shift = shift
         self.refine_zooms = refine_zooms
         self.coarse_zooms = invert_dict(refine_zooms)
 
@@ -256,16 +272,64 @@ class MG_MultiBlock(nn.Module):
         return x_zoom.expand(in_shape[0],in_shape[1],nt,-1,in_shape[-1])
 
 
-    def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
-        
+    def forward_with_rev_shift(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
         for in_zoom, out_zoom in self.refine_zooms.items():
             x_zooms[out_zoom] = refine_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
+        
+        if self.window_shift is not None:
+            for zoom in self.qkv_zooms:
+                grid_layer = self.grid_layers[str(self.field_zoom + 1)] if not self.multi_shift else self.grid_layers[str(zoom)]
+                x_zooms[zoom] = grid_layer.apply_shift(x_zooms[zoom], self.window_shift, **sample_configs[zoom])[0]
 
         x_zooms = self.block(x_zooms, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
+
+        if self.window_shift is not None:
+            for zoom in self.qkv_zooms:
+                grid_layer = self.grid_layers[str(self.field_zoom + 1)] if not self.multi_shift else self.grid_layers[str(zoom)]
+                x_zooms[zoom] = grid_layer.apply_shift(x_zooms[zoom], self.window_shift, **sample_configs[zoom], reverse=True)[0]
 
         for in_zoom, out_zoom in self.coarse_zooms.items():
             x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
 
+        return x_zooms
+
+
+    def forward_with_shift(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
+        for in_zoom, out_zoom in self.refine_zooms.items():
+            x_zooms[out_zoom] = refine_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
+        
+        x_zooms_shift = x_zooms.copy()
+
+        for zoom in self.qkv_zooms:
+            grid_layer = self.grid_layers[str(self.field_zoom + 1)] if not self.multi_shift else self.grid_layers[str(zoom)]
+            x_zooms_shift[zoom] = grid_layer.apply_shift(x_zooms_shift[zoom], self.window_shift, **sample_configs[zoom])[0]
+
+        x_zooms = self.block(x_zooms_shift, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs, x_zoom_res=x_zooms)
+
+        for in_zoom, out_zoom in self.coarse_zooms.items():
+            x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
+
+        return x_zooms
+
+
+    def forward_(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
+        for in_zoom, out_zoom in self.refine_zooms.items():
+            x_zooms[out_zoom] = refine_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
+        
+        x_zooms_shift = x_zooms.copy()
+
+        x_zooms = self.block(x_zooms_shift, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs, x_zoom_res=x_zooms)
+
+        for in_zoom, out_zoom in self.coarse_zooms.items():
+            x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
+
+        return x_zooms
+    
+
+    def forward(self, x_zooms, emb=None, mask_zooms={}, sample_configs={}):
+        
+        x_zooms = self.fwd_fcn(x_zooms, emb=emb, mask_zooms=mask_zooms, sample_configs=sample_configs)
+        
         x_zooms_out = {}
         for zoom in self.out_zooms:
             x_zooms_out[zoom] = x_zooms[zoom]
