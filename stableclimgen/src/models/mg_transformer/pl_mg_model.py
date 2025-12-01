@@ -38,14 +38,14 @@ def merge_sampling_dicts(sample_configs, patch_index_zooms):
 
     sample_configs = sample_configs.copy()
 
-    #TODO undirt 
+    for key, value in patch_index_zooms.items():
+        if key in sample_configs.keys():
+            sample_configs[key]['patch_index'] = value
+
+    #TODO undirt
     for z in range(max(sample_configs.keys())):
         if z not in sample_configs.keys():
             sample_configs[z] = sample_configs[min(sample_configs.keys())]
-
-    for key, value in patch_index_zooms.items():
-        if key in sample_configs:
-            sample_configs[key]['patch_index'] = value
 
     return sample_configs
     

@@ -638,7 +638,7 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
         return x_h_ if batched else x_h_[0]
 
 
-def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, base=12):
+def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_index_zooms=None, base=12):
 
     if zoom_h==zoom_target:
         return x_h
@@ -681,7 +681,7 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, base=12):
             zoom_patch_diff = sample_configs[zoom_target]['zoom_patch_sample'] - sample_configs[zoom_h]['zoom_patch_sample']
 
         n_patches = base**base_exp * 4**zoom_patch_diff
-        patch_index = sample_configs[zoom_target]['patch_index'] % n_patches
+        patch_index = (patch_index_zooms[zoom_target] if patch_index_zooms is not None else sample_configs[zoom_target]['patch_index']) % n_patches
 
         
 
@@ -707,7 +707,7 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, base=12):
 
 
 
-def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict):
+def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patch_index_zooms: Dict):
 
     zooms = sorted(x_zooms.keys(),reverse=True)
 
@@ -719,7 +719,7 @@ def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict):
         x_h = x_zooms[zoom_h]
 
         bvt = x.shape[:-2]
-        x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs)     
+        x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs, patch_index_zooms)
 
         x = x.view(*bvt, -1, 4**(zoom-zoom_h), x.shape[-1]) - x_h_patch.unsqueeze(dim=-2)
         x_zooms[zoom] = x.view(*bvt, -1, x.shape[-1])

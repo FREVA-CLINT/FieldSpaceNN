@@ -422,8 +422,8 @@ class BaseDataset(Dataset):
             patch_index_zooms[zoom] = torch.tensor(self.index_map[zoom][index][-1])
 
         if self.apply_diff:
-            data_source = apply_zoom_diff(source_zooms, self.sampling_zooms)
-            data_target = apply_zoom_diff(target_zooms, self.sampling_zooms)
+            data_source = apply_zoom_diff(source_zooms, self.sampling_zooms, patch_index_zooms)
+            data_target = apply_zoom_diff(target_zooms, self.sampling_zooms, patch_index_zooms)
         else:
             data_source = source_zooms
             data_target = target_zooms
