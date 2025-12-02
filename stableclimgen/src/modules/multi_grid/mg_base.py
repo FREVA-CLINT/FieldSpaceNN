@@ -18,6 +18,64 @@ from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_pat
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
+class MZTokenizer(nn.Module):
+  
+    def __init__(self, 
+                 grid_layer_field,
+                 in_zooms: List,
+                 in_features = 1,
+                 with_nh = False,
+                 norm_per_scale = True,
+                 layer_confs ={}
+                 ) -> None: 
+        
+        super().__init__()
+
+    
+        self.layer_norms = nn.ModuleDict()
+        total_dim = 0
+        for in_zoom in in_zooms:
+            in_f = 4**(in_zoom - grid_layer_field.zoom) if not with_nh else grid_layer_field.adjc.shape[-1] * 4**(in_zoom - grid_layer_field.zoom)
+            
+            self.layer_norms[str(in_zoom)] = LayerNorm([in_f, in_features], n_groups=layer_confs.get('n_groups',1)) if norm_per_scale else IdentityLayer()
+            total_dim += in_f
+
+        self.layer_norm_cross_scale =  LayerNorm([total_dim, in_features], n_groups=layer_confs.get('n_groups',1)) if not norm_per_scale else IdentityLayer()
+        self.in_zooms = in_zooms
+        self.out_zoom = grid_layer_field.zoom
+        self.with_nh = with_nh
+        self.grid_layer_field = grid_layer_field
+    
+    def forward(self, x_zooms, emb=None, sample_configs={}, return_non_norm=True):
+        x_out_norm = []
+        x_out = [] 
+        for zoom in self.in_zooms:
+            x = x_zooms[zoom]
+            if zoom < self.out_zoom:
+                x = refine_zoom(x, zoom, self.out_zoom).unsqueeze(dim=-2)
+
+            if self.with_nh:
+                if return_non_norm:
+                    x_out.append(x.view(*x.shape[:3],-1, 4**(zoom- self.out_zoom), x.shape[-1]))
+
+                x = self.grid_layer_field.get_nh(x, **sample_configs[self.out_zoom], mask=None)[0]
+                x = x.view(*x.shape[:4],-1, x.shape[-1])
+            else:
+                x = x.view(*x.shape[:3],-1, 4**(zoom- self.out_zoom), x.shape[-1])
+                if return_non_norm:
+                    x_out.append(x)
+
+            x_out_norm.append(self.layer_norms[str(zoom)](x, emb=emb))
+        
+        x_out = torch.concat(x_out, dim=-2)
+        x_out_norm = self.layer_norm_cross_scale(torch.concat(x_out_norm, dim=-2), emb=emb, sample_configs=sample_configs)
+
+        if return_non_norm:
+            return x_out_norm, x_out
+        else:
+            return x_out_norm
+        
+
 def combine_zooms(x_zooms, out_zoom, zooms=None):
     zooms = list(x_zooms.keys()) if zooms is None else zooms
     x_out = []
