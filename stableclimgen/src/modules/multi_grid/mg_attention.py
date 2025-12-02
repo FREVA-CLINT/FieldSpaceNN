@@ -549,7 +549,8 @@ class MultiFieldAttention(nn.Module):
                  layer_confs: Dict = {},
                  layer_confs_emb= {},
                  update='shift',
-                 double_skip=False) -> None: 
+                 double_skip=False,
+                 layer_norm=True) -> None: 
         
         super().__init__()
 
@@ -613,10 +614,10 @@ class MultiFieldAttention(nn.Module):
         out_features_field = in_features_q
         att_dim = out_features_field if att_dim is None else att_dim
 
-        self.emb_layer_q = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
+        self.emb_layer_q = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
 
         if not self.self_att:
-            self.emb_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
+            self.emb_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
 
 
         in_features_kv = [in_features_kv]
@@ -632,7 +633,7 @@ class MultiFieldAttention(nn.Module):
         in_features_out = att_dim * grid_layer_field.adjc.shape[-1] if self.with_nh_post_att else att_dim
         self.out_layer_att = get_layer(in_features_out, out_features_field * out_feat_fac, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
-        self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=True, layer_confs_emb=layer_confs_emb)
+        self.mlp_emb_layer = LinEmbLayer(out_features_field, out_features_field, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
        
         in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field_mlp else out_features_field
 
@@ -813,173 +814,3 @@ class MultiFieldAttention(nn.Module):
 
         return x_zooms
     
-
-class MultiFieldAttention2(nn.Module):
-  
-    def __init__(self,
-                 grid_layer_field: GridLayer,
-                 grid_layer_att: GridLayer,
-                 q_zooms: int,
-                 kv_zooms: int,
-                 mult: int=1,
-                 att_dim= 512,
-                 dropout: float=0.0,
-                 num_heads: int=None,
-                 n_head_channels: int=32,
-                 embedder: Dict[str, EmbedderSequential] = {},
-                 with_nh_field = True,
-                 with_nh_att = False,
-                 with_var_att = True,
-                 layer_confs: Dict = {},
-                 layer_confs_emb= {}) -> None: 
-        
-        super().__init__()
-
-        if grid_layer_att.zoom <= 0 and with_nh_att:
-            with_nh_att = False
-            self.global_att = True
-        else:
-            self.global_att = False
-
-        layer_confs_kv = copy.deepcopy(layer_confs)
-        layer_confs_kv['bias'] = True
-
-        self.n_head_channels = n_head_channels
-        self.grid_layer_field = grid_layer_field
-        self.grid_layer_att = grid_layer_att
-
-        self.with_nh_field = with_nh_field
-        self.with_nh_att = with_nh_att
-
-        self.n_groups = layer_confs.get('n_groups',1)
-        self.emb_layers = nn.ModuleDict()
-        self.mlp_emb_layers = nn.ModuleDict()
-        self.q_layers = nn.ModuleDict()
-        self.kv_layers = nn.ModuleDict()
-        self.mlps = nn.ModuleDict()
-        self.out_layers = nn.ModuleDict()
-       # self.gammas = nn.ParameterDict()
-
-
-        self.q_zooms = q_zooms
-        self.kv_zooms = kv_zooms
-        
-       # assert len(self.q_zooms) == len(self.kv_zooms), "MultiFieldAttention2 does only work in self attention mode q_zooms = kv_zooms"
-       
-        field_zoom = grid_layer_field.zoom
-        #att_zoom = grid_layer_att.zoom
-
-        self.q_projection_layers = nn.ModuleDict()
-        self.kv_projection_layers = nn.ModuleDict()
-        self.gammas = nn.ParameterDict()
-
-        self.n_channels_comp = {}
-        for kv_zoom in kv_zooms:
-            self.n_channels_comp[kv_zoom] = 4**(kv_zoom - field_zoom)
-        
-        comp_dims_in = sum(self.n_channels_comp.values()) * grid_layer_field.adjc.shape[-1] if self.with_nh_field else sum(self.n_channels_comp.values())
-        comp_dims_out = sum(self.n_channels_comp.values())
-
-        self.emb_layer = LinEmbLayer(att_dim, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
-
-        self.att_dim = att_dim
-
-        self.compression_layer = get_layer(comp_dims_in, att_dim, layer_confs=layer_confs, bias=False)
-        self.decompression_layer = get_layer(att_dim, comp_dims_out, layer_confs=layer_confs, bias=False)
-
-        self.q_projection_layer = get_layer(att_dim, att_dim, layer_confs=layer_confs, bias=False)
-        self.kv_projection_layer = get_layer(att_dim, 2*att_dim, layer_confs=layer_confs, bias=True)
-
-
-        self.mlp_emb_layer = LinEmbLayer(att_dim, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=True, layer_confs_emb=layer_confs_emb)
-        self.mlp = MLP_fac(att_dim, att_dim, mult, dropout, layer_confs=layer_confs, gamma=True) 
-        
-        self.gamma = nn.Parameter(torch.ones(att_dim)*1e-6,requires_grad=True)    
-        self.gamma_global = nn.Parameter(torch.ones(comp_dims_out)*1e-6,requires_grad=True) 
-        
-        self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
-        self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
-
-        if with_var_att:
-            self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
-            self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
-            self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
-        else:
-            self.att_pattern = 'b fv t N NA (NH H)-> (b fv N t) NH (NA) H'
-            self.mask_pattern = 'b v t N NA f-> (b v N t f) 1 1 (NA)'
-            self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
-
-
-    def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
-
-        zoom_field = self.grid_layer_field.zoom
-        zoom_att = self.grid_layer_att.zoom
-
-        b,nv,t,_,f = x_zooms[self.q_zooms[0]].shape
-
-        x_comp = combine_zooms(x_zooms, zoom_field, self.q_zooms)
-        x_comp = rearrange(x_comp, self.pattern_channel)
-
-        if self.with_nh_field:
-            x_comp, _ = self.grid_layer_field.get_nh(x_comp, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
-
-        x_comp = self.compression_layer(x_comp, emb=emb, sample_configs=sample_configs)
-      
-        x_res = x_comp
-
-        x_comp = self.emb_layer(x_comp, emb=emb, sample_configs=sample_configs[zoom_field])
-        
-        q = self.q_projection_layer(x_comp, emb=emb, sample_configs=sample_configs[zoom_field])
-        kv = self.kv_projection_layer(x_comp, emb=emb, sample_configs=sample_configs[zoom_field])
-
-        q = q.reshape(*q.shape[:3], -1, self.att_dim)
-        
-        if self.global_att:
-            q = q.reshape(*q.shape[:3], 1, -1, q.shape[-1])
-        else:
-            q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
-
-        kv = kv.reshape(*kv.shape[:3], -1, 2 * self.att_dim)
-
-        mask = mask_zooms[zoom_field] if zoom_field in mask_zooms.keys() else None
-    #    mask = None
-        if mask is not None:
-            mask = mask.expand_as(x_zooms[zoom_field])
-
-        if self.with_nh_att:
-            kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, mask=mask)
-        
-        elif self.global_att:
-            kv = kv.reshape(*kv.shape[:3], 1, -1, kv.shape[-1])
-            mask = mask.view(*mask.shape[:3], 1, -1, mask.shape[-1]) if mask is not None else None
-        else:
-            kv = kv.reshape(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
-            mask = mask.view(*mask.shape[:3], -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
-
-        b, fv, t, N, NA, C = q.shape
-
-        k,v = kv.chunk(2, dim=-1)
-        q = rearrange(q, self.att_pattern, H=self.n_head_channels)
-        k = rearrange(k, self.att_pattern, H=self.n_head_channels)
-        v = rearrange(v, self.att_pattern, H=self.n_head_channels)
-
-        mask = rearrange(mask, self.mask_pattern) if mask is not None else None
-
-        att_out = safe_scaled_dot_product_attention(q, k, v, mask=mask)
-
-        att_out = rearrange(att_out, self.att_pattern_reverse, b=b, fv=fv, t=t, N=N, NA=NA)
-
-        x = x_res + self.gamma * att_out
-
-        x_mlp = self.mlp(self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)]), emb=emb, sample_configs=sample_configs[int(zoom_field)])
-        
-        x = x + x_mlp.reshape_as(x)
-
-        x = self.gamma_global * self.decompression_layer(x, emb=emb, sample_configs=sample_configs)
-
-        x = x.split(tuple(self.n_channels_comp.values()), dim=-1)
-
-        for k, (zoom, n) in enumerate(self.n_channels_comp.items()):
-            x_zooms[zoom] = rearrange(x[k], self.pattern_channel_reverse, n=n, f=f,v=nv) + x_zooms[zoom]
-
-        return x_zooms

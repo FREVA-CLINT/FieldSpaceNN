@@ -13,7 +13,7 @@ from ..base import LinEmbLayer, MLP_fac, get_layer
 from ..grids.grid_layer import GridLayer
 
 from ...modules.embedding.embedder import get_embedder
-from .mg_attention import MultiZoomSelfAttention,MultiFieldAttention,MultiFieldAttention2
+from .mg_attention import MultiZoomSelfAttention,MultiFieldAttention
 from .mg_base import Conv, ResConv, refine_zoom, coarsen_zoom
 
 def invert_dict(d):
@@ -243,7 +243,8 @@ class MG_MultiBlock(nn.Module):
                     layer_confs_emb=layer_confs_emb,
                     residual_learned=layer_settings.get("residual_learned", False),
                     update=layer_settings.get("update", 'shift'),
-                    double_skip = layer_settings.get("double_skip", False)
+                    double_skip = layer_settings.get("double_skip", False),
+                    layer_norm = layer_settings.get("layer_norm", True)
                     )
 
         self.grid_layers = grid_layers
