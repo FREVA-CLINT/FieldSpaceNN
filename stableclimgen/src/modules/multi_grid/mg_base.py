@@ -68,7 +68,7 @@ class MZTokenizer(nn.Module):
             x_out_norm.append(self.layer_norms[str(zoom)](x, emb=emb))
         
         x_out = torch.concat(x_out, dim=-2)
-        x_out_norm = self.layer_norm_cross_scale(torch.concat(x_out_norm, dim=-2), emb=emb)
+        x_out_norm = self.layer_norm_cross_scale(torch.concat(x_out_norm, dim=-2), emb=emb, sample_configs=sample_configs)
 
         if return_non_norm:
             return x_out_norm, x_out

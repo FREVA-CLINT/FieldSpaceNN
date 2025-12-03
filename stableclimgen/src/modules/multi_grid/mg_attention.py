@@ -550,8 +550,7 @@ class MultiFieldAttention(nn.Module):
                  layer_confs_emb= {},
                  update='shift',
                  double_skip=False,
-                 layer_norm=True,
-                 norm_per_scale=True) -> None: 
+                 layer_norm=True) -> None: 
         
         super().__init__()
 
@@ -623,7 +622,7 @@ class MultiFieldAttention(nn.Module):
         self.MZTokenizer = MZTokenizer(grid_layer_field,
                                          q_zooms,
                                          with_nh=with_nh_field,
-                                         norm_per_scale=norm_per_scale,
+                                         norm_per_scale=True,
                                          layer_confs=layer_confs)
 
         self.emb_layer_q = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=False, layer_confs_emb=layer_confs_emb)
@@ -715,16 +714,11 @@ class MultiFieldAttention(nn.Module):
        # q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)        
 
-        if x_zoom_res is not None:
-            x_res = x_zoom_res
-            x_res = combine_zooms(x_res, zoom_field, self.q_zooms)
-
-        x_res = rearrange(x_res, self.pattern_channel)
-
-        if self.double_skip:
-            x_res1 = q
-        else:
-            x_res1 = x_res
+        if x_zoom_res is None:
+            x_res = q 
+        else: 
+         #   x_res = combine_zooms(x_zoom_res, zoom_field, self.q_zooms)
+            x_res = rearrange(x_res, self.pattern_channel)
 
         q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         

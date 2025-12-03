@@ -244,8 +244,7 @@ class MG_MultiBlock(nn.Module):
                     residual_learned=layer_settings.get("residual_learned", False),
                     update=layer_settings.get("update", 'shift'),
                     double_skip = layer_settings.get("double_skip", False),
-                    layer_norm = layer_settings.get("layer_norm", True),
-                    norm_per_scale = layer_settings.get("norm_per_scale", True)
+                    layer_norm = layer_settings.get("layer_norm", True)
                     )
 
         self.grid_layers = grid_layers
