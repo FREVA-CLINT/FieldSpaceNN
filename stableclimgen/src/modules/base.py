@@ -277,6 +277,7 @@ class MLP_fac(nn.Module):
                  in_features, 
                  out_features,
                  mult=1,
+                 hidden_dim=None,
                  dropout=0,
                  layer_confs: Dict={},
                  gamma=False
@@ -284,10 +285,13 @@ class MLP_fac(nn.Module):
       
         super().__init__() 
         
-        if isinstance(in_features, list):
-            out_features_1 = [int(in_feat*mult) for in_feat in in_features]
+        if hidden_dim is None:
+            if isinstance(in_features, list):
+                out_features_1 = [int(in_feat*mult) for in_feat in in_features]
+            else:
+                out_features_1 = int(in_features*mult)
         else:
-            out_features_1 = int(in_features*mult)
+            out_features_1 = hidden_dim
         
 
         self.layer1 = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
