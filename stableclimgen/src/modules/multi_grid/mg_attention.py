@@ -615,16 +615,18 @@ class MultiFieldAttention(nn.Module):
         out_features_field = in_features_q
         att_dim = out_features_field if att_dim is None else att_dim
 
-        self.MZTokenizer = MZTokenizer(grid_layer_field,
-                                         q_zooms,
-                                         with_nh=with_nh_field,
-                                         norm_per_scale=norm_per_scale,
-                                         layer_confs=layer_confs)
+        #self.MZTokenizer = MZTokenizer(grid_layer_field,
+        #                                 q_zooms,
+        #                                 with_nh=with_nh_field,
+        #                                 norm_per_scale=norm_per_scale,
+        #                                 layer_confs=layer_confs)
 
-        self.emb_layer_q = LinEmbLayer(in_features_q, in_features_q, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=False, layer_confs_emb=layer_confs_emb)
+        self.emb_layer_q = LinEmbLayer(in_features_q * grid_layer_field.adjc.shape[-1] if self.with_nh_field else in_features_q, 
+                                       in_features_q * grid_layer_field.adjc.shape[-1] if self.with_nh_field else in_features_q, 
+                                       layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
 
         if not self.self_att:
-            self.emb_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=False, layer_confs_emb=layer_confs_emb)
+            self.emb_layer_kv = LinEmbLayer(in_features_kv, in_features_kv, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
 
 
         in_features_kv = [in_features_kv]
@@ -711,10 +713,14 @@ class MultiFieldAttention(nn.Module):
 
         b,nv,t,_,f = x_zooms[self.q_zooms[0]].shape
 
-        q = self.MZTokenizer(x_zooms, emb=emb, sample_configs=sample_configs, return_non_norm=False)
+        #q = self.MZTokenizer(x_zooms, emb=emb, sample_configs=sample_configs, return_non_norm=False)
 
-       # q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
+        q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)
+
+        if self.with_nh_field:
+            q = self.grid_layer_field.get_nh(q, **sample_configs[zoom_field], mask=None)[0]
+            q = q.view(*q.shape[:4],-1)
 
         if x_zoom_res is not None:
             x = x_zoom_res
@@ -765,6 +771,7 @@ class MultiFieldAttention(nn.Module):
             t = self.time_seq_len
 
         k,v = kv.chunk(2, dim=-1)
+        kv=None
         q = rearrange(q, self.att_pattern, H=self.n_head_channels, t=t)
         k = rearrange(k, self.att_pattern, H=self.n_head_channels, t=t)
         v = rearrange(v, self.att_pattern, H=self.n_head_channels, t=t)
