@@ -642,7 +642,7 @@ class MultiFieldAttention(nn.Module):
 
         in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field_mlp else out_features_field
 
-        self.mlp_emb_layer = LinEmbLayer(in_features_mlp, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
+        self.mlp_emb_layer = LinEmbLayer(in_features_mlp, in_features_mlp, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
        
 
         
@@ -672,7 +672,7 @@ class MultiFieldAttention(nn.Module):
             
 
         self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6, requires_grad=True)
-        self.mlp = MLP_fac(att_dim, out_features_field * out_feat_fac, mult=mult, dropout=dropout, layer_confs=layer_confs, gamma=True) 
+        self.mlp = MLP_fac(in_features_mlp, out_features_field * out_feat_fac, hidden_dim=att_dim, dropout=dropout, layer_confs=layer_confs, gamma=True) 
 
 
         self.residual_w_embed = residual_w_embed
