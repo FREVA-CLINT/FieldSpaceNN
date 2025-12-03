@@ -639,15 +639,12 @@ class MultiFieldAttention(nn.Module):
         self.q_projection_layer = get_layer(in_features_q, out_dim_q, layer_confs=layer_confs, bias=False)
         self.kv_projection_layer = get_layer(in_features_kv, out_dim_kv, layer_confs=layer_confs, bias=True)
 
-        in_features_out = att_dim * grid_layer_field.adjc.shape[-1] if self.with_nh_post_att else att_dim
-        self.out_layer_att = get_layer(in_features_out, out_features_field * out_feat_fac, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
+        self.out_layer_att = get_layer(att_dim, out_features_field * out_feat_fac, layer_confs=layer_confs) if att_dim!=out_features_field else IdentityLayer() 
 
-        in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field else out_features_field
+        in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field_mlp else out_features_field
 
         self.mlp_emb_layer = LinEmbLayer(in_features_mlp, in_features_mlp, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
        
-
-        
         self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
 
@@ -656,10 +653,10 @@ class MultiFieldAttention(nn.Module):
 
         if update == 'scale_shift':
             self.scale_shift = True
-            self.gamma_scale = nn.Parameter(torch.ones(in_features_mlp)*1e-6, requires_grad=True)
+            self.gamma_scale = nn.Parameter(torch.ones(out_features_field)*1e-6, requires_grad=True)
 
         elif residual_learned and residual_embedder is None:
-            self.gamma_res = nn.Parameter(torch.ones(in_features_mlp), requires_grad=True)
+            self.gamma_res = nn.Parameter(torch.ones(out_features_field), requires_grad=True)
 
             self.gamma_res_mlps = nn.ParameterDict()
             self.gamma_mlps = nn.ParameterDict()
@@ -678,7 +675,7 @@ class MultiFieldAttention(nn.Module):
         
             
 
-        self.gamma = nn.Parameter(torch.ones(in_features_mlp)*1e-6, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(out_features_field)*1e-6, requires_grad=True)
         self.mlp = MLP_fac(in_features_mlp, out_features_field * out_feat_fac, hidden_dim=att_dim, dropout=dropout, layer_confs=layer_confs, gamma=False) 
 
 
@@ -718,15 +715,15 @@ class MultiFieldAttention(nn.Module):
         q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)
 
-        if self.with_nh_field:
-            q = self.grid_layer_field.get_nh(q, **sample_configs[zoom_field], mask=None)[0]
-            q = q.view(*q.shape[:4],-1)
-
         if x_zoom_res is not None:
             x = x_zoom_res
             x = rearrange(x, self.pattern_channel)
         else: 
             x = q
+        
+        if self.with_nh_field:
+            q = self.grid_layer_field.get_nh(q, **sample_configs[zoom_field], mask=None)[0]
+            q = q.view(*q.shape[:4],-1)
 
         q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
@@ -784,9 +781,6 @@ class MultiFieldAttention(nn.Module):
 
         att_out = self.out_layer_att(att_out, emb=emb, sample_configs=sample_configs)
 
-        if self.with_nh_field:
-            att_out = self.grid_layer_field.get_nh(att_out, **sample_configs[zoom_field], with_nh=True, mask=None)[0].view_as(x)
-
         if self.residual_learned:
             x = self.gamma_res * x + self.gamma * self.dropout_att(att_out)
         
@@ -805,8 +799,8 @@ class MultiFieldAttention(nn.Module):
        # if not self.double_skip:
        #     x_res = x
 
-        #if self.with_nh_field_mlp:
-        #    x, _ = self.grid_layer_field.get_nh(x, **sample_configs[zoom_field], with_nh=True, mask=None)
+        if self.with_nh_field_mlp:
+            x, _ = self.grid_layer_field.get_nh(x, **sample_configs[zoom_field], with_nh=True, mask=None)
 
         x = self.mlp_emb_layer(x, emb=emb, sample_configs=sample_configs[int(zoom_field)])
 
