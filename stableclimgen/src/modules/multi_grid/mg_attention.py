@@ -713,9 +713,9 @@ class MultiFieldAttention(nn.Module):
 
         if x_zoom_res is not None:
             x_res = x_zoom_res
-        else: 
-         #   x_res = combine_zooms(x_zoom_res, zoom_field, self.q_zooms)
-            x_res = rearrange(x_res, self.pattern_channel)
+            x_res = combine_zooms(x_res, zoom_field, self.q_zooms)
+            
+        x_res = rearrange(x_res, self.pattern_channel)
 
         q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         

@@ -322,7 +322,7 @@ class MG_MultiBlock(nn.Module):
         
         x_zooms_shift = x_zooms.copy()
 
-        x_zooms = self.block(x_zooms_shift, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs, x_zoom_res=x_zooms)
+        x_zooms = self.block(x_zooms_shift, emb=emb, mask_zooms=mask_zooms if self.use_mask else {}, sample_configs=sample_configs)
 
         for in_zoom, out_zoom in self.coarse_zooms.items():
             x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
