@@ -647,7 +647,7 @@ class MultiFieldAttention(nn.Module):
 
         in_features_mlp = out_features_field * grid_layer_field.adjc.shape[-1] if self.with_nh_field_mlp else out_features_field
 
-        self.mlp_emb_layer = LinEmbLayer(in_features_mlp, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm if not double_skip else False, layer_confs_emb=layer_confs_emb)
+        self.mlp_emb_layer = LinEmbLayer(in_features_mlp, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedder if with_mlp_embedder else None, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
        
         
         self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
