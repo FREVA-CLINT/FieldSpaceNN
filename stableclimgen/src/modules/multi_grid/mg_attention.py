@@ -537,7 +537,6 @@ class MultiFieldAttention(nn.Module):
                  n_head_channels: int=32,
                  embedder: Dict[str, EmbedderSequential] = {},
                  residual_embedder: Dict[str, EmbedderSequential] = {},
-                 with_nh_post_att = False,
                  with_nh_field_mlp = False,
                  with_nh_field = True,
                  with_nh_att = False,
@@ -551,7 +550,7 @@ class MultiFieldAttention(nn.Module):
                  update='shift',
                  double_skip=False,
                  layer_norm=True,
-                 norm_per_scale=True) -> None: 
+                 nh_update=False) -> None: 
         
         super().__init__()
 
@@ -569,10 +568,10 @@ class MultiFieldAttention(nn.Module):
         self.grid_layer_field = grid_layer_field
         self.grid_layer_att = grid_layer_att
 
+        self.nh_update = nh_update
         self.with_nh_field = with_nh_field
         self.with_nh_att = with_nh_att
         self.with_nh_field_mlp = with_nh_field_mlp
-        self.with_nh_post_att = with_nh_post_att
 
         self.n_groups = layer_confs.get('n_groups',1)
         self.emb_layers = nn.ModuleDict()
@@ -621,8 +620,8 @@ class MultiFieldAttention(nn.Module):
         #                                 norm_per_scale=norm_per_scale,
         #                                 layer_confs=layer_confs)
 
-        self.emb_layer_q = LinEmbLayer(in_features_q * grid_layer_field.adjc.shape[-1] if self.with_nh_field else in_features_q, 
-                                       in_features_q * grid_layer_field.adjc.shape[-1] if self.with_nh_field else in_features_q, 
+        self.emb_layer_q = LinEmbLayer(in_features_q, 
+                                       in_features_q, 
                                        layer_confs=layer_confs, identity_if_equal=True, embedder=embedder, layer_norm=layer_norm, layer_confs_emb=layer_confs_emb)
 
         if not self.self_att:
@@ -660,10 +659,24 @@ class MultiFieldAttention(nn.Module):
 
             self.gamma_res_mlps = nn.ParameterDict()
             self.gamma_mlps = nn.ParameterDict()
+
+
             for zoom in q_zooms:
-                self.gamma_res_mlps[str(zoom)] = nn.Parameter(torch.ones(1), requires_grad=True) 
-                self.gamma_mlps[str(zoom)] = nn.Parameter(torch.ones(1)*1e-7, requires_grad=True) 
+                if nh_update:
+                    gamma_res_mlp =  torch.zeros(grid_layer_att.adjc.shape[1])  
+                    gamma_res_mlp[0] = 1
+
+                    gamma_res_mlp = nn.Parameter(gamma_res_mlp, requires_grad=True) 
+                    gamma_mlps = nn.Parameter(torch.ones(grid_layer_att.adjc.shape[1])*1e-7, requires_grad=True) 
+
+                else:
+                    gamma_res_mlp = nn.Parameter(torch.ones(1), requires_grad=True) 
+                    gamma_mlps = nn.Parameter(torch.ones(1)*1e-7, requires_grad=True) 
+
+                self.gamma_res_mlps[str(zoom)] = gamma_res_mlp 
+                self.gamma_mlps[str(zoom)] = gamma_mlps
         
+
         elif residual_embedder is not None:
             self.residual_embedder = residual_embedder
             self.embedding_layer_res = get_layer([residual_embedder.get_out_channels], [out_features_field*2], layer_confs=layer_confs_emb)
@@ -703,7 +716,7 @@ class MultiFieldAttention(nn.Module):
             self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
 
 
-    def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}, x_zoom_res=None):        
+    def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
 
         zoom_field = self.grid_layer_field.zoom
         zoom_att = self.grid_layer_att.zoom
@@ -715,17 +728,14 @@ class MultiFieldAttention(nn.Module):
         q = combine_zooms(x_zooms, zoom_field, self.q_zooms)
         q = rearrange(q, self.pattern_channel)
 
-        if x_zoom_res is not None:
-            x = x_zoom_res
-            x = rearrange(x, self.pattern_channel)
-        else: 
-            x = q
+
+        x = q
         
+        q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
+
         if self.with_nh_field:
             q = self.grid_layer_field.get_nh(q, **sample_configs[zoom_field], mask=None)[0]
             q = q.view(*q.shape[:4],-1)
-
-        q = self.emb_layer_q(q, emb=emb, sample_configs=sample_configs[zoom_field])
         
         if not self.self_att:
             kv = combine_zooms(x_zooms, zoom_field, self.kv_zooms)
