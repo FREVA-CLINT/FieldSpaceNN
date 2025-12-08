@@ -60,49 +60,72 @@ class RandomFourierLayer(nn.Module):
 
 
 class TimeScaleLayer(nn.Module):
-    """
-    A neural network layer that applies a Random Fourier Feature transformation.
-
-    :param in_features: Number of input features (default is 3).
-    :param n_neurons: Number of neurons in the layer, which will determine the dimensionality of the output (default is 512).
-    :param wave_length: Scaling factor for the input tensor, affecting the frequency of the sine and cosine functions (default is 1.0).
-    """
-
     def __init__(
             self,
             in_features = 1,
             n_neurons: int = 512,
-            time_scales: float = [],
+            # Pass periods in the unit of your input data (Hours)
+            time_scales=None,
             time_min: float = 0.0,
             time_max: float = 1.0,
-            norm_factor: float = 86400.0
     ) -> None:
         super().__init__()
 
-        self.time_scales = torch.tensor(time_scales, dtype=torch.float32)
-        self.features_per_scale = n_neurons // (2 * len(time_scales))
+        # 1. Setup Periodic Components
+        # We need 2 features (sin + cos) per scale
+        if time_scales is None:
+            time_scales = [168.0, 8766.0]
+        self.periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
+        n_periodic_features = len(time_scales) * 2
+
+        # 2. Setup Linear Trend Component
+        # The rest of the neurons go to the linear trend
+        n_linear_features = n_neurons - n_periodic_features
+
         self.time_min = time_min
         self.time_range = time_max - time_min + 1e-8
 
-        # The first weight (alpha) is for the linear term
-        self.linear_term = nn.Linear(in_features, n_neurons // 2, bias=True)
-        self.norm_factor = norm_factor
+        # Projection for the linear trend (Global warming/Decadal shifts)
+        self.linear_trend = nn.Linear(in_features, n_linear_features)
+
+        # We also want to learn how to mix the sin/cos features
+        self.periodic_projection = nn.Linear(n_periodic_features, n_periodic_features)
 
     def forward(self, time_zooms: dict) -> torch.Tensor:
         """
-        Perform the forward pass of the layer, applying Random Fourier Feature transformation.
-
-        :param time_zooms: Input tensor to be transformed.
-        :return: Transformed output tensor.
+        times: Tensor of shape (Batch, Seq_Len) or (Batch, Seq_Len, 1)
+               Values should be integers of hours (12, 36, 60...)
         """
-        normalized_in_tensor = (time_zooms[max(time_zooms.keys())] - self.time_min) / self.time_range
-        linear_term = self.linear_term(normalized_in_tensor.unsqueeze(-1))
-        periodic_in_tensor = time_zooms[max(time_zooms.keys())].unsqueeze(-1) / self.norm_factor
-        periodic_terms = torch.cat([
-            torch.sin(2 * torch.pi * periodic_in_tensor / scale).repeat(1, 1, self.features_per_scale)
-            for scale in self.time_scales
-        ], dim=-1)
-        return torch.cat([linear_term, periodic_terms], dim=-1)
+        times = time_zooms[max(time_zooms.keys())]
+
+        if times.dim() == 2:
+            times = times.unsqueeze(-1)  # Ensure (B, S, 1)
+
+        # --- A. Linear Trend (Global Time) ---
+        # Normalize to 0-1 range for stability
+        normalized_time = (times - self.time_min) / self.time_range
+        trend_embed = self.linear_trend(normalized_time)
+
+        # --- B. Periodic Components (Seasonality) ---
+        # Formula: 2 * pi * time / period
+        # We don't use the norm_factor here; we use the raw hours and raw periods
+        device = times.device
+        scales = self.periodic_scales.to(device)
+
+        # Shape magic to broadcast: (B, S, 1) / (Num_Scales) -> (B, S, Num_Scales)
+        scaled_time = times / scales.view(1, 1, -1)
+        phase = 2 * torch.pi * scaled_time
+
+        # Compute Sin and Cos to fix phase ambiguity
+        sin_features = torch.sin(phase)
+        cos_features = torch.cos(phase)
+
+        # Concatenate and project
+        periodic_raw = torch.cat([sin_features, cos_features], dim=-1)
+        periodic_embed = self.periodic_projection(periodic_raw)
+
+        # --- C. Combine ---
+        return torch.cat([trend_embed, periodic_embed], dim=-1)
 
 
 class SinusoidalLayer(nn.Module):
