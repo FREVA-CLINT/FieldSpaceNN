@@ -62,9 +62,10 @@ class RandomFourierLayer(nn.Module):
 class TimeScaleLayer(nn.Module):
     def __init__(
             self,
+            in_features = 1,
             n_neurons: int = 512,
             # Pass periods in the unit of your input data (Hours)
-            periodic_scales: list[float] = [168.0, 8766.0],
+            periodic_scales=None,
             time_min: float = 0.0,
             time_max: float = 1.0,
     ) -> None:
@@ -72,6 +73,8 @@ class TimeScaleLayer(nn.Module):
 
         # 1. Setup Periodic Components
         # We need 2 features (sin + cos) per scale
+        if periodic_scales is None:
+            periodic_scales = [168.0, 8766.0]
         self.periodic_scales = torch.tensor(periodic_scales, dtype=torch.float32)
         n_periodic_features = len(periodic_scales) * 2
 
@@ -83,7 +86,7 @@ class TimeScaleLayer(nn.Module):
         self.time_range = time_max - time_min + 1e-8
 
         # Projection for the linear trend (Global warming/Decadal shifts)
-        self.linear_trend = nn.Linear(1, n_linear_features)
+        self.linear_trend = nn.Linear(in_features, n_linear_features)
 
         # We also want to learn how to mix the sin/cos features
         self.periodic_projection = nn.Linear(n_periodic_features, n_periodic_features)
