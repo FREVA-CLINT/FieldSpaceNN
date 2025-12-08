@@ -65,7 +65,7 @@ class TimeScaleLayer(nn.Module):
             in_features = 1,
             n_neurons: int = 512,
             # Pass periods in the unit of your input data (Hours)
-            periodic_scales=None,
+            time_scales=None,
             time_min: float = 0.0,
             time_max: float = 1.0,
     ) -> None:
@@ -73,10 +73,10 @@ class TimeScaleLayer(nn.Module):
 
         # 1. Setup Periodic Components
         # We need 2 features (sin + cos) per scale
-        if periodic_scales is None:
-            periodic_scales = [168.0, 8766.0]
-        self.periodic_scales = torch.tensor(periodic_scales, dtype=torch.float32)
-        n_periodic_features = len(periodic_scales) * 2
+        if time_scales is None:
+            time_scales = [168.0, 8766.0]
+        self.periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
+        n_periodic_features = len(time_scales) * 2
 
         # 2. Setup Linear Trend Component
         # The rest of the neurons go to the linear trend
