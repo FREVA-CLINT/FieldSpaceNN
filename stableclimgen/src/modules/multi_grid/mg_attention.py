@@ -541,6 +541,7 @@ class MultiFieldAttention(nn.Module):
                  with_nh_field_mlp = False,
                  with_nh_field = True,
                  with_nh_att = False,
+                 with_time_nh_att = False,
                  with_var_att = True,
                  with_time_att = False,
                  time_seq_len = 1,
@@ -672,22 +673,18 @@ class MultiFieldAttention(nn.Module):
         self.pattern_channel = 'b v t N n f ->  b (f v) t N n'
         self.pattern_channel_reverse = 'b (f v) t N n ->  b v t (N n) f'
 
+        self.with_time_nh_att = with_time_nh_att
         self.with_time_att = with_time_att
         self.time_seq_len = time_seq_len
 
         if with_var_att:
-            self.att_pattern = 'b fv t N NA (NH H)-> (b N t) NH (fv NA) H'
-            self.mask_pattern = 'b v t N NA f-> (b N t) 1 1 (f v NA)'
-            self.att_pattern_reverse = '(b N t) NH (fv NA) H -> b fv t (N NA) (NH H)'
-        elif with_time_att:
-            assert with_var_att == False
-            self.att_pattern = 'b fv (tb t) N NA (NH H)-> (b fv N tb) NH (t NA) H'
-            self.mask_pattern = 'b v (tb t) N NA f-> (b v N tb f) 1 1 (t NA)'
-            self.att_pattern_reverse = '(b fv N tb) NH (t NA) H -> b fv (tb t) (N NA) (NH H)'
+            self.att_pattern = 'b fv T TA N NA (NH H)-> (b N T) NH (fv NA TA) H'
+            self.mask_pattern = 'b v T TA N NA f-> (b N T) 1 1 (f v NA TA)'
+            self.att_pattern_reverse = '(b N T) NH (fv NA TA) H -> b fv (T TA) (N NA) (NH H)'
         else:
-            self.att_pattern = 'b fv t N NA (NH H)-> (b fv N t) NH (NA) H'
-            self.mask_pattern = 'b v t N NA f-> (b v N t f) 1 1 (NA)'
-            self.att_pattern_reverse = '(b fv N t) NH (NA) H -> b fv t (N NA) (NH H)'  
+            self.att_pattern = 'b fv T TA N NA (NH H)-> (b fv N T) NH (NA TA) H'
+            self.mask_pattern = 'b v T TA N NA f-> (b v N T f) 1 1 (NA TA)'
+            self.att_pattern_reverse = '(b fv N T) NH (NA TA) H -> b fv (T TA) (N NA) (NH H)'
 
 
     def forward(self, x_zooms, mask_zooms=[], emb=None, sample_configs={}):        
@@ -714,11 +711,11 @@ class MultiFieldAttention(nn.Module):
         q = self.q_projection_layer(q, emb=emb, sample_configs=sample_configs[zoom_field])
 
         q = q.reshape(*q.shape[:3], -1, self.att_dim)
-        
+
         if self.global_att:
-            q = q.reshape(*q.shape[:3], 1, -1, q.shape[-1])
+            q = q.reshape(*q.shape[:2], t//self.time_seq_len, self.time_seq_len, 1, -1, q.shape[-1])
         else:
-            q = q.reshape(*q.shape[:3], -1, 4**(zoom_field-zoom_att), q.shape[-1])
+            q = q.reshape(*q.shape[:2], t//self.time_seq_len, self.time_seq_len, -1, 4**(zoom_field-zoom_att), q.shape[-1])
 
         if self.with_nh_field:
             kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
@@ -732,31 +729,33 @@ class MultiFieldAttention(nn.Module):
         if mask is not None:
             mask = mask.expand_as(x_zooms[zoom_field])
 
-        if self.with_nh_att:
-            kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, mask=mask)
-        
+        if self.with_nh_att or self.with_time_nh_att:
+            kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, with_time_nh=self.with_time_nh_att, mask=mask)
+            if not self.with_time_nh_att:
+                kv = kv.unsqueeze(3)
+                mask = mask.unsqueeze(3) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:2], t//self.time_seq_len, -1, *kv.shape[4:])
+            mask = mask.reshape(*mask.shape[:2], t//self.time_seq_len, -1, *mask.shape[4:]) if mask is not None else None
+
         elif self.global_att:
-            kv = kv.reshape(*kv.shape[:3], 1, -1, kv.shape[-1])
-            mask = mask.view(*mask.shape[:3], 1, -1, mask.shape[-1]) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:2], t//self.time_seq_len, self.time_seq_len, 1, -1, kv.shape[-1])
+            mask = mask.view(*mask.shape[:2], t//self.time_seq_len, self.time_seq_len, 1, -1, mask.shape[-1]) if mask is not None else None
         else:
-            kv = kv.reshape(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
-            mask = mask.view(*mask.shape[:3], -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:2], t//self.time_seq_len, self.time_seq_len, -1, 4**(zoom_field-zoom_att), kv.shape[-1])
+            mask = mask.view(*mask.shape[:2], t//self.time_seq_len, self.time_seq_len, -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
 
-
-        b, fv, t, N, NA, C = q.shape
-        if self.with_time_att:
-            t = self.time_seq_len
+        b, fv, T, TA, N, NA, C = q.shape
 
         k,v = kv.chunk(2, dim=-1)
-        q = rearrange(q, self.att_pattern, H=self.n_head_channels, t=t)
-        k = rearrange(k, self.att_pattern, H=self.n_head_channels, t=t)
-        v = rearrange(v, self.att_pattern, H=self.n_head_channels, t=t)
+        q = rearrange(q, self.att_pattern, H=self.n_head_channels)
+        k = rearrange(k, self.att_pattern, H=self.n_head_channels)
+        v = rearrange(v, self.att_pattern, H=self.n_head_channels)
 
         mask = rearrange(mask, self.mask_pattern, t=t) if mask is not None else None
 
         att_out = safe_scaled_dot_product_attention(q, k, v, mask=mask)
 
-        att_out = rearrange(att_out, self.att_pattern_reverse, b=b, fv=fv, t=t, N=N, NA=NA)
+        att_out = rearrange(att_out, self.att_pattern_reverse, b=b, fv=fv, T=T, TA=TA, N=N, NA=NA)
 
         if self.with_nh_post_att:
             att_out, _ = self.grid_layer_field.get_nh(att_out, **sample_configs[zoom_field], with_nh=True, mask=None)

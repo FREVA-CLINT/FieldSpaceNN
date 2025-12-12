@@ -226,6 +226,7 @@ class MG_MultiBlock(nn.Module):
                     with_nh_att = layer_settings.get("with_nh_att", False),
                     with_var_att= layer_settings.get("with_var_att", False),
                     with_time_att= layer_settings.get("with_time_att", False),
+                    with_time_nh_att= layer_settings.get("with_time_nh_att", False),
                     time_seq_len= layer_settings.get("time_seq_len", 1),
                     with_nh_post_att = layer_settings.get("with_nh_post_att", False),
                     with_mlp_embedder=layer_settings.get("with_mlp_embedder", True),
