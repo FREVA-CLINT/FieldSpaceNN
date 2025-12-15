@@ -540,6 +540,7 @@ class MultiFieldAttention(nn.Module):
                  with_nh_post_att = False,
                  with_nh_field_mlp = False,
                  with_nh_field = True,
+                 with_time_nh_field = False,
                  with_nh_att = False,
                  with_time_nh_att = False,
                  with_var_att = True,
@@ -568,6 +569,7 @@ class MultiFieldAttention(nn.Module):
         self.grid_layer_att = grid_layer_att
 
         self.with_nh_field = with_nh_field
+        self.with_time_nh_field = with_time_nh_field
         self.with_nh_att = with_nh_att
         self.with_nh_field_mlp = with_nh_field_mlp
         self.with_nh_post_att = with_nh_post_att
@@ -605,7 +607,8 @@ class MultiFieldAttention(nn.Module):
         self.n_channels_kv = {}
         for kv_zoom in kv_zooms:
             n_channels_zoom = max([4**(kv_zoom - field_zoom),1]) * grid_layer_field.adjc.shape[-1] if self.with_nh_field else max([4**(kv_zoom - field_zoom),1])
-            self.n_channels_kv[kv_zoom] = (n_channels_zoom)
+            n_channels_zoom = 3 * n_channels_zoom if self.with_time_nh_field else n_channels_zoom
+            self.n_channels_kv[kv_zoom] = n_channels_zoom
 
         self.in_features_q = in_features_q = sum(self.n_channels_q.values())
         self.in_features_kv = in_features_kv = sum(self.n_channels_kv.values())
@@ -715,9 +718,8 @@ class MultiFieldAttention(nn.Module):
         else:
             q = q.reshape(*q.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, -1, 4**(zoom_field-zoom_att), q.shape[-1])
 
-        if self.with_nh_field:
-            kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, mask=None)
-
+        if self.with_nh_field or self.with_time_nh_field:
+            kv, _ = self.grid_layer_field.get_nh(kv, **sample_configs[zoom_field], with_nh=self.with_nh_field, with_time_nh=self.with_time_nh_field, mask=None)
         kv = self.kv_projection_layer(kv, emb=emb, sample_configs=sample_configs[zoom_field])
 
         kv = kv.reshape(*kv.shape[:3], -1, 2 * self.att_dim)
@@ -729,11 +731,8 @@ class MultiFieldAttention(nn.Module):
 
         if self.with_nh_att or self.with_time_nh_att:
             kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, with_time_nh=self.with_time_nh_att, mask=mask)
-            if not self.with_time_nh_att:
-                kv = kv.unsqueeze(3)
-                mask = mask.unsqueeze(3) if mask is not None else None
-            kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, -1, *kv.shape[4:])
-            mask = mask.reshape(*mask.shape[:2], t//self.time_seqlen_att, -1, *mask.shape[4:]) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, -1, *kv.shape[3:])
+            mask = mask.reshape(*mask.shape[:2], t//self.time_seqlen_att, -1, *mask.shape[3:]) if mask is not None else None
 
         elif self.global_att:
             kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, 1, -1, kv.shape[-1])

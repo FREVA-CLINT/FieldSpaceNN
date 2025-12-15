@@ -185,36 +185,23 @@ class GridLayer(nn.Module):
 
     def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_space_nh: bool = True, with_time_nh: bool = False,
                mask=None, **kwargs):
-        """
-        Extended get_nh to handle both spatial and temporal neighborhoods.
-        Input x shape: (batch, n_vars, n_timesteps, n_pixels, n_channels)
-        """
-
-        # Backward compatibility for the old 'with_nh' argument
+        # 1. Backward compatibility
         if 'with_nh' in kwargs:
             with_space_nh = kwargs['with_nh']
 
-        # 1. TEMPORAL NEIGHBORHOOD GATHERING
-        # We perform this first so the time neighbors are treated as extra batch items
-        # during the spatial gathering phase.
-
+        # 2. Setup Temporal Neighbors
+        # We transform x from (B, V, T, S, F) -> (B, V, T, n_time_nh, S, F)
         if with_time_nh:
-            # Pad time dimension (dim 2) by 1 on both sides.
-            # Pad tuple format: (last_dim_left, last_dim_right, 2nd_last_left, ...)
-            # We want to pad dim 2. x is 5D: (b, v, t, s, f).
-            # So we skip f (0,0) and s (0,0) and pad t (1,1).
+            # Pad time dimension (dim 2) by 1 on both sides with replication
+            # Pad args are (last_dim_left, last_dim_right, 2nd_last_left, ...)
+            # x is (B, V, T, S, F), so we pad T (3rd from last)
             pad_arg = (0, 0, 0, 0, 1, 1)
 
-            # mode='replicate' ensures boundary values select themselves as neighbors
             x_padded = F.pad(x, pad_arg, mode='replicate')
+            x = x_padded.unfold(dimension=2, size=3, step=1)  # (B, V, T, S, F, 3)
 
-            # Unfold creates a sliding window.
-            # Dim 2 becomes length `n_timesteps`, and a new last dim size 3 is created.
-            x = x_padded.unfold(dimension=2, size=3, step=1)
-
-            # Current shape: (b, v, t, s, f, 3_time_nh)
-            # We permute to: (b, v, t, 3_time_nh, s, f)
-            # This places time neighbors before spatial dim (s), acting like an extended feature or batch.
+            # Move time neighbors (3) to be before spatial (S)
+            # (B, V, T, S, F, 3) -> (B, V, T, 3, S, F)
             x = x.permute(0, 1, 2, 5, 3, 4)
 
             if mask is not None:
@@ -222,82 +209,80 @@ class GridLayer(nn.Module):
                 mask = mask_padded.unfold(dimension=2, size=3, step=1)
                 mask = mask.permute(0, 1, 2, 5, 3, 4)
         else:
-            # Add a singleton dimension for time neighbors to maintain consistent shape flow
-            # Shape: (b, v, t, 1, s, f)
+            # Add singleton dimension for consistency: (B, V, T, 1, S, F)
             x = x.unsqueeze(3)
             if mask is not None:
                 mask = mask.unsqueeze(3)
 
-        # 2. PREPARE DIMENSIONS FOR SPATIAL LOGIC
-        # x is now (..., nh_t, s, f)
+        # 3. Prepare for Spatial Gathering
+        # x is now (B, V, T, n_time_nh, S, F)
         s, f = x.shape[-2:]
+        x_feat_dims = x.shape[:-2]  # (B, V, T, n_time_nh)
 
-        # x_feat_dims captures (b, v, t, nh_t)
-        x_feat_dims = x.shape[:-2]
-
-        # Calculate Zoom Logic
         zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(
             math.log(s / 5) / math.log(4))
         zoom_diff = zoom_x - self.zoom
 
-        # 3. SPATIAL LOGIC (Existing logic, adapted to new shape rank)
+        # 4. Spatial Gathering Logic
 
-        # Case: Simple pass-through (resolution matches)
+        # Branch A: Resolution match (no down/up-sampling needed)
         if 12 ** (self.zoom == 0) * 4 ** zoom_diff >= s:
+            # Add spatial neighbor dim of size 1
             x = x.view(*x_feat_dims, 1, s, f)
             mask = mask.reshape(*x_feat_dims, 1, s, -1) if mask is not None else None
 
-            # If we added a singleton time dim and didn't want time neighbors, squeeze it out
-            if not with_time_nh:
-                x = x.squeeze(3)
-                if mask is not None: mask = mask.squeeze(3)
-            return x, mask
+        else:
+            # Reshape for patch processing
+            # Flatten (B, V, T, n_time_nh) into dim 0
+            x = x.reshape(-1, s // 4 ** zoom_diff, f * 4 ** zoom_diff)
 
-        # Reshape for patching/zooming
-        # The -1 flattens (b, v, t, nh_t) together.
-        # This is safe because spatial gathering operates per-image independently.
-        x = x.reshape(-1, s // 4 ** zoom_diff, f * 4 ** zoom_diff)
+            mask_dims = mask.shape[:-2] if mask is not None else None
+            mask = mask.reshape(-1, mask.shape[-2] // 4 ** zoom_diff, 4 ** zoom_diff) if mask is not None else None
 
-        mask_dims = mask.shape[:-2] if mask is not None else None
-        mask = mask.reshape(-1, mask.shape[-2] // 4 ** zoom_diff, 4 ** zoom_diff) if mask is not None else None
+            # Branch B: No spatial neighbors requested (indexing only)
+            if zoom_patch_sample == -1 and with_space_nh:
+                adjc = self.adjc if with_space_nh else self.adjc[:, 0]
+                x = x[:, adjc]
+                if mask is not None:
+                    mask = mask[:, adjc]
 
-        # Case: Spatial Neighbors Not Requested (Just indexing)
-        if zoom_patch_sample == -1 and with_space_nh:
-            adjc = self.adjc if with_space_nh else self.adjc[:, 0]
-            x = x[:, adjc]
+            # Branch C: Spatial neighbors requested
+            elif with_space_nh:
+                x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
+
+            # Branch D: Specific patch sample
+            elif zoom_patch_sample != -1:
+                indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
+                if mask is not None:
+                    mask = mask[:, indices]
+                x = x[:, indices]
+
+            # Reshape Mask back
+            if mask_dims is not None:
+                mask = mask.view(*mask_dims, s // 4 ** zoom_diff, -1)
+            elif mask is not None:
+                mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], x_feat_dims[2], x_feat_dims[3], -1, -1,
+                                                    4 ** zoom_diff)
+
+            # Reshape X back
+            # Resulting shape: (B, V, T, n_time_nh, S_new, NH_spatial, F)
+            x = x.view(*x_feat_dims, s // 4 ** zoom_diff, -1, f)
             if mask is not None:
-                mask = mask[:, adjc]
+                mask = mask.reshape(*x_feat_dims, s // 4 ** zoom_diff, -1, 1)
 
-        # Case: Spatial Neighbors Requested
-        elif with_space_nh:
-            # self.get_nh_patch handles the adjacency gather on the last 2 dimensions
-            x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
+        # 5. Merge Temporal and Spatial Neighbors
+        # Current x:    (B, V, T, n_time_nh, S, n_spatial_nh, F)
+        # Desired x:    (B, V, T, S, n_time_nh * n_spatial_nh, F)
 
-        # Case: Patch Sample without Neighbors
-        elif zoom_patch_sample != -1:
-            indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
-            if mask is not None:
-                mask = mask[:, indices]
-            x = x[:, indices]
+        # Permute to:   (B, V, T, S, n_time_nh, n_spatial_nh, F)
+        x = x.permute(0, 1, 2, 4, 3, 5, 6)
 
-        # 4. RESTORE DIMENSIONS
-        if mask_dims is not None:
-            mask = mask.view(*mask_dims, s // 4 ** zoom_diff, -1)
-        elif mask is not None:
-            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], x_feat_dims[2], -1, -1, 4 ** zoom_diff)
-
-        # Unflatten the batch dimensions: (b, v, t, nh_t, s_new, nh_s, f)
-        x = x.view(*x_feat_dims, s // 4 ** zoom_diff, -1, f)
+        # Flatten last 3 dimensions except F: (..., S, n_time_nh * n_spatial_nh, F)
+        x = x.reshape(x.shape[0], x.shape[1], x.shape[2], x.shape[3], -1, x.shape[6])
 
         if mask is not None:
-            mask = mask.reshape(*x_feat_dims, s // 4 ** zoom_diff, -1, 1)
-
-        # 5. CLEANUP
-        # If user didn't request time neighbors, remove the singleton dimension we added at index 3
-        if not with_time_nh:
-            x = x.squeeze(3)
-            if mask is not None:
-                mask = mask.squeeze(3)
+            mask = mask.permute(0, 1, 2, 4, 3, 5, 6)
+            mask = mask.reshape(mask.shape[0], mask.shape[1], mask.shape[2], mask.shape[3], -1, mask.shape[6])
 
         return x, mask
 

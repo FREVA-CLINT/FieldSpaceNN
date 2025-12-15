@@ -223,6 +223,7 @@ class MG_MultiBlock(nn.Module):
                     n_head_channels = layer_settings.get("n_head_channels",n_head_channels),
                     with_nh_field_mlp = layer_settings.get("with_nh_field_mlp", False),
                     with_nh_field = layer_settings.get("with_nh_field", True),
+                    with_time_nh_field = layer_settings.get("with_time_nh_field", False),
                     with_nh_att = layer_settings.get("with_nh_att", False),
                     with_var_att= layer_settings.get("with_var_att", False),
                     with_time_nh_att= layer_settings.get("with_time_nh_att", False),
