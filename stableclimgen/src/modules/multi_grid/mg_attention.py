@@ -731,7 +731,7 @@ class MultiFieldAttention(nn.Module):
             mask = mask.expand_as(x_zooms[zoom_field])
 
         if self.with_nh_att:
-            kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, with_time_nh=self.with_time_nh_att, mask=mask)
+            kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, with_time_nh=False, mask=mask)
 
         elif self.global_att:
             kv = kv.reshape(*kv.shape[:3], 1, -1, kv.shape[-1])
