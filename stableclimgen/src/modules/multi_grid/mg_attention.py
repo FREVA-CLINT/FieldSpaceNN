@@ -15,6 +15,7 @@ from ...modules.transformer.transformer_base import SelfAttention,safe_scaled_do
 
 from ...modules.embedding.embedder import EmbedderSequential
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch, get_sample_configs
+from ...utils.helpers import get_time_chunked_data
 
 
 def get_compression_dims(dims, zoom):
@@ -729,17 +730,22 @@ class MultiFieldAttention(nn.Module):
         if mask is not None:
             mask = mask.expand_as(x_zooms[zoom_field])
 
-        if self.with_nh_att or self.with_time_nh_att:
+        if self.with_nh_att:
             kv, mask = self.grid_layer_att.get_nh(kv, **sample_configs[zoom_att], with_nh=self.with_nh_att, with_time_nh=self.with_time_nh_att, mask=mask)
-            kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, -1, *kv.shape[3:])
-            mask = mask.reshape(*mask.shape[:2], t//self.time_seqlen_att, -1, *mask.shape[3:]) if mask is not None else None
 
         elif self.global_att:
-            kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, 1, -1, kv.shape[-1])
-            mask = mask.view(*mask.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, 1, -1, mask.shape[-1]) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:3], 1, -1, kv.shape[-1])
+            mask = mask.view(*mask.shape[:3], 1, -1, mask.shape[-1]) if mask is not None else None
         else:
-            kv = kv.reshape(*kv.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, -1, 4**(zoom_field-zoom_att), kv.shape[-1])
-            mask = mask.view(*mask.shape[:2], t//self.time_seqlen_att, self.time_seqlen_att, -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
+            kv = kv.reshape(*kv.shape[:3], -1, 4**(zoom_field-zoom_att), kv.shape[-1])
+            mask = mask.view(*mask.shape[:3], -1, 4**(zoom_field-zoom_att), mask.shape[-1]) if mask is not None else None
+
+        if self.time_seqlen_att > 1 or self.with_time_nh_att:
+            kv = get_time_chunked_data(kv, self.time_seqlen_att, self.with_time_nh_att)
+            mask = get_time_chunked_data(mask, self.time_seqlen_att, self.with_time_nh_att) if mask is not None else None
+        else:
+            kv = kv.unsqueeze(3)
+            mask = mask.unsqueeze(3) if mask is not None else None
 
         b, fv, T, TA, N, NA, C = q.shape
 

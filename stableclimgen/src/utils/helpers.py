@@ -3,6 +3,8 @@ from collections import defaultdict
 from typing import List, Tuple, Optional
 import re
 import torch
+import torch.nn.functional as F
+from einops import rearrange
 
 def load_from_state_dict(model, ckpt_path, device=None, print_keys=True):
     weights = torch.load(ckpt_path, map_location=device)
@@ -188,3 +190,25 @@ def expand_tensor(tensor, dims=5, keep_dims=None):
             tensor = tensor.unsqueeze(d)
 
     return tensor
+
+
+def get_time_chunked_data(x, t_seq_len, with_time_nh=True, pad_mode='replicate'):
+    if with_time_nh:
+        x = x.transpose(2, -1)
+
+        transposed_shape = list(x.shape)
+        x = x.reshape(-1, transposed_shape[-1])
+        x = F.pad(x, (1, 1), mode=pad_mode)
+        transposed_shape[-1] += 2
+        x = x.reshape(transposed_shape)
+
+        x = x.transpose(2, -1)
+        window_size = t_seq_len + 2
+    else:
+        window_size = t_seq_len
+
+    x_chunked = x.unfold(dimension=2, size=window_size, step=t_seq_len)
+
+    x_chunked = rearrange(x_chunked, "b v c ... w -> b v c w ...")
+
+    return x_chunked
