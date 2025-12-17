@@ -51,7 +51,7 @@ class LightningProbabilisticModel(pl.LightningModule):
                 mask={int(zoom): mask[zoom][start:end] for zoom in mask.keys()},
                 emb=emb_chunk
             )
-            output_zooms = {int(zoom): output_zooms[zoom].append(output_chunk[zoom]) if zoom in output_zooms.keys() else [output_chunk[zoom]] for zoom in output_chunk.keys() }
+            output_zooms = {int(zoom): output_zooms[zoom] + [output_chunk[zoom]] if zoom in output_zooms.keys() else [output_chunk[zoom]] for zoom in output_chunk.keys() }
 
         # Concatenate all output chunks
         output_zooms = {int(zoom): torch.cat(output_zooms[zoom], dim=0) for zoom in output_zooms.keys()}
