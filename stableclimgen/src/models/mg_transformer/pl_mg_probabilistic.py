@@ -29,7 +29,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         emb['DensityEmbedder'] = (mask.copy(), emb['DensityEmbedder'][1].repeat_interleave(self.n_samples, dim=0))
         emb['TimeEmbedder'] = {int(zoom): emb['TimeEmbedder'][zoom].repeat_interleave(self.n_samples, dim=0) for zoom in emb['TimeEmbedder'].keys()}
 
-        output_zooms = {}
+        output_zooms = {int(zoom): [] for zoom in target.keys()}
         max_batchsize = self.max_batchsize if self.max_batchsize != -1 else total_samples
         for start in range(0, total_samples, max_batchsize):
             end = min(start + max_batchsize, total_samples)
@@ -51,7 +51,7 @@ class LightningProbabilisticModel(pl.LightningModule):
                 mask={int(zoom): mask[zoom][start:end] for zoom in mask.keys()},
                 emb=emb_chunk
             )
-            output_zooms = {int(zoom): output_zooms[zoom].append(output_chunk[zoom]) if zoom in output_zooms.keys() else [output_chunk[zoom]] for zoom in output_chunk.keys() }
+            output_zooms = {int(zoom): output_zooms[zoom].append(output_chunk[zoom]) for zoom in output_chunk.keys()}
 
         # Concatenate all output chunks
         output_zooms = {int(zoom): torch.cat(output_zooms[zoom], dim=0) for zoom in output_zooms.keys()}
