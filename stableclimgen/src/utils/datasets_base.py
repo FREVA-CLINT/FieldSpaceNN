@@ -246,7 +246,7 @@ class BaseDataset(Dataset):
 
             patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
 
-            mask = (1. * get_mapping_weights(mapping)[...,0]).view(1,1,-1,1)
+            mask = (1. * get_mapping_weights(mapping)[...,0]).view(1,1,-1,1,1)
 
             post_map = mapping_zoom > zoom
             if post_map:
@@ -265,19 +265,26 @@ class BaseDataset(Dataset):
 
             for i, variable in enumerate(variables):
                 values = ds[variable].values
+                if values.ndim == 2:
+                    values = values.reshape(nt,1,-1)
+
+                d = values.shape[1]
+
                 if not patch_dim:
-                    values = values.reshape(nt, -1)[:, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
-                data = torch.tensor(values).view(nt, -1,1)
+                    values = values.reshape(nt, d, -1)[:, :, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
+                data = torch.tensor(values).view(nt, d, -1)
                 if self.normalize_data:
                     data = self.var_normalizers[zoom][variable].normalize(data)
-                data_g.append(data) 
+                
+                data = data.transpose(-1,-2)
+                data_g.append(data.unsqueeze(dim=-1)) 
 
         data_g = torch.stack(data_g, dim=0)
 
         _, counts = np.unique(group_ids_sample, return_counts=True)
 
         data_g = data_g.split(counts.tolist(), dim=0)
-        data_g = torch.concat([data.transpose(0,-1).expand(-1,-1,-1, max(self.var_tot_depths)) for data in data_g],dim=0)
+        data_g = torch.concat([data.expand(-1,-1,-1, max(self.var_tot_depths),-1) for data in data_g],dim=0)
 
         if drop_mask_ is not None:
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask

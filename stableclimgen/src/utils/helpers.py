@@ -163,7 +163,8 @@ def expand_tensor(tensor, dims=5, keep_dims=None):
             "v": 1,
             "t": 2,
             "s": 3,
-            "c": 4
+            "d": 4,
+            "c": 5
         }
     else:
         dim_dict = {

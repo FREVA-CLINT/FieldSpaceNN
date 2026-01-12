@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from ..modules.grids.grid_layer import GridLayer
-from .factorization import SpatiaFacLayer,CPFacLayer
+from .factorization import TuckerFacLayer,CPFacLayer
 
 
 class IdentityLayer(nn.Module):
@@ -50,16 +50,18 @@ class LayerNorm(nn.Module):
         if self.n_groups==1:
             return self.weight * x_hat + self.bias
         else:
-            weight = self.weight[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2)
-            bias = self.bias[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2)
+            weight = self.weight[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
+            bias = self.bias[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
             
             return weight * x_hat + bias
 
-    def forward(self, x: torch.Tensor, emb=None):
+    def forward(self, x: torch.Tensor, emb=None, x_stats: torch.Tensor=None):
+        if x_stats is None:
+            x_stats = x
 
         dims = tuple(range(-len(self.normalized_shape), 0))
-        mean = x.mean(dim=dims, keepdim=True)
-        var = x.var(dim=dims, unbiased=False, keepdim=True)
+        mean = x_stats.mean(dim=dims, keepdim=True)
+        var = x_stats.var(dim=dims, unbiased=False, keepdim=True)
 
         x_hat = (x - mean) / torch.sqrt(var + self.eps)
 
@@ -95,27 +97,28 @@ class EmbLayer(nn.Module):
         self.embedder = embedder
         self.spatial_dim_count = spatial_dim_count
 
-        if isinstance(out_features, list):
-            out_features_ = out_features[-1]
+        if not isinstance(out_features, list):
+            out_features_ = [out_features]
         else:
             out_features_ = out_features
         
         self.out_features = out_features_
-                
+
+        in_features = [1] * (len(out_features_) - 1)   
         if aggregation == 'shift_scale':
-            self.embedding_layer = get_layer([1, self.embedder.get_out_channels], [2, out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels, 1], [*out_features_, 2], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_shift_scale
 
         elif aggregation == 'shift':
-            self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_shift
         
         elif aggregation == 'scale':
-            self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_scale
 
         elif aggregation == 'concat':
-            self.embedding_layer = get_layer([self.embedder.get_out_channels], [out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
             self.forward_fcn = self.forward_w_concat
 
         self.aggregation = aggregation
@@ -158,14 +161,11 @@ class EmbLayer(nn.Module):
     
     def forward_w_shift_scale(self, x, emb=None, sample_configs={}):
         
-        x_shape = x.shape
-
         emb_ = self.embedder(emb, sample_configs)
-        scale, shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-2)
+        scale, shift = self.embedding_layer(emb_.view(*emb_.shape[:-1],1,emb_.shape[-1]), sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
 
-        n = scale.shape[1]
-        scale = scale.view(*scale.shape[:3], -1, x_shape[-1])
-        shift = shift.view(*shift.shape[:3], -1, x_shape[-1])
+        scale = scale.squeeze(dim=-1)
+        shift = shift.squeeze(dim=-1)
 
         x = x * (scale + 1) + shift
 
@@ -222,15 +222,15 @@ class LinEmbLayer(nn.Module):
         self.embedder = embedder
         self.spatial_dim_count = spatial_dim_count
 
-        if isinstance(out_features, list):
-            out_features_ = out_features[-1]
+        if not isinstance(out_features, list):
+            out_features_ = [out_features]
         else:
             out_features_ = out_features
         
         self.out_features = out_features
         
-        if isinstance(in_features, list):
-            in_features_ = in_features[-1]
+        if not isinstance(in_features, list):
+            in_features_ = [in_features]
         else:
             in_features_ = in_features
 
@@ -253,17 +253,17 @@ class LinEmbLayer(nn.Module):
         else:
             self.layer_norm = IdentityLayer()
 
-        if identity_if_equal and in_features==out_features_:
+        if identity_if_equal and (torch.tensor(in_features_)-torch.tensor(out_features_)==0).all():
             self.layer = IdentityLayer()
         else:
             self.layer = get_layer(in_features_, out_features_, layer_confs=layer_confs)
 
 
-    def forward(self, x, emb=None, sample_configs={},**kwargs):
+    def forward(self, x: torch.Tensor, emb: Dict={}, sample_configs: Dict={}, x_stats: torch.Tensor = None, **kwargs):
         
         x = self.layer(x, emb=emb, sample_configs=sample_configs)
-        x = x.view(*x.shape[:4 + self.spatial_dim_count-1],-1)
-        x = self.layer_norm(x, emb=emb)
+        #x = x.reshape(*x.shape[:4 + self.spatial_dim_count-1],-1)
+        x = self.layer_norm(x, emb=emb, x_stats=x_stats)
 
         x = self.embedding_layer(x, emb=emb, sample_configs=sample_configs)
 
@@ -330,24 +330,22 @@ def get_layer(
 
     layer_confs = copy.deepcopy(layer_confs)
         
-    rank_feat = check_get([layer_confs, kwargs, {'rank_feat': None}], 'rank_feat')
-    rank_vars = check_get([layer_confs, kwargs, {'rank_vars': None}], 'rank_vars')
+    ranks = check_get([layer_confs, kwargs, {'ranks': [None]}], 'ranks')
     n_groups = check_get([layer_confs, kwargs, {'n_groups': 1}], 'n_groups')
-    rank_channel = check_get([layer_confs, kwargs, {'rank_channel': None}], 'rank_channel')
     bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
     fac_mode = check_get([layer_confs, kwargs, {'fac_mode': 'Tucker'}], 'fac_mode')
-    skip_dims = check_get([layer_confs, kwargs, {'skip_dims': None}], 'skip_dims')
 
-    if not rank_feat and not rank_vars and rank_channel is None and n_groups==1:
+    ranks_not_none = [rank is not None for rank in ranks]
+
+    if not any(ranks_not_none) and n_groups==1:
         layer = LinearLayer(
                 in_features,
                 out_features,
-                bias=bias,
-                skip_dims = skip_dims
+                bias=bias
                 )
 
     elif fac_mode=='Tucker':
-        layer = SpatiaFacLayer(
+        layer = TuckerFacLayer(
             in_features,
             out_features,
             **layer_confs)
@@ -393,19 +391,18 @@ class LinearLayer(nn.Module):
                     self.in_features.append(in_feat)
                     self.out_features.append(out_feat)
 
-        self.in_features = [int(torch.tensor(self.in_features).prod())]
-        self.out_features = [int(torch.tensor(self.out_features).prod())]
+        self.in_features_tot = math.prod(self.in_features)
 
-        self.layer = nn.Linear(self.in_features[0], self.out_features[0], bias=bias)
+        self.layer = nn.Linear(self.in_features_tot , math.prod(self.out_features), bias=bias)
 
 
 
     def forward(self, x, **kwargs):
-        x_dims = x.shape[:-(len(self.in_features) + 1)]
+        x_dims = x.shape[:5]
 
-        x = x.reshape(*x_dims, -1, *self.in_features)
+        x = x.reshape(*x_dims, self.in_features_tot)
         x = self.layer(x)
-        x = x.view(*x.shape[:3], -1, x.shape[-1])
+        x = x.view(*x_dims, *self.out_features)
 
         return x
 

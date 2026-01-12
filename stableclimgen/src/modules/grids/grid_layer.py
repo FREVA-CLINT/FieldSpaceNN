@@ -280,16 +280,16 @@ class GridLayer(nn.Module):
 
 
     def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_nh: bool=True, mask=None, **kwargs):
-        s, f = x.shape[-2:]
+        s, d, f = x.shape[-3:]
         zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
 
         zoom_diff = zoom_x - self.zoom
 
-        x_feat_dims = x.shape[:-2]
+        bvt = x.shape[:3]
 
         if 12**(self.zoom==0) * 4**zoom_diff >= s:
-            x = x.view(*x_feat_dims, 1, s, f)
-            mask = mask.reshape(*x_feat_dims, 1, s,-1) if mask is not None else None
+            x = x.view(*bvt, 1, s, d, f)
+            mask = mask.reshape(*bvt, 1, s, d, -1) if mask is not None else None
             return x, mask
         
        # elif (self.adjc.shape[1]>s and with_nh):
@@ -297,10 +297,10 @@ class GridLayer(nn.Module):
        #     mask = mask.reshape(*x_feat_dims, 1, s, -1).expand(*[-1]*len(x_feat_dims),-1,s,-1) if mask is not None else None
        #     return x, mask
 
-        x = x.reshape(-1, s//4**zoom_diff, f*4**zoom_diff)
+        x = x.reshape(-1, s//4**zoom_diff, d*f*4**zoom_diff)
 
-        mask_dims = mask.shape[:-2] if mask is not None else None
-        mask = mask.reshape(-1, mask.shape[-2]//4**zoom_diff, 4**zoom_diff) if mask is not None else None
+        bvt_mask = mask.shape[:-3] if mask is not None else None
+        mask = mask.reshape(-1, mask.shape[-2]//4**zoom_diff, 4**zoom_diff, d) if mask is not None else None
 
 
         if zoom_patch_sample ==-1 and with_nh:
@@ -323,16 +323,16 @@ class GridLayer(nn.Module):
 
             x = x[:,indices]
 
-        if mask_dims is not None:
-            mask = mask.view(*mask_dims, s//4**zoom_diff, -1)
+        if bvt_mask is not None:
+            mask = mask.view(*bvt_mask, s//4**zoom_diff, -1, d)
 
         elif mask is not None:
-            mask = mask.unsqueeze(dim=1).expand(-1, x_feat_dims[1], x_feat_dims[2], -1, -1, 4**zoom_diff)
+            mask = mask.unsqueeze(dim=1).expand(-1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1)
 
 
-        x = x.view(*x_feat_dims, s//4**zoom_diff, -1, f)
+        x = x.view(*bvt, s//4**zoom_diff, -1, d, f)
 
-        mask = mask.reshape(*x_feat_dims, s//4**zoom_diff,-1,1) if mask is not None else None
+        mask = mask.reshape(*bvt, s//4**zoom_diff,-1, d, 1) if mask is not None else None
     
         return x, mask
 

@@ -5,60 +5,38 @@ lambda_loss_dict:
 weight_decay: 0
 lr_groups:
   default:
-    lr: 5e-4
-    warmup: 0
-  attention:
-    matches: ['TransformerBlock','GridSelfAttention']
-    lr: 5e-4
-    warmup: 500
+    lr: 0.001
+    warmup: 100
 model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
-  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
-  in_zooms: [3,4,6]
+  in_zooms: [3,5,6]
   in_features: 1
   out_features: 1
-  lift_features: 1
-  n_head_channels: 15
-  learn_residual: false
-  use_mask: true
+  n_head_channels: 16
+  use_mask: false
+  layer_confs:
+    n_groups: 2
   layer_confs_emb:
     n_groups: 1
     aggregation: 'shift_scale'
   block_configs:
-    "input":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128]
-      out_zooms: [3,4,6]
-      layer_settings:
-        type: 'linear'
-        embed_confs:
-          embed_names: ['DensityEmbedder']
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-    "0":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [128,128,128]
-      zooms: [3,4,6]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: ["s","mlp","vsnh","mlp"]
-        seq_lengths: [10,3,3]
-        n_head_channels: 32
-        mlp_mult: 2
-    "8":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
-      out_features: 128
-      q_zooms: [3,4,6]
-      kv_zooms: [3,4,6]
-      layer_settings:
-        with_nh: true
-        common_kv: false
-        n_head_channels: 32
-        mlp_mult: 2
-    "output":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [1,1,1]
-      zooms: [3,4,6]
-      layer_settings:
-        type: 'mlp'
+    "0_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      q_zooms: [3,5,6]
+      kv_zooms: [3,5,6]
+      att_dim: 128
+      token_zoom: 0
+      seq_zoom: -1
+      token_len_td: [4,1]
+      ranks_std: [256,2,null]
+      seq_len_td: [-1,-1]
+      token_nh_std: [True, True, False]
+      mlp_token_nh_std: [True, False, False]
+      seq_nh_std: [True, False, False]
+      calc_stats_nh: False
+      update: shift_scale
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        embed_confs: ${embedding}
+        embed_mode: "sum"

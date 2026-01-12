@@ -6,6 +6,8 @@ from scipy.special import sph_harm_y
 
 from ..grids.grid_utils import estimate_healpix_cell_radius_rad, rotate_coord_system
 from ..grids.grid_layer import GridLayer
+
+
 class RandomFourierLayer(nn.Module):
     """
     A neural network layer that applies a Random Fourier Feature transformation.

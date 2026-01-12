@@ -5,20 +5,16 @@ import copy
 defaults = {
     "predict_var":False,
     'n_head_channels': 32,
+    'att_dim': 256,
     'layer_confs': {},
+    'layer_confs_emb': {},
     'input_layer_confs': {},
     'embed_confs': {},
-    'input_embed_confs': {},
-    'output_embed_confs': {},
-    'rotate_coord_system': True,
     'dropout': 0,
-    'layer_type': 'Dense',
-    'interpolate_input': True,
     'learn_residual': False,
-    'masked_residual': False,
-    'masked_residual_learned': True,
     'with_residual': False,
-    'aggregation': 'linear'
+    'masked_residual': False,
+    'use_mask': 'False'
 }
 
 class MGEncoderConfig:

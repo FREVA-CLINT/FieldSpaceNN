@@ -9,9 +9,8 @@ from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
 from ...modules.embedding.embedding_layers import get_mg_embeddings
-from ...modules.multi_grid.mg_base import ConservativeLayer,DecodeLayer,Conv_EncoderDecoder,MGFieldLayer
-from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig,MGChannelAttentionConfig,MGChannelAttention2Config,MGFieldLayerConfig
+from ...modules.multi_grid.mg_base import ConservativeLayer,DecodeLayer,Conv_EncoderDecoder,FieldLayer,FieldLayerConfig,ConservativeLayerConfig
+from ...modules.multi_grid.field_attention import FieldAttentionModule,FieldAttentionConfig
 
 from ...modules.embedding.embedder import get_embedder
 from ...modules.grids.grid_utils import decode_zooms
@@ -59,66 +58,60 @@ class MG_Transformer(MG_base_model):
         for block_key, block_conf in block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
 
-            layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
+            embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
+            layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
+            layer_confs_emb = check_get([block_conf, kwargs, defaults], "layer_confs_emb")
+            dropout = check_get([block_conf, kwargs, defaults], "dropout")
+            out_zooms = check_get([block_conf, {'out_zooms':in_zooms}], "out_zooms")
+            use_mask = check_get([block_conf, kwargs, defaults], "use_mask")
+            n_head_channels = check_get([block_conf,kwargs,defaults], "n_head_channels")
+            att_dim = check_get([block_conf,kwargs,defaults], "att_dim")
 
-            if isinstance(block_conf, MGProcessingConfig):
-                layer_settings = block_conf.layer_settings
-
-                block = MG_SingleBlock(
-                     self.grid_layers,
-                     in_zooms,
-                     layer_settings,
-                     in_features,
-                     block_conf.out_features,
-                     zooms=check_get([block_conf, kwargs, {"zooms": in_zooms}], "zooms"),
-                     layer_confs=layer_confs,
-                     layer_confs_emb=check_get([block_conf, kwargs, {"layer_confs_emb": {}}], "layer_confs_emb"),
-                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
-                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
                         
-            elif isinstance(block_conf, MGConservativeConfig):
+            if isinstance(block_conf, ConservativeLayerConfig):
                 block = ConservativeLayer(in_zooms,
                                           first_feature_only=self.predict_var)
                 block.out_features = in_features
-
-            elif isinstance(block_conf, MGDecodeConfig):
-                block = DecodeLayer(block_conf.out_zoom)
-                
-                block.out_features = in_features
                         
             
-            elif isinstance(block_conf, MGChannelAttentionConfig):
-                layer_settings = block_conf.layer_settings
-                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+            elif isinstance(block_conf, FieldAttentionConfig):
 
-                block = MG_MultiBlock(
+
+                block = FieldAttentionModule(
                      self.grid_layers,
                      in_zooms,
-                     check_get([block_conf,{'out_zooms':in_zooms}], "out_zooms"),
-                     layer_settings,
-                     in_features=1,
-                     out_features=in_features,
-                     dropout=check_get([block_conf,kwargs,defaults], "dropout"),
-                     q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
-                     kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
+                     out_zooms,
+                     token_zoom = block_conf.token_zoom,
+                     seq_zoom = block_conf.seq_zoom,
+                     q_zooms  = block_conf.q_zooms,
+                     kv_zooms = block_conf.kv_zooms,
+                     use_mask = use_mask,
+                     refine_zooms= block_conf.refine_zooms,
+                     shift= block_conf.shift,
+                     rev_shift= block_conf.rev_shift,
+                     multi_shift= block_conf.multi_shift,
+                     att_dim = att_dim,
+                     token_len_td = block_conf.token_len_td,
+                     token_nh_std = block_conf.token_nh_std,
+                     seq_len_td =  block_conf.seq_len_td,
+                     seq_nh_std= block_conf.seq_nh_std,
+                     mlp_token_nh_std = block_conf.mlp_token_nh_std,
+                     with_var_att= block_conf.with_var_att,
+                     calc_stats_nh=block_conf.calc_stats_nh,
+                     update = block_conf.update,
+                     dropout = dropout,
+                     n_head_channels = n_head_channels,
+                     embed_confs = embed_confs,
+                     ranks_std = block_conf.ranks_std,
                      layer_confs=layer_confs,
-                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
-                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
-                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"),
-                     refine_zooms=check_get([block_conf,kwargs,{"refine_zooms": {}}], "refine_zooms"),
-                     rev_shift=check_get([block_conf,kwargs,{"rev_shift": True}], "rev_shift"),
-                     shift=check_get([block_conf,kwargs,{"shift": None}], "shift"),
-                     multi_shift=check_get([block_conf,kwargs,{"multi_shift": False}], "multi_shift"))
+                     layer_confs_emb = layer_confs_emb)
                 
-
                 block.out_features = in_features
 
 
-            elif isinstance(block_conf, MGFieldLayerConfig):
+            elif isinstance(block_conf, FieldLayerConfig):
         
-                layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
-
-                block = MGFieldLayer(
+                block = FieldLayer(
                         self.grid_layers[str(block_conf.field_zoom)],
                         in_zooms,
                         block_conf.in_zooms,
@@ -132,20 +125,6 @@ class MG_Transformer(MG_base_model):
                         type= block_conf.type,
                         layer_confs=layer_confs)
 
-            elif isinstance(block_conf, Conv_EncoderDecoderConfig):
-                layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
-
-                block = Conv_EncoderDecoder(
-                    self.grid_layers,
-                    in_zooms,
-                    zoom_map = block_conf.zoom_map,
-                    in_features_list = in_features,
-                    out_zooms = check_get([block_conf, kwargs, {"out_zooms": None}], "out_zooms"),
-                    aggregation=check_get([block_conf, kwargs, {"aggregation": "sum"}], "aggregation"),
-                    use_skip_conv=check_get([block_conf, kwargs, {"use_skip_conv": False}], "use_skip_conv"),
-                    with_gamma=check_get([block_conf, kwargs, {"with_gamma": False}], "with_gamma"),
-                    layer_confs=layer_confs
-                )
             self.Blocks[block_key] = block     
 
             in_features = block.out_features
@@ -176,10 +155,7 @@ class MG_Transformer(MG_base_model):
         :return: Output tensor of shape (batch_size, num_cells, output_dim).
         """
 
-        b, nv, nt, n, nc = x_zooms[list(x_zooms.keys())[0]].shape
-
-        assert nc == self.in_features, f" the input has {nc} features, which doesnt match the numnber of specified input_features {self.in_features}"
-        assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
+        b, nv, nt, n, nd, f = x_zooms[list(x_zooms.keys())[0]].shape
 
         emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
         emb['MGEmbedder'] = emb['GroupEmbedder']

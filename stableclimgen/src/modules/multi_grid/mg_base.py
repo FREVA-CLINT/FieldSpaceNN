@@ -18,64 +18,29 @@ from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_pat
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
-class MZTokenizer(nn.Module):
-  
+
+class FieldLayerConfig:
     def __init__(self, 
-                 grid_layer_field,
                  in_zooms: List,
-                 in_features = 1,
-                 with_nh = False,
-                 norm_per_scale = True,
-                 layer_confs ={}
-                 ) -> None: 
-        
-        super().__init__()
+                 target_zooms: List,
+                 field_zoom: int,
+                 out_zooms: List=None,
+                 with_nh: bool = False,
+                 with_residual: bool = False,
+                 mult: int = 2,
+                 type: str ='linear',
+                 **kwargs):
 
-    
-        self.layer_norms = nn.ModuleDict()
-        total_dim = 0
-        for in_zoom in in_zooms:
-            in_f = 4**(in_zoom - grid_layer_field.zoom) if not with_nh else grid_layer_field.adjc.shape[-1] * 4**(in_zoom - grid_layer_field.zoom)
-            
-            self.layer_norms[str(in_zoom)] = LayerNorm([in_f, in_features], n_groups=layer_confs.get('n_groups',1)) if norm_per_scale else IdentityLayer()
-            total_dim += in_f
-
-        self.layer_norm_cross_scale =  LayerNorm([total_dim, in_features], n_groups=layer_confs.get('n_groups',1)) if not norm_per_scale else IdentityLayer()
-        self.in_zooms = in_zooms
-        self.out_zoom = grid_layer_field.zoom
-        self.with_nh = with_nh
-        self.grid_layer_field = grid_layer_field
-    
-    def forward(self, x_zooms, emb=None, sample_configs={}, return_non_norm=True):
-        x_out_norm = []
-        x_out = [] 
-        for zoom in self.in_zooms:
-            x = x_zooms[zoom]
-            if zoom < self.out_zoom:
-                x = refine_zoom(x, zoom, self.out_zoom).unsqueeze(dim=-2)
-
-            if self.with_nh:
-                if return_non_norm:
-                    x_out.append(x.view(*x.shape[:3],-1, 4**(zoom- self.out_zoom), x.shape[-1]))
-
-                x = self.grid_layer_field.get_nh(x, **sample_configs[self.out_zoom], mask=None)[0]
-                x = x.view(*x.shape[:4],-1, x.shape[-1])
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
             else:
-                x = x.view(*x.shape[:3],-1, 4**(zoom- self.out_zoom), x.shape[-1])
-                if return_non_norm:
-                    x_out.append(x)
+                setattr(self, input, value)
 
-            x_out_norm.append(self.layer_norms[str(zoom)](x, emb=emb))
-        
-        
-        x_out_norm = self.layer_norm_cross_scale(torch.concat(x_out_norm, dim=-2), emb=emb, sample_configs=sample_configs)
-
-        if return_non_norm:
-            x_out = torch.concat(x_out, dim=-2)
-            return x_out_norm, x_out
-        else:
-            return x_out_norm
-        
+class ConservativeLayerConfig:
+    pass
 
 def combine_zooms(x_zooms, out_zoom, zooms=None):
     zooms = list(x_zooms.keys()) if zooms is None else zooms
@@ -83,24 +48,26 @@ def combine_zooms(x_zooms, out_zoom, zooms=None):
     for zoom in zooms:
         x = x_zooms[zoom]
         if zoom < out_zoom:
-            x = refine_zoom(x, zoom, out_zoom).unsqueeze(dim=-2)
+            x = refine_zoom(x, zoom, out_zoom).unsqueeze(dim=-3)
+        elif out_zoom==0:
+            x = x.view(*x.shape[:3],-1, 12*4**(zoom - out_zoom),*x.shape[-2:])
         else:
-            x = x.view(*x.shape[:3],-1, 4**(zoom - out_zoom),x.shape[-1])
+            x = x.view(*x.shape[:3],-1, 4**(zoom - out_zoom),*x.shape[-2:])
         x_out.append(x)
-    return torch.concat(x_out, dim=-2)
+    return torch.concat(x_out, dim=-3)
 
 
 def refine_zoom(x, in_zoom, out_zoom):
-    x = x.view(*x.shape[:3],-1, 1, x.shape[-1])
-    x = x.expand(-1,-1,-1, -1,4**(out_zoom - in_zoom),-1).reshape(*x.shape[:3],-1, x.shape[-1])
+    x = x.view(*x.shape[:3],-1, 1, *x.shape[-2:])
+    x = x.expand(-1,-1,-1, -1,4**(out_zoom - in_zoom),-1,-1).reshape(*x.shape[:3],-1, *x.shape[-2:])
     return x
 
 
 def coarsen_zoom(x, in_zoom, out_zoom):
-    x = x.view(*x.shape[:3],-1, 4**(in_zoom - out_zoom), x.shape[-1]).mean(dim=-2)
+    x = x.view(*x.shape[:3],-1, 4**(in_zoom - out_zoom), *x.shape[-2:]).mean(dim=-3)
     return x
 
-class MGFieldLayer(nn.Module):
+class FieldLayer(nn.Module):
   
     def __init__(self, 
                  grid_layer,

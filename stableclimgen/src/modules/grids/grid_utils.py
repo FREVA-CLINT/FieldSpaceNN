@@ -524,16 +524,17 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
         return x, mask
 
     scale_factor = 4 ** abs(in_zoom - out_zoom)
-    bvt = x.shape[:-2]
-    c = x.shape[-1]
+    
+    vt = x.shape[:2]
+    dc = x.shape[-2:]
 
     if in_zoom > out_zoom:
         # Downsample by averaging
-        x = x.view(*bvt, -1, scale_factor, c)
+        x = x.view(*vt, -1, scale_factor, *dc)
         if mask is not None:
-            mask = mask.reshape(*bvt, -1, scale_factor, mask.shape[-1])
-            weight = mask.sum(dim=-2, keepdim=True)
-            x_zoom = (x * mask).sum(dim=-2, keepdim=True) / weight.clamp(min=1e-6)
+            mask = mask.reshape(*vt, -1, scale_factor, *mask.shape[-2:])
+            weight = mask.sum(dim=-3, keepdim=True)
+            x_zoom = (x * mask).sum(dim=-3, keepdim=True) / weight.clamp(min=1e-6)
             x_zoom[weight == 0] = 0
 
             mask_zoom = (weight / (1.*scale_factor))
@@ -541,18 +542,18 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
                 mask_zoom[mask_zoom > 0] = 1
                 mask_zoom = mask_zoom.bool()
 
-            x_zoom = x_zoom.view(*bvt, -1, c)
-            mask_zoom = mask_zoom.view(*bvt, -1, mask_zoom.shape[-1])
+            x_zoom = x_zoom.view(*vt, -1, *dc)
+            mask_zoom = mask_zoom.view(*vt, -1, *mask_zoom.shape[-2:])
             return x_zoom, mask_zoom
         else:
-            x_zoom = x.mean(dim=-2)
+            x_zoom = x.mean(dim=-3)
             return x_zoom, None
 
     else:
         # Upsample by repeating
-        x_zoom = x.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
+        x_zoom = x.unsqueeze(-3).repeat_interleave(scale_factor, dim=-3)
         if mask is not None:
-            mask_zoom = mask.unsqueeze(-2).repeat_interleave(scale_factor, dim=-2)
+            mask_zoom = mask.unsqueeze(-3).repeat_interleave(scale_factor, dim=-3)
             mask_zoom = mask_zoom * 1. if not binarize_mask else mask.bool()
             return x_zoom, mask_zoom
         else:
@@ -718,11 +719,11 @@ def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patc
         x = x_zooms[zoom]
         x_h = x_zooms[zoom_h]
 
-        bvt = x.shape[:-2]
+        bvt = x.shape[:-3]
         x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs, patch_index_zooms)
 
-        x = x.view(*bvt, -1, 4**(zoom-zoom_h), x.shape[-1]) - x_h_patch.unsqueeze(dim=-2)
-        x_zooms[zoom] = x.view(*bvt, -1, x.shape[-1])
+        x = x.view(*bvt, -1, 4**(zoom-zoom_h), *x.shape[-2:]) - x_h_patch.unsqueeze(dim=-3)
+        x_zooms[zoom] = x.view(*bvt, -1, *x.shape[-2:])
 
     return x_zooms
     
@@ -790,9 +791,9 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
             x_zoom = x_zooms[zoom]
         x_zoom = get_matching_time_patch(x_zoom,zoom,out_zoom, sample_configs)  # shape [..., N, C]
         up_factor = 4 ** (out_zoom - zoom)
-        x_zoom = x_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
+        x_zoom = x_zoom.unsqueeze(-3).repeat_interleave(up_factor, dim=-3)
 
-        x = x + x_zoom.view(*x_zoom.shape[:-3],-1,x_zoom.shape[-1])
+        x = x + x_zoom.view(*x_zoom.shape[:3],-1,*x_zoom.shape[-2:])
     
     if remove_batch_dim:
         return {out_zoom: x.squeeze(dim=0)}
