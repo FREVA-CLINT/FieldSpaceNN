@@ -26,23 +26,23 @@ class BatchReshapeAllocator:
             n_patch = None
             for zoom in data_target_zooms.keys():
                 if self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"] > self.dataset.sampling_zooms[zoom]["zoom_patch_sample"]:
-                    b, nv, nt, n, nh = data_source_zooms[zoom].shape
+                    b, nv, nt, n, d, f = data_source_zooms[zoom].shape
                     n_pix = 4 ** (int(zoom) - self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"])
                     n_patch = n // n_pix
                     data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
-                                                        "b nv nt (n_patch n_pix) nh -> (b n_patch) nv nt n_pix nh",
+                                                        "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
                                                         n_patch=n_patch, n_pix=n_pix)
                     data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
-                                                        "b nv nt (n_patch n_pix) nh -> (b n_patch) nv nt n_pix nh",
+                                                        "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
                                                         n_patch=n_patch, n_pix=n_pix)
 
                     new_patch_indices = torch.cat([torch.arange(n_patch) + (n_patch * patch_index) for patch_index in patch_index_zooms[zoom]])
                     patch_index_zooms[zoom] = new_patch_indices
                     mask_zooms[zoom] = rearrange(mask_zooms[zoom],
-                                                 "b nv nt (n_patch n_pix) nh -> (b n_patch) nv nt n_pix nh",
+                                                 "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
                                                  n_patch=n_patch, n_pix=n_pix)
                     embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
-                                                                       "b nv nt (n_patch n_pix) nh -> (b n_patch) nv nt n_pix nh",
+                                                                       "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
                                                                        n_patch=n_patch, n_pix=n_pix)
                     embed_data["TimeEmbedder"][zoom] = embed_data["TimeEmbedder"][zoom].repeat_interleave(repeats=n_patch, dim=0)
             if n_patch is not None:
@@ -53,14 +53,14 @@ class BatchReshapeAllocator:
             for zoom in data_target_zooms.keys():
                 if (self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] < self.dataset.sampling_zooms[zoom]["n_past_ts"]
                  or self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] < self.dataset.sampling_zooms[zoom]["n_future_ts"]):
-                    b, nv, nt, n, nh = data_source_zooms[zoom].shape
+                    b, nv, nt, n, d, f = data_source_zooms[zoom].shape
                     n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
                     n_patch = nt // n_steps
                     data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
-                                                        "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
+                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
                                                         n_patch=n_patch, n_steps=n_steps)
                     data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
-                                                        "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
+                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
                                                         n_patch=n_patch, n_steps=n_steps)
                     
                     patch_index_zooms[zoom] = patch_index_zooms[zoom].repeat_interleave(repeats=n_patch, dim=0)
@@ -73,13 +73,13 @@ class BatchReshapeAllocator:
                 # b, nv, nt, n, nh = data_source_zooms[zoom].shape
                     n_patch = nt // n_steps
                     embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
-                                                                        "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
+                                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
                                                                         n_patch=n_patch, n_steps=n_steps)
                     embed_data["TimeEmbedder"][zoom] = rearrange(embed_data["TimeEmbedder"][zoom],
                                                                     "b (n_patch n_steps) -> (b n_patch) n_steps",
                                                                     n_patch=n_patch, n_steps=n_steps)
                     mask_zooms[zoom] = rearrange(mask_zooms[zoom],
-                                                    "b nv (n_patch n_steps) n nh -> (b n_patch) nv n_steps n nh",
+                                                    "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
                                                     n_patch=n_patch, n_steps=n_steps)
                 
             if n_patch is not None:
