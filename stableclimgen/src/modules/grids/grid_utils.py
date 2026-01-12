@@ -578,7 +578,7 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
         return x_s
 
     batched = True
-    if x_h.dim() < 5:
+    if x_h.dim() < 6:
         x_h = x_h.unsqueeze(0)
         x_s = x_s.unsqueeze(0)
         batched = False

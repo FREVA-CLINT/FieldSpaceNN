@@ -239,10 +239,10 @@ class ConservativeLayer(nn.Module):
             zoom_level_cons = zoom - self.cons_dict[zoom]
 
             if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, x.shape[-1]) 
+                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, *x.shape[-2:]) 
 
-                mean = x.mean(dim=-2)
-                x = (x-mean.unsqueeze(dim=-2)).view(*x.shape[:3], -1, x.shape[-1])
+                mean = x.mean(dim=-3)
+                x = (x-mean.unsqueeze(dim=-2)).view(*x.shape[:3], -1, *x.shape[-2:])
 
                 x_patch = get_matching_time_patch(x_zooms[self.cons_dict[zoom]], self.cons_dict[zoom], zoom, sample_configs) + mean
 
