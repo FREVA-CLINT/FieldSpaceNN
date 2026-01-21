@@ -49,6 +49,7 @@ class FieldAttentionConfig:
                  refine_zooms = {},
                  ranks_std = [None, None, None],
                  calc_stats_nh = False,
+                 separate_mlp_norm=False,
                  **kwargs):
 
         inputs = copy.deepcopy(locals())
@@ -168,6 +169,7 @@ class FieldAttentionModule(nn.Module):
                 dropout:float = 0,
                 update='shift',
                 calc_stats_nh = False,
+                separate_mlp_norm=False,
                 embed_confs={},
                 layer_confs={},
                 layer_confs_emb={}
@@ -231,7 +233,8 @@ class FieldAttentionModule(nn.Module):
                     layer_confs=layer_confs,
                     layer_confs_emb=layer_confs_emb,
                     update=update,
-                    calc_stats_nh=calc_stats_nh
+                    calc_stats_nh=calc_stats_nh,
+                    separate_mlp_norm=separate_mlp_norm
                     )
 
         self.grid_layers = grid_layers
@@ -415,6 +418,7 @@ class FieldAttentionBlock(nn.Module):
                  layer_confs_emb= {},
                  update='shift',
                  layer_norm=True,
+                 separate_mlp_norm=False,
                  calc_stats_nh=False) -> None: 
                
         super().__init__()
@@ -452,9 +456,6 @@ class FieldAttentionBlock(nn.Module):
         self.scale_shift = update == 'shift_scale'
         
         global_att = isinstance(grid_layer_att, int) and grid_layer_att == -1
-
-        layer_confs_kv = copy.deepcopy(layer_confs_)
-        layer_confs_kv['bias'] = True
 
         self.n_head_channels = n_head_channels
         self.grid_layer_field = grid_layer_field
@@ -540,13 +541,15 @@ class FieldAttentionBlock(nn.Module):
                                             layer_norm=layer_norm, 
                                             layer_confs_emb=layer_confs_emb_)
         
-       # self.emb_layer_mlp = LinEmbLayer(self.token_size_in, 
-       #                                  self.token_size_in, 
-       #                                  layer_confs=layer_confs_, 
-       #                                  identity_if_equal=True, 
-       #                                  embedder=embedder if with_mlp_embedder else None, 
-       #                                  layer_norm=layer_norm, 
-       #                                  layer_confs_emb=layer_confs_emb_)
+        self.separate_mlp_norm = separate_mlp_norm
+        if separate_mlp_norm:
+            self.emb_layer_mlp = LinEmbLayer(self.token_size_in, 
+                                            self.token_size_in, 
+                                            layer_confs=layer_confs_, 
+                                            identity_if_equal=True, 
+                                            embedder=embedder if with_mlp_embedder else None, 
+                                            layer_norm=layer_norm, 
+                                            layer_confs_emb=layer_confs_emb_)
 
         out_dim_q = [1, 1 , 1, att_dim] 
         out_dim_kv = [1, 1, 1, 2 * att_dim]
@@ -682,11 +685,13 @@ class FieldAttentionBlock(nn.Module):
 
         x = self.tokenizer(x_zooms, sample_configs)
         x = rearrange(x, self.pattern_tokens, t=self.token_size_in[0], n=self.token_size_in[1], d=self.token_size_in[2])
-        #q = self.tokenize(x_zooms, self.q_zooms)
 
-        x = self.norm_and_emb(x, emb_layer=self.emb_layer_q, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
+        q = self.norm_and_emb(x, emb_layer=self.emb_layer_q, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
 
-        q = self.get_time_depth_overlaps(x, overlap_td=self.token_overlap_std[1:])
+        if not self.separate_mlp_norm:
+            x = q
+
+        q = self.get_time_depth_overlaps(q, overlap_td=self.token_overlap_std[1:])
         
         if not self.self_att:
             kv = self.kv_tokenizer(x_zooms, sample_configs)
@@ -737,13 +742,10 @@ class FieldAttentionBlock(nn.Module):
         else:
             x = self.gamma_res * x + self.gamma * self.dropout_att(att_out)
 
-
-       # x = self.norm_and_emb(x, emb_layer=self.emb_layer_mlp, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])      
-       # x = self.get_nh(x, sample_configs=sample_configs[zoom_field], apply_nh=self.mlp_token_nh_std)
+        if self.separate_mlp_norm:
+            x = self.norm_and_emb(x, emb_layer=self.emb_layer_mlp, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])      
 
         x = self.dropout_mlp(self.mlp(x, emb=emb_tokenized, sample_configs=sample_configs[int(zoom_field)]))
-
-      #  x = rearrange(x, self.pattern_tokens_reverse)
 
         x = x.split(tuple(self.n_out_features_zooms_q.values()), dim=-3)
 
