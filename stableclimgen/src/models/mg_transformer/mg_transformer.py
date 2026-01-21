@@ -103,6 +103,7 @@ class MG_Transformer(MG_base_model):
                      n_head_channels = n_head_channels,
                      embed_confs = embed_confs,
                      ranks_std = block_conf.ranks_std,
+                     separate_mlp_norm = block_conf.separate_mlp_norm,
                      layer_confs=layer_confs,
                      layer_confs_emb = layer_confs_emb)
                 
