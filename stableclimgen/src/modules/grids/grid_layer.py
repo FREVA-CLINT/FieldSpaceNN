@@ -233,7 +233,7 @@ class GridLayer(nn.Module):
         self.median_dist = dists[dists > 1e-10].median()
 
 
-    def get_nh_patch(self, x: torch.Tensor, patch_index: torch.Tensor=None, zoom_patch_sample: torch.Tensor=None, mask: torch.Tensor = None) -> tuple:
+    def get_sample_patch_with_nh(self, x: torch.Tensor, patch_index: torch.Tensor=None, zoom_patch_sample: torch.Tensor=None, mask: torch.Tensor = None, zoom_patch_out=None) -> tuple:
 
         # Get neighborhood indices and adjacency mask
         adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
@@ -254,9 +254,45 @@ class GridLayer(nn.Module):
                 mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("inf"))
         else:
             # Use adjacency mask if no mask is provided
-            mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)#.repeat_interleave(x.shape[-1], dim=-1)
+            mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)
         
         return x, mask
+    
+    def get_global_with_nh(self, x: torch.Tensor, mask: torch.Tensor = None, zoom_patch_out=None) -> tuple:
+        
+        zoom_patch_out = self.zoom if zoom_patch_out is None else zoom_patch_out
+        #indices = self.adjc[:,[4,8]]
+        if (zoom_patch_out - self.zoom) == 0:
+            indices = self.adjc
+        else:
+            # this removes rundundancy, but still has some
+            indices = self.adjc[:,[2,4,6,8]]
+      
+        patch_indices = torch.arange(0, indices.shape[0] + 4**(self.zoom - zoom_patch_out), 4**(self.zoom - zoom_patch_out), device=x.device, dtype=indices.dtype).view(-1,1,1)
+
+        indices = indices.view(-1, 4**(self.zoom - zoom_patch_out),  indices.shape[-1])
+
+        out_of_patch = (indices < patch_indices[:-1]) | (indices >= patch_indices[1:])
+
+        assert len(out_of_patch.sum(dim=[-1,-2]).unique())==1, "neighbourhood not consistent"
+
+        nh_indices = indices[out_of_patch].view(indices.shape[0], int(out_of_patch.sum(dim=[-1,-2])[0]))
+
+        patch_indices = torch.concat((indices[:,:,0].view(indices.shape[0],-1), nh_indices), dim=-1)
+
+        x = x[:,patch_indices]
+
+        if mask is not None:
+            mask = mask[:,patch_indices]
+                
+        return x, mask
+    
+    def get_number_of_points_in_patch(self, zoom_patch_out):
+        x_ = torch.zeros_like(self.adjc[:,0].unsqueeze(dim=0))
+        n = self.get_global_with_nh(x_, zoom_patch_out=zoom_patch_out)[0].shape[-1]
+
+        return n
+
 
     def apply_shift(self, x, shift_direction, patch_index=0, zoom_patch_sample=-1, reverse=False, mask=None, **kwargs):
         x, mask = self.get_nh(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask, **kwargs)
@@ -276,52 +312,27 @@ class GridLayer(nn.Module):
 
         return x, mask
     
-   # def apply_reverse_shift(self, x, indices):
-
-
-    def get_nh(self, x, patch_index=0, zoom_patch_sample=-1, with_nh: bool=True, mask=None, **kwargs):
-        s, d, f = x.shape[-3:]
-        zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
-
-        zoom_diff = zoom_x - self.zoom
+        
+    def get_nh(self, x, input_zoom=None, patch_index=0, zoom_patch_sample=-1, mask=None, zoom_patch_out=None, **kwargs):
 
         bvt = x.shape[:3]
+        s, d, f = x.shape[-3:]
 
-        if 12**(self.zoom==0) * 4**zoom_diff >= s:
-            x = x.view(*bvt, 1, s, d, f)
-            mask = mask.reshape(*bvt, 1, s, d, -1) if mask is not None else None
-            return x, mask
-        
-       # elif (self.adjc.shape[1]>s and with_nh):
-       #     x = x.view(*x_feat_dims, s, 1, f).expand(*[-1]*len(x_feat_dims),-1,s,-1)
-       #     mask = mask.reshape(*x_feat_dims, 1, s, -1).expand(*[-1]*len(x_feat_dims),-1,s,-1) if mask is not None else None
-       #     return x, mask
+        if input_zoom is None:
+            input_zoom = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
+
+        zoom_diff = input_zoom - self.zoom
 
         x = x.reshape(-1, s//4**zoom_diff, d*f*4**zoom_diff)
 
         bvt_mask = mask.shape[:-3] if mask is not None else None
         mask = mask.reshape(-1, mask.shape[-2]//4**zoom_diff, 4**zoom_diff, d) if mask is not None else None
 
+        if zoom_patch_sample != -1:
+            x, mask = self.get_sample_patch_with_nh(x, patch_index, zoom_patch_sample, mask, zoom_patch_out=zoom_patch_out)
 
-        if zoom_patch_sample ==-1 and with_nh:
-            
-            adjc = self.adjc if with_nh else self.adjc[:,0]
-            
-            x = x[:,adjc]
-            if mask is not None:
-                mask = mask[:,adjc]
-
-
-        elif with_nh:
-            x, mask = self.get_nh_patch(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask)
-
-        elif zoom_patch_sample !=-1:
-            indices = get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=True)
-
-            if mask is not None:
-                mask = mask[:,indices]
-
-            x = x[:,indices]
+        else:
+            x, mask = self.get_global_with_nh(x, mask=mask, zoom_patch_out=zoom_patch_out)
 
         if bvt_mask is not None:
             mask = mask.view(*bvt_mask, s//4**zoom_diff, -1, d)
@@ -329,10 +340,9 @@ class GridLayer(nn.Module):
         elif mask is not None:
             mask = mask.unsqueeze(dim=1).expand(-1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1)
 
+        x = x.view(*bvt, s//4**(input_zoom - zoom_patch_out), -1, d, f)
 
-        x = x.view(*bvt, s//4**zoom_diff, -1, d, f)
-
-        mask = mask.reshape(*bvt, s//4**zoom_diff,-1, d, 1) if mask is not None else None
+        mask = mask.reshape(*bvt, s//4**(input_zoom - zoom_patch_out),-1, d, 1) if mask is not None else None
     
         return x, mask
 

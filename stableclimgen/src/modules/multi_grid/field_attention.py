@@ -33,11 +33,11 @@ class FieldAttentionConfig:
                  q_zooms = -1,
                  kv_zooms = -1,
                  token_len_td: List = [1, 1],
-                 token_nh_std: List = [False, False, False],
+                 token_overlap_std: List = [0, 0, 0],
                  seq_zoom: int = -1,
                  seq_len_td: List = [-1,-1],
                  seq_nh_std: List = [False, False, False],
-                 mlp_token_nh_std: List = [False, False, False],
+                 mlp_token_overlap_td: List = [False, False, False],
                  with_var_att= False,
                  with_time_att= False,
                  with_depth_att = False,
@@ -151,11 +151,11 @@ class FieldAttentionModule(nn.Module):
                 kv_zooms:List|int,
                 token_zoom: int,
                 token_len_td: List = [1, 1],
-                token_nh_std: List = [False, False, False],
+                token_overlap_std: List = [0, 0, 0],
                 seq_zoom: int = -1,
                 seq_len_td: List = [-1,-1],
                 seq_nh_std: List = [False, False, False],
-                mlp_token_nh_std: List = [False, False, False],
+                mlp_token_overlap_td: List = [False, False, False],
                 with_var_att= False,
                 use_mask = False,
                 att_dim = None,
@@ -212,17 +212,18 @@ class FieldAttentionModule(nn.Module):
 
 
         block = FieldAttentionBlock(
-                    grid_layers[str(token_zoom)],
-                    grid_layers[str(seq_zoom)] if seq_zoom > -1 else -1,
+                    grid_layers,
+                    token_zoom,
+                    seq_zoom if seq_zoom > -1 else -1,
                     q_zooms,
                     kv_zooms,
                     att_dim = att_dim,
                     n_head_channels = n_head_channels,
-                    token_nh_std = token_nh_std,
+                    token_overlap_std = token_overlap_std,
                     token_len_td = token_len_td,
                     seq_len_td = seq_len_td,
                     seq_nh_std = seq_nh_std,
-                    mlp_token_nh_std = mlp_token_nh_std,
+                    mlp_token_overlap_td = mlp_token_overlap_td,
                     with_var_att = with_var_att,
                     ranks_std = ranks_std,
                     dropout=dropout,
@@ -326,12 +327,76 @@ class FieldAttentionModule(nn.Module):
         return x_zooms_out
 
 
+class Tokenizer(nn.Module):
+  
+    def __init__(self,
+                 grid_layers: Dict,
+                 input_zooms,
+                 token_zoom,
+                 overlap_thickness=0) -> None: 
+               
+        super().__init__()
+
+        self.overlap_thickness = overlap_thickness
+        self.token_zoom = token_zoom
+        self.input_zooms = input_zooms
+
+        self.grid_layers_overlap = nn.ModuleDict()
+        self.features_zoom_w_overlap = []
+        self.features_zoom = []
+        for input_zoom in input_zooms:
+            n_patch = 4**(input_zoom - self.token_zoom)
+            if overlap_thickness > 0:
+                grid_layer = grid_layers[str(input_zoom + (overlap_thickness - 1))]
+                self.grid_layers_overlap[str(input_zoom)] = grid_layer
+
+                n_tot = grid_layer.get_number_of_points_in_patch(token_zoom)
+            else:
+                n_tot = n_patch
+
+            self.features_zoom_w_overlap.append(n_tot)
+            self.features_zoom.append(n_patch)
+
+        if overlap_thickness> 0:
+            self.token_fcn = self.get_token_w_overlap
+        else:
+            self.token_fcn = self.get_token
+
+    def get_features(self):
+        return dict(zip(self.input_zooms, self.features_zoom_w_overlap)), dict(zip(self.input_zooms, self.features_zoom))
+    
+    def get_patch_features_zoom(self, input_zoom, overlap_thickness):
+        n_overlap = 4*overlap_thickness * 2**(input_zoom - self.token_zoom) + 4*overlap_thickness**2
+        n_patch = 4**(input_zoom - self.token_zoom)
+
+        return n_patch + n_overlap
+
+    def get_token(self, x_zooms: Dict, **kwargs): 
+        return combine_zooms(x_zooms, out_zoom=self.token_zoom, zooms=self.input_zooms)
+
+    def get_token_w_overlap(self, x_zooms: Dict, sample_configs={}, mask=None): 
+    
+        x_out = []
+        for zoom in self.input_zooms:
+            x = x_zooms[zoom]
+            x, mask = self.grid_layers_overlap[str(zoom)].get_nh(x, zoom, **sample_configs[zoom], mask=mask, zoom_patch_out=self.token_zoom)
+            x_out.append(x)
+
+        return torch.concat(x_out, dim=-3)
+    
+    def forward(self, x_zooms, sample_configs, mask=None):
+
+        return self.token_fcn(x_zooms, sample_configs=sample_configs, mask=mask)
+
+     
+
 
 class FieldAttentionBlock(nn.Module):
   
     def __init__(self,
-                 grid_layer_field: GridLayer,
-                 grid_layer_att: GridLayer|int,
+                 grid_layers,
+                 token_zoom: int,
+                 seq_zoom: int,
                  q_zooms: int,
                  kv_zooms: int,
                  att_dim= None,
@@ -339,10 +404,10 @@ class FieldAttentionBlock(nn.Module):
                  n_head_channels: int=32,
                  embedder: Dict[str, EmbedderSequential] = {},
                  token_len_td: List = [1, 1],
-                 token_nh_std: List = [False, False, False],
+                 token_overlap_std: List = [0, 0, 0],
                  seq_len_td: List = [1, 1],
                  seq_nh_std: List = [False, False, False],
-                 mlp_token_nh_std: List = [False, False, False],
+                 mlp_token_overlap_td: List = [0, 0],
                  ranks_std: List = [None, None, None],
                  with_var_att= False,
                  with_mlp_embedder = True,
@@ -354,18 +419,25 @@ class FieldAttentionBlock(nn.Module):
                
         super().__init__()
 
-        global_update = grid_layer_field.zoom == 0
+        #add additional zoom level to indicate n_fields
+        grid_layer_field = grid_layers[str(token_zoom)]
+        grid_layer_att = grid_layers[str(seq_zoom)] if seq_zoom >-1 else -1
+
+        global_update = token_zoom == 0
+
         if global_update:
-            token_nh_std[0] = False
-            mlp_token_nh_std[0] = False
+            token_overlap_std[0] = 0
 
         self.calc_stats_nh = calc_stats_nh
         self.with_nh_space = seq_nh_std[0]
         self.with_nh_time = seq_nh_std[1]
         self.with_nh_depth = seq_nh_std[2]
         self.seq_nh_std = seq_nh_std
-        self.token_nh_std = token_nh_std
-        self.mlp_token_nh_std = mlp_token_nh_std
+        self.seq_overlap_td = [int(seq_nh_std[1]), int(seq_nh_std[2])]
+        self.att_nh = seq_nh_std[0]
+
+        self.token_overlap_std = token_overlap_std
+        self.mlp_token_overlap_td = mlp_token_overlap_td
 
         layer_confs_ = layer_confs.copy()
         layer_confs_['ranks'] = [ranks_std[1],ranks_std[0],ranks_std[2],None,None]
@@ -375,10 +447,9 @@ class FieldAttentionBlock(nn.Module):
 
         self.with_nh_att = self.with_nh_space or self.with_nh_time or self.with_nh_depth
 
-
         self.seq_len_td = seq_len_td
 
-        d_nh = grid_layer_field.adjc.shape[1] if not global_update else 1
+        self.scale_shift = update == 'shift_scale'
         
         global_att = isinstance(grid_layer_att, int) and grid_layer_att == -1
 
@@ -396,6 +467,9 @@ class FieldAttentionBlock(nn.Module):
         self.kv_layers = nn.ModuleDict()
         self.mlps = nn.ModuleDict()
         self.out_layers = nn.ModuleDict()
+
+        self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
+        self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
 
         self.q_zooms = q_zooms
         self.kv_zooms = kv_zooms
@@ -416,28 +490,41 @@ class FieldAttentionBlock(nn.Module):
         self.kv_projection_layers = nn.ModuleDict()
         self.gammas = nn.ParameterDict()
 
-        self.n_features_zooms_q = self.get_ms_features(q_zooms)
-        self.n_features_zooms_kv = self.get_ms_features(kv_zooms)
+        self.tokenizer = Tokenizer(grid_layers, 
+                                     q_zooms, 
+                                     token_zoom, 
+                                     overlap_thickness=token_overlap_std[0])
+        if not self.self_att:
+            self.kv_tokenizer = Tokenizer(grid_layers, 
+                                     kv_zooms, 
+                                     token_zoom, 
+                                     overlap_thickness=token_overlap_std[0])
+        else:
+            self.kv_tokenizer = self.tokenizer
 
-        self.token_size = token_size_q = [token_len_td[0], sum(self.n_features_zooms_q.values()), token_len_td[-1],1]
-        token_size_kv = [token_len_td[0], sum(self.n_features_zooms_q.values()), token_len_td[-1],1]
+        self.n_in_features_zooms_q, self.n_out_features_zooms_q = self.tokenizer.get_features()
+        self.n_in_features_zooms_kv, self.n_out_features_zooms_kv =  self.kv_tokenizer.get_features()
         
-        in_features_q = token_size_q[1] * (d_nh if token_nh_std[0] else 1)
-        in_features_kv = token_size_kv[1] * (d_nh if token_nh_std[0] else 1)
-        in_features_mlp = token_size_q[1] * (d_nh if mlp_token_nh_std[0] else 1)
+        self.token_size_in = [token_len_td[0], sum(self.n_in_features_zooms_q.values()), token_len_td[-1], 1]
+        self.token_size = token_size_q = [token_len_td[0], sum(self.n_out_features_zooms_q.values()), token_len_td[-1], 1]
 
-        in_features_t = token_len_td[0] + (2 if token_nh_std[1] else 0)
-        in_features_d = token_len_td[1] + (2 if token_nh_std[2] else 0)
-        in_features_mlp_t = token_len_td[0] + (2 if mlp_token_nh_std[1] else 0)
-        in_features_mlp_d = token_len_td[1] + (2 if mlp_token_nh_std[2] else 0)
+        self.token_size_in_kv = [token_len_td[0], sum(self.n_in_features_zooms_kv.values()), token_len_td[-1],1]
+        token_size_kv = [token_len_td[0], sum(self.n_out_features_zooms_kv.values()), token_len_td[-1],1]
         
-        in_features_mlp = [in_features_mlp_t, in_features_mlp, in_features_mlp_d, 1]
-        self.in_features_q = in_features_q = [in_features_t, in_features_q, in_features_d, 1]
+        in_features_q =  sum(self.n_in_features_zooms_q.values())
+        in_features_kv = sum(self.n_in_features_zooms_kv.values())
+        in_features_mlp = sum(self.n_in_features_zooms_q.values())
+
+        in_features_t = token_len_td[0] + 2 * token_overlap_std[1]
+        in_features_d = token_len_td[1] + 2 * token_overlap_std[2]
+        
+       
+        self.in_features = in_features = [in_features_t, in_features_q, in_features_d, 1]
         self.in_features_kv = in_features_kv = [in_features_t, in_features_kv, in_features_d, 1]
 
 
-        self.emb_layer_q = LinEmbLayer(self.token_size, 
-                                       self.token_size, 
+        self.emb_layer_q = LinEmbLayer(self.token_size_in, 
+                                       self.token_size_in, 
                                        layer_confs=layer_confs_, 
                                        identity_if_equal=True, 
                                        embedder=embedder, 
@@ -445,14 +532,21 @@ class FieldAttentionBlock(nn.Module):
                                        layer_confs_emb=layer_confs_emb_)
 
         if not self.self_att:
-            self.emb_layer_kv = LinEmbLayer(token_size_kv, 
-                                            token_size_kv, 
+            self.emb_layer_kv = LinEmbLayer(self.token_size_in_kv, 
+                                            self.token_size_in_kv, 
                                             layer_confs=layer_confs_,
                                             identity_if_equal=True, 
                                             embedder=embedder, 
                                             layer_norm=layer_norm, 
                                             layer_confs_emb=layer_confs_emb_)
-
+        
+       # self.emb_layer_mlp = LinEmbLayer(self.token_size_in, 
+       #                                  self.token_size_in, 
+       #                                  layer_confs=layer_confs_, 
+       #                                  identity_if_equal=True, 
+       #                                  embedder=embedder if with_mlp_embedder else None, 
+       #                                  layer_norm=layer_norm, 
+       #                                  layer_confs_emb=layer_confs_emb_)
 
         out_dim_q = [1, 1 , 1, att_dim] 
         out_dim_kv = [1, 1, 1, 2 * att_dim]
@@ -460,31 +554,21 @@ class FieldAttentionBlock(nn.Module):
         self.att_dim = att_dim
 
         
-        self.q_projection_layer = get_layer(in_features_q, out_dim_q, layer_confs=layer_confs_, bias=False)
+        self.q_projection_layer = get_layer(in_features, out_dim_q, layer_confs=layer_confs_, bias=False)
         self.kv_projection_layer = get_layer(in_features_kv, out_dim_kv, layer_confs=layer_confs_, bias=True)
 
-        update_dim = copy.deepcopy(token_size_q)
+        update_dim = copy.deepcopy(self.token_size_in)
         update_dim[-1] = update_dim[-1] * out_feat_fac
+
         self.out_layer_att = get_layer(out_dim_q, update_dim, layer_confs=layer_confs_)
 
-        
-        self.emb_layer_mlp = LinEmbLayer(self.token_size, 
-                                         self.token_size, 
-                                         layer_confs=layer_confs_, 
-                                         identity_if_equal=True, 
-                                         embedder=embedder if with_mlp_embedder else None, 
-                                         layer_norm=layer_norm, 
-                                         layer_confs_emb=layer_confs_emb_)
-       
-        self.dropout_att = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
-        self.dropout_mlp = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
+        update_dim_mlp = copy.deepcopy(self.token_size)
+        update_dim_mlp[-1] = update_dim_mlp[-1] * out_feat_fac
 
-        self.mlp = MLP_fac(in_features_mlp, update_dim, hidden_dim=out_dim_q, dropout=dropout, layer_confs=layer_confs_, gamma=False) 
+        self.mlp = MLP_fac(self.token_size_in, update_dim_mlp, hidden_dim=out_dim_q, dropout=dropout, layer_confs=layer_confs_, gamma=False) 
 
-        self.scale_shift = update == 'shift_scale'
-
-        self.gamma_res = nn.Parameter(torch.ones(token_size_q)*1e-7, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones(token_size_q)*1e-7, requires_grad=True)
+        self.gamma_res = nn.Parameter(torch.ones(self.token_size_in)*1e-7, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(self.token_size_in)*1e-7, requires_grad=True)
                 
         self.gamma_res_mlp = nn.Parameter(torch.ones(len(q_zooms))*1e-7, requires_grad=True) 
         self.gamma_mlp = nn.Parameter(torch.ones(len(q_zooms))*1e-7, requires_grad=True) 
@@ -540,35 +624,20 @@ class FieldAttentionBlock(nn.Module):
         return features
     
 
-    def get_nh(self, x: torch.Tensor, sample_configs={}, apply_nh=None, mask=None):
+    def get_time_depth_overlaps(self, x: torch.Tensor,  overlap_td=None, mask=None):
 
-        apply_nh = self.token_nh_std if apply_nh is None else apply_nh
+        if overlap_td[0]>0:
+            x = add_time_overlap_from_neighbor_patches(x, overlap=overlap_td[0], pad_mode= "edge")
         
-        t = x.shape[-4]
-        n = x.shape[-3]
-        d = x.shape[-2]
-
-        if apply_nh[0]:
-            x = rearrange(x, self.pattern_tokens_fold)
-            x = self.grid_layer_field.get_nh(x, **sample_configs, mask=None)[0]
-            x = rearrange(x, self.pattern_tokens_nh_space, t=t, n=n, d=d)
-
-        overlap = 1
-        if any(apply_nh[1:]):
-            #x = rearrange(x, self.pattern_tokens_unfold, t=token_size[0], n=token_size[1], d=token_size[2])
-
-            if apply_nh[1]:
-                x = add_time_overlap_from_neighbor_patches(x, overlap=overlap, pad_mode= "edge")
-            
-            if apply_nh[2]:
-                x = add_depth_overlap_from_neighbor_patches(x, overlap=overlap, pad_mode= "edge")
+        if overlap_td[1]>0:
+            x = add_depth_overlap_from_neighbor_patches(x, overlap=overlap_td[1], pad_mode= "edge")
 
         return x
     
     def norm_and_emb(self, x: torch.Tensor, emb_layer: nn.Module, emb={}, sample_configs={}):
 
         if self.calc_stats_nh:
-            x_stats = self.get_nh(x, sample_configs=sample_configs)
+            x_stats = self.get_overlaps(x, sample_configs=sample_configs)
         else:
             x_stats = None
 
@@ -611,18 +680,19 @@ class FieldAttentionBlock(nn.Module):
 
         emb_tokenized = self.tokenize_emb(emb, sample_configs=sample_configs)
 
-        q = self.tokenize(x_zooms, self.q_zooms)
+        x = self.tokenizer(x_zooms, sample_configs)
+        x = rearrange(x, self.pattern_tokens, t=self.token_size_in[0], n=self.token_size_in[1], d=self.token_size_in[2])
+        #q = self.tokenize(x_zooms, self.q_zooms)
 
-        x = q
+        x = self.norm_and_emb(x, emb_layer=self.emb_layer_q, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
 
-        q = self.norm_and_emb(q, emb_layer=self.emb_layer_q, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
-
-        q = self.get_nh(q, sample_configs=sample_configs[zoom_field], apply_nh=self.token_nh_std)
+        q = self.get_time_depth_overlaps(x, overlap_td=self.token_overlap_std[1:])
         
         if not self.self_att:
-            kv = self.tokenize(x_zooms, self.kv_zooms)
+            kv = self.kv_tokenizer(x_zooms, sample_configs)
+            kv = rearrange(kv, self.pattern_tokens, t=self.token_size_in_kv[0], n=self.token_size_in_kv[1], d=self.token_size_in_kv[2])
             kv = self.norm_and_emb(kv, emb_layer=self.emb_layer_kv, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
-            kv = self.get_nh(kv, sample_configs=sample_configs[zoom_field], apply_nh=self.token_nh_std)
+            kv = self.get_time_depth_overlaps(kv, overlap_td=self.token_overlap_std[1:])
         else:
             kv = q
         
@@ -632,14 +702,19 @@ class FieldAttentionBlock(nn.Module):
 
         q = rearrange(q, self.att_pattern_chunks, **self.rearrange_dict)
 
+        mask = mask_zooms[zoom_field] if zoom_field in mask_zooms.keys() else None
+        #if self.att_nh:
+            
+        #    kv = self.grid_layer_att.get_nh(kv, input_zoom=zoom_field, sample_configs=sample_configs[zoom_field], mask=mask)
+
         kv = rearrange(kv, self.att_pattern_chunks, **self.rearrange_dict)
 
-        kv = self.get_nh(kv, sample_configs=sample_configs[zoom_field], apply_nh=self.seq_nh_std)
+        kv = self.get_time_depth_overlaps(kv, overlap_td=self.seq_overlap_td)
         
-        mask = mask_zooms[zoom_field] if zoom_field in mask_zooms.keys() else None
         if mask is not None:
-            mask = self.get_nh(mask, sample_configs=sample_configs[zoom_field])
+            mask = self.get_time_depth_overlaps(mask, sample_configs=sample_configs[zoom_field])
 
+        
         K,V = kv.chunk(2, dim=-1)
         kv=None
 
@@ -663,16 +738,16 @@ class FieldAttentionBlock(nn.Module):
             x = self.gamma_res * x + self.gamma * self.dropout_att(att_out)
 
 
-        x = self.norm_and_emb(x, emb_layer=self.emb_layer_mlp, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])      
-        x = self.get_nh(x, sample_configs=sample_configs[zoom_field], apply_nh=self.mlp_token_nh_std)
+       # x = self.norm_and_emb(x, emb_layer=self.emb_layer_mlp, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])      
+       # x = self.get_nh(x, sample_configs=sample_configs[zoom_field], apply_nh=self.mlp_token_nh_std)
 
         x = self.dropout_mlp(self.mlp(x, emb=emb_tokenized, sample_configs=sample_configs[int(zoom_field)]))
 
       #  x = rearrange(x, self.pattern_tokens_reverse)
 
-        x = x.split(tuple(self.n_features_zooms_q.values()), dim=-3)
+        x = x.split(tuple(self.n_out_features_zooms_q.values()), dim=-3)
 
-        for k, (zoom, n) in enumerate(self.n_features_zooms_q.items()):
+        for k, (zoom, n) in enumerate(self.n_out_features_zooms_q.items()):
             
             x_ = rearrange(x[k], self.pattern_tokens_reverse, n=n)
 

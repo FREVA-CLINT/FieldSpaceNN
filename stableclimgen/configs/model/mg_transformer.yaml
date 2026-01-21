@@ -26,17 +26,19 @@ model:
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
       att_dim: 128
-      token_zoom: 0
-      seq_zoom: -1
-      token_len_td: [4,1]
-      ranks_std: [256,2,null]
+      token_zoom: 2
+      seq_zoom: 1
+      token_len_td: [1,1]
+      ranks_std: [null,null,null]
       seq_len_td: [-1,-1]
-      token_nh_std: [True, True, False]
-      mlp_token_nh_std: [True, False, False]
+      token_overlap_std: [1, 0, 0]
+      mlp_token_overlap_td: [True, False, False]
       seq_nh_std: [True, False, False]
       calc_stats_nh: False
       update: shift_scale
       embed_confs:
-        embed_names: ['TimeEmbedder']
+        embed_names: ['TimeEmbedder','MGEmbedder']
         embed_confs: ${embedding}
         embed_mode: "sum"
+    "conservative": 
+      _target_: stableclimgen.src.modules.multi_grid.mg_base.ConservativeLayerConfig
