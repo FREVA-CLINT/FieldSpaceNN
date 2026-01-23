@@ -314,19 +314,24 @@ class GridLayer(nn.Module):
     
         
     def get_nh(self, x, input_zoom=None, patch_index=0, zoom_patch_sample=-1, mask=None, zoom_patch_out=None, **kwargs):
+        
+        if zoom_patch_out is None:
+            zoom_patch_out = self.zoom
 
-        bvt = x.shape[:3]
-        s, d, f = x.shape[-3:]
-
+        b,v,t,s = x.shape[:4]
+        bvt = (b,v,t)
+        fs = x.shape[4:]
+    
         if input_zoom is None:
             input_zoom = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
 
         zoom_diff = input_zoom - self.zoom
 
-        x = x.reshape(-1, s//4**zoom_diff, d*f*4**zoom_diff)
+        x = x.reshape(-1, s//4**zoom_diff, math.prod(fs)*4**zoom_diff)
 
         bvt_mask = mask.shape[:-3] if mask is not None else None
-        mask = mask.reshape(-1, mask.shape[-2]//4**zoom_diff, 4**zoom_diff, d) if mask is not None else None
+
+        mask = mask.reshape(math.prod(bvt), s//4**zoom_diff, -1) if mask is not None else None
 
         if zoom_patch_sample != -1:
             x, mask = self.get_sample_patch_with_nh(x, patch_index, zoom_patch_sample, mask, zoom_patch_out=zoom_patch_out)
@@ -335,14 +340,12 @@ class GridLayer(nn.Module):
             x, mask = self.get_global_with_nh(x, mask=mask, zoom_patch_out=zoom_patch_out)
 
         if bvt_mask is not None:
-            mask = mask.view(*bvt_mask, s//4**zoom_diff, -1, d)
+            mask = mask.view(*bvt, s//4**zoom_diff, -1)
 
         elif mask is not None:
             mask = mask.unsqueeze(dim=1).expand(-1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1)
 
-        x = x.view(*bvt, s//4**(input_zoom - zoom_patch_out), -1, d, f)
-
-        mask = mask.reshape(*bvt, s//4**(input_zoom - zoom_patch_out),-1, d, 1) if mask is not None else None
+        x = x.view(*bvt, s//4**(input_zoom - zoom_patch_out), -1, *fs)
     
         return x, mask
 

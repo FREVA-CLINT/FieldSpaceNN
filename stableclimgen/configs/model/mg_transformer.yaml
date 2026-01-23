@@ -5,39 +5,54 @@ lambda_loss_dict:
 weight_decay: 0
 lr_groups:
   default:
-    lr: 0.001
-    warmup: 100
+    lr: 2e-4
+    warmup: 2000
 model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
   in_zooms: [3,5,6]
   in_features: 1
   out_features: 1
+  lift_features: 1
   n_head_channels: 16
   use_mask: false
   layer_confs:
-    n_groups: 2
+    n_groups: 1
   layer_confs_emb:
     n_groups: 1
     aggregation: 'shift_scale'
   block_configs:
+    "0_2":
+      _target_: stableclimgen.src.modules.multi_grid.field_layer.FieldLayerConfig
+      in_zooms: [5,6]
+      target_zooms: [5]
+      field_zoom: 4
+      out_zooms: [3,5]
+      overlap: 1
+    "0_1":
+      _target_: stableclimgen.src.modules.multi_grid.field_layer.FieldLayerConfig
+      in_zooms: [5]
+      target_zooms: [5,6]
+      field_zoom: 4
+      out_zooms: [3,5,6]
+      overlap: 1
     "0_0":
       _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
-      att_dim: 128
-      token_zoom: 2
-      seq_zoom: 1
-      token_len_td: [1,1]
+      att_dim: 32
+      token_zoom: 3
+      seq_zoom: -1
+      token_len_td: [1,10]
       ranks_std: [null,null,null]
       seq_len_td: [-1,-1]
       token_overlap_std: [1, 0, 0]
-      mlp_token_overlap_td: [True, False, False]
       seq_nh_std: [True, False, False]
       calc_stats_nh: False
-      update: shift_scale
+      separate_mlp_norm: False
+      update: shift
       embed_confs:
-        embed_names: ['TimeEmbedder','MGEmbedder']
+        embed_names: ['MGEmbedder']
         embed_confs: ${embedding}
         embed_mode: "sum"
     "conservative": 

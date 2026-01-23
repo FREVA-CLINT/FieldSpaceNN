@@ -6,13 +6,11 @@ from omegaconf import ListConfig
 from typing import List,Dict
 
 from ...utils.helpers import check_get
-from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.embedding.embedding_layers import get_mg_embeddings
-from ...modules.multi_grid.mg_base import ConservativeLayer,DecodeLayer,Conv_EncoderDecoder,FieldLayer,FieldLayerConfig,ConservativeLayerConfig
+from ...modules.multi_grid.mg_base import ConservativeLayer,ConservativeLayerConfig, DiffDecoder
+from ...modules.multi_grid.field_layer import FieldLayer, FieldLayerConfig
 from ...modules.multi_grid.field_attention import FieldAttentionModule,FieldAttentionConfig
 
-from ...modules.embedding.embedder import get_embedder
 from ...modules.grids.grid_utils import decode_zooms
 
 from .confs import defaults
@@ -26,9 +24,6 @@ class MG_Transformer(MG_base_model):
                  in_zooms: List,
                  in_features: int=1,
                  out_features: int=1,
-                 shared_mg_emb_confs: dict={},
-                 with_global_gamma=True,
-                 decoder_settings= {},
                  **kwargs
                  ) -> None: 
         
@@ -45,11 +40,6 @@ class MG_Transformer(MG_base_model):
 
         self.out_features = out_features
         self.predict_var = predict_var
-
-        if len(shared_mg_emb_confs)>0:
-            self.mg_emeddings = get_mg_embeddings(shared_mg_emb_confs, self.grid_layers)
-        else:
-            self.mg_emeddings = None
 
         self.Blocks = nn.ModuleDict()
 
@@ -76,7 +66,6 @@ class MG_Transformer(MG_base_model):
             
             elif isinstance(block_conf, FieldAttentionConfig):
 
-
                 block = FieldAttentionModule(
                      self.grid_layers,
                      in_zooms,
@@ -97,7 +86,6 @@ class MG_Transformer(MG_base_model):
                      seq_nh_std= block_conf.seq_nh_std,
                      mlp_token_overlap_td = block_conf.mlp_token_overlap_td,
                      with_var_att= block_conf.with_var_att,
-                     calc_stats_nh=block_conf.calc_stats_nh,
                      update = block_conf.update,
                      dropout = dropout,
                      n_head_channels = n_head_channels,
@@ -113,7 +101,7 @@ class MG_Transformer(MG_base_model):
             elif isinstance(block_conf, FieldLayerConfig):
         
                 block = FieldLayer(
-                        self.grid_layers[str(block_conf.field_zoom)],
+                        self.grid_layers,
                         in_zooms,
                         block_conf.in_zooms,
                         block_conf.target_zooms,
@@ -122,7 +110,7 @@ class MG_Transformer(MG_base_model):
                         in_features=in_features,
                         target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                         mult = block_conf.mult,
-                        with_nh = block_conf.with_nh,
+                        overlap= block_conf.overlap,
                         type= block_conf.type,
                         layer_confs=layer_confs)
 
@@ -145,27 +133,10 @@ class MG_Transformer(MG_base_model):
 
     def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None, out_zoom=None):
 
-        """
-        Forward pass for the ICON_Transformer model.
-
-        :param x: Input tensor of shape (batch_size, num_cells, input_dim).
-        :param coords_input: Input coordinates for x
-        :param coords_output: Output coordinates for position embedding.
-        :param sampled_indices_batch_dict: Dictionary of sampled indices for regional models.
-        :param mask_zooms: Mask for dropping cells in the input tensor.
-        :return: Output tensor of shape (batch_size, num_cells, output_dim).
-        """
-
         b, nv, nt, n, nd, f = x_zooms[list(x_zooms.keys())[0]].shape
 
-        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
         emb['MGEmbedder'] = emb['GroupEmbedder']
 
-       # x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
-       # mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
-        
-       # x_zooms = self.encoder(x_zooms, emb=emb, sample_configs=sample_configs)
-       
         if self.learn_residual:
             x_zooms_res = x_zooms.copy()
         
@@ -173,10 +144,9 @@ class MG_Transformer(MG_base_model):
             mask_res = mask_zooms.copy()
 
         for k, block in enumerate(self.Blocks.values()):
-            # Process input through the block
+            
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
 
-        
 
         if self.learn_residual and len(x_zooms.keys())==1:
             x_zooms_res = decode_zooms(x_zooms_res, sample_configs=sample_configs, out_zoom=list(x_zooms.keys())[0])
@@ -213,13 +183,3 @@ class MG_Transformer(MG_base_model):
 
         return x_zooms
 
-class DiffDecoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x_zooms: dict, sample_configs: Dict, out_zoom: int = None, **kwargs):
-
-        if out_zoom is None:
-            return x_zooms
-        
-        return decode_zooms(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom)

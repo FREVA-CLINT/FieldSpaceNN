@@ -665,7 +665,7 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_inde
     
 
     b,nv,nt,n = x_h.shape[:4]
-    c = x_h.shape[4:]
+    c = x_h.shape[-2:]
     
     if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
 
