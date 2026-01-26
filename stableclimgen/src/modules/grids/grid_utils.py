@@ -719,11 +719,23 @@ def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patc
         x = x_zooms[zoom]
         x_h = x_zooms[zoom_h]
 
+        if x.ndim < 6:
+            x = x.unsqueeze(dim=0)
+            x_h = x_h.unsqueeze(dim=0)
+            batched = False
+        else:
+            batched = True
+
+
         bvt = x.shape[:-3]
         x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs, patch_index_zooms)
 
         x = x.view(*bvt, -1, 4**(zoom-zoom_h), *x.shape[-2:]) - x_h_patch.unsqueeze(dim=-3)
-        x_zooms[zoom] = x.view(*bvt, -1, *x.shape[-2:])
+
+        if batched:
+            x_zooms[zoom] = x.view(*bvt, -1, *x.shape[-2:])
+        else:
+            x_zooms[zoom] = x.view(*bvt[1:], -1, *x.shape[-2:])
 
     return x_zooms
     

@@ -576,13 +576,12 @@ class FieldAttentionBlock(nn.Module):
             sample_configs = {}
 
         emb_cpy = dict(emb)  # shallow copy of top level
-
+        emb_cpy['TimeEmbedder'] = {max(self.q_zooms): emb_cpy['TimeEmbedder'][max(self.q_zooms)]}
+        
         if self.token_size[0] > 1 and 'TimeEmbedder' in emb_cpy:
-            emb_cpy['TimeEmbedder'] = dict(emb_cpy['TimeEmbedder'])  # copy nested dict
             time_zooms = emb_cpy['TimeEmbedder']
-            k = max(time_zooms.keys())
-            max_zoom_time = time_zooms[k]
-            time_zooms[k] = max_zoom_time.view(max_zoom_time.shape[0], -1, self.token_size[0])[..., 0]
+            max_zoom_time = time_zooms[max(self.q_zooms)]
+            time_zooms[max(self.q_zooms)] = max_zoom_time.view(max_zoom_time.shape[0], -1, self.token_size[0])[..., 0]
 
         if self.token_size[1] > 1 and 'DepthEmbedder' in emb_cpy:
             depth = emb_cpy['DepthEmbedder']
@@ -669,8 +668,10 @@ class FieldAttentionBlock(nn.Module):
 
             if self.scale_shift:
                 scale, shift = x_.chunk(2,dim=-1)
+                shift = insert_matching_time_patch(x_zooms[zoom], shift, zoom, max(self.q_zooms), sample_configs)
                 x_zooms[zoom] = x_zooms[zoom] * (1 + self.gamma_res_mlp[k] * scale) + self.gamma_mlp[k] * shift
             else:
+                x_ = insert_matching_time_patch(x_zooms[zoom], x_, zoom, max(self.q_zooms), sample_configs)
                 x_zooms[zoom] = (1 + self.gamma_res_mlp[k]) * x_zooms[zoom] +  self.gamma_mlp[k] * x_
 
         return x_zooms

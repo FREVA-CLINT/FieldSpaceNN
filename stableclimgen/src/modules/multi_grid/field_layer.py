@@ -11,11 +11,6 @@ import copy
 from ..base import get_layer, MLP_fac
 from .mg_base import Tokenizer
 
-from ...modules.embedding.embedder import EmbedderSequential
-
-
-from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_patch, decode_zooms
-
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
 
@@ -97,12 +92,17 @@ class FieldLayer(nn.Module):
         self.pattern_tokens = 'b v T N n D f ->  b v T N D (n f)'
         self.pattern_tokens_reverse = 'b v T N D (n f) ->  b v T (N n) D f'
 
+    def update_time_embedder(self, emb):
+        for zoom in self.in_zooms:
+            emb['TimeEmbedder'][zoom] = emb['TimeEmbedder'][max(self.in_zooms)]
 
     def forward(self, x_zooms, emb=None, sample_configs={}, **kwargs):
         
         nv = x_zooms[list(self.n_in_features_zooms.keys())[0]].shape[1]
 
         x = self.tokenizer(x_zooms, sample_configs=sample_configs)
+
+        self.update_time_embedder(emb)
 
         x = rearrange(x, self.pattern_tokens)
 

@@ -68,8 +68,8 @@ class Tokenizer(nn.Module):
 
         return n_patch + n_overlap
 
-    def get_token(self, x_zooms: Dict, **kwargs): 
-        return combine_zooms(x_zooms, out_zoom=self.token_zoom, zooms=self.input_zooms)
+    def get_token(self, x_zooms: Dict, sample_configs={}, **kwargs): 
+        return combine_zooms(x_zooms, out_zoom=self.token_zoom, zooms=self.input_zooms, sample_configs=sample_configs)
 
     def get_token_w_overlap(self, x_zooms: Dict, sample_configs={}, mask=None): 
     
@@ -77,6 +77,9 @@ class Tokenizer(nn.Module):
         for zoom in self.input_zooms:
             x = x_zooms[zoom]
             x, mask = self.grid_layers_overlap[str(zoom)].get_nh(x, zoom, **sample_configs[zoom], mask=mask, zoom_patch_out=self.token_zoom)
+
+            x = get_matching_time_patch(x, zoom, max(self.input_zooms), sample_configs)
+
             x_out.append(x)
 
         return torch.concat(x_out, dim=-3)
@@ -143,11 +146,14 @@ class ConservativeLayer(nn.Module):
 
 
 
-def combine_zooms(x_zooms, out_zoom, zooms=None):
+def combine_zooms(x_zooms, out_zoom, zooms=None, sample_configs=None):
     zooms = list(x_zooms.keys()) if zooms is None else zooms
     x_out = []
     for zoom in zooms:
         x = x_zooms[zoom]
+
+        x = get_matching_time_patch(x, zoom, max(zooms), sample_configs)
+
         if zoom < out_zoom:
             x = refine_zoom(x, zoom, out_zoom).unsqueeze(dim=-3)
         elif out_zoom==0:
