@@ -24,6 +24,8 @@ class MG_Transformer(MG_base_model):
                  in_zooms: List,
                  in_features: int=1,
                  out_features: int=1,
+                 n_groups_variables: List = [1],
+
                  **kwargs
                  ) -> None: 
         
@@ -71,26 +73,35 @@ class MG_Transformer(MG_base_model):
                      in_zooms,
                      out_zooms,
                      token_zoom = block_conf.token_zoom,
-                     seq_zoom = block_conf.seq_zoom,
                      q_zooms  = block_conf.q_zooms,
                      kv_zooms = block_conf.kv_zooms,
                      use_mask = use_mask,
                      refine_zooms= block_conf.refine_zooms,
                      shift= block_conf.shift,
-                     rev_shift= block_conf.rev_shift,
                      multi_shift= block_conf.multi_shift,
                      att_dim = att_dim,
-                     token_len_td = block_conf.token_len_td,
-                     token_overlap_std = block_conf.token_overlap_std,
-                     seq_len_td =  block_conf.seq_len_td,
-                     seq_nh_std= block_conf.seq_nh_std,
-                     mlp_token_overlap_td = block_conf.mlp_token_overlap_td,
+                     n_groups_variables = n_groups_variables,
+                     token_len_time = block_conf.token_len_time,
+                     token_len_depth = block_conf.token_len_depth,
+                     token_overlap_space = block_conf.token_overlap_space,
+                     token_overlap_time = block_conf.token_overlap_time,
+                     token_overlap_depth = block_conf.token_overlap_depth,
+                     token_overlap_mlp_time = block_conf.token_overlap_mlp_time,
+                     token_overlap_mlp_depth = block_conf.token_overlap_mlp_depth,
+                     rank_space = block_conf.rank_space,
+                     rank_time = block_conf.rank_time,
+                     rank_depth = block_conf.rank_depth,
+                     seq_len_zoom = block_conf.seq_len_zoom,
+                     seq_len_time =  block_conf.seq_len_time,
+                     seq_len_depth = block_conf.seq_len_depth,
+                     seq_overlap_space = block_conf.seq_overlap_space,
+                     seq_overlap_time = block_conf.seq_overlap_time,
+                     seq_overlap_depth = block_conf.seq_overlap_depth,
                      with_var_att= block_conf.with_var_att,
                      update = block_conf.update,
                      dropout = dropout,
                      n_head_channels = n_head_channels,
                      embed_confs = embed_confs,
-                     ranks_std = block_conf.ranks_std,
                      separate_mlp_norm = block_conf.separate_mlp_norm,
                      layer_confs=layer_confs,
                      layer_confs_emb = layer_confs_emb)
@@ -131,55 +142,96 @@ class MG_Transformer(MG_base_model):
         return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom)
 
 
-    def forward(self, x_zooms: Dict[int, torch.Tensor], sample_configs={}, mask_zooms: Dict[int, torch.Tensor]= None, emb=None, out_zoom=None):
+    def forward(self, 
+                x_zooms_groups: List[Dict[int, torch.Tensor]] = None,
+                mask_zooms_groups: List[Dict[int, torch.Tensor]] = None,
+                emb_groups: List[Dict] = None,
+                sample_configs={},
+                out_zoom=None):
 
-        b, nv, nt, n, nd, f = x_zooms[list(x_zooms.keys())[0]].shape
+        if x_zooms_groups is None:
+            x_zooms_groups = []
+        if mask_zooms_groups is None:
+            mask_zooms_groups = [None] * len(x_zooms_groups)
+        if emb_groups is None:
+            emb_groups = [{} for _ in range(len(x_zooms_groups))]
 
-        emb['MGEmbedder'] = emb['GroupEmbedder']
+        x_zooms_groups_res = None
+        #if self.learn_residual:
+        x_zooms_groups_res = [x.copy() for x in x_zooms_groups]
+
+        mask_zooms_groups_res = None
+        if self.masked_residual:
+            mask_zooms_groups_res = [
+                mask.copy() if mask is not None else None for mask in mask_zooms_groups
+            ]
+
+        for block in self.Blocks.values():
+            x_zooms_groups = block(
+                x_zooms_groups,
+                sample_configs=sample_configs,
+                mask_groups=mask_zooms_groups,
+                emb_groups=emb_groups,
+            )
+            pass
+
+        for i, x_zooms in enumerate(x_zooms_groups):
+
+            x_res = x_zooms_groups_res[i] if self.learn_residual else None
+            x_zooms_groups[i] = self.apply_residuals(x_zooms, x_res, mask_zooms_groups, mask_zooms_groups_res, sample_configs)
+
+        if out_zoom is not None:
+            for i, x_zooms in enumerate(x_zooms_groups):
+                x_zooms_groups[i] = (
+                    self.decoder(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom)
+                    if x_zooms
+                    else {}
+                )
+
+        return x_zooms_groups
+
+
+    def apply_residuals(self, x_zooms, x_zooms_res, mask_zooms, mask_res, sample_configs):
+        if not x_zooms:
+            return x_zooms
+
+        if mask_res is None:
+            mask_res = mask_zooms
 
         if self.learn_residual:
-            x_zooms_res = x_zooms.copy()
-        
-        if self.masked_residual:
-            mask_res = mask_zooms.copy()
-
-        for k, block in enumerate(self.Blocks.values()):
-            
-            x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
-
-
-        if self.learn_residual and len(x_zooms.keys())==1:
-            x_zooms_res = decode_zooms(x_zooms_res, sample_configs=sample_configs, out_zoom=list(x_zooms.keys())[0])
+            for i, x_zooms_res in enumerate(x_zooms_res):
+                if len(x_zooms_res) == 1 :
+                    x_zooms_res = decode_zooms(
+                        x_zooms_res,
+                        sample_configs=sample_configs,
+                        out_zoom=list(x_zooms_res.keys())[0],
+                    )
 
         if self.predict_var and self.learn_residual:
             for zoom, x in x_zooms.items():
-                x, x_var = x.chunk(2,dim=-1) 
+                x, x_var = x.chunk(2, dim=-1)
 
-                if not self.masked_residual:
+                if not self.masked_residual or mask_zooms is None:
                     x = x_zooms_res[zoom] + x
                 elif mask_zooms[zoom].dtype == torch.bool:
                     x = (1 - mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x
                 else:
                     x = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_zooms[zoom]) * x
 
-                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
+                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)), dim=-1)
 
         elif self.predict_var:
             for zoom, x in x_zooms.items():
-                x, x_var = x.chunk(2,dim=-1) 
-                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)),dim=-1)
+                x, x_var = x.chunk(2, dim=-1)
+                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)), dim=-1)
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
-
-                if not self.masked_residual:
+                if not self.masked_residual or mask_zooms is None:
                     x_zooms[zoom] = x_zooms_res[zoom] + x_zooms[zoom]
                 elif mask_zooms[zoom].dtype == torch.bool:
-                    x_zooms[zoom] = (1 - 1.*mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x_zooms[zoom]
+                    x_zooms[zoom] = (1 - 1. * mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x_zooms[zoom]
                 else:
                     x_zooms[zoom] = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_res[zoom]) * x_zooms[zoom]
 
-        x_zooms = self.decoder(x_zooms, sample_configs=sample_configs, emb=emb, out_zoom=out_zoom)
-
         return x_zooms
-

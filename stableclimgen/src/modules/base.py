@@ -20,7 +20,7 @@ class IdentityLayer(nn.Module):
 
 
 class LayerNorm(nn.Module):
-    def __init__(self, normalized_shape, n_groups=1, eps=1e-5, elementwise_affine=True):
+    def __init__(self, normalized_shape, n_variables=1, eps=1e-5, elementwise_affine=True):
         """
         normalized_shape: int or tuple, the shape over which normalization is applied
         eps: small value to avoid division by zero
@@ -33,25 +33,25 @@ class LayerNorm(nn.Module):
         self.normalized_shape = tuple(normalized_shape)
         self.eps = eps
         self.elementwise_affine = elementwise_affine
-        self.n_groups = n_groups
+        self.n_variables = n_variables
 
         if elementwise_affine:
-            if n_groups==1:
+            if n_variables==1:
                 self.weight = nn.Parameter(torch.ones(self.normalized_shape))
                 self.bias = nn.Parameter(torch.zeros(self.normalized_shape))
             else:
-                self.weight = nn.Parameter(torch.ones(n_groups, *self.normalized_shape))
-                self.bias = nn.Parameter(torch.zeros(n_groups, *self.normalized_shape))
+                self.weight = nn.Parameter(torch.ones(n_variables, *self.normalized_shape))
+                self.bias = nn.Parameter(torch.zeros(n_variables, *self.normalized_shape))
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
 
     def apply_weight_bias(self, x_hat, emb):
-        if self.n_groups==1:
+        if self.n_variables==1:
             return self.weight * x_hat + self.bias
         else:
-            weight = self.weight[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
-            bias = self.bias[emb['GroupEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
+            weight = self.weight[emb['VariableEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
+            bias = self.bias[emb['VariableEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
             
             return weight * x_hat + bias
 
@@ -78,10 +78,10 @@ class IdentityLayer(nn.Module):
         return x
     
     def get_tensor(self, tensor, emb):
-        if self.n_groups==1:
+        if self.n_variables==1:
             return tensor
         else:
-            return tensor[emb['GroupEmbedder']]
+            return tensor[emb['VariableEmbedder']]
 
 class EmbLayer(nn.Module):
     def __init__(self,
@@ -249,7 +249,7 @@ class LinEmbLayer(nn.Module):
             self.embedding_layer = IdentityLayer()
 
         if layer_norm:
-            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_groups=layer_confs.get("n_groups",1))
+            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_variables=layer_confs.get("n_variables",1))
         else:
             self.layer_norm = IdentityLayer()
 
@@ -331,13 +331,13 @@ def get_layer(
     layer_confs = copy.deepcopy(layer_confs)
         
     ranks = check_get([layer_confs, kwargs, {'ranks': [None]}], 'ranks')
-    n_groups = check_get([layer_confs, kwargs, {'n_groups': 1}], 'n_groups')
+    n_variables = check_get([layer_confs, kwargs, {'n_variables': 1}], 'n_variables')
     bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
     fac_mode = check_get([layer_confs, kwargs, {'fac_mode': 'Tucker'}], 'fac_mode')
 
     ranks_not_none = [rank is not None for rank in ranks]
 
-    if not any(ranks_not_none) and n_groups==1:
+    if not any(ranks_not_none) and n_variables==1:
         layer = LinearLayer(
                 in_features,
                 out_features,
@@ -405,7 +405,4 @@ class LinearLayer(nn.Module):
         x = x.view(*x_dims, *self.out_features)
 
         return x
-
-
-
 

@@ -123,26 +123,27 @@ class ConservativeLayer(nn.Module):
         self.in_zooms = in_zooms
     
 
-    def forward(self, x_zooms, sample_configs={}, **kwargs):
+    def forward(self, x_zooms_groups, sample_configs={}, **kwargs):
+        
+        for k, x_zooms in enumerate(x_zooms_groups):
+            for zoom in sorted(x_zooms.keys()):
+                
+                x = x_zooms[zoom]
+                zoom_level_cons = zoom - self.cons_dict[zoom]
 
-        for zoom in sorted(x_zooms.keys()):
-            
-            x = x_zooms[zoom]
-            zoom_level_cons = zoom - self.cons_dict[zoom]
+                if zoom_level_cons > 0:
+                    x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, *x.shape[-2:]) 
 
-            if zoom_level_cons > 0:
-                x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, *x.shape[-2:]) 
+                    mean = x.mean(dim=-3)
+                    x = (x-mean.unsqueeze(dim=-3)).view(*x.shape[:3], -1, *x.shape[-2:])
 
-                mean = x.mean(dim=-3)
-                x = (x-mean.unsqueeze(dim=-3)).view(*x.shape[:3], -1, *x.shape[-2:])
+                    x_patch = get_matching_time_patch(x_zooms[self.cons_dict[zoom]], self.cons_dict[zoom], zoom, sample_configs) + mean
 
-                x_patch = get_matching_time_patch(x_zooms[self.cons_dict[zoom]], self.cons_dict[zoom], zoom, sample_configs) + mean
+                    x_zooms[self.cons_dict[zoom]] = insert_matching_time_patch(x_zooms[self.cons_dict[zoom]], x_patch, self.cons_dict[zoom], zoom, sample_configs)
 
-                x_zooms[self.cons_dict[zoom]] = insert_matching_time_patch(x_zooms[self.cons_dict[zoom]], x_patch, self.cons_dict[zoom], zoom, sample_configs)
-
-                x_zooms[zoom] = x
-
-        return x_zooms
+                    x_zooms[zoom] = x
+            x_zooms_groups[k] = x_zooms
+        return x_zooms_groups
 
 
 

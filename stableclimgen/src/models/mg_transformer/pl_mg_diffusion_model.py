@@ -48,9 +48,15 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict, _, _, _ = self.get_losses(target.copy(), target, sample_configs,
-                                                                         mask_zooms=mask, emb=emb, prefix='train',
-                                                                         mode="diffusion")
+        loss, loss_dict, _, _ = self.get_losses(
+            target.copy(),
+            target,
+            sample_configs,
+            mask_zooms=mask,
+            emb=emb,
+            prefix='train',
+            mode="diffusion",
+        )
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -65,10 +71,16 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         max_zoom = max(target.keys())
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict, output, output_comp, pred_xstart = self.get_losses(target.copy(), target, sample_configs,
-                                                                            mask_zooms=mask, emb=emb, prefix='val',
-                                                                            mode = "diffusion",
-                                                                            pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0))
+        loss, loss_dict, output_groups, pred_xstart = self.get_losses(
+            target.copy(),
+            target,
+            sample_configs,
+            mask_zooms=mask,
+            emb=emb,
+            prefix='val',
+            mode="diffusion",
+            pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0),
+        )
 
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -79,7 +91,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 source_p = {zoom: source[zoom][0:1] for zoom in source.keys()}
                 target_p = {zoom: target[zoom][0:1] for zoom in target.keys()}
                 mask_p = {zoom: mask[zoom][0:1] for zoom in mask.keys()}
-                emb_p = {'GroupEmbedder': emb['GroupEmbedder'][0:1],
+                emb_p = {'VariableEmbedder': emb['VariableEmbedder'][0:1],
                          'DensityEmbedder': (mask_p.copy(), emb['DensityEmbedder'][1][0:1]),
                          'TimeEmbedder': {int(zoom): emb['TimeEmbedder'][zoom][0:1] for zoom in
                                           emb['TimeEmbedder'].keys()}}

@@ -180,8 +180,8 @@ class MG_VAE(MG_base_model):
 
 
     def vae_encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
-        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
-        emb['MGEmbedder'] = emb['GroupEmbedder']
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
+        emb['MGEmbedder'] = emb['VariableEmbedder']
 
         for k, block in enumerate(self.encoder_blocks.values()):
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
@@ -191,8 +191,8 @@ class MG_VAE(MG_base_model):
         return posterior_zooms
 
     def vae_decode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None):
-        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
-        emb['MGEmbedder'] = emb['GroupEmbedder']
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['VariableEmbedder'])
+        emb['MGEmbedder'] = emb['VariableEmbedder']
 
         x_zooms = self.post_quantize(x_zooms, sample_configs=sample_configs, emb=emb)
 

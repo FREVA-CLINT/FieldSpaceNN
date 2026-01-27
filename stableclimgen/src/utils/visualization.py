@@ -137,8 +137,8 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
                 mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0, 0].float().cpu().numpy() if mask_zooms is not None else None
 
             # Use embedding index for variable name if available
-            if emb is not None and 'GroupEmbedder' in emb:
-                var_idx = emb['GroupEmbedder'][sample, var].item()
+            if emb is not None and 'VariableEmbedder' in emb:
+                var_idx = emb['VariableEmbedder'][sample, var].item()
             else:
                 var_idx = var
 

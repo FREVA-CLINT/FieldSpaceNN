@@ -25,7 +25,7 @@ class LightningProbabilisticModel(pl.LightningModule):
 
         patch_index_zooms = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in patch_index_zooms.items()}
 
-        emb['GroupEmbedder'] = emb['GroupEmbedder'].repeat_interleave(self.n_samples, dim=0)
+        emb['VariableEmbedder'] = emb['VariableEmbedder'].repeat_interleave(self.n_samples, dim=0)
         emb['DensityEmbedder'] = (mask.copy(), emb['DensityEmbedder'][1].repeat_interleave(self.n_samples, dim=0))
         emb['TimeEmbedder'] = {int(zoom): emb['TimeEmbedder'][zoom].repeat_interleave(self.n_samples, dim=0) for zoom in emb['TimeEmbedder'].keys()}
 
@@ -36,7 +36,7 @@ class LightningProbabilisticModel(pl.LightningModule):
 
             # Slice dictionaries properly
             emb_chunk = {}
-            emb_chunk['GroupEmbedder'] = emb['GroupEmbedder'][start:end]
+            emb_chunk['VariableEmbedder'] = emb['VariableEmbedder'][start:end]
             emb_chunk['DensityEmbedder'] = (
                 {int(zoom): emb['DensityEmbedder'][0][zoom][start:end] for zoom in emb['DensityEmbedder'][0].keys()},
                 emb['DensityEmbedder'][1][start:end])

@@ -1,12 +1,14 @@
 import math
 from typing import List
 
+import copy
 import numpy as np
 import xarray as xr
 
 from .datasets_base import BaseDataset
 from ..modules.grids.grid_utils import hierarchical_zoom_distance_map
 import healpy as hp
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 class HealPixLoader(BaseDataset):
     def __init__(self, 
@@ -17,8 +19,12 @@ class HealPixLoader(BaseDataset):
                  ):
         
         self.data_dict = data_dict
-        self.sampling_zooms = sampling_zooms
-        self.sampling_zooms_collate = sampling_zooms_collate
+        if isinstance(sampling_zooms, (DictConfig, ListConfig)):
+            sampling_zooms = OmegaConf.to_container(sampling_zooms, resolve=True)
+        if isinstance(sampling_zooms_collate, (DictConfig, ListConfig)):
+            sampling_zooms_collate = OmegaConf.to_container(sampling_zooms_collate, resolve=True)
+        self.sampling_zooms = copy.deepcopy(sampling_zooms)
+        self.sampling_zooms_collate = copy.deepcopy(sampling_zooms_collate)
 
         self.indices = {}
         for zoom, sampling in sampling_zooms.items():

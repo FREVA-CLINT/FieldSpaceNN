@@ -1,3 +1,4 @@
+import copy
 import torch
 from einops import rearrange
 from lightning.pytorch import LightningDataModule
@@ -14,78 +15,97 @@ class BatchReshapeAllocator:
     def __init__(self, dataset):
         self.dataset = dataset
 
+    def _reshape_group(self, data_source_zooms, data_target_zooms, emb_data, sample_configs):
+        if not data_source_zooms:
+            return data_source_zooms, data_target_zooms, emb_data, sample_configs
+
+        base_configs = self.dataset.sampling_zooms_collate or self.dataset.sampling_zooms
+        cleaned_configs = {}
+        for zoom, conf in base_configs.items():
+            if zoom in sample_configs:
+                conf_copy = copy.deepcopy(conf)
+                conf_copy["patch_index"] = sample_configs[zoom].get("patch_index")
+                cleaned_configs[zoom] = conf_copy
+        sample_configs = cleaned_configs
+
+        n_patch = None
+        for zoom in data_target_zooms.keys():
+            if self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"] > self.dataset.sampling_zooms[zoom]["zoom_patch_sample"]:
+                b, nv, nt, n, d, f = data_source_zooms[zoom].shape
+                n_pix = 4 ** (int(zoom) - self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"])
+                n_patch = n // n_pix
+                data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
+                                                    "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
+                                                    n_patch=n_patch, n_pix=n_pix)
+                data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
+                                                    "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
+                                                    n_patch=n_patch, n_pix=n_pix)
+
+                patch_index = sample_configs[zoom]["patch_index"]
+                new_patch_indices = torch.cat([torch.arange(n_patch) + (n_patch * patch_idx) for patch_idx in patch_index])
+                sample_configs[zoom]["patch_index"] = new_patch_indices
+
+                emb_data["DensityEmbedder"][0][zoom] = rearrange(emb_data["DensityEmbedder"][0][zoom],
+                                                                 "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
+                                                                 n_patch=n_patch, n_pix=n_pix)
+                emb_data["TimeEmbedder"][zoom] = emb_data["TimeEmbedder"][zoom].repeat_interleave(repeats=n_patch, dim=0)
+        if n_patch is not None:
+            emb_data["VariableEmbedder"] = emb_data["VariableEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
+            emb_data["DensityEmbedder"] = (emb_data["DensityEmbedder"][0], emb_data["VariableEmbedder"])
+
+        n_patch = None
+        for zoom in data_target_zooms.keys():
+            if (self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] < self.dataset.sampling_zooms[zoom]["n_past_ts"]
+             or self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] < self.dataset.sampling_zooms[zoom]["n_future_ts"]):
+                b, nv, nt, n, d, f = data_source_zooms[zoom].shape
+                n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
+                n_patch = nt // n_steps
+                data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
+                                                    "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
+                                                    n_patch=n_patch, n_steps=n_steps)
+                data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
+                                                    "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
+                                                    n_patch=n_patch, n_steps=n_steps)
+
+                sample_configs[zoom]["patch_index"] = sample_configs[zoom]["patch_index"].repeat_interleave(repeats=n_patch, dim=0)
+
+        for zoom in emb_data["DensityEmbedder"][0].keys():
+            if (self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] < self.dataset.sampling_zooms[zoom]["n_past_ts"]
+             or self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] < self.dataset.sampling_zooms[zoom]["n_future_ts"]):
+                n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
+                n_patch = emb_data["DensityEmbedder"][0][zoom].shape[2] // n_steps
+                emb_data["DensityEmbedder"][0][zoom] = rearrange(emb_data["DensityEmbedder"][0][zoom],
+                                                                "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
+                                                                n_patch=n_patch, n_steps=n_steps)
+                emb_data["TimeEmbedder"][zoom] = rearrange(emb_data["TimeEmbedder"][zoom],
+                                                          "b (n_patch n_steps) -> (b n_patch) n_steps",
+                                                          n_patch=n_patch, n_steps=n_steps)
+
+        if n_patch is not None:
+            emb_data["VariableEmbedder"] = emb_data["VariableEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
+            emb_data["DensityEmbedder"] = (emb_data["DensityEmbedder"][0], emb_data["VariableEmbedder"])
+
+        return data_source_zooms, data_target_zooms, emb_data, sample_configs
+
     def __call__(self, batch):
         # Use the default collate function to create the initial batch.
         # This will stack the tensors from __getitem__ along a new dimension.
         # The shape will be (batch_size, n, C, H, W).
 
         if hasattr(self.dataset, "sampling_zooms_collate") and self.dataset.sampling_zooms_collate is not None:
-            data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data = default_collate(batch)
+            (source_zooms_2d, source_zooms_3d,
+             target_zooms_2d, target_zooms_3d,
+             emb_2d, emb_3d,
+             sample_configs_2d, sample_configs_3d) = default_collate(batch)
 
-            # spatial collate
-            n_patch = None
-            for zoom in data_target_zooms.keys():
-                if self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"] > self.dataset.sampling_zooms[zoom]["zoom_patch_sample"]:
-                    b, nv, nt, n, d, f = data_source_zooms[zoom].shape
-                    n_pix = 4 ** (int(zoom) - self.dataset.sampling_zooms_collate[zoom]["zoom_patch_sample"])
-                    n_patch = n // n_pix
-                    data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
-                                                        "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
-                                                        n_patch=n_patch, n_pix=n_pix)
-                    data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
-                                                        "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
-                                                        n_patch=n_patch, n_pix=n_pix)
+            source_zooms_2d, target_zooms_2d, emb_2d, sample_configs_2d = self._reshape_group(
+                source_zooms_2d, target_zooms_2d, emb_2d, sample_configs_2d
+            )
+            source_zooms_3d, target_zooms_3d, emb_3d, sample_configs_3d = self._reshape_group(
+                source_zooms_3d, target_zooms_3d, emb_3d, sample_configs_3d
+            )
 
-                    new_patch_indices = torch.cat([torch.arange(n_patch) + (n_patch * patch_index) for patch_index in patch_index_zooms[zoom]])
-                    patch_index_zooms[zoom] = new_patch_indices
-                    mask_zooms[zoom] = rearrange(mask_zooms[zoom],
-                                                 "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
-                                                 n_patch=n_patch, n_pix=n_pix)
-                    embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
-                                                                       "b nv nt (n_patch n_pix) d f  -> (b n_patch) nv nt n_pix d f ",
-                                                                       n_patch=n_patch, n_pix=n_pix)
-                    embed_data["TimeEmbedder"][zoom] = embed_data["TimeEmbedder"][zoom].repeat_interleave(repeats=n_patch, dim=0)
-            if n_patch is not None:
-                embed_data["GroupEmbedder"] = embed_data["GroupEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
-
-            # temporal collate
-            n_patch = None
-            for zoom in data_target_zooms.keys():
-                if (self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] < self.dataset.sampling_zooms[zoom]["n_past_ts"]
-                 or self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] < self.dataset.sampling_zooms[zoom]["n_future_ts"]):
-                    b, nv, nt, n, d, f = data_source_zooms[zoom].shape
-                    n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
-                    n_patch = nt // n_steps
-                    data_source_zooms[zoom] = rearrange(data_source_zooms[zoom],
-                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
-                                                        n_patch=n_patch, n_steps=n_steps)
-                    data_target_zooms[zoom] = rearrange(data_target_zooms[zoom],
-                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
-                                                        n_patch=n_patch, n_steps=n_steps)
-                    
-                    patch_index_zooms[zoom] = patch_index_zooms[zoom].repeat_interleave(repeats=n_patch, dim=0)
-                    
-
-            for zoom in mask_zooms.keys():
-                if (self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] < self.dataset.sampling_zooms[zoom]["n_past_ts"]
-                 or self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] < self.dataset.sampling_zooms[zoom]["n_future_ts"]):
-                    n_steps = self.dataset.sampling_zooms_collate[zoom]["n_past_ts"] + self.dataset.sampling_zooms_collate[zoom]["n_future_ts"] + 1
-                # b, nv, nt, n, nh = data_source_zooms[zoom].shape
-                    n_patch = nt // n_steps
-                    embed_data["DensityEmbedder"][0][zoom] = rearrange(embed_data["DensityEmbedder"][0][zoom],
-                                                                        "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
-                                                                        n_patch=n_patch, n_steps=n_steps)
-                    embed_data["TimeEmbedder"][zoom] = rearrange(embed_data["TimeEmbedder"][zoom],
-                                                                    "b (n_patch n_steps) -> (b n_patch) n_steps",
-                                                                    n_patch=n_patch, n_steps=n_steps)
-                    mask_zooms[zoom] = rearrange(mask_zooms[zoom],
-                                                    "b nv (n_patch n_steps) n d f -> (b n_patch) nv n_steps n d f",
-                                                    n_patch=n_patch, n_steps=n_steps)
-                
-            if n_patch is not None:
-                embed_data["GroupEmbedder"] = embed_data["GroupEmbedder"].repeat_interleave(repeats=n_patch, dim=0)
-
-            return data_source_zooms, data_target_zooms, patch_index_zooms, mask_zooms, embed_data
+            return source_zooms_2d, source_zooms_3d, target_zooms_2d, target_zooms_3d, emb_2d, emb_3d, sample_configs_2d, sample_configs_3d
         else:
             return default_collate(batch)
 

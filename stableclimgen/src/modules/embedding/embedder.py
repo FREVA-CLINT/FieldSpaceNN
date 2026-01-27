@@ -92,7 +92,7 @@ class CoordinateEmbedder(BaseEmbedder):
         coordinates= coordinates.view(coordinates.shape[0],-1, 4**zoom_diff, coordinates.shape[-1])[:,:,0]
         coord_emb = self.embedding_fn(coordinates)
 
-        coord_emb = self.mlp(coord_emb, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
+        coord_emb = self.mlp(coord_emb, sample_configs=sample_configs, emb={'VariableEmbedder': var_indices})
         return coord_emb
     
 
@@ -135,11 +135,13 @@ class Embedding_interpolator(nn.Module):
 
 #class Mmbedder(BaseEmbedder):
 
-    
+
+
+
 class MGEmbedder(BaseEmbedder):
 
 
-    def __init__(self, name: str, in_channels:int, embed_dim: int, grid_layers=None, zoom=None, n_groups=1, init_method='spherical_harmonics', **kwargs) -> None:
+    def __init__(self, name: str, in_channels:int, embed_dim: int, grid_layers=None, zoom=None, n_variables=1, init_method='spherical_harmonics', **kwargs) -> None:
 
         in_channels = 2
 
@@ -148,7 +150,7 @@ class MGEmbedder(BaseEmbedder):
         mg_emb_confs = {}
         mg_emb_confs['zooms'] = [zoom]
         mg_emb_confs['features'] = [embed_dim]
-        mg_emb_confs['n_groups'] = [n_groups]
+        mg_emb_confs['n_variables'] = [n_variables]
         mg_emb_confs['init_methods'] = [init_method]
 
         self.mg_embedding = get_mg_embeddings(mg_emb_confs,
@@ -159,7 +161,7 @@ class MGEmbedder(BaseEmbedder):
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "v", "t", "s", "c"]
 
-        if n_groups ==1:
+        if n_variables ==1:
             self.get_emb_fcn = self.get_embeddings
         else:
             self.get_emb_fcn = self.get_embeddings_from_var_idx
@@ -237,9 +239,9 @@ class SharedMGEmbedder(BaseEmbedder):
             self.grid_layers[str(zoom_proc)] = grid_layers[str(zoom_proc)]
 
             in_channels = mg_emb_confs['features'][zoom_proc_idx]
-            n_groups = mg_emb_confs['n_groups'][zoom_proc_idx]
+            n_variables = mg_emb_confs['n_variables'][zoom_proc_idx]
 
-            if n_groups ==1:
+            if n_variables ==1:
                 get_emb_fcn = self.get_embeddings
             else:
                 get_emb_fcn = self.get_embeddings_from_var_idx
@@ -319,7 +321,7 @@ class SharedMGEmbedder(BaseEmbedder):
             embs = get_patch_fcn(embs, self.grid_layers[str(zoom_proc)], sample_configs=sample_configs)
             embs = embs.unsqueeze(dim=2)
 
-            embs = self.layers[str(zoom_proc)](embs, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
+            embs = self.layers[str(zoom_proc)](embs, sample_configs=sample_configs, emb={'VariableEmbedder': var_indices})
 
             embs = embs.reshape(*embs.shape[:3],-1,embs.shape[-1])
             
@@ -375,10 +377,10 @@ class DensityEmbedder(BaseEmbedder):
         
         density_emb = self.embedding_fn(density_)
 
-        density_emb = self.mlp(density_emb, sample_configs=sample_configs, emb={'GroupEmbedder': var_indices})
+        density_emb = self.mlp(density_emb, sample_configs=sample_configs, emb={'VariableEmbedder': var_indices})
         return density_emb
 
-class GroupEmbedder(BaseEmbedder):
+class VariableEmbedder(BaseEmbedder):
 
     def __init__(self, name: str, in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
         super().__init__(name, in_channels, embed_dim)

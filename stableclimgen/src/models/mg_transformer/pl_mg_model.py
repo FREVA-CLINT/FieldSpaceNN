@@ -126,13 +126,12 @@ class MGMultiLoss(nn.Module):
 
         self.has_elements = self._compute_has_elements()
 
-    def forward(self, output, target, mask=None, sample_configs={}, prefix='', emb=None):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix='', emb={}):
         loss_dict = {}
         total_loss = 0.0
 
         group_embedder = None
-        if isinstance(emb, dict) and isinstance(emb.get('GroupEmbedder'), torch.Tensor):
-            group_embedder = emb['GroupEmbedder']
+        group_embedder = emb['VariableEmbedder']
 
         for level_key in output:
             out = output[level_key]
@@ -392,66 +391,195 @@ class LightningMGModel(pl.LightningModule):
         comp_loss_dict = lambda_loss_dict.get("composed",{})
         self.loss_composed = MGMultiLoss(comp_loss_dict, grid_layers=model.grid_layers, max_zoom=max(model.in_zooms))
 
-    def forward(self, x, sample_configs={}, mask_zooms=None, emb=None, out_zoom=None) -> torch.Tensor:
-        return self.model(x, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=out_zoom)
 
-    def get_losses(self, source, target, sample_configs, mask_zooms=None, emb=None, prefix='', mode="default", pred_xstart=False):
+    def forward(self,  
+                x_zooms_groups=None,
+                mask_zooms_groups=None,
+                emb_groups=None,
+                sample_configs={},
+                out_zoom=None,
+                mask_zooms=None,
+                emb=None,
+                **kwargs) -> torch.Tensor:
+        
+        if x_zooms_groups is None:
+            x_zooms_groups = []
+        if isinstance(x_zooms_groups, dict):
+            x_zooms_groups = [x_zooms_groups]
+
+        if mask_zooms_groups is None:
+            mask_zooms_groups = mask_zooms
+        if emb_groups is None:
+            emb_groups = emb
+
+        return self.model( 
+                x_zooms_groups=x_zooms_groups,
+                mask_zooms_groups=mask_zooms_groups,
+                emb_groups=emb_groups,
+                sample_configs=sample_configs,
+                out_zoom=out_zoom) 
+
+    def get_losses(self, 
+                   source_groups,
+                   target_groups,
+                   sample_configs={}, 
+                   mask_groups=None,
+                   emb_groups=None,
+                   prefix='', 
+                   mode="default", 
+                   pred_xstart=False,
+                   mask_zooms=None,
+                   emb=None):
 
         loss_dict_total = {}
         total_loss = 0
         posterior = None
 
-        if self.loss_zooms.has_elements:
-            if mode == "vae":
-                output, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
-            elif mode == "diffusion":
-                target, output, pred_xstart = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms,
-                                                   emb=emb, pred_xstart=pred_xstart)
-            else:
-                output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)
+        if mask_groups is None:
+            mask_groups = mask_zooms
+        if emb_groups is None:
+            emb_groups = emb
 
-            loss, loss_dict = self.loss_zooms(output, target, mask=mask_zooms, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb)
-            total_loss += loss
-            loss_dict_total.update(loss_dict)
+        source_is_dict = isinstance(source_groups, dict)
+        if source_is_dict:
+            source_groups_list = [source_groups]
         else:
-            output = None
+            source_groups_list = list(source_groups)
+
+        if source_is_dict:
+            model_input = source_groups.copy()
+            mask_input = mask_groups[0] if mask_groups else None
+            emb_input = emb_groups[0] if emb_groups else None
+        else:
+            model_input = [group.copy() for group in source_groups_list]
+            mask_input = mask_groups
+            emb_input = emb_groups
+
+        if mode == "vae":
+            if source_is_dict:
+                outputs = self(
+                    model_input,
+                    mask_zooms=mask_input,
+                    emb=emb_input,
+                    sample_configs=sample_configs,
+                    pred_xstart=pred_xstart,
+                )
+            else:
+                outputs = self(
+                    x_zooms_groups=model_input,
+                    mask_zooms_groups=mask_input,
+                    emb_groups=emb_input,
+                    sample_configs=sample_configs,
+                    pred_xstart=pred_xstart,
+                )
+            if isinstance(outputs, tuple) and len(outputs) == 2:
+                output_groups, posterior = outputs
+            elif isinstance(outputs, tuple) and len(outputs) == 3:
+                output_groups = [outputs[0], outputs[1]]
+                posterior = outputs[2]
+            else:
+                output_groups = outputs
+                posterior = None
+            
+        elif mode == "diffusion":
+            if source_is_dict:
+                outputs = self(
+                    model_input,
+                    mask_zooms=mask_input,
+                    emb=emb_input,
+                    sample_configs=sample_configs,
+                    pred_xstart=pred_xstart,
+                )
+            else:
+                outputs = self(
+                    x_zooms_groups=model_input,
+                    mask_zooms_groups=mask_input,
+                    emb_groups=emb_input,
+                    sample_configs=sample_configs,
+                    pred_xstart=pred_xstart,
+                )
+            if isinstance(outputs, tuple) and len(outputs) == 3:
+                target_groups, output_groups, pred_xstart = outputs
+            elif isinstance(outputs, tuple) and len(outputs) == 4:
+                target_groups = outputs[0]
+                output_groups = [outputs[1], outputs[2]]
+                pred_xstart = outputs[3]
+            else:
+                target_groups = target_groups
+                output_groups = outputs
+                pred_xstart = None
+            
+        else:
+            if source_is_dict:
+                output_groups = self(
+                    model_input,
+                    mask_zooms=mask_input,
+                    emb=emb_input,
+                    sample_configs=sample_configs,
+                )
+            else:
+                output_groups = self(
+                    x_zooms_groups=model_input,
+                    mask_zooms_groups=mask_input,
+                    emb_groups=emb_input,
+                    sample_configs=sample_configs,
+                )
+
+        for source, output, target, mask, emb in zip(
+            source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+        ):
+            if len(source) > 0:
+                loss, loss_dict = self.loss_zooms(
+                    output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb
+                )
+                total_loss += loss
+                loss_dict_total.update(loss_dict)
 
         if self.loss_composed.has_elements:
+            max_zooms = [max(target.keys()) for target in target_groups if target]
+            if max_zooms:
+                max_zoom = max(max_zooms)
+                for source, output, target, mask, emb in zip(
+                    source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+                ):
+                    if len(source) > 0:
+                        output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                        target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
 
-            max_zoom = max(target.keys())
+                        loss, loss_dict = self.loss_composed(
+                            output_comp,
+                            target_comp,
+                            mask=mask,
+                            sample_configs=sample_configs,
+                            prefix=f'{prefix}/composed_',
+                            emb=emb,
+                        )
+                        total_loss += loss
+                        loss_dict_total.update(loss_dict)
 
-            if mode == "vae":
-                output_comp, posterior = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb,
-                                   out_zoom=max_zoom)
-            elif mode == "diffusion":
-                target, output_comp, pred_xstart_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms,
-                                                             emb=emb, out_zoom=max_zoom, pred_xstart=pred_xstart)
-
-            else:
-                output_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb, out_zoom=max_zoom)
-
-            target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-            loss, loss_dict = self.loss_composed(output_comp, target_comp, mask=mask_zooms, sample_configs=sample_configs, prefix=f'{prefix}/composed_', emb=emb)
-            total_loss += loss
-            loss_dict_total.update(loss_dict)
-        else:
-            output_comp = None
 
         if mode=="vae":
-            return total_loss, loss_dict_total, output, output_comp, posterior
+            return total_loss, loss_dict_total, output_groups, posterior
         elif mode=="diffusion":
-            return total_loss, loss_dict_total, output, output_comp, pred_xstart
+            return total_loss, loss_dict_total, output_groups, pred_xstart
         else:
-            return total_loss, loss_dict_total, output, output_comp
+            return total_loss, loss_dict_total, output_groups
 
 
     def training_step(self, batch, batch_idx):
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict, _, _ = self.get_losses(source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train')
+        loss, loss_dict, _ = self.get_losses(
+            source_groups,
+            target_groups,
+            sample_configs,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix='train',
+        )
       
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -462,21 +590,39 @@ class LightningMGModel(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
-        max_zoom = max(target.keys())
+        max_zooms = [max(target.keys()) for target in target_groups if target]
+        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict, output, output_comp = self.get_losses(source.copy(), target, sample_configs, mask_zooms=mask, emb=emb, prefix='val')
-
+   
+        loss, loss_dict, output_groups = self.get_losses(
+            [group.copy() for group in source_groups],
+            target_groups,
+            sample_configs=sample_configs, 
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix='val')
+        
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            if output_comp is None:
-                output_comp = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
-         
+
+            group_idx = next((idx for idx, group in enumerate(output_groups) if len(group) > 0), None)
+            if group_idx is None:
+                return loss
+
+            output = output_groups[group_idx]
+            source = source_groups[group_idx]
+            target = target_groups[group_idx]
+            mask = mask_groups[group_idx]
+            emb = emb_groups[group_idx]
+
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+
             self.log_tensor_plot(source, output, target, mask, sample_configs, emb, self.current_epoch, output_comp=output_comp)
             
         return loss
@@ -484,16 +630,17 @@ class LightningMGModel(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
-        max_zoom = max(target.keys())
+        max_zooms = [max(target.keys()) for target in target_groups if target]
+        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        output = self(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
+        output = self([group.copy() for group in source_groups], sample_configs=sample_configs, mask_zooms=mask_groups, emb=emb_groups,
                            out_zoom=max_zoom)
 
         output = {'output': output,
-                  'mask': mask}
+                  'mask': mask_groups}
         return output
 
     def prepare_missing_zooms(self, x_zooms, sample_configs=None):
@@ -516,7 +663,16 @@ class LightningMGModel(pl.LightningModule):
         save_paths = []
 
         if output is not None:
-            save_paths += healpix_plot_zooms_var(input, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}{plot_name}", emb=emb)
+            save_paths += healpix_plot_zooms_var(
+                input,
+                output,
+                gt,
+                save_dir,
+                mask_zooms=mask,
+                sample_configs=sample_configs,
+                plot_name=f"epoch_{current_epoch}{plot_name}",
+                emb=emb,
+            )
     
         max_zoom = max(self.model.in_zooms)
 
@@ -524,12 +680,27 @@ class LightningMGModel(pl.LightningModule):
         target_p = decode_zooms(gt, sample_configs=sample_configs, out_zoom=max_zoom)
 
         if output_comp is None:
-            output_p = self(input.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
+            output_p = self(
+                input.copy(),
+                sample_configs=sample_configs,
+                mask_zooms=mask,
+                emb=emb,
+                out_zoom=max_zoom,
+            )
         else:
             output_p = output_comp
 
         mask = {max_zoom: mask[max_zoom]} if mask is not None else None
-        save_paths += healpix_plot_zooms_var(source_p, output_p, target_p, save_dir, mask_zooms=mask, sample_configs=sample_configs, plot_name=f"epoch_{current_epoch}_combined{plot_name}", emb=emb)
+        save_paths += healpix_plot_zooms_var(
+            source_p,
+            output_p,
+            target_p,
+            save_dir,
+            mask_zooms=mask,
+            sample_configs=sample_configs,
+            plot_name=f"epoch_{current_epoch}_combined{plot_name}",
+            emb=emb,
+        )
 
         for k, save_path in enumerate(save_paths):
             if isinstance(self.logger, WandbLogger):
@@ -608,5 +779,5 @@ class LightningMGModel(pl.LightningModule):
 
     #TODO fix
    # def prepare_emb(self, emb=None, sample_configs={}):
-   #     emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["GroupEmbedder"])
+   #     emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["VariableEmbedder"])
    #     return emb

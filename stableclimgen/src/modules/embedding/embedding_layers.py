@@ -179,14 +179,14 @@ def get_mg_embeddings(mg_emb_confs, grid_layers):
     
     amplitude = 1
     wavelength_max = None
-    for zoom, features, n_groups, init_method in zip(mg_emb_confs['zooms'], mg_emb_confs['features'], mg_emb_confs["n_groups"], mg_emb_confs['init_methods']):
+    for zoom, features, n_variables, init_method in zip(mg_emb_confs['zooms'], mg_emb_confs['features'], mg_emb_confs["n_variables"], mg_emb_confs['init_methods']):
         
         wavelength_min = estimate_healpix_cell_radius_rad(grid_layers[str(zoom)].adjc.shape[0])
 
         mg_emeddings[str(zoom)] = get_mg_embedding(
             grid_layers[str(zoom)],
             features,
-            n_groups,
+            n_variables,
             init_mode=init_method,
             wavelength_min=wavelength_min,
             wavelength_max=wavelength_max,
@@ -205,7 +205,7 @@ def get_mg_embeddings(mg_emb_confs, grid_layers):
 def get_mg_embedding(
         grid_layer_emb: GridLayer, 
         features, 
-        n_groups, 
+        n_variables, 
         init_mode='fourier_sphere',
         wavelength=1,
         wavelength_min=None,
@@ -278,7 +278,7 @@ def get_mg_embedding(
             embs[..., k] = amplitude * Y_real.view(1, -1)
 
 
-    embs = embs.repeat_interleave(n_groups, dim=0)
+    embs = embs.repeat_interleave(n_variables, dim=0)
     
     embs = nn.Parameter(embs, requires_grad=True)
 

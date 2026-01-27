@@ -50,7 +50,15 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         else:
             new_source = source
 
-        loss, loss_dict, _, _, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask, emb=emb, prefix='train', mode="vae")
+        loss, loss_dict, _, posterior_zooms = self.get_losses(
+            new_source,
+            target,
+            sample_configs,
+            mask_zooms=mask,
+            emb=emb,
+            prefix='train',
+            mode="vae",
+        )
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
@@ -78,8 +86,17 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
         else:
             new_source = source
 
-        loss, loss_dict, output, output_comp, posterior_zooms = self.get_losses(new_source, target, sample_configs, mask_zooms=mask,
-                                                                 emb=emb, prefix='val', mode="vae")
+        loss, loss_dict, output_groups, posterior_zooms = self.get_losses(
+            new_source,
+            target,
+            sample_configs,
+            mask_zooms=mask,
+            emb=emb,
+            prefix='val',
+            mode="vae",
+        )
+        output = output_groups[0] if isinstance(output_groups, list) else output_groups
+        output_comp = None
 
         # Compute KL divergence loss
         if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
@@ -93,8 +110,13 @@ class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
 
         if batch_idx == 0 and rank_zero_only.rank==0:
             if output_comp is None:
-                output_comp, _ = self(new_source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb,
-                                      out_zoom=max_zoom)
+                output_comp = self(
+                    new_source.copy(),
+                    sample_configs=sample_configs,
+                    mask_zooms=mask,
+                    emb=emb,
+                    out_zoom=max_zoom,
+                )
 
             self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch, output_comp=output_comp)
 

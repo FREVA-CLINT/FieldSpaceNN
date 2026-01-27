@@ -45,8 +45,8 @@ class TuckerFacLayer(nn.Module):
                  in_features: List|int, 
                  out_features: List|int, 
                  ranks: int = None,
-                 rank_groups = None,
-                 n_groups = 1,
+                 rank_variables = None,
+                 n_variables = 1,
                  bias = False,
                  **kwargs):
 
@@ -68,7 +68,7 @@ class TuckerFacLayer(nn.Module):
         self.core_letters = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
 
         
-        factorize_vars = rank_groups is not None
+        factorize_vars = rank_variables is not None
 
         self.subscripts = {
             'factors': [],
@@ -81,9 +81,9 @@ class TuckerFacLayer(nn.Module):
         
         # variables -----
         scale = 0
-        if factorize_vars and n_groups>1:
-            self.factor_vars = get_fac_matrix(n_groups, rank_groups, init_ones=True)
-            self.core_dims.append(rank_groups)
+        if factorize_vars and n_variables>1:
+            self.factor_vars = get_fac_matrix(n_variables, rank_variables, init_ones=True)
+            self.core_dims.append(rank_variables)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core
 
@@ -91,8 +91,8 @@ class TuckerFacLayer(nn.Module):
             self.subscripts['core'] = sub_c
             self.subscripts['factors'].append('bv' + sub_c)
 
-        elif n_groups>1:
-            self.core_dims.append(n_groups)
+        elif n_variables>1:
+            self.core_dims.append(n_variables)
             self.get_core_fcn = self.get_core_from_var_idx
             self.get_var_fac_fcn = self.get_empty1
             self.subscripts['core'] = 'bv'
@@ -121,7 +121,7 @@ class TuckerFacLayer(nn.Module):
 
         core = torch.empty(self.core_dims)
 
-        if n_groups == 1:
+        if n_variables == 1:
             core = core.reshape(math.prod(in_dims),math.prod(out_dims))
             nn.init.kaiming_normal_(core)
             core = core.reshape(self.core_dims)
@@ -167,7 +167,7 @@ class TuckerFacLayer(nn.Module):
         return x_sub, core_dim
 
     def get_core_from_var_idx(self, emb=None):
-        return self.core[emb['GroupEmbedder']]
+        return self.core[emb['VariableEmbedder']]
     
     def get_core(self,**kwargs):
         return self.core
@@ -176,14 +176,8 @@ class TuckerFacLayer(nn.Module):
         return []
     
     def get_variable_factors(self, emb):
-        return [self.factor_vars[emb['GroupEmbedder']]]
-    
-    def get_in_feat_factors(self):
-        return list(self.factors_feats_in) 
-    
-    def get_out_feat_factors(self):
-        return list(self.factors_feats_out)
-    
+        return [self.factor_vars[emb['VariableEmbedder']]]
+        
     def return_w_bias(self, x):
         return x + self.bias
     
@@ -225,7 +219,7 @@ class CPFacLayer(nn.Module):
                  out_features: List[int], 
                  rank: int,
                  rank_groups: int = None,
-                 n_groups: int = 1,
+                 n_variables: int = 1,
                  keys: List[str] = [],
                  contract_feats: bool = True,
                  contract_channel: bool = True,
@@ -241,7 +235,7 @@ class CPFacLayer(nn.Module):
         """
 
         super().__init__()
-        self.n_groups = n_groups
+        self.n_variables = n_variables
         # Handle single int inputs
         if isinstance(in_features, int):
             in_features = [in_features]
@@ -267,7 +261,7 @@ class CPFacLayer(nn.Module):
             in_features=in_features_f,
             out_features=out_features_f,
             rank=rank,
-            n_groups=n_groups,
+            n_variables=n_variables,
             keys=keys,
             contract=contract_feats,
             init=init,
@@ -278,7 +272,7 @@ class CPFacLayer(nn.Module):
             in_features=in_features[-1],
             out_features=out_features[-1],
             rank=rank,
-            n_groups=n_groups,
+            n_variables=n_variables,
             contract=contract_channel,
             init=init,
             std=std
@@ -304,16 +298,16 @@ class CPFacLayer(nn.Module):
         else:
             self.bias = None
         """
-        self.equation = get_cp_equation(len(in_features), n_groups=n_groups, contract_feats=contract_feats, contract_channel=contract_channel, skip_dims=skip_dims)
+        self.equation = get_cp_equation(len(in_features), n_variables=n_variables, contract_feats=contract_feats, contract_channel=contract_channel, skip_dims=skip_dims)
 
     def get_tensors(self, emb):
         return [self.get_tensor(tensor, emb) for tensor in self.cp_tensors]
 
     def get_tensor(self, tensor, emb):
-        if self.n_groups==1:
+        if self.n_variables==1:
             return tensor
         else:
-            return tensor[emb['GroupEmbedder']]
+            return tensor[emb['VariableEmbedder']]
 
     def forward(self, x, emb={}, sample_configs={}):
         x = x.view(*x.shape[:3],-1,*self.in_feats)
@@ -322,13 +316,13 @@ class CPFacLayer(nn.Module):
         x = x.view(*x.shape[:3],-1,*self.out_feats)
         return x
 
-def get_cp_tensor(in_features, out_features, rank, n_groups=1, init='std_scale', std=0.1, contract=True):
+def get_cp_tensor(in_features, out_features, rank, n_variables=1, init='std_scale', std=0.1, contract=True):
     
     if contract:
-        c_dims = [n_groups, in_features, out_features, rank]
+        c_dims = [n_variables, in_features, out_features, rank]
 
     elif in_features==out_features:
-        c_dims = [n_groups, out_features, rank]
+        c_dims = [n_variables, out_features, rank]
 
     else:
         ValueError("in_features != out_features with no contraction")
@@ -345,22 +339,22 @@ def get_cp_tensor(in_features, out_features, rank, n_groups=1, init='std_scale',
     return nn.Parameter(weight, requires_grad=True)
 
 
-def get_cp_tensors(in_features, out_features, rank, n_groups=1, keys=[], contract=True, init='std_scale',std=0.1):
+def get_cp_tensors(in_features, out_features, rank, n_variables=1, keys=[], contract=True, init='std_scale',std=0.1):
     
     if len(keys)==0:
         tensors = nn.ParameterList()
         for in_f, out_f in zip(in_features,out_features):
-            tensors.append(get_cp_tensor(in_f, out_f, rank, n_groups=n_groups,contract=contract, init=init, std=std))
+            tensors.append(get_cp_tensor(in_f, out_f, rank, n_variables=n_variables,contract=contract, init=init, std=std))
     else:
         tensors = nn.ParameterDict()
         for key,in_f, out_f in zip(keys,in_features,out_features):
-            tensors[str(key)] = get_cp_tensor(in_f, out_f, rank, n_groups=n_groups,contract=contract, init=init, std=std)
+            tensors[str(key)] = get_cp_tensor(in_f, out_f, rank, n_variables=n_variables,contract=contract, init=init, std=std)
     
     return tensors
 
 
     
-def get_cp_equation(n_dims, n_groups=1, contract_feats=True, contract_channel=True, nh_dim=False, skip_dims=None):
+def get_cp_equation(n_dims, n_variables=1, contract_feats=True, contract_channel=True, nh_dim=False, skip_dims=None):
 
     x_letters =  iter("adefgijklmopqruwxyz")
     tensor_letters = iter("ABCDEFGHIJKLMNOPQSTUVWXYZ") 
@@ -370,7 +364,7 @@ def get_cp_equation(n_dims, n_groups=1, contract_feats=True, contract_channel=Tr
     
     tensors_subscripts = []
     for k in range(n_dims):
-        subs = '' if n_groups==1 else 'bv'
+        subs = '' if n_variables==1 else 'bv'
         skip = skip_dims[k] if skip_dims is not None else False
 
         if skip:
