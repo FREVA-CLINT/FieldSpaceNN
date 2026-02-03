@@ -117,7 +117,10 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     zoom_levels = sorted(output_zooms.keys())
     save_paths = []
 
-    for ts in range(plot_n_ts):
+    B, V, T, _, _, _ = input_zooms[zoom_levels[-1]].shape
+    plot_ts = (T-1) - np.arange(plot_n_ts)
+
+    for ts in plot_ts:
         # Assume all zoom levels have same number of variables
         B, V, T, _, _, _ = input_zooms[zoom_levels[0]].shape
 

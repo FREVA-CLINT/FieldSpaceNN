@@ -7,8 +7,8 @@ import math
 import torch
 import torch.nn as nn
 
-from ..base import get_layer, LinEmbLayer, MLP_fac
-from .mg_base import combine_zooms,refine_zoom,coarsen_zoom, Tokenizer
+from ..base import get_layer, MLP_fac
+from .mg_base import combine_zooms,refine_zoom,coarsen_zoom, Tokenizer, LinEmbLayer
 
 from ..grids.grid_layer import GridLayer
 from ..transformer.transformer_base import safe_scaled_dot_product_attention
@@ -238,9 +238,7 @@ class FieldAttentionModule(nn.Module):
         self.blocks = nn.ModuleList()
 
         for k in range(n_groups):
-
-            embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=int(token_zoom))
-
+            
             layer_confs[k]['n_variables'] = n_groups_variables[k]
             block = FieldAttentionBlock(
                         grid_layers,
@@ -267,7 +265,7 @@ class FieldAttentionModule(nn.Module):
                         with_var_att = with_var_att,
                         n_head_channels = n_head_channels,
                         dropout=dropout,
-                        embedder=embedder,
+                        embed_confs=embed_confs,
                         layer_confs=layer_confs[k],
                         layer_confs_emb=layer_confs_emb[k],
                         update=update,
@@ -390,7 +388,7 @@ class FieldAttentionBlock(nn.Module):
                  rank_depth : int =None,
                  dropout: float=0.0,
                  n_head_channels: int=32,
-                 embedder: Dict[str, EmbedderSequential] = {},
+                 embed_confs: Dict = {},
                  seq_len_time: int = -1,
                  seq_len_depth: int = -1,
                  seq_overlap_space: bool = False,
@@ -413,17 +411,16 @@ class FieldAttentionBlock(nn.Module):
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_time = token_overlap_time
 
-        grid_layer_field = grid_layers[str(token_zoom)]
+        grid_layer_field = grid_layers[str(token_zoom)] if token_zoom >-1 else grid_layers[str(0)]
         grid_layer_att = grid_layers[str(seq_zoom)] if seq_zoom >-1 else -1
 
-        global_update = token_zoom == 0
+        global_update = token_zoom == -1
 
         if global_update:
             token_overlap_space = 0
 
         self.att_dim = att_dim
 
-    
         layer_confs_ = layer_confs.copy()
         layer_confs_['ranks'] = [rank_time,rank_space,rank_depth,None,None]
 
@@ -466,15 +463,19 @@ class FieldAttentionBlock(nn.Module):
         self.kv_projection_layers = nn.ModuleDict()
         self.gammas = nn.ParameterDict()
 
-        self.tokenizer = Tokenizer(grid_layers, 
-                                    q_zooms, 
-                                    token_zoom, 
-                                    overlap_thickness=int(token_overlap_space))
+        self.tokenizer = Tokenizer(q_zooms, 
+                                    token_zoom,
+                                    grid_layers=grid_layers,
+                                    overlap_thickness=int(token_overlap_space),
+                                    token_len_time=token_len_time,
+                                    token_len_depth=token_len_depth)
         if not self.self_att:
-            self.kv_tokenizer = Tokenizer(grid_layers, 
-                                     kv_zooms, 
-                                     token_zoom, 
-                                     overlap_thickness=int(token_overlap_space))
+            self.kv_tokenizer = Tokenizer(kv_zooms, 
+                                     token_zoom,
+                                     grid_layers=grid_layers, 
+                                     overlap_thickness=int(token_overlap_space),
+                                     token_len_time=token_len_time,
+                                     token_len_depth=token_len_depth)
         else:
             self.kv_tokenizer = self.tokenizer
 
@@ -489,19 +490,39 @@ class FieldAttentionBlock(nn.Module):
         token_size_in_mlp_overlap = [token_len_time + 2 * token_overlap_mlp_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_mlp_depth, 1]
         token_size_in_kv_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth + 2 * token_overlap_depth, 1]
 
-
         self.separate_mlp_norm = separate_mlp_norm
 
-        self.emb_layer_q = LinEmbLayer(
-            self.token_size_space,
-            self.token_size_space,
+        input_zoom_field = embed_confs.get("input_zoom", min(q_zooms))
+        embedder: EmbedderSequential = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
+
+        emb_tokenizer = Tokenizer(
+            input_zooms=[input_zoom_field] if embedder.has_space() else [],
+            token_zoom=token_zoom,
+            token_len_time=token_len_time if embedder.has_time() else 1,
+            token_len_depth=token_len_depth if embedder.has_depth() else 1,
+            overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
+            grid_layers=grid_layers
+        ) 
+
+        layer_confs_emb_field = layer_confs_emb_.copy()
+        layer_confs_emb_field['ranks'] = embed_confs.get("ranks", [*layer_confs_['ranks'], None]) 
+
+        emb_tokenizer_out_features = copy.deepcopy(self.token_size_space)
+        emb_tokenizer_out_features[1] = self.token_size_space[1] if embedder.has_space() else 1
+
+        self.emb_layer_q_field = LinEmbLayer(
+            emb_tokenizer_out_features,
+            emb_tokenizer_out_features,
             layer_confs=layer_confs_,
             identity_if_equal=True,
             embedder=embedder,
-            layer_norm=layer_norm,
-            layer_confs_emb=layer_confs_emb_,
+            field_tokenizer= emb_tokenizer,
+            output_zoom=max(self.q_zooms),
+            layer_norm=True,
+            layer_confs_emb=layer_confs_emb_field
         )
-
+            
+        
         if separate_mlp_norm:
             self.emb_layer_mlp = LinEmbLayer(
                 self.token_size_space,
@@ -509,6 +530,8 @@ class FieldAttentionBlock(nn.Module):
                 layer_confs=layer_confs_,
                 identity_if_equal=True,
                 embedder=embedder,
+                field_tokenizer= emb_tokenizer,
+                output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
                 layer_confs_emb=layer_confs_emb_,
             )
@@ -522,6 +545,8 @@ class FieldAttentionBlock(nn.Module):
                 layer_confs=layer_confs_,
                 identity_if_equal=True,
                 embedder=embedder,
+                field_tokenizer= emb_tokenizer,
+                output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
                 layer_confs_emb=layer_confs_emb_,
             )
@@ -608,7 +633,7 @@ class FieldAttentionBlock(nn.Module):
         return x
     
     
-    def tokenize_emb(self, emb: Dict, sample_configs=None):
+    def select_emb(self, emb: Dict, sample_configs=None):
         if sample_configs is None:
             sample_configs = {}
 
@@ -618,14 +643,7 @@ class FieldAttentionBlock(nn.Module):
         emb_cpy = dict(emb)  # shallow copy of top level
         emb_cpy['TimeEmbedder'] = {max(self.q_zooms): emb_cpy['TimeEmbedder'][max(self.q_zooms)]}
         
-        if self.token_len_time > 1 and 'TimeEmbedder' in emb_cpy:
-            time_zooms = emb_cpy['TimeEmbedder']
-            max_zoom_time = time_zooms[max(self.q_zooms)]
-            time_zooms[max(self.q_zooms)] = max_zoom_time.view(max_zoom_time.shape[0], -1, self.token_len_time)[..., 0]
 
-        if self.token_len_depth > 1 and 'DepthEmbedder' in emb_cpy:
-            depth = emb_cpy['DepthEmbedder']
-            emb_cpy['DepthEmbedder'] = depth.view(depth.shape[0], -1, self.token_len_depth)[..., 0]
 
         return emb_cpy
     
@@ -633,11 +651,11 @@ class FieldAttentionBlock(nn.Module):
         zoom_field = self.grid_layer_field.zoom
 
         x = self.tokenizer(x_zooms, sample_configs)
-        x = rearrange(x, self.pattern_tokens, t=self.token_size_space[0], n=self.token_size_space[1], d=self.token_size_space[2])
 
-        emb_tokenized = self.tokenize_emb(emb)
+        emb_tokenized = emb#self.select_emb(emb)
 
-        q = self.emb_layer_q(x, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
+        if self.emb_layer_q_field is not None:
+            q = self.emb_layer_q_field(x, emb=emb_tokenized, sample_configs=sample_configs)
 
         x_base = q if not self.separate_mlp_norm else x
 
@@ -645,7 +663,6 @@ class FieldAttentionBlock(nn.Module):
 
         if not self.self_att:
             kv = self.kv_tokenizer(x_zooms, sample_configs)
-            kv = rearrange(kv, self.pattern_tokens, t=self.token_size_space_kv[0], n=self.token_size_space_kv[1], d=self.token_size_space_kv[2])
             kv = self.emb_layer_kv(kv, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
             kv = self.get_time_depth_overlaps(kv, overlap_time=self.token_overlap_time, overlap_depth=self.token_overlap_depth)
         else:
@@ -718,7 +735,7 @@ class FieldAttentionBlock(nn.Module):
 
     def forward_mlp(self, x_zooms, x_base, att_out, shape, emb=None, sample_configs={}):
 
-        emb_tokenized = self.tokenize_emb(emb)
+        emb_tokenized = emb#self.select_emb(emb)
 
         att_out = rearrange(att_out, self.att_pattern_reverse, **shape)
 
@@ -732,7 +749,7 @@ class FieldAttentionBlock(nn.Module):
             x = self.gamma_res * x_base + self.gamma * self.dropout_att(att_out)
 
         if self.separate_mlp_norm and self.emb_layer_mlp is not None:
-            x = self.emb_layer_mlp(x, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
+            x = self.emb_layer_mlp(x, emb=emb_tokenized, sample_configs=sample_configs)
 
         x = self.mlp(x, emb=emb_tokenized, sample_configs=sample_configs[int(zoom_field)])
 

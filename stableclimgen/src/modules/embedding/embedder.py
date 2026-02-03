@@ -5,10 +5,12 @@ from omegaconf import ListConfig
 import torch
 import torch.nn as nn
 from torch import ModuleDict
+from einops import rearrange
 
 from .embedding_layers import SinusoidalLayer, TimeScaleLayer, RandomFourierLayer, get_mg_embeddings
 from ...modules.grids.grid_layer import GridLayer,get_idx_of_patch,get_nh_idx_of_patch,RelativeCoordinateManager
 from ...utils.helpers import expand_tensor
+from ..grids.grid_utils import get_matching_time_patch
 
 from ..base import get_layer,IdentityLayer,MLP_fac
 
@@ -30,7 +32,7 @@ class BaseEmbedder(nn.Module):
 
         self.keep_dims = []
 
-    def forward(self, emb: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, emb: torch.Tensor, output_zoom=None, **kwargs) -> torch.Tensor:
         """
         Perform the forward pass to embed the tensor.
 
@@ -38,20 +40,65 @@ class BaseEmbedder(nn.Module):
         :return: Embedded tensor.
         """
         # Apply the embedder to the input tensor
+        if output_zoom is not None:
+            return self.embedding_fn((output_zoom, emb))
+        else:
+            return self.embedding_fn(emb)
+
+class ZoomBaseEmbedder(nn.Module):
+    """
+    A neural network module to embed longitude and latitude coordinates.
+
+    :param in_channels: Number of input features.
+    :param embed_dim: Dimensionality of the embedding output.
+    """
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int, zoom: int) -> None:
+        super().__init__()
+        self.name = name
+        self.in_channels = in_channels
+        self.embed_dim = embed_dim
+        self.embedding_fn = None
+        self.zoom = zoom
+
+        self.keep_dims = []
+
+    def forward(self, emb: torch.Tensor, output_zoom=None, sample_configs=None, **kwargs) -> torch.Tensor:
+        """
+        Perform the forward pass to embed the tensor.
+
+        :param emb: Input tensor containing values to be embedded.
+        :return: Embedded tensor.
+        """
+        # Apply the embedder to the input tensor
+        emb = emb[self.zoom]
+
+        if output_zoom is not None and output_zoom != self.zoom and 't' in self.keep_dims:
+            t_dim =  2 - int('v' in self.keep_dims) - int('b' in self.keep_dims)
+
+            ts_start = sample_configs[self.zoom]['n_past_ts'] - sample_configs[output_zoom]['n_past_ts']
+            ts_end = sample_configs[self.zoom]['n_future_ts'] - sample_configs[output_zoom]['n_future_ts']
+
+            nt = emb.shape[t_dim]
+
+            emb = torch.index_select(emb, dim=t_dim, index=torch.arange(ts_start, nt - ts_end, device=emb.device))
+        
         return self.embedding_fn(emb)
 
 
-class TimeEmbedder(BaseEmbedder):
-    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales, time_min, time_max, **kwargs):
+class TimeEmbedder(ZoomBaseEmbedder):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales, time_min, time_max, zoom, **kwargs):
         """
         Time2Vec module with fixed periodic components based on user-defined time scales.
         :param out_features: Number of output features (embedding dimension).
         :param time_scales: List of time scales (e.g., [24, 168, 720, 8760] for hourly, weekly, monthly, yearly).
         """
-        super().__init__(name, in_channels, embed_dim)
+        super().__init__(name, in_channels, embed_dim, zoom)
 
         # keep batch, spatial, variable and channel dimensions
         self.keep_dims = ["b", "t", "c"]
+
+        self.zoom = zoom
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
@@ -62,7 +109,7 @@ class TimeEmbedder(BaseEmbedder):
         )
 
 
-class CoordinateEmbedder(BaseEmbedder):
+class CoordinateEmbedder(ZoomBaseEmbedder):
     """
     A neural network module to embed longitude and latitude coordinates.
 
@@ -392,6 +439,35 @@ class VariableEmbedder(BaseEmbedder):
         if init_value is not None:
             self.embedding_fn.weight.data.fill_(init_value)
 
+
+
+class StaticVariableFieldReshaper(nn.Module):
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.variables_as_features = 'b v t n f d-> b t n (f v d)'
+
+    def forward(self, static_variables):
+        return rearrange(static_variables, self.variables_as_features)
+
+
+class StaticVariableEmbedder(ZoomBaseEmbedder):
+
+    def __init__(self, name: str, in_channels: int, embed_dim: int, zoom: int, **kwargs) -> None:
+        super().__init__(name, in_channels, embed_dim, zoom)
+
+        self.keep_dims = ["b", "t", "s", "c"]
+
+        self.zoom = zoom
+        
+        self.embedding_fn = nn.Sequential(
+            nn.Linear(self.in_channels, self.embed_dim),
+            nn.SiLU(),
+            nn.Linear(self.embed_dim, self.embed_dim),
+        )
+
+
 class MaskEmbedder(BaseEmbedder):
 
     def __init__(self, name: str,  in_channels: int, embed_dim: int, init_value:float = None, **kwargs) -> None:
@@ -488,7 +564,25 @@ class EmbedderSequential(nn.Module):
         self.spatial_dim_count = spatial_dim_count
         self.activation = nn.Identity()
 
-    def forward(self, inputs: Dict[str, torch.Tensor], sample_configs: Dict=None):
+    def get_embedding_dims(self):
+        dims = []
+        for embedder in self.embedders.values():
+            dims = dims + [dim for dim in embedder.keep_dims]
+        return dims
+    
+    def has_time(self):
+        return 't' in self.get_embedding_dims()
+
+    def has_space(self):
+        return 's' in self.get_embedding_dims()
+    
+    def has_depth(self):
+        return 'd' in self.get_embedding_dims()
+    
+    def has_var(self):
+        return 'v' in self.get_embedding_dims()
+    
+    def forward(self, inputs: Dict[str, torch.Tensor], sample_configs: Dict=None, output_zoom=None):
         """
         Args:
             inputs (dict): A dictionary of input tensors where each key corresponds to an embedder.
@@ -505,7 +599,8 @@ class EmbedderSequential(nn.Module):
                 raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
 
             input_tensor = inputs[embedder_name]
-            embed_output = embedder(input_tensor, sample_configs=sample_configs)
+                    
+            embed_output = embedder(input_tensor, sample_configs=sample_configs, output_zoom=output_zoom)     
 
             # Add time dimension
             if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):

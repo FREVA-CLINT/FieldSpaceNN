@@ -288,9 +288,11 @@ class GridLayer(nn.Module):
         return x, mask
     
     def get_number_of_points_in_patch(self, zoom_patch_out):
-        x_ = torch.zeros_like(self.adjc[:,0].unsqueeze(dim=0))
-        n = self.get_global_with_nh(x_, zoom_patch_out=zoom_patch_out)[0].shape[-1]
-
+        if zoom_patch_out > -1:
+            x_ = torch.zeros_like(self.adjc[:,0].unsqueeze(dim=0))
+            n = self.get_global_with_nh(x_, zoom_patch_out=zoom_patch_out)[0].shape[-1]
+        else:
+            n = self.adjc[:,0].shape[-1]
         return n
 
 

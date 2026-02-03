@@ -14,7 +14,8 @@ from stableclimgen.src.utils.utils import EmbedBlock
 
 from ...utils.helpers import check_value
 
-from ..base import get_layer, LinEmbLayer, IdentityLayer, MLP_fac
+from ..base import get_layer, IdentityLayer, MLP_fac
+from ..multi_grid.mg_base import LinEmbLayer
 
 
 def safe_scaled_dot_product_attention(q, k, v, mask=None, is_causal=False, chunk_size=2**16):

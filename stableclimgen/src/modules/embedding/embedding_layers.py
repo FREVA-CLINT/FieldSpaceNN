@@ -93,12 +93,12 @@ class TimeScaleLayer(nn.Module):
         # We also want to learn how to mix the sin/cos features
         self.periodic_projection = nn.Linear(n_periodic_features, n_periodic_features)
 
-    def forward(self, time_zooms: dict) -> torch.Tensor:
+    def forward(self, times: torch.Tensor) -> torch.Tensor:
         """
         times: Tensor of shape (Batch, Seq_Len) or (Batch, Seq_Len, 1)
                Values should be integers of hours (12, 36, 60...)
         """
-        times = time_zooms[max(time_zooms.keys())]
+       # times = time_zooms[max(time_zooms.keys())]
 
         if times.dim() == 2:
             times = times.unsqueeze(-1)  # Ensure (B, S, 1)

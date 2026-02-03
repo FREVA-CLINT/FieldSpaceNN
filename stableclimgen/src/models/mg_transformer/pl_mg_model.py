@@ -20,7 +20,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from ...modules.grids.grid_utils import decode_zooms
 
 from ...utils.visualization import healpix_plot_zooms_var
-from ...utils.losses import MSE_loss,GNLL_loss,NHVar_loss,NHTV_loss,NHInt_loss,L1_loss,NHTV_decay_loss,MSE_Hole_loss
+from ...utils.losses import MSE_masked_loss,MSE_loss,GNLL_loss,NHVar_loss,NHTV_loss,NHInt_loss,L1_loss,NHTV_decay_loss,MSE_Hole_loss
 
 
 def check_empty(x):

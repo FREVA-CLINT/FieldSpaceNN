@@ -30,7 +30,7 @@ class MSE_masked_loss(nn.Module):
         self.loss_fcn = torch.nn.MSELoss() 
 
     def forward(self, output, target, mask, **kwargs):
-        loss = self.loss_fcn(output, target.view(output.shape))
+        loss = self.loss_fcn(output[mask], target.view(output.shape)[mask])
         return loss
     
 class NHInt_loss(nn.Module):

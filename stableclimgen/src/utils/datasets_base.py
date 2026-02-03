@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import xarray as xr
 from omegaconf import ListConfig
+from einops import rearrange
 from torch.utils.data import Dataset
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,encode_zooms,to_zoom, apply_zoom_diff, get_matching_time_patch, decode_zooms,decode_masks
 
@@ -45,7 +46,8 @@ class BaseDataset(Dataset):
                  output_differences=True,
                  apply_diff = True,
                  output_max_zoom_only = False,
-                 normalize_data = True
+                 normalize_data = True,
+                 mask_ts_mode = 'repeat'
                  ):
         
         super(BaseDataset, self).__init__()
@@ -65,7 +67,10 @@ class BaseDataset(Dataset):
         self.apply_diff = apply_diff
         self.output_max_zoom_only = output_max_zoom_only
         
+        self.mask_ts_mode = mask_ts_mode
         self.p_dropout_all_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()]))
+        self.mask_last_ts_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("mask_last_ts", False) for v in self.sampling_zooms.values()]))
+
         self.p_dropout_all = p_dropout_all
 
 
@@ -384,21 +389,40 @@ class BaseDataset(Dataset):
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
-            for zoom in sorted(self.p_dropout_all_zooms.keys()):
+            for zoom in sorted(self.sampling_zooms.keys()):
+
                 if self.p_dropout_all_zooms[zoom] > 0 and not drop:
                     drop = torch.rand(1) < self.p_dropout_all_zooms[zoom]
 
                 if drop and mask_mapping_zooms[zoom].dtype == torch.bool:
                     mask_mapping_zooms[zoom] = torch.ones_like(mask_mapping_zooms[zoom], dtype=bool)
+
                 elif drop:
                     mask_mapping_zooms[zoom] = torch.zeros_like(mask_mapping_zooms[zoom], dtype=mask_mapping_zooms[zoom].dtype)
+
 
         for zoom in data_source.keys():
             if mask_mapping_zooms[zoom].dtype == torch.float:
                 mask_zoom = mask_mapping_zooms[zoom] == 0
             else:
                 mask_zoom = mask_mapping_zooms[zoom]
+
             data_source[zoom][mask_zoom.expand_as(data_source[zoom])] = 0
+
+
+        if any(['mask_last_ts' in z for z in self.sampling_zooms.values()]):
+            drop = False
+            for zoom, sampling_zoom in self.sampling_zooms.items():
+
+                if sampling_zoom['mask_last_ts']:
+                    mask_mapping_zooms[zoom][:,-1] = True
+
+                    if self.mask_ts_mode == 'repeat':
+                        data_source[zoom][:,-1] = data_source[zoom][:,-2]
+                    else:
+                        data_source[zoom][:,-1] = 0.
+
+        
 
         for key, value in patch_index_zooms.items():
             if key in sample_configs:
@@ -544,26 +568,36 @@ class BaseDataset(Dataset):
         emb_groups = []
 
         emb = {}
+        StaticVariableEmbedder = None
        # emb['DensityEmbedder'] = torch.tensor([selected_var_ids[group] for group in group_keys])
+        for group_idx, group in enumerate(group_keys):
+            if group == 'embedding': 
+                StaticVariableEmbedder = source_zooms_groups[group_idx]
+                StaticVariableEmbedder = dict(zip(StaticVariableEmbedder.keys(), [rearrange(t, 'v t n f d-> t n (v f d)') for t in StaticVariableEmbedder.values()]))
 
         for group_idx, group in enumerate(group_keys):
-            source_zooms, target_zooms, _, mask_group = self._finalize_group(
-                source_zooms_groups[group_idx],
-                target_zooms_groups[group_idx],
-                time_zooms,
-                mask_mapping_zooms_groups[group_idx],
-                patch_index_zooms,
-                hr_dopout,
-            )
-            source_zooms_groups_out.append(source_zooms)
-            target_zooms_groups_out.append(target_zooms)
-            mask_zooms_groups.append(mask_group)
+            if group != 'embedding': 
+                source_zooms, target_zooms, _, mask_group = self._finalize_group(
+                    source_zooms_groups[group_idx],
+                    target_zooms_groups[group_idx],
+                    time_zooms,
+                    mask_mapping_zooms_groups[group_idx],
+                    patch_index_zooms,
+                    hr_dopout,
+                )
+                source_zooms_groups_out.append(source_zooms)
+                target_zooms_groups_out.append(target_zooms)
+                mask_zooms_groups.append(mask_group)
 
-            emb_group = emb.copy()
-            emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(-1)
-            emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
-            emb_group['TimeEmbedder'] = time_zooms
-            emb_groups.append(emb_group)
+                emb_group = emb.copy()
+                emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(-1)
+                emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
+
+                if StaticVariableEmbedder is not None:
+                    emb_group['StaticVariableEmbedder'] = StaticVariableEmbedder
+
+                emb_group['TimeEmbedder'] = time_zooms
+                emb_groups.append(emb_group)
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 
