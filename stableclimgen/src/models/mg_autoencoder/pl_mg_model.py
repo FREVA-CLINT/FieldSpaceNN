@@ -1,18 +1,11 @@
-import torch.nn as nn
 
-import lightning.pytorch as pl
 import torch
-from typing import Dict
-
 from pytorch_lightning.utilities import rank_zero_only
-
-
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
-from ...modules.grids.grid_utils import decode_zooms
 from ...models.mg_transformer.pl_mg_model import LightningMGModel,merge_sampling_dicts
 
 
-class LightningMGVAEModel(LightningMGModel, LightningProbabilisticModel):
+class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel):
     def __init__(self, 
                  model, 
                  lr_groups,

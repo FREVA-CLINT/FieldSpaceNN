@@ -1,16 +1,13 @@
-import json
 import os
-from typing import Any
 import hydra
-import wandb
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from lightning.pytorch.loggers import WandbLogger, MLFlowLogger
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
-from stableclimgen.src.utils.pl_data_module import DataModule
 import torch
-from stableclimgen.src.utils.helpers import load_from_state_dict,freeze_zoom_levels,freeze_params
+from ..src.utils.helpers import load_from_state_dict,freeze_zoom_levels,freeze_params
+from ..src.data.pl_data_module import DataModule
 import getpass
 import mlflow
 

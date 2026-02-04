@@ -1,0 +1,150 @@
+_target_: stableclimgen.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
+kl_weight: 1.0e-10
+lambda_loss_dict:
+  zooms:
+    3:
+      MSE_loss: 1
+    4:
+      MSE_loss: 1
+    6:
+      MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.0005
+    warmup: 0
+  attention:
+    matches:
+    - TransformerBlock
+    - GridSelfAttention
+    lr: 0.0005
+    warmup: 500
+model:
+  _target_: stableclimgen.src.models.mg_autoencoder.mg_autoencoder.MG_AutoEncoder
+  mgrids: ${mgrids}
+  in_zooms: [3,5,6]
+  in_features: 1
+  out_features: 1
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [2]
+  layer_confs_emb:
+    aggregation: 'shift_scale'
+  encoder_block_configs:
+    "att_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3,5,6]
+      kv_zooms: [3,5,6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,5]
+      token_len_time: 2
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+    "down_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_layer.FieldLayerConfig
+      in_zooms: [5,6]
+      target_zooms: [5]
+      field_zoom: 4
+      out_zooms: [5,3]
+      with_nh: true
+      type: "mlp"
+    "att_1":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3,5]
+      kv_zooms: [3,5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,5]
+      token_len_time: 2
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+  decoder_block_configs:
+    "att_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3,5]
+      kv_zooms: [3,5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,5]
+      token_len_time: 2
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+    "up_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_layer.FieldLayerConfig
+      in_zooms: [5]
+      target_zooms: [6]
+      field_zoom: 3
+      out_zooms: [3,5,6]
+      with_nh: true
+      type: "mlp"
+    "att_1":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3,5,6]
+      kv_zooms: [3,5,6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,5]
+      token_len_time: 2
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"

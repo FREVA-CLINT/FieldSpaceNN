@@ -43,7 +43,7 @@ model:
       with_var_att: True
       update: shift
       embed_confs:
-        embed_names: ['TimeEmbedder','StaticVariableEmbedder']
+        embed_names: ['TimeEmbedder']
         input_zoom: 3
         embed_confs: ${embedding}
         embed_mode: "sum"
@@ -69,7 +69,7 @@ model:
       with_var_att: True
       update: shift
       embed_confs:
-        embed_names: ['TimeEmbedder','StaticVariableEmbedder']
+        embed_names: ['TimeEmbedder']
         input_zoom: 3
         embed_confs: ${embedding}
         embed_mode: "sum"

@@ -52,3 +52,6 @@ SharedMGEmbedder:
     init_methods: [spherical_harmonics,spherical_harmonics]
   layer_confs:
     n_groups: 4
+StaticVariableEmbedder:
+  in_channels: 2
+  embed_dim: 64

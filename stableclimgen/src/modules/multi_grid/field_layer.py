@@ -63,14 +63,14 @@ class FieldLayer(nn.Module):
 
         self.out_features = [self.target_features_dict[zoom] if zoom in self.target_features_dict.keys() else self.in_features_dict[zoom] for zoom in out_zooms]
 
-        self.tokenizer = Tokenizer(grid_layers, 
-                                in_zooms, 
-                                field_zoom, 
-                                overlap_thickness=overlap)
+        self.tokenizer = Tokenizer(in_zooms, 
+                                   field_zoom,
+                                   grid_layers=grid_layers, 
+                                   overlap_thickness=overlap)
         
-        tokenizer_out = Tokenizer(grid_layers, 
-                                target_zooms, 
-                                field_zoom)
+        tokenizer_out = Tokenizer(target_zooms, 
+                                  field_zoom,
+                                  grid_layers=grid_layers)
         
         self.n_in_features_zooms, _  = self.tokenizer.get_features()
         self.n_out_features_zooms, _ = tokenizer_out.get_features()

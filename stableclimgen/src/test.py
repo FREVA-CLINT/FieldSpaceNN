@@ -1,26 +1,20 @@
-import json
 import os
 from typing import Any
 
 import time
 import hydra
-import netCDF4
 import torch
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from einops import rearrange
-import xarray as xr
 
-from stableclimgen.src.modules.grids.grid_utils import get_lon_lat_names
-from stableclimgen.src.utils.datasets_base import BaseDataset
-from stableclimgen.src.utils.file_export import save_tensor_as_netcdf, remap_healpix_to_any, export_healpix_to_netcdf
-from stableclimgen.src.utils.pl_data_module import DataModule
+from stableclimgen.src.data.datasets_base import BaseDataset
+from stableclimgen.src.utils.file_export import export_healpix_to_netcdf
+from stableclimgen.src.data.pl_data_module import DataModule
 from stableclimgen.src.utils.helpers import load_from_state_dict
 import healpy as hp
 
-import numpy as np
-from scipy.interpolate import griddata
 
 
 @hydra.main(version_base=None, config_path="../configs/", config_name="healpix_vae_test")

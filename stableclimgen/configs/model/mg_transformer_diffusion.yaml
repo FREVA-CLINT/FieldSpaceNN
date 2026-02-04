@@ -1,75 +1,85 @@
 _target_: stableclimgen.src.models.mg_transformer.pl_mg_diffusion_model.Lightning_MG_diffusion_transformer
 lambda_loss_dict:
-  MSE_loss: 1
-noise_std: 0
+  zooms:
+    MSE_loss: 1
 weight_decay: 0
 lr_groups:
   default:
-    lr: 2e-4
-    warmup: 5000
-  attention:
-    matches: ['TransformerBlock','GridSelfAttention']
-    lr: 2e-4
-    warmup: 5000
+    lr: 0.001
+    warmup: 2000
 model:
   _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
-  mg_emb_confs: ${embedding.MGEmbedder.mg_emb_confs}
-  predict_var: false
+  in_zooms: [3,5,6]
   in_features: 1
   out_features: 1
   lift_features: 1
   n_head_channels: 16
-  learn_residual: true
-  in_zooms: [6,5,4,3]
-  layer_confs:
-    n_groups: 1
+  use_mask: false
+  n_groups_variables: [2]
   layer_confs_emb:
-    n_groups: 4
+    aggregation: 'shift_scale'
   block_configs:
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128, 128 ]
-      layer_settings:
-        type: 'linear'
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGSelfProcessingConfig
-      out_features: 128
-      q_zooms: [6,5,4,3]
-      kv_zooms: [6,5,4,3]
-      layer_settings:
-        with_nh: true
-        common_kv: true
-        n_head_channels: 32
-        mlp_mult: 2
-        embed_confs:
-          embed_names: [ "MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 128,128,128,128 ]
-      layer_settings:
-        type: "TransformerBlock"
-        blocks: [ "vsnh","mlp","vsnh","mlp" ]
-        seq_lengths: 1
-        n_head_channels: 32
-        mlp_mult: 2
-        embed_confs:
-          embed_names:
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-            - [ "MGEmbedder"]
-          embed_confs: ${embedding}
-          embed_mode: "sum"
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
-      out_features: [ 1,1,1, 1 ]
-      layer_settings:
-        type: 'mlp'
-    - _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
+    "0":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3]
+      kv_zooms: [3]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,1]
+      token_len_time: 5
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      rank_space: [16,16]
+      rank_time: [2,2]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+        token_overlap_space: False
+    "0_0":
+      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      separate_mlp_norm: True
+      q_zooms: [3,5,6]
+      kv_zooms: [3,5,6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1,5]
+      token_len_time: 2
+      token_overlap_space: True
+      token_overlap_time: False
+      token_overlap_depth: False
+      mlp_token_overlap_time: False
+      mlp_token_overlap_depth: False
+      rank_depth: [null,4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: True
+      update: shift
+      embed_confs:
+        embed_names: ['TimeEmbedder']
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: "sum"
+    "conservative": 
+      _target_: stableclimgen.src.modules.multi_grid.mg_base.ConservativeLayerConfig
 gaussian_diffusion:
   _target_: stableclimgen.src.models.diffusion.mg_respace.SpacedDiffusion
   diffusion_steps: 1000
   diffusion_step_scheduler:
-    6: "cosine"
-    5: "cosine"
-    4: "cosine"
-    3: "cosine"
+    5: "linear"
+    4: "linear"
+    3: "linear"
+  separate_noise_on_zoom: false

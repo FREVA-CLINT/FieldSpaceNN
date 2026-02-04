@@ -1,44 +1,32 @@
 dataset:
-  _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
+  _target_: stableclimgen.src.data.datasets_healpix.HealPixLoader
   norm_dict: ${run_dir}/input/norm_dict.json
-  p_dropout: 0.98
+  p_dropout: 0
   random_p: false
-  p_dropout_all: 0.4
-  n_sample_groups: -1
-  output_binary_mask: false
+  p_dropout_all: 1
+  n_sample_variables: -1
+  output_binary_mask: true
   apply_diff: true
-  sampling_zooms_collate:
-    3:
-      n_past_ts: 0
-      n_future_ts: 0
-      zoom_patch_sample: -1
-    4:
-      n_past_ts: 0
-      n_future_ts: 0
-      zoom_patch_sample: -1
-    6:
-      n_past_ts: 0
-      n_future_ts: 0
-      zoom_patch_sample: -1
+  mask_ts_mode: 'repeat'
   sampling_zooms:
     3:
-      n_past_ts: 0
-      n_future_ts: 0
+      n_past_ts: 2
+      n_future_ts: 2
       zoom_patch_sample: -1
-      p_drop: 0
-    4:
-      n_past_ts: 0
-      n_future_ts: 0
+      mask_last_ts: true
+    5:
+      n_past_ts: 1
+      n_future_ts: 1
       zoom_patch_sample: -1
-      p_drop: 0.5
+      mask_last_ts: true
     6:
-      n_past_ts: 0
+      n_past_ts: 1
       n_future_ts: 0
       zoom_patch_sample: -1
-      p_drop: 1.0
-
+      mask_last_ts: true
+  output_max_zoom_only: false
 datamodule:
-  _target_: stableclimgen.src.utils.pl_data_module.DataModule
+  _target_: stableclimgen.src.data.pl_data_module.DataModule
   batch_size: 2
   num_workers: 0
   use_costum_ddp_sampler: false

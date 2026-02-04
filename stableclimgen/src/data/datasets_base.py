@@ -1,6 +1,5 @@
 import copy
 import json
-from collections import defaultdict
 
 import numpy as np
 import torch
@@ -8,12 +7,12 @@ import xarray as xr
 from omegaconf import ListConfig
 from einops import rearrange
 from torch.utils.data import Dataset
-from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,encode_zooms,to_zoom, apply_zoom_diff, get_matching_time_patch, decode_zooms,decode_masks
 
 import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
 
-from . import normalizer as normalizers
+from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, apply_zoom_diff, decode_zooms
+from ..utils import normalizer as normalizers
 
 def skewed_random_p(size, exponent=2, max_p=0.9):
     uniform_random = torch.rand(size)
@@ -325,6 +324,8 @@ class BaseDataset(Dataset):
             data_g = torch.stack(data_g, dim=0)
 
         if drop_mask_ is not None:
+            print(drop_mask_.shape)
+            print(mask.shape)
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
         
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask.expand_as(data_g), binarize_mask=self.output_binary_mask)
