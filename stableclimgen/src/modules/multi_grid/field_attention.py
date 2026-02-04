@@ -37,6 +37,7 @@ class FieldAttentionConfig:
                  rank_space: List|int = None,
                  rank_time: List|int = None,
                  rank_depth: List|int = None,
+                 rank_features: List|int = None,
                  seq_len_zoom: int = -1,
                  seq_len_time: List|int = -1,
                  seq_len_depth: List|int = -1,
@@ -151,6 +152,7 @@ class FieldAttentionModule(nn.Module):
                 q_zooms:List|int,
                 kv_zooms:List|int,
                 token_zoom: int,
+                in_features: int = 1,
                 n_groups_variables: List = [1],
                 token_len_depth: List|int = 1,
                 token_len_time: List|int = 1,
@@ -162,6 +164,7 @@ class FieldAttentionModule(nn.Module):
                 rank_space : List|int =None,
                 rank_time : List|int =None,
                 rank_depth : List|int =None,
+                rank_features: List|int =None,
                 seq_len_zoom: int = -1,
                 seq_len_time: List = -1,
                 seq_len_depth: List = -1,
@@ -200,6 +203,7 @@ class FieldAttentionModule(nn.Module):
         rank_space = check_value(rank_space, n_groups)
         rank_time = check_value(rank_time, n_groups)
         rank_depth = check_value(rank_depth, n_groups)
+        rank_features = check_value(rank_features, n_groups)
         
 
         self.out_zooms = copy.deepcopy(out_zooms)
@@ -247,6 +251,7 @@ class FieldAttentionModule(nn.Module):
                         q_zooms,
                         kv_zooms,
                         att_dim,
+                        in_features = in_features,
                         token_len_depth= token_len_depth[k],
                         token_len_time= token_len_time[k],
                         token_overlap_space= token_overlap_space[k],
@@ -257,6 +262,7 @@ class FieldAttentionModule(nn.Module):
                         rank_space = rank_space[k],
                         rank_time = rank_time[k],
                         rank_depth = rank_depth[k],
+                        rank_features = rank_features[k],
                         seq_len_time= seq_len_time,
                         seq_len_depth= seq_len_depth,
                         seq_overlap_space = seq_overlap_space,
@@ -376,6 +382,7 @@ class FieldAttentionBlock(nn.Module):
                  q_zooms: int,
                  kv_zooms: int,
                  att_dim: int,
+                 in_features: int = 1,
                  token_len_depth: int = 1,
                  token_len_time: int = 1,
                  token_overlap_space: bool = False,
@@ -386,6 +393,7 @@ class FieldAttentionBlock(nn.Module):
                  rank_space : int =None,
                  rank_time : int =None,
                  rank_depth : int =None,
+                 rank_features: int = None,
                  dropout: float=0.0,
                  n_head_channels: int=32,
                  embed_confs: Dict = {},
@@ -422,10 +430,10 @@ class FieldAttentionBlock(nn.Module):
         self.att_dim = att_dim
 
         layer_confs_ = layer_confs.copy()
-        layer_confs_['ranks'] = [rank_time,rank_space,rank_depth,None,None]
+        layer_confs_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
 
         layer_confs_emb_ = layer_confs_emb.copy()
-        layer_confs_emb_['ranks'] = [rank_time,rank_space,rank_depth,None,None]
+        layer_confs_emb_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
 
         self.scale_shift = update == 'shift_scale'
         
@@ -448,8 +456,8 @@ class FieldAttentionBlock(nn.Module):
         self.q_zooms = q_zooms
         self.kv_zooms = kv_zooms
 
-        update_dim = 1
-        update_dim = 2 if update == 'shift_scale' else update_dim
+        update_dim = in_features
+        update_dim = 2 * in_features if update == 'shift_scale' else update_dim
         
         if len(self.q_zooms) == len(self.kv_zooms):
             self.self_att = True
@@ -482,13 +490,13 @@ class FieldAttentionBlock(nn.Module):
         self.n_in_features_zooms_q, self.n_out_features_zooms_q = self.tokenizer.get_features()
         self.n_in_features_zooms_kv, self.n_out_features_zooms_kv =  self.kv_tokenizer.get_features()
         
-        self.token_size_space = [token_len_time, sum(self.n_in_features_zooms_q.values()), token_len_depth, 1]
-        self.token_size_space_kv = [token_len_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth, 1]
-        self.token_size_update = [token_len_time, sum(self.n_out_features_zooms_q.values()), token_len_depth, 1]
+        self.token_size_space = [token_len_time, sum(self.n_in_features_zooms_q.values()), token_len_depth, in_features]
+        self.token_size_space_kv = [token_len_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth, in_features]
+        self.token_size_update = [token_len_time, sum(self.n_out_features_zooms_q.values()), token_len_depth, in_features]
 
-        token_size_in_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_depth, 1]
-        token_size_in_mlp_overlap = [token_len_time + 2 * token_overlap_mlp_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_mlp_depth, 1]
-        token_size_in_kv_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth + 2 * token_overlap_depth, 1]
+        token_size_in_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_depth, in_features]
+        token_size_in_mlp_overlap = [token_len_time + 2 * token_overlap_mlp_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_mlp_depth, in_features]
+        token_size_in_kv_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth + 2 * token_overlap_depth, in_features]
 
         self.separate_mlp_norm = separate_mlp_norm
 
@@ -557,7 +565,7 @@ class FieldAttentionBlock(nn.Module):
         out_dim_kv = [1, 1, 1, 2 * att_dim]
 
         update_dims = [*self.token_size_space[:-1], update_dim]
-        update_dims_mlp = [*self.token_size_update [:-1], update_dim]
+        update_dims_mlp = [*self.token_size_update[:-1], update_dim]
 
         self.q_projection_layer = get_layer(token_size_in_overlap, out_dim_q, layer_confs=layer_confs_, bias=False)
         self.kv_projection_layer = get_layer(token_size_in_kv_overlap, out_dim_kv, layer_confs=layer_confs_, bias=True)

@@ -6,6 +6,7 @@ from omegaconf import ListConfig
 from typing import List,Dict
 
 from ...utils.helpers import check_get
+from einops import rearrange
 
 from ...modules.multi_grid.mg_base import ConservativeLayer,ConservativeLayerConfig, DiffDecoder
 from ...modules.multi_grid.field_layer import FieldLayer, FieldLayerConfig
@@ -23,9 +24,7 @@ class MG_Transformer(MG_base_model):
                  block_configs: List,
                  in_zooms: List,
                  in_features: int=1,
-                 out_features: int=1,
                  n_groups_variables: List = [1],
-
                  **kwargs
                  ) -> None: 
         
@@ -34,18 +33,12 @@ class MG_Transformer(MG_base_model):
 
         self.in_zooms = in_zooms
         self.in_features = in_features 
-        predict_var = kwargs.get("predict_var", defaults['predict_var'])
-
-        if predict_var:
-            out_features = out_features * 2
-            self.activation_var = nn.Softplus()
-
-        self.out_features = out_features
-        self.predict_var = predict_var
+       
 
         self.Blocks = nn.ModuleDict()
 
         in_features = [in_features]*len(in_zooms)
+
 
         for block_key, block_conf in block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
@@ -61,8 +54,7 @@ class MG_Transformer(MG_base_model):
 
                         
             if isinstance(block_conf, ConservativeLayerConfig):
-                block = ConservativeLayer(in_zooms,
-                                          first_feature_only=self.predict_var)
+                block = ConservativeLayer(in_zooms)
                 block.out_features = in_features
                         
             
@@ -80,6 +72,7 @@ class MG_Transformer(MG_base_model):
                      shift= block_conf.shift,
                      multi_shift= block_conf.multi_shift,
                      att_dim = att_dim,
+                     in_features= in_features[0],
                      n_groups_variables = n_groups_variables,
                      token_len_time = block_conf.token_len_time,
                      token_len_depth = block_conf.token_len_depth,
@@ -206,24 +199,6 @@ class MG_Transformer(MG_base_model):
                         sample_configs=sample_configs,
                         out_zoom=list(x_zooms_res.keys())[0],
                     )
-
-        if self.predict_var and self.learn_residual:
-            for zoom, x in x_zooms.items():
-                x, x_var = x.chunk(2, dim=-1)
-
-                if not self.masked_residual or mask_zooms is None:
-                    x = x_zooms_res[zoom] + x
-                elif mask_zooms[zoom].dtype == torch.bool:
-                    x = (1 - mask_zooms[zoom]) * x_zooms_res[zoom] + (mask_zooms[zoom]) * x
-                else:
-                    x = mask_zooms[zoom] * x_zooms_res[zoom] + (1 - mask_zooms[zoom]) * x
-
-                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)), dim=-1)
-
-        elif self.predict_var:
-            for zoom, x in x_zooms.items():
-                x, x_var = x.chunk(2, dim=-1)
-                x_zooms[zoom] = torch.concat((x, self.activation_var(x_var)), dim=-1)
 
         elif self.learn_residual:
             for zoom in x_zooms.keys():
