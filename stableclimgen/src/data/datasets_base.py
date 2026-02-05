@@ -227,7 +227,7 @@ class BaseDataset(Dataset):
 
     #def map_data(self):
 
-    def select_ranges(self, ds, time_idx, patch_idx, mapping, mapping_zoom, zoom):
+    def _select_time_patch(self, ds, time_idx, patch_idx, mapping, mapping_zoom, zoom):
         # Fetch raw patch indices
         n_past_timesteps = self.sampling_zooms[zoom]['n_past_ts']
         n_future_timesteps = self.sampling_zooms[zoom]['n_future_ts']
@@ -256,11 +256,11 @@ class BaseDataset(Dataset):
 
                 if patch_dim:
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
-
+            #print(isel_dict, ds.sizes)
             ds_zoom = ds.isel(isel_dict)
     
         return ds_zoom
-
+    
     def get_data(self, ds, patch_idx, variables_sample, mapping, mapping_zoom, zoom, drop_mask=None):
         # Fetch raw patch indices
         drop_mask_ = drop_mask.clone() if drop_mask is not None else None
@@ -324,8 +324,6 @@ class BaseDataset(Dataset):
             data_g = torch.stack(data_g, dim=0)
 
         if drop_mask_ is not None:
-            print(drop_mask_.shape)
-            print(mask.shape)
             mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
         
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask.expand_as(data_g), binarize_mask=self.output_binary_mask)
@@ -508,15 +506,15 @@ class BaseDataset(Dataset):
 
             data_time_zoom = None
 
-            ds_source = self.select_ranges(ds_source,
+            ds_source_zoom = self._select_time_patch(ds_source,
                     time_index,
                     patch_index,
                     self.mapping[mapping_zoom],
                     mapping_zoom,
                     zoom)
-
+            
             if ds_target is not None:
-                    ds_target = self.select_ranges(
+                    ds_target_zoom = self._select_time_patch(
                         ds_target,
                         time_index,
                         patch_index,
@@ -524,10 +522,11 @@ class BaseDataset(Dataset):
                         mapping_zoom,
                         zoom
                     )
+            
 
             for group_idx, group in enumerate(group_keys):
                 data_source, data_time_zoom_group, drop_mask_zoom_group = self.get_data(
-                    ds_source,
+                    ds_source_zoom,
                     patch_index,
                     selected_vars[group],
                     self.mapping[mapping_zoom],
@@ -537,8 +536,8 @@ class BaseDataset(Dataset):
                 )
 
                 if ds_target is not None:
-                    data_target, _, _ = self.get_data(
-                        ds_target,
+                    data_target, _, _ = self.get_data( #TODO ds_target is not sliced
+                        ds_target_zoom,
                         patch_index,
                         selected_vars[group],
                         self.mapping[mapping_zoom],

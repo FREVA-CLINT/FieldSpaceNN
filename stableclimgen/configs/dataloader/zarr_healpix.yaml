@@ -10,8 +10,8 @@ dataset:
   mask_ts_mode: 'repeat'
   sampling_zooms:
     3:
-      n_past_ts: 2
-      n_future_ts: 2
+      n_past_ts: 1
+      n_future_ts: 1
       zoom_patch_sample: -1
       mask_last_ts: true
     5:
@@ -21,7 +21,7 @@ dataset:
       mask_last_ts: true
     6:
       n_past_ts: 1
-      n_future_ts: 0
+      n_future_ts: 1
       zoom_patch_sample: -1
       mask_last_ts: true
   output_max_zoom_only: false

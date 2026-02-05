@@ -19,6 +19,86 @@ from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_pat
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
 
+def add_depth_overlap_from_neighbor_patches(
+    x: torch.Tensor,
+    overlap: int = 1,
+    pad_mode: str = "zeros",  
+
+) -> torch.Tensor:
+  
+    o = overlap
+    if o == 0:
+        return x
+
+    b, v, T, N, D, t, n, d, f = x.shape
+    assert o <= d, f"overlap={o} must be <= d={d}"
+
+    out = x.new_empty(b, v, T, N, D, t, n, d + 2 * o, f)
+
+    # center
+    out[..., o:o + d, :] = x
+
+    if D > 1:
+        out[:, :, :, :, 1:, :, :, :o] = x[:, :, :, :, :-1, :, :, d - o : d]
+        out[:, :, :, :, :-1, :, :, o + d :] = x[:, :, :, :, 1:, :, :, :o]
+
+    # boundaries
+    if pad_mode == "zeros":
+        out[:, :, :, :, 0,  :, :, :o] = 0
+        out[:, :, :, :, -1, :, :, o + d :] = 0
+
+    elif pad_mode == "edge":
+        left_edge  = x[:, :, :, :, 0,  :, :, :1].expand(b, v, T, N, t, n, o, f)
+        right_edge = x[:, :, :, :, -1, :, :, -1:].expand(b, v, T, N, t, n, o, f)
+        out[:, :, :, :, 0,  :, :, :o] = left_edge
+        out[:, :, :, :, -1, :, :, o + d :] = right_edge
+
+    else:
+        raise ValueError("pad_mode must be 'zeros' or 'edge'")
+
+    return out
+
+def add_time_overlap_from_neighbor_patches(
+    x: torch.Tensor,
+    overlap: int = 1,
+    pad_mode: str = "zeros",  
+
+) -> torch.Tensor:
+  
+    o = overlap
+    if o == 0:
+        return x
+
+    b, v, T, N, D, t, n, d, f = x.shape
+    assert o <= t, f"overlap={o} must be <= t={t}"
+
+    out = x.new_empty(b, v, T, N, D, t + 2 * o, n, d, f)
+
+    # center
+    out[..., o:o + t,:,:,:] = x
+
+    if T > 1:
+        out[:, :, 1:, :, :, :o] = x[:, :, :-1, :, :, t - o : t]
+        out[:, :, :-1, :, :, o + t :] = x[:, :, 1:, :, :, :o]
+
+    # boundaries
+    if pad_mode == "zeros":
+        out[:, :, 0, :, :,  :o] = 0
+        out[:, :, -1, :, :, o + t :] = 0
+
+    elif pad_mode == "edge":
+        left_edge  = x[:, :, 0, :, :,  :1].expand(b, v, N, D, o, n, d, f)
+        right_edge = x[:, :, -1, :, :, -1:].expand(b, v, N, D, o, n, d, f)
+        out[:, :, 0, :, :,  :o] = left_edge
+        out[:, :, -1, :, :, o + t :] = right_edge
+
+    else:
+        raise ValueError("pad_mode must be 'zeros' or 'edge'")
+
+    return out
+
+
+
 class ConservativeLayerConfig:
     pass
 

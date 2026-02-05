@@ -455,33 +455,7 @@ class LightningMGModel(pl.LightningModule):
             mask_input = mask_groups
             emb_input = emb_groups
 
-        if mode == "vae":
-            if source_is_dict:
-                outputs = self(
-                    model_input,
-                    mask_zooms=mask_input,
-                    emb=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
-            else:
-                outputs = self(
-                    x_zooms_groups=model_input,
-                    mask_zooms_groups=mask_input,
-                    emb_groups=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
-            if isinstance(outputs, tuple) and len(outputs) == 2:
-                output_groups, posterior = outputs
-            elif isinstance(outputs, tuple) and len(outputs) == 3:
-                output_groups = [outputs[0], outputs[1]]
-                posterior = outputs[2]
-            else:
-                output_groups = outputs
-                posterior = None
-            
-        elif mode == "diffusion":
+        if mode == "diffusion":
             if source_is_dict:
                 outputs = self(
                     model_input,
@@ -558,9 +532,7 @@ class LightningMGModel(pl.LightningModule):
                         loss_dict_total.update(loss_dict)
 
 
-        if mode=="vae":
-            return total_loss, loss_dict_total, output_groups, posterior
-        elif mode=="diffusion":
+        if mode=="diffusion":
             return total_loss, loss_dict_total, output_groups, pred_xstart
         else:
             return total_loss, loss_dict_total, output_groups

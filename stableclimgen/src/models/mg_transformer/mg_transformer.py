@@ -1,21 +1,11 @@
 import torch
 import torch.nn as nn
-
-from hydra.utils import instantiate
-from omegaconf import ListConfig
 from typing import List,Dict
-
 from ...utils.helpers import check_get
-
-from ...modules.multi_grid.mg_base import ConservativeLayer,ConservativeLayerConfig, DiffDecoder
-from ...modules.multi_grid.field_layer import FieldLayer, FieldLayerConfig
-from ...modules.multi_grid.field_attention import FieldAttentionModule,FieldAttentionConfig
-
+from ...modules.multi_grid.mg_base import DiffDecoder
 from ...modules.grids.grid_utils import decode_zooms
-
 from .confs import defaults
-
-from .mg_base_model import MG_base_model
+from .mg_base_model import MG_base_model, create_encoder_decoder_block
 
 class MG_Transformer(MG_base_model):
     def __init__(self, 
@@ -49,81 +39,7 @@ class MG_Transformer(MG_base_model):
 
         for block_key, block_conf in block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
-
-            embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
-            layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
-            layer_confs_emb = check_get([block_conf, kwargs, defaults], "layer_confs_emb")
-            dropout = check_get([block_conf, kwargs, defaults], "dropout")
-            out_zooms = check_get([block_conf, {'out_zooms':in_zooms}], "out_zooms")
-            use_mask = check_get([block_conf, kwargs, defaults], "use_mask")
-            n_head_channels = check_get([block_conf,kwargs,defaults], "n_head_channels")
-            att_dim = check_get([block_conf,kwargs,defaults], "att_dim")
-
-                        
-            if isinstance(block_conf, ConservativeLayerConfig):
-                block = ConservativeLayer(in_zooms,
-                                          first_feature_only=self.predict_var)
-                block.out_features = in_features
-                        
-            
-            elif isinstance(block_conf, FieldAttentionConfig):
-
-                block = FieldAttentionModule(
-                     self.grid_layers,
-                     in_zooms,
-                     out_zooms,
-                     token_zoom = block_conf.token_zoom,
-                     q_zooms  = block_conf.q_zooms,
-                     kv_zooms = block_conf.kv_zooms,
-                     use_mask = use_mask,
-                     refine_zooms= block_conf.refine_zooms,
-                     shift= block_conf.shift,
-                     multi_shift= block_conf.multi_shift,
-                     att_dim = att_dim,
-                     n_groups_variables = n_groups_variables,
-                     token_len_time = block_conf.token_len_time,
-                     token_len_depth = block_conf.token_len_depth,
-                     token_overlap_space = block_conf.token_overlap_space,
-                     token_overlap_time = block_conf.token_overlap_time,
-                     token_overlap_depth = block_conf.token_overlap_depth,
-                     token_overlap_mlp_time = block_conf.token_overlap_mlp_time,
-                     token_overlap_mlp_depth = block_conf.token_overlap_mlp_depth,
-                     rank_space = block_conf.rank_space,
-                     rank_time = block_conf.rank_time,
-                     rank_depth = block_conf.rank_depth,
-                     seq_len_zoom = block_conf.seq_len_zoom,
-                     seq_len_time =  block_conf.seq_len_time,
-                     seq_len_depth = block_conf.seq_len_depth,
-                     seq_overlap_space = block_conf.seq_overlap_space,
-                     seq_overlap_time = block_conf.seq_overlap_time,
-                     seq_overlap_depth = block_conf.seq_overlap_depth,
-                     with_var_att= block_conf.with_var_att,
-                     update = block_conf.update,
-                     dropout = dropout,
-                     n_head_channels = n_head_channels,
-                     embed_confs = embed_confs,
-                     separate_mlp_norm = block_conf.separate_mlp_norm,
-                     layer_confs=layer_confs,
-                     layer_confs_emb = layer_confs_emb)
-                
-                block.out_features = in_features
-
-
-            elif isinstance(block_conf, FieldLayerConfig):
-        
-                block = FieldLayer(
-                        self.grid_layers,
-                        in_zooms,
-                        block_conf.in_zooms,
-                        block_conf.target_zooms,
-                        block_conf.field_zoom,
-                        out_zooms=block_conf.out_zooms,
-                        in_features=in_features,
-                        target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
-                        mult = block_conf.mult,
-                        overlap= block_conf.overlap,
-                        type= block_conf.type,
-                        layer_confs=layer_confs)
+            block = create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, self.predict_var, self.grid_layers)
 
             self.Blocks[block_key] = block     
 

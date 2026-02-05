@@ -3,6 +3,7 @@ import torch
 from pytorch_lightning.utilities import rank_zero_only
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...models.mg_transformer.pl_mg_model import LightningMGModel,merge_sampling_dicts
+from ...modules.grids.grid_utils import decode_zooms
 
 
 class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel):
@@ -14,8 +15,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
                  weight_decay=0,
                  decomposed_loss = True,
                  n_samples=1, max_batchsize=-1,
-                 mode="encode_decode",
-                 diff_input=True):
+                 mode="encode_decode"):
         
         super().__init__(
             model,  # Main VAE model
@@ -28,37 +28,23 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         self.n_samples = n_samples
         self.max_batchsize = max_batchsize
         self.mode = mode
-        self.diff_input = diff_input
 
     
     def training_step(self, batch, batch_idx):
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
-      #  emb = self.prepare_emb(emb, sample_configs)
 
-        if not self.diff_input:
-            new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max(target.keys()))
-        else:
-            new_source = source
-
-        loss, loss_dict, _, posterior_zooms = self.get_losses(
-            new_source,
-            target,
+        loss, loss_dict, _, = self.get_losses(
+            source_groups,
+            target_groups,
             sample_configs,
-            mask_zooms=mask,
-            emb=emb,
-            prefix='train',
+            mask_groups,
+            emb_groups,
+            prefix='val',
             mode="vae",
         )
-
-        # Compute KL divergence loss
-        if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
-            kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
-            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = loss + self.kl_weight * kl_loss
-            loss_dict['train/kl_loss'] = self.kl_weight * kl_loss
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -68,50 +54,42 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
 
     def validation_step(self, batch, batch_idx):
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
-        max_zoom = max(target.keys())
+        max_zooms = [max(target.keys()) for target in target_groups if target]
+        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        if not self.diff_input:
-            new_source = self.model.decoder(source, emb=emb, sample_configs=sample_configs, out_zoom=max_zoom)
-        else:
-            new_source = source
-
-        loss, loss_dict, output_groups, posterior_zooms = self.get_losses(
-            new_source,
-            target,
+        loss, loss_dict, output_groups = self.get_losses(
+            source_groups,
+            target_groups,
             sample_configs,
-            mask_zooms=mask,
-            emb=emb,
+            mask_groups,
+            emb_groups,
             prefix='val',
             mode="vae",
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups
         output_comp = None
 
-        # Compute KL divergence loss
-        if self.kl_weight != 0.0 and self.model.distribution == "gaussian":
-            kl_loss = torch.stack([posterior.kl() for posterior in posterior_zooms.values()]).mean(dim=0)
-            kl_loss = torch.sum(kl_loss) / kl_loss.shape[0]
-            loss = loss + self.kl_weight * kl_loss
-            loss_dict['val/kl_loss'] = self.kl_weight * kl_loss
-
         self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
         if batch_idx == 0 and rank_zero_only.rank==0:
-            if output_comp is None:
-                output_comp = self(
-                    new_source.copy(),
-                    sample_configs=sample_configs,
-                    mask_zooms=mask,
-                    emb=emb,
-                    out_zoom=max_zoom,
-                )
+            group_idx = next((idx for idx, group in enumerate(output_groups) if len(group) > 0), None)
+            if group_idx is None:
+                return loss
 
-            self.log_tensor_plot(source, output, target,mask, sample_configs, emb, self.current_epoch, output_comp=output_comp)
+            output = output_groups[group_idx]
+            source = source_groups[group_idx]
+            target = target_groups[group_idx]
+            mask = mask_groups[group_idx]
+            emb = emb_groups[group_idx]
+
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+
+            self.log_tensor_plot(source, output, target, mask, sample_configs, emb, self.current_epoch, output_comp=output_comp)
 
         return loss
 

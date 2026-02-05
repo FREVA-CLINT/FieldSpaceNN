@@ -1,14 +1,13 @@
 from typing import List,Dict
 from einops import rearrange
 import copy
-from omegaconf import DictConfig, ListConfig
+from omegaconf import ListConfig
 
-import math
 import torch
 import torch.nn as nn
 
 from ..base import get_layer, MLP_fac
-from .mg_base import combine_zooms,refine_zoom,coarsen_zoom, Tokenizer, LinEmbLayer
+from .mg_base import refine_zoom,coarsen_zoom, Tokenizer, LinEmbLayer, add_time_overlap_from_neighbor_patches, add_depth_overlap_from_neighbor_patches
 
 from ..grids.grid_layer import GridLayer
 from ..transformer.transformer_base import safe_scaled_dot_product_attention
@@ -16,7 +15,7 @@ from ..transformer.transformer_base import safe_scaled_dot_product_attention
 from ..embedding.embedder import EmbedderSequential
 from ...modules.embedding.embedder import get_embedder
 
-from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch, get_sample_configs
+from ..grids.grid_utils import insert_matching_time_patch
 
 from ...utils.helpers import check_value
 
@@ -59,87 +58,6 @@ class FieldAttentionConfig:
                     setattr(self, input_kw, value_kw)
             else:
                 setattr(self, input, value)
-
-
-
-def add_depth_overlap_from_neighbor_patches(
-    x: torch.Tensor,
-    overlap: int = 1,
-    pad_mode: str = "zeros",  
-
-) -> torch.Tensor:
-  
-    o = overlap
-    if o == 0:
-        return x
-
-    b, v, T, N, D, t, n, d, f = x.shape
-    assert o <= d, f"overlap={o} must be <= d={d}"
-
-    out = x.new_empty(b, v, T, N, D, t, n, d + 2 * o, f)
-
-    # center
-    out[..., o:o + d, :] = x
-
-    if D > 1:
-        out[:, :, :, :, 1:, :, :, :o] = x[:, :, :, :, :-1, :, :, d - o : d]
-        out[:, :, :, :, :-1, :, :, o + d :] = x[:, :, :, :, 1:, :, :, :o]
-
-    # boundaries
-    if pad_mode == "zeros":
-        out[:, :, :, :, 0,  :, :, :o] = 0
-        out[:, :, :, :, -1, :, :, o + d :] = 0
-
-    elif pad_mode == "edge":
-        left_edge  = x[:, :, :, :, 0,  :, :, :1].expand(b, v, T, N, t, n, o, f)
-        right_edge = x[:, :, :, :, -1, :, :, -1:].expand(b, v, T, N, t, n, o, f)
-        out[:, :, :, :, 0,  :, :, :o] = left_edge
-        out[:, :, :, :, -1, :, :, o + d :] = right_edge
-
-    else:
-        raise ValueError("pad_mode must be 'zeros' or 'edge'")
-
-    return out
-
-def add_time_overlap_from_neighbor_patches(
-    x: torch.Tensor,
-    overlap: int = 1,
-    pad_mode: str = "zeros",  
-
-) -> torch.Tensor:
-  
-    o = overlap
-    if o == 0:
-        return x
-
-    b, v, T, N, D, t, n, d, f = x.shape
-    assert o <= t, f"overlap={o} must be <= t={t}"
-
-    out = x.new_empty(b, v, T, N, D, t + 2 * o, n, d, f)
-
-    # center
-    out[..., o:o + t,:,:,:] = x
-
-    if T > 1:
-        out[:, :, 1:, :, :, :o] = x[:, :, :-1, :, :, t - o : t]
-        out[:, :, :-1, :, :, o + t :] = x[:, :, 1:, :, :, :o]
-
-    # boundaries
-    if pad_mode == "zeros":
-        out[:, :, 0, :, :,  :o] = 0
-        out[:, :, -1, :, :, o + t :] = 0
-
-    elif pad_mode == "edge":
-        left_edge  = x[:, :, 0, :, :,  :1].expand(b, v, N, D, o, n, d, f)
-        right_edge = x[:, :, -1, :, :, -1:].expand(b, v, N, D, o, n, d, f)
-        out[:, :, 0, :, :,  :o] = left_edge
-        out[:, :, -1, :, :, o + t :] = right_edge
-
-    else:
-        raise ValueError("pad_mode must be 'zeros' or 'edge'")
-
-    return out
-
 
 
 class FieldAttentionModule(nn.Module):
@@ -496,10 +414,10 @@ class FieldAttentionBlock(nn.Module):
         embedder: EmbedderSequential = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
 
         emb_tokenizer = Tokenizer(
-            input_zooms=[input_zoom_field] if embedder.has_space() else [],
+            input_zooms=[input_zoom_field] if embedder and embedder.has_space() else [],
             token_zoom=token_zoom,
-            token_len_time=token_len_time if embedder.has_time() else 1,
-            token_len_depth=token_len_depth if embedder.has_depth() else 1,
+            token_len_time=token_len_time if embedder and embedder.has_time() else 1,
+            token_len_depth=token_len_depth if embedder and embedder.has_depth() else 1,
             overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
             grid_layers=grid_layers
         ) 
@@ -508,7 +426,7 @@ class FieldAttentionBlock(nn.Module):
         layer_confs_emb_field['ranks'] = embed_confs.get("ranks", [*layer_confs_['ranks'], None]) 
 
         emb_tokenizer_out_features = copy.deepcopy(self.token_size_space)
-        emb_tokenizer_out_features[1] = self.token_size_space[1] if embedder.has_space() else 1
+        emb_tokenizer_out_features[1] = self.token_size_space[1] if embedder and embedder.has_space() else 1
 
         self.emb_layer_q_field = LinEmbLayer(
             emb_tokenizer_out_features,
