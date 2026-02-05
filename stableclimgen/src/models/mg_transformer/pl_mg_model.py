@@ -130,8 +130,7 @@ class MGMultiLoss(nn.Module):
         loss_dict = {}
         total_loss = 0.0
 
-        group_embedder = None
-        group_embedder = emb['VariableEmbedder']
+        group_embedder = emb['VariableEmbedder'] if 'VariableEmbedder' in emb.keys() else None 
 
         for level_key in output:
             out = output[level_key]

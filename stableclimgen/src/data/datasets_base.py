@@ -46,7 +46,9 @@ class BaseDataset(Dataset):
                  apply_diff = True,
                  output_max_zoom_only = False,
                  normalize_data = True,
-                 mask_ts_mode = 'repeat'
+                 mask_ts_mode = 'repeat',
+                 variables_as_features = False,
+                 load_n_samples_time = 1
                  ):
         
         super(BaseDataset, self).__init__()
@@ -65,6 +67,9 @@ class BaseDataset(Dataset):
         self.mask_zooms = mask_zooms
         self.apply_diff = apply_diff
         self.output_max_zoom_only = output_max_zoom_only
+        self.variables_as_features = variables_as_features
+
+        self.load_n_samples_time = load_n_samples_time
         
         self.mask_ts_mode = mask_ts_mode
         self.p_dropout_all_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()]))
@@ -122,19 +127,24 @@ class BaseDataset(Dataset):
             num_timesteps -= self.max_time_step_future
 
             start_idx = self.max_time_step_past
+            if self.sample_timesteps is None:
+                time_indices = list(range(start_idx, num_timesteps))
+            else:
+                time_indices = [t for t in self.sample_timesteps if start_idx <= t < num_timesteps]
 
-            for time_idx in range(start_idx, num_timesteps):
-                if self.sample_timesteps is None or time_idx in self.sample_timesteps:
-                    for zoom in self.zooms:
-                        for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
-                            if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
-                                region_idx_zoom = 0
-                            else:
-                                region_idx_zoom = region_idx_max//4**(self.sampling_zooms[max(self.zooms)]['zoom_patch_sample'] - self.sampling_zooms[zoom]['zoom_patch_sample'])
+            time_entries = np.array(time_indices).reshape(-1,self.load_n_samples_time)
 
-                            self.index_map[zoom].append((file_idx, time_idx, region_idx_zoom))
+            for time_entry in time_entries:
+                for zoom in self.zooms:
+                    for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
+                        if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
+                            region_idx_zoom = 0
+                        else:
+                            region_idx_zoom = region_idx_max//4**(self.sampling_zooms[max(self.zooms)]['zoom_patch_sample'] - self.sampling_zooms[zoom]['zoom_patch_sample'])
+
+                        self.index_map[zoom].append((file_idx, list(time_entry), region_idx_zoom))
                 
-        self.index_map = {z: np.array(idx_map) for z, idx_map in self.index_map.items()}
+        #self.index_map = {z: np.array(idx_map) for z, idx_map in self.index_map.items()}
 
         all_variables = []
         variable_ids = {}
@@ -199,7 +209,7 @@ class BaseDataset(Dataset):
                         norm_dict[var]['stats'],
                         norm_dict[var]['normalizer'])
         self.normalize_data = normalize_data
-        self.len_dataset = max([idx_map.shape[0] for idx_map in self.index_map.values()])
+        self.len_dataset = len(list(self.index_map.values())[0])
     
     def get_indices_from_patch_idx(self, patch_idx):
         raise NotImplementedError
@@ -227,12 +237,14 @@ class BaseDataset(Dataset):
 
     #def map_data(self):
 
-    def _select_time_patch(self, ds, time_idx, patch_idx, mapping, mapping_zoom, zoom):
+    def select_ranges(self, ds, time_indices, patch_idx, mapping, mapping_zoom, zoom):
         # Fetch raw patch indices
         n_past_timesteps = self.sampling_zooms[zoom]['n_past_ts']
         n_future_timesteps = self.sampling_zooms[zoom]['n_future_ts']
 
-        time_indices = np.arange(time_idx-n_past_timesteps, time_idx + n_future_timesteps + 1, 1)
+          
+        time_indices = np.stack([np.arange(time_index-n_past_timesteps, time_index+n_future_timesteps + 1,1) for time_index in time_indices],axis=0).reshape(-1)
+ 
         isel_dict = {"time": time_indices}
         patch_dim = [d for d in ds.dims if "cell" in d or "ncells" in d]
         patch_dim = patch_dim[0] if patch_dim else None
@@ -273,7 +285,7 @@ class BaseDataset(Dataset):
         patch_dim = [d for d in ds.dims if "cell" in d or "ncells" in d]
         patch_dim = patch_dim[0] if patch_dim else None
 
-        nt = 1 + n_past_timesteps + n_future_timesteps
+        nt = (1 + n_past_timesteps + n_future_timesteps) * self.load_n_samples_time
 
         data_g = []
         data_time_zoom = None
@@ -310,8 +322,10 @@ class BaseDataset(Dataset):
                 d = values.shape[1]
 
                 if not patch_dim:
-                    values = values.reshape(nt, d, -1)[:, :, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
+                    values = values.reshape(nt, d, -1)[:, :, :, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
+
                 data = torch.tensor(values).view(nt, d, -1)
+
                 if self.normalize_data:
                     data = self.var_normalizers[zoom][variable].normalize(data)
                 
@@ -371,20 +385,13 @@ class BaseDataset(Dataset):
 
         return drop_mask
   
-    def _finalize_group(self, source_zooms, target_zooms, time_zooms, mask_mapping_zooms, patch_index_zooms, hr_dopout):
+    def _finalize_group(self, data_source, data_target, time_zooms, mask_mapping_zooms, patch_index_zooms, hr_dopout):
         sample_configs = copy.deepcopy(self.sampling_zooms)
-        if not source_zooms:
+        if not data_source:
             for key, value in patch_index_zooms.items():
                 if key in sample_configs:
                     sample_configs[key]['patch_index'] = value
             return {}, {}, {}, sample_configs
-
-        if self.apply_diff:
-            data_source = apply_zoom_diff(source_zooms, sample_configs, patch_index_zooms)
-            data_target = apply_zoom_diff(target_zooms, sample_configs, patch_index_zooms)
-        else:
-            data_source = source_zooms
-            data_target = target_zooms
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
@@ -409,28 +416,40 @@ class BaseDataset(Dataset):
             data_source[zoom][mask_zoom.expand_as(data_source[zoom])] = 0
 
 
+        for key, value in patch_index_zooms.items():
+            if key in sample_configs:
+                sample_configs[key]['patch_index'] = value
+
+        if self.variables_as_features:
+            for zoom, x in data_source.items():
+                data_source[zoom] = rearrange(x, 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+        else:
+            for zoom, x in data_source.items():
+                data_source[zoom] = rearrange(x, 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
+                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
+                mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
+        
+        if self.output_max_zoom_only:
+            max_zoom = max(data_source.keys())
+            data_source = data_source[max_zoom]
+            data_target = data_target[max_zoom]
+        else:
+            data_source = apply_zoom_diff(data_source, sample_configs, patch_index_zooms)
+            data_target = apply_zoom_diff(data_target, sample_configs, patch_index_zooms)
+
         if any(['mask_last_ts' in z for z in self.sampling_zooms.values()]):
             drop = False
             for zoom, sampling_zoom in self.sampling_zooms.items():
 
                 if sampling_zoom['mask_last_ts']:
-                    mask_mapping_zooms[zoom][:,-1] = True
+                    mask_mapping_zooms[zoom][:,:,-1] = True
 
                     if self.mask_ts_mode == 'repeat':
-                        data_source[zoom][:,-1] = data_source[zoom][:,-2]
+                        data_source[zoom][:,:,-1] = data_source[zoom][:,:,-2]
                     else:
-                        data_source[zoom][:,-1] = 0.
-
-        
-
-        for key, value in patch_index_zooms.items():
-            if key in sample_configs:
-                sample_configs[key]['patch_index'] = value
-
-        if self.output_max_zoom_only:
-            max_zoom = max(source_zooms.keys())
-            data_source = decode_zooms(data_source, sample_configs=sample_configs, out_zoom=max_zoom)
-            data_target = decode_zooms(data_target, sample_configs=sample_configs, out_zoom=max_zoom)
+                        data_source[zoom][:,:,-1] = 0.
 
         return data_source, data_target, sample_configs, mask_mapping_zooms
 
@@ -468,6 +487,9 @@ class BaseDataset(Dataset):
             if self.p_dropout > 0:
                 UserWarning('Multi-source input does not support global dropout')
 
+        time_indices = self.index_map[self.zooms[0]][index][1]
+
+       
         source_zooms_groups = [ {} for _ in group_keys ]
         target_zooms_groups = [ {} for _ in group_keys ]
         time_zooms = {}
@@ -475,7 +497,7 @@ class BaseDataset(Dataset):
 
         loaded = False
         for zoom in self.zooms:
-            file_index, time_index, patch_index = self.index_map[zoom][index]
+            file_index, _, patch_index = self.index_map[zoom][index]
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
@@ -506,17 +528,17 @@ class BaseDataset(Dataset):
 
             data_time_zoom = None
 
-            ds_source_zoom = self._select_time_patch(ds_source,
-                    time_index,
+            ds_source_zoom = self.select_ranges(ds_source,
+                    time_indices,
                     patch_index,
                     self.mapping[mapping_zoom],
                     mapping_zoom,
                     zoom)
             
             if ds_target is not None:
-                    ds_target_zoom = self._select_time_patch(
+                    ds_target_zoom = self.select_ranges(
                         ds_target,
-                        time_index,
+                        time_indices,
                         patch_index,
                         self.mapping[mapping_zoom],
                         mapping_zoom,
@@ -557,7 +579,7 @@ class BaseDataset(Dataset):
             if data_time_zoom is not None:
                 time_zooms[zoom] = data_time_zoom
 
-    
+        
         patch_index_zooms = {}
         for zoom in self.sampling_zooms.keys():
             patch_index_zooms[zoom] = torch.tensor(self.index_map[zoom][index][-1])
@@ -569,11 +591,12 @@ class BaseDataset(Dataset):
 
         emb = {}
         StaticVariableEmbedder = None
-       # emb['DensityEmbedder'] = torch.tensor([selected_var_ids[group] for group in group_keys])
+        # emb['DensityEmbedder'] = torch.tensor([selected_var_ids[group] for group in group_keys])
         for group_idx, group in enumerate(group_keys):
             if group == 'embedding': 
                 StaticVariableEmbedder = source_zooms_groups[group_idx]
-                StaticVariableEmbedder = dict(zip(StaticVariableEmbedder.keys(), [rearrange(t, 'v t n f d-> t n (v f d)') for t in StaticVariableEmbedder.values()]))
+                StaticVariableEmbedder = dict(zip(StaticVariableEmbedder.keys(), 
+                                                  [rearrange(t, 'v (b t) n f d-> b t n (v f d)', b=self.load_n_samples_time) for t in StaticVariableEmbedder.values()]))
 
         for group_idx, group in enumerate(group_keys):
             if group != 'embedding': 
@@ -583,7 +606,7 @@ class BaseDataset(Dataset):
                     time_zooms,
                     mask_mapping_zooms_groups[group_idx],
                     patch_index_zooms,
-                    hr_dopout,
+                    hr_dopout
                 )
                 source_zooms_groups_out.append(source_zooms)
                 target_zooms_groups_out.append(target_zooms)
@@ -596,10 +619,32 @@ class BaseDataset(Dataset):
                 if StaticVariableEmbedder is not None:
                     emb_group['StaticVariableEmbedder'] = StaticVariableEmbedder
 
+                for zoom, time_zoom in time_zooms.items():
+                    time_zooms[zoom] = time_zoom.reshape(self.load_n_samples_time, -1)
+                    
                 emb_group['TimeEmbedder'] = time_zooms
                 emb_groups.append(emb_group)
+        
+            source_zooms_groups_out_ = {}
+            target_zooms_groups_out_ = {}
+            mask_zooms_groups_ = {}
+            if self.variables_as_features:
+                for zoom in source_zooms_groups_out[0].keys():
+                    source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
+                    target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
+                    mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
+
+                emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
+                       'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
+                       'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+
+                emb_groups = [emb]
+                source_zooms_groups_out = [source_zooms_groups_out_]
+                target_zooms_groups_out = [target_zooms_groups_out_]
+                mask_zooms_groups = [mask_zooms_groups_]
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
+
 
     def __len__(self):
         return self.len_dataset

@@ -26,14 +26,9 @@ class MG_AutoEncoder(MG_base_model):
         self.in_zooms = in_zooms
 
         self.in_features = in_features 
-        predict_var = kwargs.get("predict_var", defaults['predict_var'])
 
-        if predict_var:
-            out_features = out_features * 2
-            self.activation_var = nn.Softplus()
 
         self.out_features = out_features
-        self.predict_var = predict_var
 
         # Construct blocks based on configurations
         self.encoder_blocks = nn.ModuleDict()
@@ -43,7 +38,7 @@ class MG_AutoEncoder(MG_base_model):
 
         for block_key, block_conf in encoder_block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
-            block = create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, self.predict_var, self.grid_layers, **kwargs)
+            block = create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, self.grid_layers, **kwargs)
 
             self.encoder_blocks[block_key] = block
 
@@ -54,7 +49,7 @@ class MG_AutoEncoder(MG_base_model):
 
         for block_key, block_conf in decoder_block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
-            block = create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, self.predict_var, self.grid_layers, **kwargs)
+            block = create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, self.grid_layers, **kwargs)
             self.decoder_blocks[block_key] = block
 
             in_features = block.out_features

@@ -8,7 +8,7 @@ from ...utils.helpers import check_get
 from .confs import defaults
 
 
-def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables, predict_var, grid_layers, **kwargs):
+def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables,  grid_layers, **kwargs):
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
     layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
     layer_confs_emb = check_get([block_conf, kwargs, defaults], "layer_confs_emb")
@@ -19,7 +19,7 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
     att_dim = check_get([block_conf,kwargs,defaults], "att_dim")
 
     if isinstance(block_conf, ConservativeLayerConfig):
-        block = ConservativeLayer(in_zooms, first_feature_only=predict_var)
+        block = ConservativeLayer(in_zooms)
         block.out_features = in_features
     
     elif isinstance(block_conf, FieldAttentionConfig):
@@ -46,6 +46,7 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
                 rank_space = block_conf.rank_space,
                 rank_time = block_conf.rank_time,
                 rank_depth = block_conf.rank_depth,
+                rank_features = block_conf.rank_features,
                 seq_len_zoom = block_conf.seq_len_zoom,
                 seq_len_time =  block_conf.seq_len_time,
                 seq_len_depth = block_conf.seq_len_depth,

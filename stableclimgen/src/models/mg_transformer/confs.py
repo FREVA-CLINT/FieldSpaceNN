@@ -14,7 +14,7 @@ defaults = {
     'learn_residual': False,
     'with_residual': False,
     'masked_residual': False,
-    'use_mask': 'False'
+    'use_mask': False
 }
 
 class MGEncoderConfig:

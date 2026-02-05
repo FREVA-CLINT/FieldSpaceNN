@@ -28,7 +28,7 @@ model:
       token_zoom: 3
       att_dim: 32
       token_len_depth: [1,1]
-      token_len_time: 5
+      token_len_time: 3
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
@@ -56,7 +56,7 @@ model:
       token_zoom: 3
       att_dim: 32
       token_len_depth: [1,5]
-      token_len_time: 2
+      token_len_time: 1
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
