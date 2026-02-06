@@ -87,7 +87,7 @@ class ZoomBaseEmbedder(nn.Module):
 
 
 class TimeEmbedder(ZoomBaseEmbedder):
-    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales, time_min, time_max, zoom, **kwargs):
+    def __init__(self, name: str, in_channels: int, embed_dim: int, time_scales, time_min, time_max, zoom, use_linear=True, **kwargs):
         """
         Time2Vec module with fixed periodic components based on user-defined time scales.
         :param out_features: Number of output features (embedding dimension).
@@ -102,7 +102,7 @@ class TimeEmbedder(ZoomBaseEmbedder):
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn = torch.nn.Sequential(
-            TimeScaleLayer(in_features=self.in_channels, n_neurons=self.embed_dim, time_scales=time_scales, time_min=time_min, time_max=time_max),
+            TimeScaleLayer(in_features=self.in_channels, n_neurons=self.embed_dim, time_scales=time_scales, time_min=time_min, time_max=time_max, use_linear=use_linear),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
             torch.nn.GELU(),
             torch.nn.Linear(self.embed_dim, self.embed_dim),

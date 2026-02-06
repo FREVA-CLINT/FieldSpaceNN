@@ -70,28 +70,37 @@ class TimeScaleLayer(nn.Module):
             time_scales=None,
             time_min: float = 0.0,
             time_max: float = 1.0,
+            use_linear: bool = True
     ) -> None:
         super().__init__()
 
+        self.use_linear = use_linear
         # 1. Setup Periodic Components
         # We need 2 features (sin + cos) per scale
         if time_scales is None:
             time_scales = [168.0, 8766.0]
-        self.periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
+
+        periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
+
+        self.register_buffer('periodic_scales', periodic_scales.view(1, 1, -1))
+
         n_periodic_features = len(time_scales) * 2
 
         # 2. Setup Linear Trend Component
         # The rest of the neurons go to the linear trend
-        n_linear_features = n_neurons - n_periodic_features
+        
+        n_linear_features = n_neurons - n_periodic_features if use_linear else 0
 
         self.time_min = time_min
         self.time_range = time_max - time_min + 1e-8
 
         # Projection for the linear trend (Global warming/Decadal shifts)
-        self.linear_trend = nn.Linear(in_features, n_linear_features)
+        self.linear_trend = nn.Linear(in_features, n_linear_features) if use_linear else nn.Identity()
 
         # We also want to learn how to mix the sin/cos features
-        self.periodic_projection = nn.Linear(n_periodic_features, n_periodic_features)
+        out_features_periodic = n_periodic_features if use_linear else n_neurons
+        self.periodic_projection = nn.Linear(n_periodic_features, out_features_periodic)
+
 
     def forward(self, times: torch.Tensor) -> torch.Tensor:
         """
@@ -105,18 +114,12 @@ class TimeScaleLayer(nn.Module):
 
         # --- A. Linear Trend (Global Time) ---
         # Normalize to 0-1 range for stability
-        normalized_time = (times - self.time_min) / self.time_range
-        trend_embed = self.linear_trend(normalized_time)
-
-        # --- B. Periodic Components (Seasonality) ---
-        # Formula: 2 * pi * time / period
-        # We don't use the norm_factor here; we use the raw hours and raw periods
-        device = times.device
-        scales = self.periodic_scales.to(device)
+        if self.use_linear:
+            normalized_time = (times - self.time_min) / self.time_range
+            trend_embed = self.linear_trend(normalized_time)
 
         # Shape magic to broadcast: (B, S, 1) / (Num_Scales) -> (B, S, Num_Scales)
-        scaled_time = times / scales.view(1, 1, -1)
-        phase = 2 * torch.pi * scaled_time
+        phase = 2 * torch.pi * times / self.periodic_scales
 
         # Compute Sin and Cos to fix phase ambiguity
         sin_features = torch.sin(phase)
@@ -126,8 +129,10 @@ class TimeScaleLayer(nn.Module):
         periodic_raw = torch.cat([sin_features, cos_features], dim=-1)
         periodic_embed = self.periodic_projection(periodic_raw)
 
-        # --- C. Combine ---
-        return torch.cat([trend_embed, periodic_embed], dim=-1)
+        if self.use_linear:
+            return torch.cat([trend_embed, periodic_embed], dim=-1)
+        else:
+            return periodic_embed
 
 
 class SinusoidalLayer(nn.Module):
