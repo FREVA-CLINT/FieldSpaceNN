@@ -223,7 +223,7 @@ class MGEmbedder(BaseEmbedder):
 
     def get_patch(self, embs: torch.Tensor, sample_configs={}):
     
-        idx = self.grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
+        idx = self.grid_layer.get_idx_of_patch(**sample_configs[self.zoom], return_local=False)
 
         idx = idx.view(idx.shape[0],1,-1,1)
 
