@@ -149,5 +149,12 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         outputs = self.sampler.sample_loop(self.model, source_groups, mask_groups=mask_groups, progress=True, **model_kwargs)
 
         if self.decode_zooms:
-            outputs = decode_zooms(outputs.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+            # decode_zooms operates on a single group (dict), so we iterate
+            decoded_outputs = []
+            for group in outputs:
+                if group:
+                    decoded_outputs.append(decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom))
+                else:
+                    decoded_outputs.append(None)
+            return decoded_outputs
         return outputs

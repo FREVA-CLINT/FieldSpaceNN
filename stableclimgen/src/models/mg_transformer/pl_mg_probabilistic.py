@@ -12,49 +12,66 @@ class LightningProbabilisticModel(pl.LightningModule):
         self.max_batchsize = max_batchsize
 
     def predict_step(self, batch, batch_index):
-        source, target, patch_index_zooms, mask, emb = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
-        max_zoom = max(target.keys())
-        batch_size = target[max_zoom].shape[0]
+        first_valid_target = next((g for g in target_groups if g), None)
+        if not first_valid_target:
+            return {"output": target_groups, "mask": mask_groups}
+
+        batch_size = first_valid_target[max(first_valid_target.keys())].shape[0]
         total_samples = batch_size * self.n_samples  # Total expanded batch size
 
-        # Repeat each sample n_samples times
-        source = {int(zoom): source[zoom].repeat_interleave(self.n_samples, dim=0) for zoom in source.keys()}
-        target = {int(zoom): target[zoom].repeat_interleave(self.n_samples, dim=0) for zoom in target.keys()}
-        mask = {int(zoom): mask[zoom].repeat_interleave(self.n_samples, dim=0) for zoom in mask.keys()}
+        # Repeat each sample n_samples times for each group
+        source_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in source_groups]
+        target_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in target_groups]
+        mask_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in mask_groups] if mask_groups else [None] * len(source_groups)
+        patch_index_zooms_rep = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in patch_index_zooms.items()}
+        
+        emb_groups_rep = []
+        if emb_groups:
+            for emb in emb_groups:
+                if emb:
+                    emb_rep = {
+                        'VariableEmbedder': emb['VariableEmbedder'].repeat_interleave(self.n_samples, dim=0),
+                        'TimeEmbedder': {int(z): emb['TimeEmbedder'][z].repeat_interleave(self.n_samples, dim=0) for z in emb['TimeEmbedder']}
+                    }
+                    emb_groups_rep.append(emb_rep)
+                else:
+                    emb_groups_rep.append(None)
 
-        patch_index_zooms = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in patch_index_zooms.items()}
-
-        emb['VariableEmbedder'] = emb['VariableEmbedder'].repeat_interleave(self.n_samples, dim=0)
-        emb['DensityEmbedder'] = (mask.copy(), emb['DensityEmbedder'][1].repeat_interleave(self.n_samples, dim=0))
-        emb['TimeEmbedder'] = {int(zoom): emb['TimeEmbedder'][zoom].repeat_interleave(self.n_samples, dim=0) for zoom in emb['TimeEmbedder'].keys()}
-
-        output_zooms = {}
+        output_groups_chunks = []
         max_batchsize = self.max_batchsize if self.max_batchsize != -1 else total_samples
         for start in range(0, total_samples, max_batchsize):
             end = min(start + max_batchsize, total_samples)
 
-            # Slice dictionaries properly
-            emb_chunk = {}
-            emb_chunk['VariableEmbedder'] = emb['VariableEmbedder'][start:end]
-            emb_chunk['DensityEmbedder'] = (
-                {int(zoom): emb['DensityEmbedder'][0][zoom][start:end] for zoom in emb['DensityEmbedder'][0].keys()},
-                emb['DensityEmbedder'][1][start:end])
-            emb_chunk['TimeEmbedder'] = {int(zoom): emb['TimeEmbedder'][zoom][start:end] for zoom in emb['TimeEmbedder'].keys()}
+            # Slice all group structures for the current chunk
+            source_chunk = [{int(z): g[z][start:end] for z in g} if g else None for g in source_groups_rep]
+            target_chunk = [{int(z): g[z][start:end] for z in g} if g else None for g in target_groups_rep]
+            mask_chunk = [{int(z): g[z][start:end] for z in g} if g else None for g in mask_groups_rep]
+            patch_chunk = {k: v[start:end] for k, v in patch_index_zooms_rep.items()}
+            emb_chunk = []
+            if emb_groups_rep:
+                for emb_rep in emb_groups_rep:
+                    if emb_rep:
+                        chunk = {'VariableEmbedder': emb_rep['VariableEmbedder'][start:end],
+                                 'TimeEmbedder': {int(z): emb_rep['TimeEmbedder'][z][start:end] for z in emb_rep['TimeEmbedder']}}
+                        emb_chunk.append(chunk)
+                    else:
+                        emb_chunk.append(None)
 
-            patch_index_zooms_chunk = {k: v[start:end] for k, v in patch_index_zooms.items()}
-            
-            output_chunk = self._predict_step(
-                source={int(zoom): source[zoom][start:end] for zoom in source.keys()},
-                target={int(zoom): target[zoom][start:end] for zoom in target.keys()},
-                patch_index_zooms=patch_index_zooms_chunk,
-                mask={int(zoom): mask[zoom][start:end] for zoom in mask.keys()},
-                emb=emb_chunk
-            )
-            output_zooms = {int(zoom): output_zooms[zoom].append(output_chunk[zoom]) if zoom in output_zooms.keys() else [output_chunk[zoom]] for zoom in output_chunk.keys() }
+            output_chunk = self._predict_step(source_chunk, target_chunk, patch_chunk, mask_chunk, emb_chunk)
+            output_groups_chunks.append(output_chunk)
 
-        # Concatenate all output chunks
-        output_zooms = {int(zoom): torch.cat(output_zooms[zoom], dim=0) for zoom in output_zooms.keys()}
-        output_zooms = {int(zoom): output_zooms[zoom].view(batch_size, self.n_samples, *output_zooms[zoom].shape[1:]) for zoom in output_zooms.keys()}
+        # Concatenate chunks for each group
+        num_groups = len(source_groups)
+        output_groups = [{} for _ in range(num_groups)]
+        for i in range(num_groups):
+            if source_groups[i] is None: continue
+            # Concatenate all chunks for the i-th group
+            group_chunks = [chunk[i] for chunk in output_groups_chunks if chunk and chunk[i]]
+            if group_chunks:
+                concatenated_group = {int(z): torch.cat([c[z] for c in group_chunks], dim=0) for z in group_chunks[0]}
+                # Reshape to (batch_size, n_samples, ...)
+                output_groups[i] = {int(z): v.view(batch_size, self.n_samples, *v.shape[1:]) for z, v in concatenated_group.items()}
 
-        return {"output": output_zooms, "mask": mask}
+        return {"output": output_groups, "mask": mask_groups}

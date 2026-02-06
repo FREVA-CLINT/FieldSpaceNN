@@ -98,26 +98,35 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         # Note: Pass 'self' explicitly here
         return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
 
-    def _predict_step(self, source, target, patch_index_zooms, mask, emb):
+    def _predict_step(self, source_groups, target_groups, patch_index_zooms, mask_groups, emb_groups):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
+        processed_source_groups = []
         if self.mode != "decode":
-            source, sample_configs = self.prepare_missing_zooms(source, sample_configs)
-            mask, _ = self.prepare_missing_zooms(mask)
-            target, _ = self.prepare_missing_zooms(target)
+            for group in source_groups:
+                if group:
+                    # The sample_configs are modified in-place by prepare_missing_zooms, so copy
+                    processed_group, _ = self.prepare_missing_zooms(group.copy(), sample_configs.copy())
+                    processed_source_groups.append(processed_group)
+                else:
+                    processed_source_groups.append(None)
         else:
-            for zoom in self.model.in_zooms:
-                sample_configs[zoom] = sample_configs[max(sample_configs.keys())]
+            processed_source_groups = source_groups
 
         max_zoom = max(self.model.in_zooms)
 
         if self.mode == "encode_decode":
-            outputs, posterior = self.model(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
+            # The self() call routes to the model's forward method, which does encode and decode.
+            output_groups, _ = self(x_zooms_groups=processed_source_groups, sample_configs=sample_configs,
+                                    mask_zooms_groups=mask_groups, emb_groups=emb_groups, out_zoom=max_zoom)
         elif self.mode == "encode":
-            output_samples = self.model.vae_encode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb)
-            outputs = {int(zoom): x.sample(gamma=self.model.gammas[str(zoom)] if self.model.gammas else None) for zoom, x in output_samples.items()}
+            output_groups = self.model.ae_encode(processed_source_groups, sample_configs=sample_configs,
+                                                 mask_groups=mask_groups, emb_groups=emb_groups)
         elif self.mode == "decode":
-            outputs = self.model.vae_decode(source.copy(), sample_configs=sample_configs, mask_zooms=mask, emb=emb, out_zoom=max_zoom)
+            output_groups = self.model.ae_decode(processed_source_groups, sample_configs=sample_configs,
+                                                 mask_groups=mask_groups, emb_groups=emb_groups, out_zoom=max_zoom)
+        else:
+            raise ValueError(f"Unknown mode for prediction: {self.mode}")
 
-        return outputs
+        return output_groups
