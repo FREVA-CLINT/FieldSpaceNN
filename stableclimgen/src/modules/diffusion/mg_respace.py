@@ -1,8 +1,7 @@
 import numpy as np
 import torch
 from typing import Union, List, Set, Dict
-from .gaussian_diffusion import GaussianDiffusion
-from .model import DiffusionGenerator
+from .mg_gaussian_diffusion import MGGaussianDiffusion
 
 
 def space_diffusion_steps(num_diffusion_steps: int, section_counts: Union[str, List[int]]) -> Set[int]:
@@ -65,7 +64,7 @@ def space_diffusion_steps(num_diffusion_steps: int, section_counts: Union[str, L
     return set(all_steps)
 
 
-class SpacedDiffusion(GaussianDiffusion):
+class SpacedDiffusion(MGGaussianDiffusion):
     """
     A diffusion process class that enables step-skipping in the diffusion process.
     Allows for diffusion steps to be spaced out according to specified criteria.
@@ -87,18 +86,21 @@ class SpacedDiffusion(GaussianDiffusion):
         self.diffusion_step_map = []  # Mapping for diffusion steps
         self.original_num_steps = diffusion_steps
 
-        base_diffusion = GaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
-        last_alpha_cumprod = 1.0
-        new_betas = []
+        base_diffusion = MGGaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
+        last_alpha_cumprod_zooms = {int(zoom): 1.0 for zoom in base_diffusion.alphas_cumprod_zooms.keys()}
+        new_betas_zooms = {int(zoom): [] for zoom in base_diffusion.alphas_cumprod_zooms.keys()}
 
         # Calculate new betas for selected diffusion steps
-        for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
-            if i in self.use_steps:
-                new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
-                last_alpha_cumprod = alpha_cumprod
-                self.diffusion_step_map.append(i)
+        for k, zoom in enumerate(base_diffusion.alphas_cumprod_zooms.keys()):
+            for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod_zooms[zoom]):
+                if i in self.use_steps:
+                    new_betas_zooms[zoom].append(1 - alpha_cumprod / last_alpha_cumprod_zooms[zoom])
+                    last_alpha_cumprod_zooms[zoom] = alpha_cumprod
+                    if k==0:
+                        self.diffusion_step_map.append(i)
+            new_betas_zooms[zoom] = np.array(new_betas_zooms[zoom])
 
-        kwargs["betas"] = np.array(new_betas)
+        kwargs["betas_zooms"] = new_betas_zooms
         super().__init__(diffusion_steps=diffusion_steps, **kwargs)
 
     def p_mean_variance(self, model, *args, **kwargs):
@@ -155,23 +157,26 @@ class _WrappedModel:
         self.rescale_steps = rescale_steps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x: torch.Tensor, emb: Dict, mask: torch.Tensor, **kwargs) -> torch.Tensor:
+    def __call__(self, x, **kwargs) -> torch.Tensor:
         """
         Call the wrapped model with rescaled diffusion steps.
 
-        :param x: Input tensor.
-        :param emb: Embedding tensor.
-        :param mask: Mask tensor for diffusion.
-        :param cond: Conditional input tensor.
+        :param x: Input tensor or list of input tensors (groups).
+        :param kwargs: Keyword arguments including emb_groups, mask_zooms_groups, etc.
         :return: Output from the model with rescaled diffusion steps.
         """
-        # Convert diffusion_step_map to a tensor on the correct device and type
-        diffusion_steps = emb["DiffusionStepEmbedder"]
-        map_tensor = torch.tensor(self.diffusion_step_map, device=diffusion_steps.device, dtype=diffusion_steps.dtype)
-        new_ts = map_tensor[diffusion_steps]  # Map diffusion steps
+        emb_groups = kwargs.get("emb_groups")
+        if emb_groups:
+            for emb in emb_groups:
+                if emb and "DiffusionStepEmbedder" in emb:
+                    diffusion_steps = emb["DiffusionStepEmbedder"]
+                    map_tensor = torch.tensor(self.diffusion_step_map, device=diffusion_steps.device, dtype=diffusion_steps.dtype)
+                    new_ts = map_tensor[diffusion_steps]  # Map diffusion steps
 
-        # Rescale steps if necessary
-        if self.rescale_steps:
-            new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
-        emb["DiffusionStepEmbedder"] = new_ts
-        return self.model(x, emb=emb, mask=mask, **kwargs)
+                    # Rescale steps if necessary
+                    if self.rescale_steps:
+                        new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
+                    emb["DiffusionStepEmbedder"] = new_ts
+            kwargs["emb_groups"] = emb_groups
+
+        return self.model(x, **kwargs)

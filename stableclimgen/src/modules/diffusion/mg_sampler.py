@@ -1,23 +1,21 @@
 import torch
-from .gaussian_diffusion import extract_into_tensor, GaussianDiffusion
+from .mg_gaussian_diffusion import extract_into_tensor, MGGaussianDiffusion
 
 
 class Sampler:
-    def __init__(self, gaussian_diffusion: GaussianDiffusion, condition_input=False):
+    def __init__(self, gaussian_diffusion: MGGaussianDiffusion):
         """
         Initialize the Sampler class with a Gaussian diffusion process.
 
         :param gaussian_diffusion: Gaussian diffusion object with necessary properties and methods.
         """
         self.gaussian_diffusion = gaussian_diffusion
-        self.condition_input = condition_input
 
     def sample_loop(
         self,
         model: torch.nn.Module,
-        input_data: torch.Tensor,
-        mask: torch.Tensor = None,
-        noise: torch.Tensor = None,
+        input_groups: list,
+        mask_groups: list = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
         eta: float = 0.0,
@@ -28,8 +26,8 @@ class Sampler:
         Generate samples from the model.
 
         :param model: The model module used for sampling.
-        :param input_data: Input data tensor.
-        :param mask: Mask data tensor, applied to control data.
+        :param input_groups: List of input data groups (dictionaries of tensors).
+        :param mask_groups: List of mask data groups, applied to control data.
         :param noise: Initial noise tensor. If None, random noise is used.
         :param denoised_fn: Optional function applied to the predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
@@ -38,18 +36,23 @@ class Sampler:
         :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: Final batch of non-differentiable samples.
         """
-        x_0 = noise if noise is not None else torch.randn_like(input_data).to(input_data.device)
+        x_t_groups = [self.gaussian_diffusion.generate_noise(g) if g else None for g in input_groups]
+
+        first_valid_group = next((g for g in x_t_groups if g), None)
+        if not first_valid_group:
+            return x_t_groups
+
+        device = first_valid_group[list(first_valid_group.keys())[0]].device
 
         final = None
-        # Progressive sampling loop
         for sample in self.sample_loop_progressive(
             model,
-            input_data,
-            x_0,
-            mask,
+            input_groups,
+            x_t_groups,
+            mask_groups=mask_groups,
             denoised_fn=denoised_fn,
             cond_fn=cond_fn,
-            device=input_data.device,
+            device=device,
             eta=eta,
             progress=progress,
             **model_kwargs
@@ -61,9 +64,9 @@ class Sampler:
     def sample_loop_progressive(
         self,
         model: torch.nn.Module,
-        input_data: torch.Tensor,
-        x_0: torch.Tensor,
-        mask: torch.Tensor = None,
+        input_groups: list,
+        x_t_groups: list,
+        mask_groups: list = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
         device: torch.device = None,
@@ -75,9 +78,9 @@ class Sampler:
         Perform a progressive sampling loop over diffusion steps.
 
         :param model: The model module used for sampling.
-        :param input_data: Input data tensor.
-        :param x_0: Initial noise tensor.
-        :param mask: Mask data tensor for controlling data.
+        :param input_groups: List of input data groups.
+        :param x_t_groups: List of initial noise tensor groups.
+        :param mask_groups: List of mask data groups for controlling data.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
         :param device: Device to perform sampling on (e.g., 'cuda' or 'cpu').
@@ -86,8 +89,10 @@ class Sampler:
         :param model_kwargs: Extra arguments for the model, used for conditioning.
         :return: A generator yielding the sample dictionary for each diffusion step.
         """
-        if torch.is_tensor(mask):
-            x_0 = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, x_0)
+        if mask_groups is not None:
+            for i, (mask_zooms, input_zooms, x_t_zooms) in enumerate(zip(mask_groups, input_groups, x_t_groups)):
+                if mask_zooms and input_zooms and x_t_zooms:
+                    x_t_groups[i] = {int(zoom): torch.where(~mask_zooms[zoom], input_zooms[zoom], x_t_zooms[zoom]) for zoom in x_t_zooms.keys()}
 
         indices = list(range(self.gaussian_diffusion.diffusion_steps))[::-1]  # Reverse the diffusion steps
 
@@ -96,39 +101,37 @@ class Sampler:
             from tqdm.auto import tqdm
             indices = tqdm(indices)
 
+        first_valid_group = next((g for g in x_t_groups if g), None)
+        batch_size = first_valid_group[list(first_valid_group.keys())[0]].shape[0]
+
         # Iterate over diffusion steps in reverse
         for i in indices:
-            diffusion_steps = torch.tensor([i] * x_0.shape[0], device=device)
-            if self.condition_input and torch.is_tensor(mask):
-                alpha_cumprod = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_0.shape)
-                input_weight = torch.sqrt(alpha_cumprod)
-                input_part = input_weight * input_data
-                noise_weight = torch.sqrt((1 - alpha_cumprod))
-                noise_part = noise_weight * torch.randn_like(x_0)
-                weighed_input = input_part + noise_part
-                x_0 = torch.where(~mask, weighed_input, x_0)
+            diffusion_steps = torch.tensor([i] * batch_size, device=device)
             with torch.no_grad():
                 out = self.sample(
                     model,
-                    x_0,
+                    x_t_groups,
                     diffusion_steps,
-                    mask,
+                    mask_groups=mask_groups,
                     denoised_fn=denoised_fn,
                     cond_fn=cond_fn,
                     eta=eta,
                     **model_kwargs
                 )
                 # Reapply mask to the sample output
-                out["sample"] = torch.where(~mask * self.gaussian_diffusion.unmask_existing, input_data, out["sample"]) if torch.is_tensor(mask) else out["sample"]
+                if mask_groups is not None:
+                    for j, (mask_zooms, input_zooms, sample_zooms) in enumerate(zip(mask_groups, input_groups, out["sample"])):
+                        if mask_zooms and input_zooms and sample_zooms:
+                            out["sample"][j] = {int(zoom): torch.where(~mask_zooms[zoom], input_zooms[zoom], sample_zooms[zoom]) for zoom in input_zooms.keys()}
                 yield out
-                x_0 = out["sample"]
+                x_t_groups = out["sample"]
 
     def sample(
         self,
         model: torch.nn.Module,
-        x_t: torch.Tensor,
+        x_t_groups: list,
         diffusion_steps: torch.Tensor,
-        mask: torch.Tensor = None,
+        mask_groups: list = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
         eta: float = 0.0,
@@ -138,9 +141,9 @@ class Sampler:
         Placeholder method for sampling at each timestep. Intended to be implemented by subclasses.
 
         :param model: The model to sample from.
-        :param x_t: The current tensor at x_t.
+        :param x_t_groups: The current list of tensor groups at x_t.
         :param diffusion_steps: Current diffusion step tensor.
-        :param mask: Mask data tensor.
+        :param mask_zooms: Mask data tensor.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
         :param eta: Hyperparameter controlling noise level.
@@ -162,9 +165,9 @@ class DDPMSampler(Sampler):
     def sample(
         self,
         model: torch.nn.Module,
-        x_t: torch.Tensor,
+        x_t_groups: list,
         diffusion_steps: torch.Tensor,
-        mask: torch.Tensor = None,
+        mask_groups: dict = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
         eta: float = 0.0,
@@ -174,27 +177,35 @@ class DDPMSampler(Sampler):
         Sample x_{t-1} from the model at the given timestep.
 
         :param model: The model to sample from.
-        :param x_t: The current tensor at x_t.
+        :param x_t_groups: The current list of tensor groups at x_t.
         :param diffusion_steps: Current diffusion step tensor.
-        :param mask: Mask data tensor.
+        :param mask_groups: List of mask data groups.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
         :param eta: Hyperparameter controlling noise level.
         :param model_kwargs: Extra arguments for the model.
         :return: A dictionary containing sample and predicted x_start.
         """
-        out = self.gaussian_diffusion.p_mean_variance(
+        output_groups = self.gaussian_diffusion.p_mean_variance(
             model,
-            x_t,
+            x_t_groups,
             diffusion_steps,
-            mask,
+            mask_groups=mask_groups,
             denoised_fn=denoised_fn,
             **model_kwargs
         )
-        noise = torch.randn_like(x_t)
-        nonzero_mask = (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
-        sample = out["mean"] + nonzero_mask * torch.exp(0.5 * out["log_variance"]) * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+        
+        sample_groups = []
+        for i, x_t_zooms in enumerate(x_t_groups):
+            if not x_t_zooms:
+                sample_groups.append(None)
+                continue
+            noise_zooms = self.gaussian_diffusion.generate_noise(x_t_zooms)
+            nonzero_mask_zooms = {int(zoom): (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t_zooms[zoom].shape) - 1))) for zoom in x_t_zooms.keys()}
+            sample_zooms = {int(zoom): output_groups["mean"][i][zoom] + nonzero_mask_zooms[zoom] * torch.exp(0.5 * output_groups["log_variance"][i][zoom]) * noise_zooms[zoom] for zoom in x_t_zooms.keys()}
+            sample_groups.append(sample_zooms)
+
+        return {"sample": sample_groups, "pred_xstart": output_groups["pred_xstart"]}
 
 
 class DDIMSampler(Sampler):
@@ -209,9 +220,9 @@ class DDIMSampler(Sampler):
     def sample(
         self,
         model: torch.nn.Module,
-        x_t: torch.Tensor,
+        x_t_groups: list,
         diffusion_steps: torch.Tensor,
-        mask: torch.Tensor = None,
+        mask_groups: list = None,
         denoised_fn: callable = None,
         cond_fn: callable = None,
         eta: float = 0.0,
@@ -221,32 +232,41 @@ class DDIMSampler(Sampler):
         Sample x_{t-1} from the model using DDIM.
 
         :param model: The model to sample from.
-        :param x_t: The current tensor at x_t.
+        :param x_t_groups: The current list of tensor groups at x_t.
         :param diffusion_steps: Current diffusion step tensor.
-        :param mask: Mask data tensor.
+        :param mask_groups: List of mask data groups.
         :param denoised_fn: Optional function applied to predicted x_start.
         :param cond_fn: Optional gradient function acting similarly to the model.
         :param eta: Hyperparameter controlling noise level.
         :param model_kwargs: Extra arguments for the model.
         :return: A dictionary containing sample and predicted x_start.
         """
-        out = self.gaussian_diffusion.p_mean_variance(
+        output_groups = self.gaussian_diffusion.p_mean_variance(
             model,
-            x_t,
+            x_t_groups,
             diffusion_steps,
-            mask,
+            mask_groups=mask_groups,
             denoised_fn=denoised_fn,
             **model_kwargs
         )
 
-        eps = self.gaussian_diffusion.predict_eps_from_xstart(x_t, diffusion_steps, out["pred_xstart"])
+        sample_groups = []
+        for i, x_t_zooms in enumerate(x_t_groups):
+            if not x_t_zooms:
+                sample_groups.append(None)
+                continue
 
-        alpha_bar = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod, diffusion_steps, x_t.shape)
-        alpha_bar_prev = extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev, diffusion_steps, x_t.shape)
-        sigma = eta * torch.sqrt((1 - alpha_bar_prev) / (1 - alpha_bar)) * torch.sqrt(1 - alpha_bar / alpha_bar_prev)
+            pred_xstart_zooms = output_groups["pred_xstart"][i]
+            eps_zooms = self.gaussian_diffusion.predict_eps_from_xstart(x_t_zooms, diffusion_steps, pred_xstart_zooms)
 
-        noise = torch.randn_like(x_t)
-        mean_pred = out["pred_xstart"] * torch.sqrt(alpha_bar_prev) + torch.sqrt(1 - alpha_bar_prev - sigma ** 2) * eps
-        nonzero_mask = (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t.shape) - 1)))
-        sample = mean_pred + nonzero_mask * sigma * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+            alpha_bar_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_zooms[zoom], diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+            alpha_bar_prev_zooms = {int(zoom): extract_into_tensor(self.gaussian_diffusion.alphas_cumprod_prev_zooms[zoom], diffusion_steps, x_t_zooms[zoom].shape) for zoom in x_t_zooms.keys()}
+            sigma_zooms = {int(zoom): eta * torch.sqrt((1 - alpha_bar_prev_zooms[zoom]) / (1 - alpha_bar_zooms[zoom])) * torch.sqrt(1 - alpha_bar_zooms[zoom] / alpha_bar_prev_zooms[zoom]) for zoom in x_t_zooms.keys()}
+
+            noise_zooms = self.gaussian_diffusion.generate_noise(x_t_zooms)
+            mean_pred_zooms = {int(zoom): pred_xstart_zooms[zoom] * torch.sqrt(alpha_bar_prev_zooms[zoom]) + torch.sqrt(1 - alpha_bar_prev_zooms[zoom] - sigma_zooms[zoom] ** 2) * eps_zooms[zoom] for zoom in x_t_zooms.keys()}
+            nonzero_mask_zooms = {int(zoom): (diffusion_steps != 0).float().view(-1, *([1] * (len(x_t_zooms[zoom].shape) - 1))) for zoom in x_t_zooms.keys()}
+            sample_zooms = {int(zoom): mean_pred_zooms[zoom] + nonzero_mask_zooms[zoom] * sigma_zooms[zoom] * noise_zooms[zoom] for zoom in x_t_zooms.keys()}
+            sample_groups.append(sample_zooms)
+
+        return {"sample": sample_groups, "pred_xstart": output_groups["pred_xstart"]}

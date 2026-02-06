@@ -142,7 +142,7 @@ class LossType(enum.Enum):
         return self in [LossType.KL, LossType.RESCALED_KL]
 
 
-class GaussianDiffusion:
+class MGGaussianDiffusion:
     """
     Utilities for training and sampling diffusion models.
 
@@ -336,95 +336,109 @@ class GaussianDiffusion:
     def p_mean_variance(
         self,
         model: Callable,
-        x_zooms: dict,
+        x_groups: list,
         diff_steps: torch.Tensor,
-        mask_zooms: dict = None,
-        emb: Dict = None,
+        mask_groups: list = None,
+        emb_groups: list = None,
         denoised_fn: Optional[Callable] = None,
         **model_kwargs
     ) -> Dict[str, torch.Tensor]:
         """
         Apply the model to get p(x_{t-1} | x_t) and predict the model output.
 
-        :param model: the model, which takes a signal and a batch of timesteps
-                      as input.
-        :param x_zooms: the [N x C x ...] tensor at time t.
+        :param model: the model, which takes a list of groups and a batch of timesteps as input.
+        :param x_groups: a list of dictionaries, where each dictionary represents a group of tensors at time t.
         :param diff_steps: a 1-D Tensor of timesteps.
-        :param mask_zooms: a [N x C x ...] tensor applied to x_t
-        :param emb: an embedding dictionary
+        :param mask_groups: a list of mask dictionaries.
+        :param emb_groups: a list of embedding dictionaries.
         :param denoised_fn: if not None, a function which applies to the
             x_start prediction before it is used to compute means and variances.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
             pass to the model. This can be used for conditioning.
         :return: a dict with the following keys:
-                 - 'mean': the model mean output.
-                 - 'variance': the model variance output.
-                 - 'log_variance': the log of 'variance'.
-                 - 'pred_xstart': the predicted x_start.
+                 - 'mean': a list of model mean output dictionaries.
+                 - 'variance': a list of model variance output dictionaries.
+                 - 'log_variance': a list of log of 'variance' dictionaries.
+                 - 'pred_xstart': a list of predicted x_start dictionaries.
         """
-        if emb is None:
-            emb = {}
-        emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+        if emb_groups is None:
+            emb_groups = [{} for _ in x_groups]
+        for emb in emb_groups:
+            if emb is not None:
+                emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+
         if 'condition' in model_kwargs.keys():
-            x_input_zooms = {int(zoom): torch.cat([x_zooms[zoom], model_kwargs.pop('condition')][zoom], dim=-1) for zoom in x_zooms.keys()}
+            condition = model_kwargs.pop('condition')
+            x_input_groups = [torch.cat([x_t_zooms, condition], dim=-1) if x_t_zooms else None for x_t_zooms in x_groups]
         else:
-            x_input_zooms = x_zooms
-        model_output_zooms = model(x_input_zooms.copy(), emb=emb.copy(), mask_zooms=mask_zooms.copy(), **model_kwargs)
+            x_input_groups = x_groups
 
-        if self.model_var_type in [ModelVarType.FIXED_LARGE, ModelVarType.FIXED_SMALL]:
-            # Use pre-calculated fixed variance schedules
-            model_variance_zooms, model_log_variance_zooms = {
-                # for fixedlarge, we set the initial variance estimates to B.
-                # at the same time, we need to make sure we don't include beta_0.
-                ModelVarType.FIXED_LARGE: (
-                    {int(zoom): np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:]) for zoom in x_zooms.keys()},
-                    {int(zoom): np.log(np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:])) for zoom in x_zooms.keys()},
-                ),
-                ModelVarType.FIXED_SMALL: (
-                    self.posterior_variance_zooms,
-                    self.posterior_log_variance_clipped_zooms,
-                ),
-            }[self.model_var_type]
-            model_variance_zooms = {int(zoom): extract_into_tensor(model_variance_zooms[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
-            model_log_variance_zooms = {int(zoom): extract_into_tensor(model_log_variance_zooms[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
-        else:
-            raise NotImplementedError
+        model_kwargs.update({"emb_groups": emb_groups, "mask_zooms_groups": mask_groups})
+        model_output_groups = model(x_input_groups, **model_kwargs)
 
-        # --- Calculate predicted x_start and model mean based on model_mean_type ---
-        if self.model_mean_type == ModelMeanType.PREVIOUS_X:
-            pred_xstart_zooms = self.process_xstart(
-                self._predict_xstart_from_xprev(x_t_zooms=x_zooms, t=diff_steps, xprev_zooms=model_output_zooms), diff_steps, denoised_fn
-            )
-            model_mean_zooms = model_output_zooms
-        elif self.model_mean_type == ModelMeanType.START_X:
-            pred_xstart_zooms = self.process_xstart(model_output_zooms, diff_steps, denoised_fn)
-            model_mean_zooms, _, _ = self.q_posterior_mean_variance(
-                x_start_zooms=pred_xstart_zooms, x_t_zooms=x_zooms, diff_steps=diff_steps
-            )
-        elif self.model_mean_type == ModelMeanType.EPSILON:
-            pred_xstart_zooms = self.process_xstart(
-                self._predict_xstart_from_eps(x_t_zooms=x_zooms, t=diff_steps, eps_zooms=model_output_zooms), diff_steps, denoised_fn
-            )
-            model_mean_zooms, _, _ = self.q_posterior_mean_variance(
-                x_start_zooms=pred_xstart_zooms, x_t_zooms=x_zooms, diff_steps=diff_steps
-            )
-        elif self.model_mean_type == ModelMeanType.V_PREDICTION:
-             # Model outputs v_pred
-            v_pred = model_output_zooms
-            pred_xstart_zooms = self.process_xstart(
-                self._predict_xstart_from_v(x_t_zooms=x_zooms, t=diff_steps, v_zooms=v_pred), diff_steps, denoised_fn
-            )
-            model_mean_zooms, _, _ = self.q_posterior_mean_variance(
-                x_start_zooms=pred_xstart_zooms, x_t_zooms=x_zooms, diff_steps=diff_steps
-            )
-        else:
-            raise NotImplementedError(self.model_mean_type)
+        output_mean_groups, output_variance_groups, output_log_variance_groups, output_pred_xstart_groups = [], [], [], []
+
+        for i, (x_zooms, model_output_zooms) in enumerate(zip(x_groups, model_output_groups)):
+            if not x_zooms:
+                output_mean_groups.append(None)
+                output_variance_groups.append(None)
+                output_log_variance_groups.append(None)
+                output_pred_xstart_groups.append(None)
+                continue
+
+            if self.model_var_type in [ModelVarType.FIXED_LARGE, ModelVarType.FIXED_SMALL]:
+                model_variance_schedule, model_log_variance_schedule = {
+                    ModelVarType.FIXED_LARGE: (
+                        {int(zoom): np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:]) for zoom in x_zooms.keys()},
+                        {int(zoom): np.log(np.append(self.posterior_variance_zooms[zoom][1], self.betas_zooms[zoom][1:])) for zoom in x_zooms.keys()},
+                    ),
+                    ModelVarType.FIXED_SMALL: (
+                        self.posterior_variance_zooms,
+                        self.posterior_log_variance_clipped_zooms,
+                    ),
+                }[self.model_var_type]
+                model_variance = {int(zoom): extract_into_tensor(model_variance_schedule[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
+                model_log_variance = {int(zoom): extract_into_tensor(model_log_variance_schedule[zoom], diff_steps, x_zooms[zoom].shape) for zoom in x_zooms.keys()}
+            else:
+                raise NotImplementedError(self.model_var_type)
+
+            if self.model_mean_type == ModelMeanType.PREVIOUS_X:
+                pred_xstart = self.process_xstart(
+                    self._predict_xstart_from_xprev(x_t_zooms=x_zooms, t=diff_steps, xprev_zooms=model_output_zooms), diff_steps, denoised_fn
+                )
+                model_mean = model_output_zooms
+            elif self.model_mean_type == ModelMeanType.START_X:
+                pred_xstart = self.process_xstart(model_output_zooms, diff_steps, denoised_fn)
+                model_mean, _, _ = self.q_posterior_mean_variance(
+                    x_start_zooms=pred_xstart, x_t_zooms=x_zooms, diff_steps=diff_steps
+                )
+            elif self.model_mean_type == ModelMeanType.EPSILON:
+                pred_xstart = self.process_xstart(
+                    self._predict_xstart_from_eps(x_t_zooms=x_zooms, t=diff_steps, eps_zooms=model_output_zooms), diff_steps, denoised_fn
+                )
+                model_mean, _, _ = self.q_posterior_mean_variance(
+                    x_start_zooms=pred_xstart, x_t_zooms=x_zooms, diff_steps=diff_steps
+                )
+            elif self.model_mean_type == ModelMeanType.V_PREDICTION:
+                pred_xstart = self.process_xstart(
+                    self._predict_xstart_from_v(x_t_zooms=x_zooms, t=diff_steps, v_zooms=model_output_zooms), diff_steps, denoised_fn
+                )
+                model_mean, _, _ = self.q_posterior_mean_variance(
+                    x_start_zooms=pred_xstart, x_t_zooms=x_zooms, diff_steps=diff_steps
+                )
+            else:
+                raise NotImplementedError(self.model_mean_type)
+
+            output_mean_groups.append(model_mean)
+            output_variance_groups.append(model_variance)
+            output_log_variance_groups.append(model_log_variance)
+            output_pred_xstart_groups.append(pred_xstart)
 
         return {
-            "mean": model_mean_zooms,
-            "variance": model_variance_zooms,
-            "log_variance": model_log_variance_zooms,
-            "pred_xstart": pred_xstart_zooms,
+            "mean": output_mean_groups,
+            "variance": output_variance_groups,
+            "log_variance": output_log_variance_groups,
+            "pred_xstart": output_pred_xstart_groups,
         }
 
     def _predict_xstart_from_eps(self, x_t_zooms: dict, t: torch.Tensor, eps_zooms: dict) -> dict:
@@ -474,119 +488,87 @@ class GaussianDiffusion:
             return t.float() * (1000.0 / self.diffusion_steps)
         return t
 
-    def _vb_terms_bpd(
-        self,
-        model: Callable,
-        x_start_zooms: dict,
-        x_t_zooms: dict,
-        mask_zooms: dict,
-        emb: Dict,
-        diff_steps: torch.Tensor,
-        **model_kwargs
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Get a term for the variational lower-bound.
-
-        The resulting units are bits (rather than nats, as one might expect).
-        This allows for easier comparison to other papers.
-
-        :return: a dict with the following keys:
-                 - 'output': a shape [N] tensor of NLLs or KLs.
-                 - 'pred_xstart': the x_0 predictions.
-        """
-        true_mean, _, true_log_variance_clipped = self.q_posterior_mean_variance(
-            x_start_zooms=x_start_zooms, x_t_zooms=x_t_zooms, diff_steps=diff_steps
-        )
-        out_zooms = self.p_mean_variance(
-            model=model,
-            x_zooms=x_t_zooms,
-            diff_steps=diff_steps,
-            mask_zooms=mask_zooms,
-            emb=emb,
-            **model_kwargs
-        )
-        kl = normal_kl(
-            true_mean, true_log_variance_clipped, out_zooms["mean"], out_zooms["log_variance"]
-        )
-        kl = mean_flat(kl) / np.log(2.0)
-
-        decoder_nll = -continuous_gaussian_log_likelihood(
-            x_start_zooms, means=out_zooms["mean"], log_scales=0.5 * out_zooms["log_variance"]
-        )
-        assert decoder_nll.shape == x_start_zooms.shape
-        decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
-
-        # At the first timestep return the decoder NLL,
-        # otherwise return KL(q(x_{t-1}|x_t,x_0) || p(x_{t-1}|x_t))
-        output = torch.where(diff_steps == 0, decoder_nll, kl)
-        return {"output": output, "pred_xstart": out_zooms["pred_xstart"]}
-
     def training_losses(
         self,
         model: Callable,
-        gt_zooms: dict,
+        gt_groups: list,
         diff_steps: torch.Tensor,
-        mask_zooms: dict = None,
-        emb: Dict = None,
-        noise_zooms: dict = None,
+        mask_groups: list = None,
+        emb_groups: list = None,
+        noise_groups: list = None,
         create_pred_xstart: bool = False,
         **model_kwargs
-    ) -> Tuple[dict, dict, dict]:
-        if noise_zooms is None:
-            noise_zooms = self.generate_noise(gt_zooms)
+    ) -> list:
+        if noise_groups is None:
+            noise_groups = [self.generate_noise(group) if group else None for group in gt_groups]
 
-        if mask_zooms is not None:
-            noise_zooms = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
-        x_t_zooms = self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms)
+        if mask_groups is not None:
+            for i, (mask_zooms, gt_zooms, noise_zooms) in enumerate(zip(mask_groups, gt_groups, noise_groups)):
+                if mask_zooms and gt_zooms and noise_zooms:
+                    print(mask_zooms[3].shape, gt_zooms[3].shape, noise_zooms[3].shape)
+                    noise_groups[i] = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
 
+        x_t_groups = [self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms) if gt_zooms else None
+                      for gt_zooms, noise_zooms in zip(gt_groups, noise_groups)]
+
+        # Prepare model inputs
+        if emb_groups is None:
+            emb_groups = [{} for _ in gt_groups]
+        
+        for emb in emb_groups:
+            if emb is not None:
+                emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
+
+        if 'condition' in model_kwargs:
+            condition = model_kwargs.pop('condition')
+            x_input_groups = [torch.cat([x_t_zooms, condition], dim=-1) if x_t_zooms else None for x_t_zooms in x_t_groups]
+        else:
+            x_input_groups = x_t_groups
+
+        model_output_groups = model(x_input_groups, emb_groups=emb_groups, mask_zooms_groups=mask_groups, **model_kwargs)
+
+        target_groups = []
+        pred_xstart_groups = []
+        
         if self.loss_type in {LossType.MSE, LossType.RESCALED_MSE}:
-            # Prepare model inputs
-            if emb is None:
-                emb = {}
-            emb["DiffusionStepEmbedder"] = self._scale_steps(diff_steps)
-            if 'condition' in model_kwargs.keys():
-                x_input_zooms = torch.cat([x_t_zooms, model_kwargs.pop('condition')], dim=-1)
-            else:
-                x_input_zooms = x_t_zooms
-            model_output = model(x_input_zooms.copy(), emb=emb.copy(), mask_zooms=mask_zooms.copy(), **model_kwargs)
+            for i, (gt_zooms, x_t_zooms, noise_zooms, model_output, mask_zooms) in enumerate(zip(gt_groups, x_t_groups, noise_groups, model_output_groups, mask_groups)):
+                if not gt_zooms:
+                    target_groups.append(None)
+                    pred_xstart_groups.append(None)
+                    continue
 
-            # Determine the target for the MSE loss based on model_mean_type
-            if self.model_mean_type == ModelMeanType.PREVIOUS_X:
-                target_zooms = self.q_posterior_mean_variance(
-                    x_start_zooms=gt_zooms, x_t_zooms=x_t_zooms, diff_steps=diff_steps
-                )[0]
-            elif self.model_mean_type == ModelMeanType.START_X:
-                target_zooms = gt_zooms
-            elif self.model_mean_type == ModelMeanType.EPSILON:
-                target_zooms = noise_zooms
-            elif self.model_mean_type == ModelMeanType.V_PREDICTION:
-                 target_zooms = self._predict_v_from_eps_and_xstart(noise_zooms, gt_zooms, diff_steps)
-            else:
-                raise NotImplementedError(self.model_mean_type)
-
-            model_output = {int(zoom): torch.where(~mask_zooms[zoom], target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
-
-            if create_pred_xstart:
-                if self.model_mean_type == ModelMeanType.START_X:
-                    pred_xstart_zooms = self.process_xstart(model_output, diff_steps, None)
+                # Determine the target for the MSE loss based on model_mean_type
+                if self.model_mean_type == ModelMeanType.PREVIOUS_X:
+                    target_zooms = self.q_posterior_mean_variance(x_start_zooms=gt_zooms, x_t_zooms=x_t_zooms, diff_steps=diff_steps)[0]
+                elif self.model_mean_type == ModelMeanType.START_X:
+                    target_zooms = gt_zooms
                 elif self.model_mean_type == ModelMeanType.EPSILON:
-                    pred_xstart_zooms = self.process_xstart(
-                        self._predict_xstart_from_eps(x_t_zooms=x_t_zooms, t=diff_steps, eps_zooms=model_output), diff_steps, None
-                    )
+                    target_zooms = noise_zooms
                 elif self.model_mean_type == ModelMeanType.V_PREDICTION:
-                    pred_xstart_zooms = self.process_xstart(
-                        self._predict_xstart_from_v(x_t_zooms=x_t_zooms, t=diff_steps, v_zooms=model_output), diff_steps, None
-                    )
-                elif self.model_mean_type == ModelMeanType.PREVIOUS_X:
-                     pred_xstart_zooms = self.process_xstart(
-                         self._predict_xstart_from_xprev(x_t_zooms=x_t_zooms, t=diff_steps, xprev_zooms=model_output), diff_steps, None
-                     )
-            else:
-                pred_xstart_zooms = None
+                    target_zooms = self._predict_v_from_eps_and_xstart(noise_zooms, gt_zooms, diff_steps)
+                else:
+                    raise NotImplementedError(self.model_mean_type)
+                target_groups.append(target_zooms)
+
+                if mask_zooms:
+                    model_output_groups[i] = {int(zoom): torch.where(~mask_zooms[zoom], target_zooms[zoom], model_output[zoom]) for zoom in target_zooms.keys()}
+
+                if create_pred_xstart:
+                    if self.model_mean_type == ModelMeanType.START_X:
+                        pred_xstart_zooms = self.process_xstart(model_output, diff_steps, None)
+                    elif self.model_mean_type == ModelMeanType.EPSILON:
+                        pred_xstart_zooms = self.process_xstart(self._predict_xstart_from_eps(x_t_zooms=x_t_zooms, t=diff_steps, eps_zooms=model_output), diff_steps, None)
+                    elif self.model_mean_type == ModelMeanType.V_PREDICTION:
+                        pred_xstart_zooms = self.process_xstart(self._predict_xstart_from_v(x_t_zooms=x_t_zooms, t=diff_steps, v_zooms=model_output), diff_steps, None)
+                    elif self.model_mean_type == ModelMeanType.PREVIOUS_X:
+                        pred_xstart_zooms = self.process_xstart(self._predict_xstart_from_xprev(x_t_zooms=x_t_zooms, t=diff_steps, xprev_zooms=model_output), diff_steps, None)
+                    pred_xstart_groups.append(pred_xstart_zooms)
+                else:
+                    pred_xstart_groups.append(None)
         else:
             raise NotImplementedError(self.loss_type)
 
-        return target_zooms, model_output, pred_xstart_zooms # Return loss dict and predicted x0
+        return list(zip(target_groups, model_output_groups, pred_xstart_groups))
 
 
     def get_diffusion_steps(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -610,7 +592,7 @@ class GaussianDiffusion:
             noise_zooms = {}
             for zoom in x_zooms.keys():
                 noise_zooms[zoom] = noise.view(*x_zooms[zoom].shape[:3], -1, 4 ** (max_zoom - zoom),
-                                               x_zooms[zoom].shape[-1]).mean(dim=-2)
+                                               x_zooms[zoom].shape[-2], x_zooms[zoom].shape[-1]).mean(dim=-3)
         return noise_zooms
 
 

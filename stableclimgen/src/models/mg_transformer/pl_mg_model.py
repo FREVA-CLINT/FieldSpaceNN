@@ -84,290 +84,65 @@ class CosineWarmupScheduler(torch.optim.lr_scheduler._LRScheduler):
 class MGMultiLoss(nn.Module):
     def __init__(self, lambda_dict, grid_layers=None, max_zoom=None):
         super().__init__()
+        self.grid_layers = grid_layers
+        self.common_losses = nn.ModuleList()
+        self.level_specific_losses = nn.ModuleDict()
 
-        self.grid_layers = grid_layers or {}
-        self.max_zoom = max_zoom
+        common_loss_config = lambda_dict.get("common", {})
+        for loss_name, lambda_value in common_loss_config.items():
+            self._add_loss(loss_name, lambda_value, self.common_losses)
 
-        # {level: {'default': [loss_entries], 'per_var': {var_id: {'label': str, 'losses': [loss_entries]}}}}
-        self.level_loss_fcns: Dict[Any, Dict[str, Any]] = {}
-        self.common_loss_fcns: Dict[str, Any] = {'default': [], 'per_var': {}}
+        for key, level_config in lambda_dict.items():
+            if str(key).isdigit():
+                zoom_level = str(key)
+                if zoom_level not in self.level_specific_losses:
+                    self.level_specific_losses[zoom_level] = nn.ModuleList()
+                for loss_name, lambda_value in level_config.items():
+                    self._add_loss(loss_name, lambda_value, self.level_specific_losses[zoom_level], zoom_level)
 
-        for key, value in lambda_dict.items():
-            if self._is_level_key(key):
-                level_key = self._normalize_level_key(key)
-                level_entry = {'default': [], 'per_var': {}}
-                default_spec, per_var_spec = self._split_loss_config(value)
-                level_entry['default'].extend(self._build_losses(default_spec, self._get_grid_layer(level_key)))
-                for var_key, loss_spec in per_var_spec.items():
-                    losses = self._build_losses(loss_spec, self._get_grid_layer(level_key))
-                    if not losses:
-                        continue
-                    normalized_var = self._normalize_var_key(var_key)
-                    var_entry = level_entry['per_var'].setdefault(normalized_var, {'label': str(var_key), 'losses': []})
-                    var_entry['losses'].extend(losses)
-                if level_entry['default'] or level_entry['per_var']:
-                    self.level_loss_fcns[level_key] = level_entry
-            else:
-                if isinstance(value, dict) and key not in globals():
-                    default_spec, per_var_spec = self._split_loss_config(value)
-                else:
-                    default_spec, per_var_spec = self._split_loss_config({key: value})
+    def _add_loss(self, loss_name, lambda_value, module_list, zoom_level=None):
+        lambda_val = float(lambda_value)
+        if lambda_val > 0:
+            if loss_name not in globals():
+                raise KeyError(f"Unknown loss '{loss_name}' in lambda configuration")
 
-                common_losses = self._build_losses(default_spec, self._get_grid_layer(self.max_zoom))
-                self.common_loss_fcns['default'].extend(common_losses)
+            grid_layer = self.grid_layers[zoom_level] if zoom_level is not None and self.grid_layers else None
+            loss_instance = globals()[loss_name](grid_layer=grid_layer)
+            
+            # Store lambda and name on the instance for easy access in forward
+            loss_instance.lambda_val = lambda_val
+            loss_instance.loss_name = loss_name
+            module_list.append(loss_instance)
 
-                for var_key, loss_spec in per_var_spec.items():
-                    losses = self._build_losses(loss_spec, self._get_grid_layer(self.max_zoom))
-                    if not losses:
-                        continue
-                    normalized_var = self._normalize_var_key(var_key)
-                    var_entry = self.common_loss_fcns['per_var'].setdefault(normalized_var, {'label': str(var_key), 'losses': []})
-                    var_entry['losses'].extend(losses)
-
-        self.has_elements = self._compute_has_elements()
+    @property
+    def has_elements(self):
+        return len(self.common_losses) > 0 or any(len(v) > 0 for v in self.level_specific_losses.values())
 
     def forward(self, output, target, mask=None, sample_configs={}, prefix='', emb={}):
         loss_dict = {}
         total_loss = 0.0
 
-        group_embedder = emb['VariableEmbedder'] if 'VariableEmbedder' in emb.keys() else None 
-
-        for level_key in output:
-            out = output[level_key]
-            tgt = target[level_key]
-            level_idx = self._normalize_level_key(level_key)
-
-            mask_level = self._select_level_item(mask, level_key)
-            mask_level = self._maybe_to_device(mask_level, out.device)
-
-            sample_conf = self._select_level_item(sample_configs, level_key)
-
-            level_losses = self.level_loss_fcns.get(level_idx)
-            has_level_specific = level_losses is not None
-            if level_losses is None:
-                level_losses = {'default': [], 'per_var': {}}
-
-            # Level-specific default losses
-            for loss_fcn in level_losses['default']:
-                loss = loss_fcn['fcn'](out, tgt, mask=mask_level, sample_configs=sample_conf)
-                name = f"{prefix}level{level_idx}_{loss_fcn['fcn']._get_name()}"
+        for zoom_level, out_zoom in output.items():
+            tgt_zoom = target[zoom_level]
+            mask_zoom = mask.get(zoom_level) if mask else None
+            sample_conf = sample_configs.get(zoom_level) if sample_configs else None
+            
+            # Apply common losses
+            for loss_fcn in self.common_losses:
+                loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
+                name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
                 loss_dict[name] = loss.item()
-                total_loss += loss_fcn['lambda'] * loss
+                total_loss += loss_fcn.lambda_val * loss
 
-            # Level-specific per-variable losses
-            if group_embedder is not None and level_losses['per_var']:
-                group_embedder_level = self._maybe_to_device(group_embedder, out.device)
-                for var_id, var_entry in level_losses['per_var'].items():
-                    var_mask = self._build_var_mask(group_embedder_level, var_id)
-                    if var_mask is None or not torch.any(var_mask):
-                        continue
-                    out_var = out[var_mask]
-                    tgt_var = tgt[var_mask]
-                    mask_var = self._subset_mask(mask_level, var_mask)
-
-                    for loss_fcn in var_entry['losses']:
-                        loss = loss_fcn['fcn'](out_var, tgt_var, mask=mask_var, sample_configs=sample_conf)
-                        name = f"{prefix}level{level_idx}_var{var_entry['label']}_{loss_fcn['fcn']._get_name()}"
-                        loss_dict[name] = loss.item()
-                        total_loss += loss_fcn['lambda'] * loss
-
-            if not has_level_specific:
-                # Common losses (default)
-                for loss_fcn in self.common_loss_fcns['default']:
-                    loss = loss_fcn['fcn'](out, tgt, mask=mask_level, sample_configs=sample_conf)
-                    name = f"{prefix}level{level_idx}_{loss_fcn['fcn']._get_name()}"
+            # Apply level-specific losses
+            if str(zoom_level) in self.level_specific_losses:
+                for loss_fcn in self.level_specific_losses[str(zoom_level)]:
+                    loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
+                    name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
                     loss_dict[name] = loss.item()
-                    total_loss += loss_fcn['lambda'] * loss
-
-                # Common per-variable losses
-                if group_embedder is not None and self.common_loss_fcns['per_var']:
-                    group_embedder_level = self._maybe_to_device(group_embedder, out.device)
-                    for var_id, var_entry in self.common_loss_fcns['per_var'].items():
-                        var_mask = self._build_var_mask(group_embedder_level, var_id)
-                        if var_mask is None or not torch.any(var_mask):
-                            continue
-                        out_var = out[var_mask]
-                        tgt_var = tgt[var_mask]
-                        mask_var = self._subset_mask(mask_level, var_mask)
-
-                        for loss_fcn in var_entry['losses']:
-                            loss = loss_fcn['fcn'](out_var, tgt_var, mask=mask_var, sample_configs=sample_conf)
-                            name = f"{prefix}level{level_idx}_var{var_entry['label']}_{loss_fcn['fcn']._get_name()}"
-                            loss_dict[name] = loss.item()
-                            total_loss += loss_fcn['lambda'] * loss
-
+                    total_loss += loss_fcn.lambda_val * loss
         return total_loss, loss_dict
 
-    def _compute_has_elements(self):
-        if self.common_loss_fcns['default'] or self.common_loss_fcns['per_var']:
-            return True
-        for level_entry in self.level_loss_fcns.values():
-            if level_entry['default'] or level_entry['per_var']:
-                return True
-        return False
-
-    def _is_level_key(self, key: Any) -> bool:
-        if isinstance(key, (int, float)):
-            return True
-        if isinstance(key, str):
-            stripped = key.strip()
-            if stripped.startswith('-'):
-                stripped = stripped[1:]
-            return stripped.isdigit()
-        try:
-            int(str(key))
-            return True
-        except (TypeError, ValueError):
-            return False
-
-    def _normalize_level_key(self, key: Any):
-        if isinstance(key, (int, float)):
-            return int(key)
-        if isinstance(key, str):
-            stripped = key.strip()
-            negative = stripped.startswith('-')
-            if negative:
-                stripped = stripped[1:]
-            if stripped.isdigit():
-                value = int(stripped)
-                return -value if negative else value
-        try:
-            return int(str(key))
-        except (TypeError, ValueError):
-            return key
-
-    def _normalize_var_key(self, key: Any):
-        if isinstance(key, str):
-            try:
-                return int(key)
-            except ValueError:
-                return key
-        if isinstance(key, (int, float)):
-            return int(key)
-        return key
-
-    def _to_plain_dict(self, value):
-        if DictConfig is not None and isinstance(value, DictConfig):
-            return OmegaConf.to_container(value, resolve=True)
-        return value
-
-    def _split_loss_config(self, config):
-        config = self._to_plain_dict(config)
-        default_losses = {}
-        per_var_losses = {}
-
-        if not isinstance(config, dict):
-            raise TypeError(f"Lambda configuration must be a dictionary, got {type(config)}")
-
-        for cfg_key, cfg_val in config.items():
-            cfg_val = self._to_plain_dict(cfg_val)
-            if cfg_key == 'default' and isinstance(cfg_val, dict):
-                default_losses.update(cfg_val)
-                continue
-
-            if cfg_key == 'per_var' and isinstance(cfg_val, dict):
-                for var_key, loss_dict in cfg_val.items():
-                    loss_dict = self._to_plain_dict(loss_dict)
-                    if isinstance(loss_dict, dict):
-                        per_var_losses.setdefault(var_key, {}).update(loss_dict)
-                continue
-
-            if isinstance(cfg_key, str) and cfg_key in globals():
-                if isinstance(cfg_val, (int, float)):
-                    default_losses[cfg_key] = cfg_val
-                elif isinstance(cfg_val, dict):
-                    if 'default' in cfg_val:
-                        default_entry = self._to_plain_dict(cfg_val['default'])
-                        if isinstance(default_entry, (int, float)):
-                            default_losses[cfg_key] = default_entry
-                    if 'per_var' in cfg_val:
-                        per_var_entry = self._to_plain_dict(cfg_val['per_var'])
-                        if isinstance(per_var_entry, dict):
-                            for var_key, lambda_val in per_var_entry.items():
-                                lambda_val = self._to_plain_dict(lambda_val)
-                                if isinstance(lambda_val, dict):
-                                    per_var_losses.setdefault(var_key, {}).update(lambda_val)
-                                else:
-                                    per_var_losses.setdefault(var_key, {})[cfg_key] = lambda_val
-                    for var_key, lambda_val in cfg_val.items():
-                        if var_key in ('default', 'per_var'):
-                            continue
-                        lambda_val = self._to_plain_dict(lambda_val)
-                        if isinstance(lambda_val, (int, float)):
-                            per_var_losses.setdefault(var_key, {})[cfg_key] = lambda_val
-                        elif isinstance(lambda_val, dict):
-                            per_var_losses.setdefault(var_key, {}).update(lambda_val)
-                else:
-                    raise ValueError(f"Invalid lambda specification for loss '{cfg_key}': expected number or dict, got {type(cfg_val)}")
-            else:
-                if isinstance(cfg_val, dict):
-                    per_var_losses.setdefault(cfg_key, {}).update(cfg_val)
-                else:
-                    raise ValueError(f"Invalid lambda specification for key '{cfg_key}': expected dict, got {type(cfg_val)}")
-
-        return default_losses, per_var_losses
-
-    def _build_losses(self, loss_spec, grid_layer):
-        losses = []
-        if not isinstance(loss_spec, dict):
-            return losses
-        for loss_name, lambda_value in loss_spec.items():
-            try:
-                lambda_float = float(lambda_value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"Lambda for loss '{loss_name}' must be numeric, got {lambda_value}") from exc
-            if lambda_float <= 0:
-                continue
-            if loss_name not in globals():
-                raise KeyError(f"Unknown loss '{loss_name}' in lambda configuration")
-            losses.append({
-                'lambda': lambda_float,
-                'fcn': globals()[loss_name](grid_layer=grid_layer)
-            })
-        return losses
-
-    def _get_grid_layer(self, zoom):
-        if self.grid_layers is None:
-            return None
-        if zoom is None:
-            return None
-        return self.grid_layers[str(zoom)]
-    
-    def _select_level_item(self, container, level_key):
-        if level_key in container:
-            return container[level_key]
-        try:
-            return container[int(level_key)]
-        except (TypeError, ValueError, KeyError):
-            pass
-        return container.get(str(level_key), None)
-
-
-    def _maybe_to_device(self, value, device):
-        if torch.is_tensor(value):
-            return value.to(device)
-        return value
-
-    def _build_var_mask(self, group_embedder, var_id):
-        if group_embedder is None or not torch.is_tensor(group_embedder):
-            return None
-        if isinstance(var_id, str):
-            try:
-                var_id = int(var_id)
-            except ValueError:
-                return None
-        if isinstance(var_id, (int, float)):
-            return group_embedder == int(var_id)
-        return None
-
-    def _subset_mask(self, mask_level, var_mask):
-        if mask_level is None:
-            return None
-        if torch.is_tensor(mask_level):
-            if mask_level.numel() == 0:
-                return mask_level
-            return mask_level[var_mask]
-        return mask_level
 
 class LightningMGModel(pl.LightningModule):
     def __init__(self, 
@@ -471,16 +246,18 @@ class LightningMGModel(pl.LightningModule):
                     sample_configs=sample_configs,
                     pred_xstart=pred_xstart,
                 )
-            if isinstance(outputs, tuple) and len(outputs) == 3:
-                target_groups, output_groups, pred_xstart = outputs
-            elif isinstance(outputs, tuple) and len(outputs) == 4:
-                target_groups = outputs[0]
-                output_groups = [outputs[1], outputs[2]]
-                pred_xstart = outputs[3]
-            else:
-                target_groups = target_groups
-                output_groups = outputs
-                pred_xstart = None
+
+            # outputs is now a list of tuples, one for each group
+            output_groups = []
+            target_groups_from_diffusion = []
+            pred_xstart_list = []
+            for group_output in outputs:
+                if group_output is not None and len(group_output) >= 2:
+                    target_groups_from_diffusion.append(group_output[0])
+                    output_groups.append(group_output[1])
+                    pred_xstart_list.append(group_output[2] if len(group_output) > 2 else None)
+            target_groups = target_groups_from_diffusion
+            pred_xstart = pred_xstart_list[0] if pred_xstart_list else None # Keep single pred_xstart for now
             
         else:
             if source_is_dict:
