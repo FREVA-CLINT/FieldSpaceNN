@@ -15,7 +15,7 @@ from ...utils.utils import EmbedBlockSequential
 from einops import rearrange
 
 
-class VAE(nn.Module):
+class CNN_VAE(nn.Module):
     """
     Variational Autoencoder (VAE) model using a configurable encoder-decoder architecture.
 
