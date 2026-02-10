@@ -7,23 +7,24 @@ dataset:
   n_sample_variables: -1
   output_binary_mask: true
   apply_diff: true
-  mask_ts_mode: 'repeat'
+  mask_ts_mode: 'zero'
+  load_n_samples_time: 2
   sampling_zooms:
     3:
       n_past_ts: 1
       n_future_ts: 1
       zoom_patch_sample: -1
-      mask_last_ts: true
+      mask_n_last_ts: 1
     5:
       n_past_ts: 1
       n_future_ts: 1
       zoom_patch_sample: -1
-      mask_last_ts: true
+      mask_n_last_ts: 1
     6:
       n_past_ts: 1
       n_future_ts: 1
       zoom_patch_sample: -1
-      mask_last_ts: true
+      mask_n_last_ts: 1
   output_max_zoom_only: false
 datamodule:
   _target_: stableclimgen.src.data.pl_data_module.DataModule

@@ -1,5 +1,7 @@
-_target_: lightning.pytorch.loggers.WandbLogger
-log_model: false
-save_dir: ${run_dir}/logs/${project_name}/${run_name}/
-project: ${project_name}
-name: ${run_name}
+logger:
+  _target_: lightning.pytorch.loggers.WandbLogger
+  log_model: false
+  save_dir: ${run_dir}/logs/${project_name}/${run_name}/
+  project: ${project_name}
+  name: ${run_name}
+log_images: false
