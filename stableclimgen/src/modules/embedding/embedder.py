@@ -40,10 +40,10 @@ class BaseEmbedder(nn.Module):
         :return: Embedded tensor.
         """
         # Apply the embedder to the input tensor
-        if output_zoom is not None:
-            return self.embedding_fn((output_zoom, emb))
-        else:
-            return self.embedding_fn(emb)
+       # if output_zoom is not None:
+       #     return self.embedding_fn((output_zoom, emb))
+       # else:
+        return self.embedding_fn(emb)
 
 class ZoomBaseEmbedder(nn.Module):
     """
@@ -241,141 +241,6 @@ class MGEmbedder(BaseEmbedder):
         embs = embs.unsqueeze(dim=2)
 
         return embs
-    
-
-class SharedMGEmbedder(BaseEmbedder):
-    """
-    A neural network module to embed longitude and latitude coordinates.
-
-    :param embed_dim: Dimensionality of the embedding output.
-    :param in_channels: Number of input coordinate features (default is 2).
-    """
-
-    def __init__(self, name: str, in_channels:int, embed_dim: int, mg_emb_confs, grid_layers=None, zoom=None, gamma=True, spatial_interpolation=True, layer_confs={}, **kwargs) -> None:
-
-        in_channels = mg_emb_confs['features'][0]
-        diff_mode = mg_emb_confs.get("diff_mode", True)
-
-        super().__init__(name, in_channels, embed_dim)
-
-        self.zoom = zoom
-
-        self.grid_layers = grid_layers
-        # keep batch, spatial, variable and channel dimensions
-        self.keep_dims = ["b", "v", "t", "s", "c"]
-
-        emb_zooms = list(mg_emb_confs['zooms'])
-
-        if diff_mode:
-            zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom <= zoom]
-        else:
-            zooms_proc_idx = [k for k, emb_zoom in enumerate(emb_zooms) if emb_zoom == zoom]
-        
-        if len(zooms_proc_idx) == 0:
-            zooms_proc_idx += [int(torch.tensor(emb_zooms).argmin())]
-        
-        self.layers = nn.ModuleDict()
-        self.get_patch_fcns = {}
-        self.get_emb_fcns = {}
-
-        self.grid_layers = nn.ModuleDict()
-        self.gammas = nn.ParameterDict()
-
-        for zoom_proc_idx in zooms_proc_idx:
-            zoom_proc = emb_zooms[zoom_proc_idx]
-            self.grid_layers[str(zoom_proc)] = grid_layers[str(zoom_proc)]
-
-            in_channels = mg_emb_confs['features'][zoom_proc_idx]
-            n_variables = mg_emb_confs['n_variables'][zoom_proc_idx]
-
-            if n_variables ==1:
-                get_emb_fcn = self.get_embeddings
-            else:
-                get_emb_fcn = self.get_embeddings_from_var_idx
-
-
-            if zoom == zoom_proc:
-                layer = get_layer(in_channels, embed_dim, layer_confs=layer_confs)
-                get_patch_fcn = self.get_patch
-
-    #            if gamma and len(zooms_proc_idx)>0:
-    #               self.gammas[str(zoom_proc)] = nn.Parameter(torch.ones(embed_dim)*1e-6, requires_grad=True)
-
-            elif zoom > zoom_proc:
-                get_patch_fcn = self.get_patch_nh
-
-                if spatial_interpolation:
-                    layer = Embedding_interpolator(grid_layers[str(zoom_proc)],
-                                grid_layers[str(zoom)])
-                else:
-                    nh_dim = grid_layers[str(zoom_proc)].adjc.shape[-1]
-                    layer = get_layer([nh_dim, *[1]*int((zoom -zoom_proc) -1) , in_channels], [*[4]*int(zoom-zoom_proc), embed_dim], layer_confs=layer_confs)
-
-            else:
-                get_patch_fcn = self.get_patch
-
-                if spatial_interpolation:
-                    layer = Embedding_interpolator(grid_layers[str(zoom_proc)],
-                                grid_layers[str(zoom)])
-                else:
-                    layer = get_layer([*[4]*int(zoom_proc-zoom), in_channels], [*[1]*int((zoom_proc-zoom)), embed_dim], layer_confs=layer_confs)
-
-    
-
-            self.get_emb_fcns[zoom_proc] = get_emb_fcn
-            self.get_patch_fcns[zoom_proc] = get_patch_fcn
-            self.layers[str(zoom_proc)] = layer
-
-
-
-    def get_embeddings(self, mg_emb, var_indices):
-        return mg_emb[var_indices*0]
-    
-    def get_embeddings_from_var_idx(self, mg_emb, var_indices):
-        return mg_emb[var_indices]
-    
-
-    def get_patch(self, embs: torch.Tensor, grid_layer: GridLayer, sample_configs={}):
-    
-        idx = grid_layer.get_idx_of_patch(**sample_configs, return_local=False)
-
-        idx = idx.view(idx.shape[0],1,-1,1)
-
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:2], idx.shape[-2], embs.shape[-1]))
-
-        return embs
-    
-    def get_patch_nh(self, embs: torch.Tensor, grid_layer: GridLayer, sample_configs={}):
-
-        idx = get_nh_idx_of_patch(grid_layer.adjc, **sample_configs, return_local=False)[0]
-
-        idx = idx.view(idx.shape[0],1,-1,1)
-
-        embs = torch.gather(embs, dim=-2, index=idx.expand(*embs.shape[:2], idx.shape[-2], embs.shape[-1]))
-        
-        return embs
-    
-    def forward(self, mg_emb_var, sample_configs={},**kwargs):
-
-        embs_zooms, var_indices = mg_emb_var
-
-        embs_out = 0
-        for zoom_proc in self.get_patch_fcns.keys():
-            get_emb_fcn = self.get_emb_fcns[zoom_proc]
-            get_patch_fcn = self.get_patch_fcns[zoom_proc]
-
-            embs = get_emb_fcn(embs_zooms[str(zoom_proc)], var_indices)
-            embs = get_patch_fcn(embs, self.grid_layers[str(zoom_proc)], sample_configs=sample_configs)
-            embs = embs.unsqueeze(dim=2)
-
-            embs = self.layers[str(zoom_proc)](embs, sample_configs=sample_configs, emb={'VariableEmbedder': var_indices})
-
-            embs = embs.reshape(*embs.shape[:3],-1,embs.shape[-1])
-            
-            embs_out = embs_out + embs
-
-        return embs_out
-
 
 
 class DensityEmbedder(BaseEmbedder):

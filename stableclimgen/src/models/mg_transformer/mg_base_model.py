@@ -30,6 +30,7 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
                 token_zoom = block_conf.token_zoom,
                 q_zooms  = block_conf.q_zooms,
                 kv_zooms = block_conf.kv_zooms,
+                target_zooms = block_conf.target_zooms,
                 use_mask = use_mask,
                 refine_zooms= block_conf.refine_zooms,
                 shift= block_conf.shift,

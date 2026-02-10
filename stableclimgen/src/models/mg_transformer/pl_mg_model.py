@@ -4,7 +4,7 @@ import torch.nn as nn
 
 import lightning.pytorch as pl
 import torch
-from typing import Any, Dict
+from typing import Any, Dict,List
 
 try:
     from omegaconf import DictConfig, OmegaConf
@@ -118,7 +118,7 @@ class MGMultiLoss(nn.Module):
     def has_elements(self):
         return len(self.common_losses) > 0 or any(len(v) > 0 for v in self.level_specific_losses.values())
 
-    def forward(self, output, target, mask=None, sample_configs={}, prefix='', emb={}):
+    def forward(self, output, target, mask=None, sample_configs={}, prefix='', emb={}, lambda_group=0):
         loss_dict = {}
         total_loss = 0.0
 
@@ -131,16 +131,16 @@ class MGMultiLoss(nn.Module):
             for loss_fcn in self.common_losses:
                 loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
                 name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
-                loss_dict[name] = loss.item()
-                total_loss += loss_fcn.lambda_val * loss
+                loss_dict[name] = lambda_group*loss.item()
+                total_loss += lambda_group*loss_fcn.lambda_val * loss
 
             # Apply level-specific losses
             if str(zoom_level) in self.level_specific_losses:
                 for loss_fcn in self.level_specific_losses[str(zoom_level)]:
                     loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
                     name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
-                    loss_dict[name] = loss.item()
-                    total_loss += loss_fcn.lambda_val * loss
+                    loss_dict[name] = lambda_group*loss.item()
+                    total_loss += lambda_group*loss_fcn.lambda_val * loss
         return total_loss, loss_dict
 
 
@@ -148,17 +148,21 @@ class LightningMGModel(pl.LightningModule):
     def __init__(self, 
                  model, 
                  lr_groups, 
-                 lambda_loss_dict: dict, 
-                 weight_decay=0):
+                 lambda_loss_dict: Dict, 
+                 lambda_loss_groups: List = None,
+                 weight_decay=0,
+                 n_autoregressive_steps=1):
         
         super().__init__()
 
         self.model = model
         self.lr_groups = lr_groups  
         self.weight_decay = weight_decay
+        self.n_autoregressive_steps = n_autoregressive_steps
         
         self.save_hyperparameters(ignore=['model'])
 
+        self.lambda_loss_groups = lambda_loss_groups
         zooms_loss_dict = lambda_loss_dict.get("zooms",{})
         self.loss_zooms = MGMultiLoss(zooms_loss_dict, grid_layers=model.grid_layers, max_zoom=max(model.in_zooms))
 
@@ -214,38 +218,21 @@ class LightningMGModel(pl.LightningModule):
         if emb_groups is None:
             emb_groups = emb
 
-        source_is_dict = isinstance(source_groups, dict)
-        if source_is_dict:
-            source_groups_list = [source_groups]
-        else:
-            source_groups_list = list(source_groups)
+        if isinstance(source_groups, dict):
+            source_groups = [source_groups]
 
-        if source_is_dict:
-            model_input = source_groups.copy()
-            mask_input = mask_groups[0] if mask_groups else None
-            emb_input = emb_groups[0] if emb_groups else None
-        else:
-            model_input = [group.copy() for group in source_groups_list]
-            mask_input = mask_groups
-            emb_input = emb_groups
+        model_input = [group.copy() for group in source_groups]
+        mask_input = mask_groups
+        emb_input = emb_groups
 
         if mode == "diffusion":
-            if source_is_dict:
-                outputs = self(
-                    model_input,
-                    mask_zooms=mask_input,
-                    emb=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
-            else:
-                outputs = self(
-                    x_zooms_groups=model_input,
-                    mask_zooms_groups=mask_input,
-                    emb_groups=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
+            outputs = self(
+                x_zooms_groups=model_input,
+                mask_zooms_groups=mask_input,
+                emb_groups=emb_input,
+                sample_configs=sample_configs,
+                pred_xstart=pred_xstart,
+            )
 
             # outputs is now a list of tuples, one for each group
             output_groups = []
@@ -260,27 +247,23 @@ class LightningMGModel(pl.LightningModule):
             pred_xstart = pred_xstart_list[0] if pred_xstart_list else None # Keep single pred_xstart for now
             
         else:
-            if source_is_dict:
-                output_groups = self(
-                    model_input,
-                    mask_zooms=mask_input,
-                    emb=emb_input,
-                    sample_configs=sample_configs,
-                )
-            else:
-                output_groups = self(
-                    x_zooms_groups=model_input,
-                    mask_zooms_groups=mask_input,
-                    emb_groups=emb_input,
-                    sample_configs=sample_configs,
-                )
+            output_groups = self(
+                x_zooms_groups=model_input,
+                mask_zooms_groups=mask_input,
+                emb_groups=emb_input,
+                sample_configs=sample_configs,
+            )
 
-        for source, output, target, mask, emb in zip(
-            source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+        lambda_groups = self.lambda_loss_groups if self.lambda_loss_groups is not None else [1]*len(source_groups)
+        weight_groups = torch.tensor([list(t.values())[0].shape[1] for t in source_groups], device=emb_groups[0]['VariableEmbedder'].device)
+        weight_groups = weight_groups/weight_groups.sum()
+
+        for source, output, target, mask, emb, lambda_group, weight_group in zip(
+            source_groups, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
         ):
             if len(source) > 0:
                 loss, loss_dict = self.loss_zooms(
-                    output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb
+                    output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb, lambda_group=(lambda_group*weight_group)
                 )
                 total_loss += loss
                 loss_dict_total.update(loss_dict)
@@ -289,8 +272,8 @@ class LightningMGModel(pl.LightningModule):
             max_zooms = [max(target.keys()) for target in target_groups if target]
             if max_zooms:
                 max_zoom = max(max_zooms)
-                for source, output, target, mask, emb in zip(
-                    source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+                for source, output, target, mask, emb, lambda_group, weight_group in zip(
+                    source_groups, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
                 ):
                     if len(source) > 0:
                         output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
@@ -303,6 +286,7 @@ class LightningMGModel(pl.LightningModule):
                             sample_configs=sample_configs,
                             prefix=f'{prefix}/composed_',
                             emb=emb,
+                            lambda_group=(lambda_group*weight_group)
                         )
                         total_loss += loss
                         loss_dict_total.update(loss_dict)
@@ -314,20 +298,113 @@ class LightningMGModel(pl.LightningModule):
             return total_loss, loss_dict_total, output_groups
 
 
+    def get_losses_autoregressive(
+        self,
+        source_groups,
+        target_groups,
+        sample_configs={},
+        mask_groups=None,
+        emb_groups=None,
+        prefix="",
+        init_mode="repeat",
+        n_autoregressive_steps=None,
+        load_n_samples_time=None,
+        mask_zooms=None,
+        emb=None
+    ):
+        """
+        Compute loss after rolling out autoregressively across consecutive samples.
+        Expects batches where consecutive entries (per load_n_samples_time) represent consecutive timesteps.
+        """
+        if mask_groups is None:
+            mask_groups = mask_zooms
+        if emb_groups is None:
+            emb_groups = emb
+
+        time_embedder_all = [group['TimeEmbedder'].copy() for group in emb_groups]
+        for group, emb in enumerate(emb_groups):
+                for zoom, time_emb in emb['TimeEmbedder'].items():
+                    emb_groups[group]['TimeEmbedder'][zoom] = time_emb[:,:-sample_configs[zoom].get('shift_n_ts_target',self.n_autoregressive_steps)]
+
+        n_ar = n_autoregressive_steps or getattr(self.hparams, "n_autoregressive_steps", 1)
+        if n_ar <= 1:
+            return self.get_losses(
+                source_groups,
+                target_groups,
+                sample_configs,
+                mask_groups=mask_groups,
+                emb_groups=emb_groups,
+                prefix=prefix,
+            )
+
+        load_n_samples_time = self.trainer.datamodule.dataset_train.load_n_samples_time
+
+        assert load_n_samples_time>1, "load_n_samples_time needs to be alrger than 1"
+
+        b, t = source_groups[0][min(source_groups[0].keys())].shape[:2]
+
+        output_groups = self(
+                    x_zooms_groups=source_groups,
+                    mask_zooms_groups=mask_groups,
+                    emb_groups=emb_groups,
+                    sample_configs=sample_configs
+                    )
+                
+        for step in range(1, n_ar + 1):
+
+            for group, output_zooms in enumerate(output_groups):
+                for zoom, output in output_zooms.items():
+                    output = torch.concat((output[:,:,1:], output[:,:,[-1]]), dim=2)
+                    if self.trainer.datamodule.dataset_train.mask_ts_mode == 'zero':
+                        output[:,:,-1] = 0
+
+                    source_groups[group][zoom] = output
+
+                if step < n_ar:
+                    emb_groups[group]['TimeEmbedder'][zoom] = time_embedder_all[group][zoom][:,step:-(n_ar-step)]
+                    output_groups = self(
+                        x_zooms_groups=source_groups,
+                        mask_zooms_groups=mask_groups,
+                        emb_groups=emb_groups,
+                        sample_configs=sample_configs
+                        )
+                else:
+                    emb_groups[group]['TimeEmbedder'][zoom] = time_embedder_all[group][zoom][:,step:]
+                    loss, loss_dict, output_groups = self.get_losses(
+                        source_groups,
+                        target_groups,
+                        sample_configs,
+                        mask_groups=mask_groups,
+                        emb_groups=emb_groups,
+                        prefix=prefix,
+                    )
+
+        return loss, loss_dict, output_groups
+
     def training_step(self, batch, batch_idx):
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
-        loss, loss_dict, _ = self.get_losses(
-            source_groups,
-            target_groups,
-            sample_configs,
-            mask_groups=mask_groups,
-            emb_groups=emb_groups,
-            prefix='train',
-        )
+        if getattr(self.hparams, "n_autoregressive_steps", 1) > 1:
+            loss, loss_dict, _ = self.get_losses_autoregressive(
+                source_groups,
+                target_groups,
+                sample_configs,
+                mask_groups=mask_groups,
+                emb_groups=emb_groups,
+                prefix='train'
+            )
+        else:
+            loss, loss_dict, _ = self.get_losses(
+                source_groups,
+                target_groups,
+                sample_configs,
+                mask_groups=mask_groups,
+                emb_groups=emb_groups,
+                prefix='train',
+            )
       
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -346,13 +423,23 @@ class LightningMGModel(pl.LightningModule):
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
    
-        loss, loss_dict, output_groups = self.get_losses(
-            [group.copy() for group in source_groups],
-            target_groups,
-            sample_configs=sample_configs, 
-            mask_groups=mask_groups,
-            emb_groups=emb_groups,
-            prefix='val')
+        if getattr(self.hparams, "n_autoregressive_steps", 1) > 1:
+            loss, loss_dict, output_groups = self.get_losses_autoregressive(
+                [group.copy() for group in source_groups],
+                target_groups,
+                sample_configs=sample_configs,
+                mask_groups=mask_groups,
+                emb_groups=emb_groups,
+                prefix='val'
+            )
+        else:
+            loss, loss_dict, output_groups = self.get_losses(
+                [group.copy() for group in source_groups],
+                target_groups,
+                sample_configs=sample_configs, 
+                mask_groups=mask_groups,
+                emb_groups=emb_groups,
+                prefix='val')
         
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
@@ -451,10 +538,11 @@ class LightningMGModel(pl.LightningModule):
         )
 
         for k, save_path in enumerate(save_paths):
-            if isinstance(self.logger, WandbLogger):
-                self.logger.log_image(f"plots/{os.path.basename(save_path).replace('.png','')}", [save_path])
-            elif isinstance(self.logger, MLFlowLogger):
-                mlflow.log_artifact(save_path, artifact_path=f"plots/{os.path.basename(save_path).replace('.png','')}")
+           if getattr(self,'log_images',False):
+                if isinstance(self.logger, WandbLogger):
+                    self.logger.log_image(f"plots/{os.path.basename(save_path).replace('.png','')}", [save_path])
+                elif isinstance(self.logger, MLFlowLogger):
+                    mlflow.log_artifact(save_path, artifact_path=f"plots/{os.path.basename(save_path).replace('.png','')}")
 
 
     def configure_optimizers(self):
@@ -524,8 +612,3 @@ class LightningMGModel(pl.LightningModule):
    #     for name, param in self.named_parameters():
    #         if param.grad is None:
    #             print(f"Parameter with no gradient: {name}")
-
-    #TODO fix
-   # def prepare_emb(self, emb=None, sample_configs={}):
-   #     emb['CoordinateEmbedder'] = (self.model.grid_layer_max.get_coordinates(**sample_configs[self.model.grid_layer_max.zoom]), emb["VariableEmbedder"])
-   #     return emb

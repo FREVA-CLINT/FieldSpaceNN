@@ -7,9 +7,17 @@ import xarray as xr
 from omegaconf import ListConfig
 from einops import rearrange
 from torch.utils.data import Dataset
-
+from zarr.errors import ZarrUserWarning
 import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
+
+
+
+warnings.filterwarnings(
+    "ignore",
+    message="",
+    category=ZarrUserWarning,
+)
 
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, apply_zoom_diff, decode_zooms
 from ..utils import normalizer as normalizers
@@ -70,10 +78,18 @@ class BaseDataset(Dataset):
         self.variables_as_features = variables_as_features
 
         self.load_n_samples_time = load_n_samples_time
+
+        # shift target timesteps per zoom; default to no shift
+        self.shift_n_ts_target = dict(
+            zip(
+                self.sampling_zooms.keys(),
+                [int(v.get("shift_n_ts_target", 0)) for v in self.sampling_zooms.values()],
+            )
+        )
         
         self.mask_ts_mode = mask_ts_mode
         self.p_dropout_all_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()]))
-        self.mask_last_ts_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("mask_last_ts", False) for v in self.sampling_zooms.values()]))
+        self.mask_n_last_ts_zooms = dict(zip(self.sampling_zooms.keys(), [v.get("mask_n_last_ts", 0) for v in self.sampling_zooms.values()]))
 
         self.p_dropout_all = p_dropout_all
 
@@ -123,16 +139,37 @@ class BaseDataset(Dataset):
             self.time_steps_files.append(len(ds.time))
 
         self.index_map = dict(zip(self.zooms, [[] for _ in self.zooms]))
-        for file_idx, num_timesteps in enumerate(self.time_steps_files):
-            num_timesteps -= self.max_time_step_future
+        for file_idx, total_timesteps in enumerate(self.time_steps_files):
+            # ensure both source window and shifted target window are inside the dataset
+            start_bounds = []
+            end_bounds = []
+            for zoom in self.zooms:
+                shift_target = self.shift_n_ts_target.get(zoom, 0)
+                n_past_ts = self.sampling_zooms[zoom]['n_past_ts']
+                n_future_ts = self.sampling_zooms[zoom]['n_future_ts']
 
-            start_idx = self.max_time_step_past
+                start_bounds.append(n_past_ts)
+                end_bounds.append(total_timesteps - 1 - n_future_ts - shift_target)
+
+            start_idx = max(start_bounds)
+            end_idx = min(end_bounds)
+
+            if end_idx < start_idx:
+                continue
+
             if self.sample_timesteps is None:
-                time_indices = list(range(start_idx, num_timesteps))
+                time_indices = list(range(start_idx, end_idx + 1))
             else:
-                time_indices = [t for t in self.sample_timesteps if start_idx <= t < num_timesteps]
+                time_indices = [t for t in self.sample_timesteps if start_idx <= t <= end_idx]
 
-            time_entries = np.array(time_indices).reshape(-1,self.load_n_samples_time)
+            # drop incomplete groups instead of raising when load_n_samples_time does not divide cleanly
+            n_complete = len(time_indices) // self.load_n_samples_time
+            time_indices = time_indices[: n_complete * self.load_n_samples_time]
+
+            if len(time_indices) == 0:
+                continue
+
+            time_entries = np.array(time_indices).reshape(-1, self.load_n_samples_time)
 
             for time_entry in time_entries:
                 for zoom in self.zooms:
@@ -237,12 +274,12 @@ class BaseDataset(Dataset):
 
     #def map_data(self):
 
-    def select_ranges(self, ds, time_indices, patch_idx, mapping, mapping_zoom, zoom):
+    def select_ranges(self, ds, time_indices, patch_idx, mapping, mapping_zoom, zoom, shift_n_ts_target=0):
         # Fetch raw patch indices
         n_past_timesteps = self.sampling_zooms[zoom]['n_past_ts']
         n_future_timesteps = self.sampling_zooms[zoom]['n_future_ts']
 
-          
+        time_indices = np.array(time_indices, dtype=int) + int(shift_n_ts_target)
         time_indices = np.stack([np.arange(time_index-n_past_timesteps, time_index+n_future_timesteps + 1,1) for time_index in time_indices],axis=0).reshape(-1)
  
         isel_dict = {"time": time_indices}
@@ -439,17 +476,22 @@ class BaseDataset(Dataset):
             data_source = apply_zoom_diff(data_source, sample_configs, patch_index_zooms)
             data_target = apply_zoom_diff(data_target, sample_configs, patch_index_zooms)
 
-        if any(['mask_last_ts' in z for z in self.sampling_zooms.values()]):
-            drop = False
+        if any([z.get('mask_n_last_ts', 0) > 0 for z in self.sampling_zooms.values()]):
             for zoom, sampling_zoom in self.sampling_zooms.items():
+                mask_n_last_ts = sampling_zoom.get('mask_n_last_ts', 0)
+                if mask_n_last_ts > 0:
+                    time_len = data_source[zoom].shape[2]
+                    n_mask = min(mask_n_last_ts, time_len)
+                    if n_mask == 0:
+                        continue
 
-                if sampling_zoom['mask_last_ts']:
-                    mask_mapping_zooms[zoom][:,:,-1] = True
+                    mask_mapping_zooms[zoom][:, :, -n_mask:] = True
 
-                    if self.mask_ts_mode == 'repeat':
-                        data_source[zoom][:,:,-1] = data_source[zoom][:,:,-2]
+                    if self.mask_ts_mode == 'repeat' and time_len > n_mask:
+                        repeat_source = data_source[zoom][:, :, -(n_mask + 1)].unsqueeze(2)
+                        data_source[zoom][:, :, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, :, -n_mask:])
                     else:
-                        data_source[zoom][:,:,-1] = 0.
+                        data_source[zoom][:, :, -n_mask:] = 0.
 
         return data_source, data_target, sample_configs, mask_mapping_zooms
 
@@ -526,7 +568,21 @@ class BaseDataset(Dataset):
                 for group in group_keys:
                     drop_mask_zoom_groups.append(drop_mask_zoom[drop_indices[group]].unsqueeze(0))
 
+            # build time embeddings before slicing to include shift for targets
+            shift_ts = int(self.shift_n_ts_target.get(zoom, 0))
+            time_indices_np = np.array(time_indices, dtype=int)
+            start_times = time_indices_np - self.sampling_zooms[zoom]['n_past_ts'] + min(0, shift_ts)
+            end_times = time_indices_np + self.sampling_zooms[zoom]['n_future_ts'] + max(0, shift_ts)
+            time_indices_full = np.stack(
+                [np.arange(s, e + 1) for s, e in zip(start_times, end_times)],
+                axis=0
+            ).reshape(-1)
+            time_full = torch.tensor(ds_source["time"].values[time_indices_full]).float()
+            time_zooms[zoom] = time_full.reshape(self.load_n_samples_time, -1)
+
             data_time_zoom = None
+            data_time_source_zoom = None
+            data_time_target_zoom = None
 
             ds_source_zoom = self.select_ranges(ds_source,
                     time_indices,
@@ -534,17 +590,19 @@ class BaseDataset(Dataset):
                     self.mapping[mapping_zoom],
                     mapping_zoom,
                     zoom)
-            
-            if ds_target is not None:
-                    ds_target_zoom = self.select_ranges(
-                        ds_target,
-                        time_indices,
-                        patch_index,
-                        self.mapping[mapping_zoom],
-                        mapping_zoom,
-                        zoom
-                    )
-            
+            target_dataset = ds_target if ds_target is not None else ds_source
+            if target_dataset is not None:
+                ds_target_zoom = self.select_ranges(
+                    target_dataset,
+                    time_indices,
+                    patch_index,
+                    self.mapping[mapping_zoom],
+                    mapping_zoom,
+                    zoom,
+                    shift_n_ts_target=self.shift_n_ts_target.get(zoom, 0),
+                )
+            else:
+                ds_target_zoom = None
 
             for group_idx, group in enumerate(group_keys):
                 data_source, data_time_zoom_group, drop_mask_zoom_group = self.get_data(
@@ -557,8 +615,8 @@ class BaseDataset(Dataset):
                     drop_mask=drop_mask_zoom_groups[group_idx],
                 )
 
-                if ds_target is not None:
-                    data_target, _, _ = self.get_data( #TODO ds_target is not sliced
+                if ds_target_zoom is not None:
+                    data_target, data_time_target_zoom_group, _ = self.get_data( #TODO ds_target is not sliced
                         ds_target_zoom,
                         patch_index,
                         selected_vars[group],
@@ -568,15 +626,16 @@ class BaseDataset(Dataset):
                     )
                 else:
                     data_target = data_source.clone()
+                    data_time_target_zoom_group = data_time_zoom_group
 
                 source_zooms_groups[group_idx][zoom] = data_source
                 target_zooms_groups[group_idx][zoom] = data_target
                 mask_mapping_zooms_groups[group_idx][zoom] = drop_mask_zoom_group
 
                 if data_time_zoom is None:
-                    data_time_zoom = data_time_zoom_group
+                    data_time_zoom = data_time_target_zoom_group if data_time_target_zoom_group is not None else data_time_zoom_group
 
-            if data_time_zoom is not None:
+            if zoom not in time_zooms and data_time_zoom is not None:
                 time_zooms[zoom] = data_time_zoom
 
         
@@ -613,7 +672,7 @@ class BaseDataset(Dataset):
                 mask_zooms_groups.append(mask_group)
 
                 emb_group = emb.copy()
-                emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(-1)
+                emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
 
                 if StaticVariableEmbedder is not None:

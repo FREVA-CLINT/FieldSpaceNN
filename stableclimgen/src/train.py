@@ -14,7 +14,7 @@ import mlflow
 torch.manual_seed(42)
 
 
-@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs/", config_name="mg_transformer_train")
+@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs/", config_name="era5_prediction_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
@@ -37,23 +37,24 @@ def train(cfg: DictConfig) -> None:
         val_dataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split['val'])
 
     OmegaConf.set_struct(cfg, False)
-    if "WandbLogger" in cfg.logger['_target_']:
-        if not hasattr(cfg.logger, "id") or cfg.logger.id is None or (hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None):
-            logger: WandbLogger = instantiate(cfg.logger, id=None)
+    logger_conf = cfg.logger.logger
+    if "WandbLogger" in logger_conf['_target_']:
+        if not hasattr(logger_conf, "id") or logger_conf.id is None or (hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None):
+            logger: WandbLogger = instantiate(logger_conf, id=None)
             if rank_zero_only.rank == 0:
-                cfg.logger.id = logger.experiment.id
+                logger_conf.id = logger.experiment.id
         else:
-            logger: WandbLogger = instantiate(cfg.logger)
-    elif "MLFlowLogger" in cfg.logger['_target_']:
+            logger: WandbLogger = instantiate(logger_conf)
+    elif "MLFlowLogger" in logger_conf['_target_']:
         if rank_zero_only.rank == 0:
             mlflow.enable_system_metrics_logging()
-            mlflow.set_tracking_uri(cfg.logger.tracking_uri)
+            mlflow.set_tracking_uri(logger_conf.tracking_uri)
             mlflow.set_experiment(cfg.project_name)
-            mlflow.start_run(run_name=cfg.run_name, run_id=cfg.logger.run_id, tags={"user": getpass.getuser()})
-            if not hasattr(cfg.logger, "run_id") or not cfg.logger.run_id:
-                cfg.logger.run_id = mlflow.active_run().info.run_id
+            mlflow.start_run(run_name=cfg.run_name, run_id=logger_conf.run_id, tags={"user": getpass.getuser()})
+            if not hasattr(logger_conf, "run_id") or not logger_conf.run_id:
+                logger_conf.run_id = mlflow.active_run().info.run_id
             mlflow.log_params(OmegaConf.to_container(cfg, resolve=True))
-        logger: MLFlowLogger = instantiate(cfg.logger)
+        logger: MLFlowLogger = instantiate(logger_conf)
 
     if rank_zero_only.rank == 0:
         # Create YAML config of training configuration
@@ -65,12 +66,13 @@ def train(cfg: DictConfig) -> None:
     model: any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer, logger=logger)
 
-    if rank_zero_only.rank == 0 and "WandbLogger" in cfg.logger['_target_']:
+    if rank_zero_only.rank == 0 and "WandbLogger" in logger_conf['_target_']:
         # Log model config
         logger.experiment.config.update(OmegaConf.to_container(
             cfg.model, resolve=True, throw_on_missing=False
         ), allow_val_change=True)
 
+    model.log_images = cfg.logger.get('log_images', False)
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
     
     if hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None:
