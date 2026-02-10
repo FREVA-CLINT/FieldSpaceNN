@@ -228,6 +228,9 @@ class ScaledLogNormalizer(DataNormalizer):
             stat_dict['quantiles'][key] = float(torch.log1p(torch.tensor(val * self.scale)))
 
         self.quantile_normalizer = QuantileNormalizer(stat_dict, definition_dict)
+        self.zero_offset = float(
+            self.quantile_normalizer.normalize(torch.tensor(0.0))
+        )
 
 
     def normalize(self, data: torch.Tensor) -> torch.Tensor:
@@ -241,7 +244,7 @@ class ScaledLogNormalizer(DataNormalizer):
 
         data = torch.log1p(data * self.scale)
 
-        return self.quantile_normalizer.normalize(data)
+        return self.quantile_normalizer.normalize(data) - self.zero_offset
 
     def denormalize(self, data: torch.Tensor) -> torch.Tensor:
         """
@@ -250,7 +253,7 @@ class ScaledLogNormalizer(DataNormalizer):
         :param data: Standardized data tensor to be denormalized.
         :return: Data tensor in the original scale.
         """
-        data = self.quantile_normalizer.denormalize(data)
+        data = self.quantile_normalizer.denormalize(data + self.zero_offset)
         # Rescale data to the original scale by multiplying by std and adding the mean
         data = torch.expm1(data)/self.scale
 
