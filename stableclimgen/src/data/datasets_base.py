@@ -499,19 +499,19 @@ class BaseDataset(Dataset):
     def __getitem__(self, index):
         
         selected_vars = {}
-        selected_var_ids = {}
+  
         var_indices = {}
-        drop_indices = {}
-        offset = 0
         group_keys = list(self.data_dict['variables'].keys())
         for group in group_keys:
             variables = self.data_dict['variables'][group]
             sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
-            selected_vars[group] = np.random.choice(variables, sample_size, replace=False)
-            selected_var_ids[group] = [self.all_variable_ids[str(variable)] for variable in selected_vars[group]]
-            var_indices[group] = np.arange(len(selected_vars[group]))
-            drop_indices[group] = var_indices[group] + offset
-            offset += len(selected_vars[group])
+            var_indices[group] = np.arange(len(variables))
+
+            if sample_size != len(variables):
+                var_indices[group] = np.random.choice(var_indices[group], sample_size, replace=False)
+
+            selected_vars[group] = np.array(variables)[var_indices[group]]
+            
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
 
@@ -687,20 +687,21 @@ class BaseDataset(Dataset):
             source_zooms_groups_out_ = {}
             target_zooms_groups_out_ = {}
             mask_zooms_groups_ = {}
-            if self.variables_as_features:
-                for zoom in source_zooms_groups_out[0].keys():
-                    source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
-                    target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
-                    mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
 
-                emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
-                       'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
-                       'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+        if self.variables_as_features:
+            for zoom in source_zooms_groups_out[0].keys():
+                source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
+                target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
+                mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
 
-                emb_groups = [emb]
-                source_zooms_groups_out = [source_zooms_groups_out_]
-                target_zooms_groups_out = [target_zooms_groups_out_]
-                mask_zooms_groups = [mask_zooms_groups_]
+            emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
+                    'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
+                    'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+
+            emb_groups = [emb]
+            source_zooms_groups_out = [source_zooms_groups_out_]
+            target_zooms_groups_out = [target_zooms_groups_out_]
+            mask_zooms_groups = [mask_zooms_groups_]
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 
