@@ -81,7 +81,6 @@ class MG_Transformer(MG_base_model):
                 mask_groups=mask_zooms_groups,
                 emb_groups=emb_groups,
             )
-            pass
 
         for i, x_zooms in enumerate(x_zooms_groups):
 

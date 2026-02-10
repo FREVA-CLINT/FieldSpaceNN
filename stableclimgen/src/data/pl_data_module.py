@@ -29,7 +29,7 @@ class BatchReshapeAllocator:
             if torch.is_tensor(obj):
                 return _merge_tensor(obj)
             if isinstance(obj, dict):
-                return {k: _merge_obj(v) if k!='VariableEmbedder' else v for k, v in obj.items()}
+                return {k: _merge_obj(v) for k, v in obj.items()}
             if isinstance(obj, list):
                 return [_merge_obj(v) for v in obj]
             if isinstance(obj, tuple):

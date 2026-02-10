@@ -26,6 +26,7 @@ class FieldAttentionConfig:
                  q_zooms = -1,
                  kv_zooms = -1,
                  att_dim= 64,
+                 target_zooms: List = None,
                  token_len_depth: List|int = [1],
                  token_len_time: List|int = 1,
                  token_overlap_space: List|int = False,
@@ -70,6 +71,7 @@ class FieldAttentionModule(nn.Module):
                 q_zooms:List|int,
                 kv_zooms:List|int,
                 token_zoom: int,
+                target_zooms: List = None,
                 in_features: int = 1,
                 n_groups_variables: List = [1],
                 token_len_depth: List|int = 1,
@@ -116,6 +118,7 @@ class FieldAttentionModule(nn.Module):
         token_overlap_mlp_depth = check_value(token_overlap_mlp_depth, n_groups)
 
         layer_confs = check_value(layer_confs, n_groups)
+
         layer_confs_emb = check_value(layer_confs_emb, n_groups)
 
         rank_space = check_value(rank_space, n_groups)
@@ -169,6 +172,7 @@ class FieldAttentionModule(nn.Module):
                         q_zooms,
                         kv_zooms,
                         att_dim,
+                        target_zooms = target_zooms,
                         in_features = in_features,
                         token_len_depth= token_len_depth[k],
                         token_len_time= token_len_time[k],
@@ -297,9 +301,10 @@ class FieldAttentionBlock(nn.Module):
                  grid_layers,
                  token_zoom: int,
                  seq_zoom: int,
-                 q_zooms: int,
-                 kv_zooms: int,
+                 q_zooms: List,
+                 kv_zooms: List,
                  att_dim: int,
+                 target_zooms: List = None,
                  in_features: int = 1,
                  token_len_depth: int = 1,
                  token_len_time: int = 1,
@@ -328,7 +333,8 @@ class FieldAttentionBlock(nn.Module):
                  separate_mlp_norm=False) -> None: 
                
         super().__init__()
- 
+
+        target_zooms = q_zooms if target_zooms is None else target_zooms
         self.seq_overlap_time = seq_overlap_time
         self.seq_overlap_depth = seq_overlap_depth
         self.seq_overlap_space = seq_overlap_space if seq_zoom > -1 else False
@@ -389,6 +395,13 @@ class FieldAttentionBlock(nn.Module):
         self.kv_projection_layers = nn.ModuleDict()
         self.gammas = nn.ParameterDict()
 
+        tokenizer_update = Tokenizer(target_zooms, 
+                                    token_zoom,
+                                    grid_layers=grid_layers,
+                                    overlap_thickness=int(token_overlap_space),
+                                    token_len_time=token_len_time,
+                                    token_len_depth=token_len_depth)
+        
         self.tokenizer = Tokenizer(q_zooms, 
                                     token_zoom,
                                     grid_layers=grid_layers,
@@ -405,12 +418,13 @@ class FieldAttentionBlock(nn.Module):
         else:
             self.kv_tokenizer = self.tokenizer
 
+        _, self.n_out_features_update = tokenizer_update.get_features()
         self.n_in_features_zooms_q, self.n_out_features_zooms_q = self.tokenizer.get_features()
         self.n_in_features_zooms_kv, self.n_out_features_zooms_kv =  self.kv_tokenizer.get_features()
         
         self.token_size_space = [token_len_time, sum(self.n_in_features_zooms_q.values()), token_len_depth, in_features]
         self.token_size_space_kv = [token_len_time, sum(self.n_in_features_zooms_kv.values()), token_len_depth, in_features]
-        self.token_size_update = [token_len_time, sum(self.n_out_features_zooms_q.values()), token_len_depth, in_features]
+        self.token_size_update = [token_len_time, sum(self.n_out_features_update.values()), token_len_depth, in_features]
 
         token_size_in_overlap = [token_len_time + 2 * token_overlap_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_depth, in_features]
         token_size_in_mlp_overlap = [token_len_time + 2 * token_overlap_mlp_time, sum(self.n_in_features_zooms_q.values()), token_len_depth + 2 * token_overlap_mlp_depth, in_features]
@@ -679,9 +693,9 @@ class FieldAttentionBlock(nn.Module):
 
         x = self.mlp(x, emb=emb_tokenized, sample_configs=sample_configs[int(zoom_field)])
 
-        x = x.split(tuple(self.n_out_features_zooms_q.values()), dim=-3)
+        x = x.split(tuple(self.n_out_features_update.values()), dim=-3)
 
-        for k, (zoom, n) in enumerate(self.n_out_features_zooms_q.items()):
+        for k, (zoom, n) in enumerate(self.n_out_features_update.items()):
             if x_zooms and x is not None:
                 x_out = rearrange(x[k], self.pattern_tokens_reverse, n=n)
 

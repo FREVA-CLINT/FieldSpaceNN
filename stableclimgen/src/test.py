@@ -89,8 +89,9 @@ def test(cfg: DictConfig) -> None:
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
 
     if hasattr(cfg, "save_netcdf") and cfg.save_netcdf:
+        logger_conf = cfg.logger.logger
         export_healpix_to_netcdf(test_dataset, max_zoom, output, mask,
-                                 cfg.logger.run_id if "MLFlowLogger" in cfg.logger['_target_'] else cfg.logger.id,
+                                 logger_conf.run_id if "MLFlowLogger" in logger_conf['_target_'] else logger_conf.id,
                                  cfg.output_path)
 
 if __name__ == "__main__":
