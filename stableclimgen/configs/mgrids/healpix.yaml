@@ -1,4 +1,2 @@
-_target_: stableclimgen.src.utils.grid_utils_healpix.healpix_grid_to_mgrid
-reference_grid_level: 3
-n_grid_levels: 6
-nh: 1
+_target_: stableclimgen.src.modules.grids.grid_utils.healpix_grid_to_mgrid
+zoom_max: 6

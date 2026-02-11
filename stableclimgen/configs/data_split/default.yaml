@@ -1,0 +1,29 @@
+train:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+
+  timesteps: ["1-10"]
+  variables: ${data_variables}
+
+val:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+
+  timesteps: ["1-10"]
+  variables: ${data_variables}
+
+test:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+    
+  timesteps: ["1-100"]
+  variables: ${data_variables}

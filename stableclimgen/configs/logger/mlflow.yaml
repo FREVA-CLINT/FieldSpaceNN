@@ -1,0 +1,7 @@
+_target_: stableclimgen.src.utils.logger.CustomImageLogger
+logger_type: mlflow
+save_snapshot_images: true
+log_snapshot_images: false
+experiment_name: "mg_autoencoder_experiment"
+tracking_uri: http://127.0.0.1:5000
+run_id: null

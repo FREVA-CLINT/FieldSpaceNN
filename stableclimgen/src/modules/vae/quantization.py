@@ -1,17 +1,15 @@
-from typing import Optional, List, Dict
+from typing import Any, List, Optional
+
 import torch
 import torch.nn as nn
-from stableclimgen.src.utils.helpers import check_value
-from ..distributions.distributions import AbstractDistribution
-from ..embedding.embedder import BaseEmbedder, EmbedderManager, EmbedderSequential
 
-from ..icon_grids.grid_attention import GridAttention
-from ..rearrange import RearrangeConvCentric
-from ..cnn.conv import ConvBlockSequential
+from ..cnn.cnn_base import ConvBlockSequential
 from ..cnn.resnet import ResBlockSequential
-from ...modules.distributions.distributions import DiagonalGaussianDistribution, DiracDistribution
+from ..embedding.embedder import EmbedderSequential
+from ..rearrange import RearrangeConvCentric
 from ..transformer.transformer_base import TransformerBlock
-from ..utils import EmbedBlockSequential
+from .distributions import DiagonalGaussianDistribution, DiracDistribution
+from ..cnn.cnn_base import EmbedBlockSequential
 
 
 class Quantization(nn.Module):
@@ -32,99 +30,105 @@ class Quantization(nn.Module):
             block_type: str,
             spatial_dim_count: int,
             blocks: List[str],
-            embedder_names: List[List[str]] = None,
-            embed_confs: Dict = None,
-            embed_mode: str = "sum",
+            embedders: List[EmbedderSequential] = None,
             dims: int = 2,
             distribution: str = "gaussian",
-            n_head_channels: List[int] = None,
             **kwargs
     ):
         super().__init__()
         # Choose the block type based on provided configuration
-        self.distribution = distribution
-        if block_type == "conv":
+        self.distribution: str = distribution
+        if block_type == "ConvBlock":
             # Define convolutional block for quantization
-            self.quant = RearrangeConvCentric(
+            self.quant: nn.Module = RearrangeConvCentric(
                 EmbedBlockSequential(
                     nn.GroupNorm(32, in_ch),  # Normalize input channels
                     ConvBlockSequential(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks, dims=dims, **kwargs)
                 ), spatial_dim_count, dims=dims
             )
             # Define convolutional block for post-quantization decoding
-            self.post_quant = RearrangeConvCentric(
+            self.post_quant: nn.Module = RearrangeConvCentric(
                 ConvBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, dims=dims, **kwargs),
                 spatial_dim_count, dims=dims
             )
-        elif block_type == "resnet":
+        elif block_type == "ResNetBlock":
             # Define ResNet block for quantization
             self.quant = RearrangeConvCentric(
                 EmbedBlockSequential(
                     ResBlockSequential(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks,
-                                       embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, dims=dims,
+                                       embedders=embedders, dims=dims,
                                        **kwargs)
                 ), spatial_dim_count, dims=dims
             )
             # Define ResNet block for post-quantization decoding
             self.post_quant = RearrangeConvCentric(
                 ResBlockSequential(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks,
-                                   embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, dims=dims,
+                                   embedders=embedders, dims=dims,
                                    **kwargs),
                 spatial_dim_count, dims=dims
             )
-        elif block_type == "trans":
-            # Use Transformer block for quantization and post-quantization
-            self.quant = TransformerBlock(in_ch, [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch], blocks, spatial_dim_count=spatial_dim_count,
-                                          embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
-            self.post_quant = TransformerBlock(latent_ch[-1], latent_ch[::-1][1:] + [in_ch], blocks, spatial_dim_count=spatial_dim_count,
-                                               embedder_names=embedder_names, embed_confs=embed_confs, embed_mode=embed_mode, **kwargs)
-        elif block_type == "grid_trans":
-            grid_layer = kwargs.pop("grid_layer")
-            rotate_coord_system = kwargs.pop("rotate_coord_system")
+        elif block_type == "TransformerBlock":
+            self.quant = TransformerBlock(in_ch,
+                                          [(1 + (distribution == "gaussian")) * l_ch for l_ch in latent_ch],
+                                          blocks,
+                                          spatial_dim_count=spatial_dim_count,
+                                          embedders=embedders,
+                                          **kwargs)
+            self.post_quant = TransformerBlock(latent_ch[-1],
+                                               latent_ch[::-1][1:] + [in_ch],
+                                               blocks,
+                                               spatial_dim_count=spatial_dim_count,
+                                               embedders=embedders,
+                                               **kwargs)
+        else:
+            raise ValueError(f"Unsupported block_type: {block_type}")
 
-            spatial_attention_configs = kwargs
-            spatial_attention_configs["embedder_names"] = embedder_names
-            spatial_attention_configs["embed_confs"] = embed_confs
-            spatial_attention_configs["embed_mode"] = embed_mode
-            spatial_attention_configs["blocks"] = blocks
-
-            enc_latent_channels = latent_ch[:-1] + [latent_ch[-1] * (2 if distribution == "gaussian" else 1)]
-
-            self.quant = GridAttention(grid_layer, in_ch, enc_latent_channels, n_head_channels, spatial_attention_configs.copy(), rotate_coord_system)
-            self.post_quant = GridAttention(grid_layer, latent_ch[-1], latent_ch[::-1][1:] + [in_ch], n_head_channels[::-1], spatial_attention_configs.copy(), rotate_coord_system)
-
-    def quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                 cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+    def quantize(
+        self,
+        x: torch.Tensor,
+        emb: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+        *args: Any,
+        **kwargs: Any
+    ):
         """
         Encodes the input tensor x into a quantized latent space.
 
-        :param x: Input tensor.
+        :param x: Input tensor of shape ``(b, v, t, n, d, f)``.
         :param emb: Optional embedding tensor.
-        :param mask: Optional mask tensor.
-        :param cond: Optional conditioning tensor.
-        :return: Quantized tensor.
+        :param mask: Optional mask tensor of shape ``(b, v, t, n, d, m)``.
+        :param args: Additional positional arguments forwarded to the block.
+        :param kwargs: Additional keyword arguments forwarded to the block.
+        :return: Quantized tensor of shape ``(b, v, t, n, d, f')``.
         """
-        return self.quant(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
+        return self.quant(x, emb=emb, mask=mask, *args, **kwargs)
 
-    def post_quantize(self, x: torch.Tensor, emb: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None,
-                      cond: Optional[torch.Tensor] = None, *args, **kwargs) -> torch.Tensor:
+    def post_quantize(
+        self,
+        x: torch.Tensor,
+        emb: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None,
+        *args: Any,
+        **kwargs: Any
+    ):
         """
         Decodes the quantized tensor x back to the original space.
 
-        :param x: Quantized tensor.
+        :param x: Quantized tensor of shape ``(b, v, t, n, d, f')``.
         :param emb: Optional embedding tensor.
-        :param mask: Optional mask tensor.
-        :param cond: Optional conditioning tensor.
-        :return: Decoded tensor.
+        :param mask: Optional mask tensor of shape ``(b, v, t, n, d, m)``.
+        :param args: Additional positional arguments forwarded to the block.
+        :param kwargs: Additional keyword arguments forwarded to the block.
+        :return: Decoded tensor of shape ``(b, v, t, n, d, f)``.
         """
-        return self.post_quant(x, emb=emb, mask=mask, cond=cond, *args, **kwargs)
+        return self.post_quant(x, emb=emb, mask=mask, *args, **kwargs)
 
-    def get_distribution(self, x: torch.Tensor) -> AbstractDistribution:
+    def get_distribution(self, x: torch.Tensor):
         """
         Encodes the input tensor x into a quantized latent space.
 
-        :param x: Input tensor.
-        :return: Distribution for tensor.
+        :param x: Input tensor of shape ``(b, v, t, n, d, f')``.
+        :return: Distribution instance for the tensor.
         """
         assert self.distribution == "gaussian" or self.distribution == "dirac"
         if self.distribution == "gaussian":

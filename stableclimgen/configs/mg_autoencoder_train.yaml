@@ -1,0 +1,18 @@
+defaults:
+  - trainer: trainer
+  - logger: wandb
+  - model: mg_autoencoder
+  - mgrids: healpix
+  - dataloader: zarr_healpix
+  - data_split: default
+  - data_zooms: default
+  - data_variables: default
+  - hydra: default
+  - embedding: default
+  - _self_
+
+ckpt_path: null
+
+project_name: mg_autoencoder
+run_name: default
+run_dir: ../..

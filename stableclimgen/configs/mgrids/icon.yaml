@@ -1,4 +1,0 @@
-_target_: stableclimgen.src.utils.grid_utils_icon.icon_grid_to_mgrid
-grid_file: /Users/maxwitte/work/crai_sr/ICON_atmo/data/icon_grid_0007_R02B06_G.nc
-n_grid_levels: 8
-nh: 1

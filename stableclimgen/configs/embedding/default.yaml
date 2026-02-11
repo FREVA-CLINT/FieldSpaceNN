@@ -6,6 +6,8 @@ DensityEmbedder:
   in_channels: 1
   embed_dim: 64
   shared: false
+  layer_confs:
+    n_variables: 4
 UncertaintyEmbedder:
   in_channels: 1
   embed_dim: 64
@@ -14,15 +16,15 @@ UncertaintyEmbedder:
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
-  shared: true
+  shared: false
 VariableEmbedder:
-  in_channels: 16
+  in_channels: 5
   embed_dim: 64
   shared: false
 GridEmbedder:
   in_channels: 11
   embed_dim: 64
-  shared: true
+  shared: false
 MaskEmbedder:
   in_channels: 2
   embed_dim: 64
@@ -30,3 +32,15 @@ TimeEmbedder:
   in_channels: 1
   embed_dim: 64
   time_scales: [1, 7, 30.4375, 365.25]
+  time_min: 1577923200
+  time_max: 2524608000
+  use_linear: false
+MGEmbedder:
+  shared: false
+  in_channels: 2
+  embed_dim: 64
+  n_variables: 5
+  init_method: spherical_harmonics
+StaticVariableEmbedder:
+  in_channels: 2
+  embed_dim: 64
