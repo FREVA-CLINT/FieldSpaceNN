@@ -58,7 +58,7 @@ class BatchReshapeAllocator:
 
 
 class DataModule(LightningDataModule):
-    def __init__(self, dataset_train=None, dataset_val=None, dataset_test=None, batch_size=16, num_workers=16, use_costum_ddp_sampler=False):
+    def __init__(self, dataset_train=None, dataset_val=None, dataset_test=None, batch_size=16, num_workers=16, num_val_workers=None, use_costum_ddp_sampler=False):
         super().__init__()
 
         self.dataset_train = dataset_train
@@ -73,7 +73,7 @@ class DataModule(LightningDataModule):
         self.batch_size=batch_size
         self.num_workers= num_workers
         self.use_costum_ddp_sampler = use_costum_ddp_sampler
-    
+        self.num_val_workers = num_workers if num_val_workers is None else num_val_workers
 
     def train_dataloader(self):
         
@@ -92,7 +92,7 @@ class DataModule(LightningDataModule):
         else:
             sampler = None
 
-        dataloader = DataLoader(self.dataset_val, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.val_collator)
+        dataloader = DataLoader(self.dataset_val, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_val_workers, collate_fn=self.val_collator)
 
         return dataloader
 
