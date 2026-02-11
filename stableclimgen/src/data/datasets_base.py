@@ -328,7 +328,7 @@ class BaseDataset(Dataset):
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
         if file_path_target is None:
-            ds_target = copy.deepcopy(ds_source)
+            ds_target = None
 
         elif file_path_target == file_path_source and not drop_source:
             ds_target = None
@@ -394,8 +394,8 @@ class BaseDataset(Dataset):
 
                 if patch_dim:
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
-            #print(isel_dict, ds.sizes)
-            ds_zoom = ds.isel(isel_dict)
+
+        ds_zoom = ds.isel(isel_dict)
     
         return ds_zoom
     
@@ -463,7 +463,7 @@ class BaseDataset(Dataset):
                     drop_mask_ = drop_mask_[:, :, patch_indices]
 
             if data_time_zoom is None:
-                data_time_zoom = torch.tensor(ds["time"].values).float()
+                data_time_zoom = torch.from_numpy(ds["time"].values).float()
 
             for variable in variables:
                 values = ds[variable].values
@@ -475,7 +475,7 @@ class BaseDataset(Dataset):
                 if not patch_dim:
                     values = values.reshape(nt, d, -1)[:, :, :, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
 
-                data = torch.tensor(values).view(nt, d, -1)
+                data = torch.from_numpy(values).view(nt, d, -1)
 
                 if self.normalize_data:
                     data = self.var_normalizers[zoom][variable].normalize(data)
@@ -586,6 +586,13 @@ class BaseDataset(Dataset):
                 if key in sample_configs:
                     sample_configs[key]['patch_index'] = value
             return {}, {}, {}, sample_configs
+        if data_target is None:
+            # Defer target construction until here to avoid masking it with source dropouts.
+            data_target = {zoom: data_source[zoom].clone() for zoom in data_source.keys()}
+        else:
+            for zoom in list(data_source.keys()):
+                if zoom not in data_target or data_target[zoom] is None:
+                    data_target[zoom] = data_source[zoom].clone()
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
@@ -673,20 +680,20 @@ class BaseDataset(Dataset):
             ``(1,)``.
         """
         selected_vars = {}
-        selected_var_ids = {}
+  
         var_indices = {}
-        drop_indices = {}
-        offset = 0
         group_keys = list(self.data_dict['variables'].keys())
         # Sample variables per group to build a compact input for this item.
         for group in group_keys:
             variables = self.data_dict['variables'][group]
             sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
-            selected_vars[group] = np.random.choice(variables, sample_size, replace=False)
-            selected_var_ids[group] = [self.all_variable_ids[str(variable)] for variable in selected_vars[group]]
-            var_indices[group] = np.arange(len(selected_vars[group]))
-            drop_indices[group] = var_indices[group] + offset
-            offset += len(selected_vars[group])
+            var_indices[group] = np.arange(len(variables))
+
+            if sample_size != len(variables):
+                var_indices[group] = np.random.choice(var_indices[group], sample_size, replace=False)
+
+            selected_vars[group] = np.array(variables)[var_indices[group]]
+            
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
 
@@ -744,8 +751,8 @@ class BaseDataset(Dataset):
             if drop_mask_zoom is None:
                 drop_mask_zoom_groups = [None for _ in group_keys]
             else:
-                for group in group_keys:
-                    drop_mask_zoom_groups.append(drop_mask_zoom[drop_indices[group]].unsqueeze(0))
+                for indices in var_indices.values():
+                    drop_mask_zoom_groups.append(drop_mask_zoom[indices].unsqueeze(0))
 
             # build time embeddings before slicing to include shift for targets
             shift_ts = int(self.shift_n_ts_target.get(zoom, 0))
@@ -769,10 +776,10 @@ class BaseDataset(Dataset):
                     self.mapping[mapping_zoom],
                     mapping_zoom,
                     zoom)
-            target_dataset = ds_target if ds_target is not None else ds_source
-            if target_dataset is not None:
+            
+            if ds_target is not None:
                 ds_target_zoom = self.select_ranges(
-                    target_dataset,
+                    ds_target,
                     time_indices,
                     patch_index,
                     self.mapping[mapping_zoom],
@@ -804,7 +811,7 @@ class BaseDataset(Dataset):
                         zoom,
                     )
                 else:
-                    data_target = data_source.clone()
+                    data_target = None
                     data_time_target_zoom_group = data_time_zoom_group
 
                 source_zooms_groups[group_idx][zoom] = data_source
@@ -869,21 +876,24 @@ class BaseDataset(Dataset):
             source_zooms_groups_out_ = {}
             target_zooms_groups_out_ = {}
             mask_zooms_groups_ = {}
-            # Merge groups into a single feature axis when variables are treated as features.
-            if self.variables_as_features:
-                for zoom in source_zooms_groups_out[0].keys():
-                    source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
-                    target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
-                    mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
 
-                emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
-                       'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
-                       'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+        if self.variables_as_features:
+            for zoom in source_zooms_groups_out[0].keys():
+                source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
+                target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
+                mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
 
-                emb_groups = [emb]
-                source_zooms_groups_out = [source_zooms_groups_out_]
-                target_zooms_groups_out = [target_zooms_groups_out_]
-                mask_zooms_groups = [mask_zooms_groups_]
+            emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
+                    'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
+                    'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+
+            emb_groups = [emb]
+            source_zooms_groups_out = [source_zooms_groups_out_]
+            target_zooms_groups_out = [target_zooms_groups_out_]
+            mask_zooms_groups = [mask_zooms_groups_]
+        
+        for zoom, indices in patch_index_zooms.items():
+            patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 

@@ -37,6 +37,7 @@ class BatchReshapeAllocator:
         target_groups: Any,
         mask_groups: Any,
         emb_groups: Any,
+        patch_index_zooms
     ):
         """
         Merge the time-sample dimension into the batch dimension when present.
@@ -74,8 +75,9 @@ class BatchReshapeAllocator:
         target_groups = [_merge_obj(group) for group in target_groups]
         mask_groups = [_merge_obj(group) for group in mask_groups]
         emb_groups = [_merge_obj(group) for group in emb_groups]
+        patch_index_zooms = _merge_obj(patch_index_zooms)
 
-        return source_groups, target_groups, mask_groups, emb_groups
+        return source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms
 
     def __call__(self, batch: Sequence[Any]):
         """
@@ -91,8 +93,8 @@ class BatchReshapeAllocator:
         # The shape will be (batch_size, n, C, H, W).
         source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = default_collate(batch)
 
-        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups = self._merge_time_batch_groups(
-            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups
+        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = self._merge_time_batch_groups(
+            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
         )
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
@@ -107,6 +109,7 @@ class DataModule(LightningDataModule):
         batch_size: int = 16,
         num_workers: int = 16,
         use_costum_ddp_sampler: bool = False,
+        prefetch_factor=None,persistent_workers=False
     ) -> None:
         """
         Initialize the data module and its datasets/collators.
@@ -130,10 +133,12 @@ class DataModule(LightningDataModule):
         self.dataset_test: Any = dataset_test
         self.test_collator: BatchReshapeAllocator = IdentityAllocator() if isinstance(dataset_train, RegularDataset) else BatchReshapeAllocator(dataset_test)
 
-        self.batch_size: int = batch_size
-        self.num_workers: int = num_workers
-        self.use_costum_ddp_sampler: bool = use_costum_ddp_sampler
-    
+        self.batch_size=batch_size
+        self.num_workers= num_workers
+        self.use_costum_ddp_sampler = use_costum_ddp_sampler
+        self.num_val_workers = num_workers if num_val_workers is None else num_val_workers
+        self.prefetch_factor = prefetch_factor
+        self.persistent_workers = persistent_workers
 
     def train_dataloader(self):
         """
@@ -145,7 +150,7 @@ class DataModule(LightningDataModule):
             sampler = DistributedSampler(dataset=self.dataset_train, shuffle=False)
         else:
             sampler = None
-        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.train_collator)
+        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.train_collator, prefetch_factor=self.prefetch_factor, persistent_workers=self.persistent_workers)
 
         return dataloader
     
@@ -160,7 +165,7 @@ class DataModule(LightningDataModule):
         else:
             sampler = None
 
-        dataloader = DataLoader(self.dataset_val, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.val_collator)
+        dataloader = DataLoader(self.dataset_val, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_val_workers, collate_fn=self.val_collator, prefetch_factor=self.prefetch_factor, persistent_workers=self.persistent_workers)
 
         return dataloader
 
