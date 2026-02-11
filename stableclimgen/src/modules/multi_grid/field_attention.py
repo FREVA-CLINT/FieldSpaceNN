@@ -503,12 +503,12 @@ class FieldAttentionBlock(nn.Module):
         self.kv_projection_layer = get_layer(token_size_in_kv_overlap, out_dim_kv, layer_confs=layer_confs_, bias=True)
         self.out_layer_att = get_layer(out_dim_q, update_dims, layer_confs=layer_confs_)
 
-        self.gamma_res = nn.Parameter(torch.ones(update_dims) * 1e-7, requires_grad=True)
-        self.gamma = nn.Parameter(torch.ones(update_dims) * 1e-7, requires_grad=True)
+        self.gamma_res = nn.Parameter(torch.ones(self.token_size_space) * 1e-7, requires_grad=True)
+        self.gamma = nn.Parameter(torch.ones(self.token_size_space) * 1e-7, requires_grad=True)
 
         self.mlp = MLP_fac(token_size_in_mlp_overlap, update_dims_mlp, hidden_dim=out_dim_q, dropout=dropout, layer_confs=layer_confs_, gamma=False)
-        self.gamma_res_mlp = nn.Parameter(torch.ones(len(update_dims_mlp)) * 1e-7, requires_grad=True)
-        self.gamma_mlp = nn.Parameter(torch.ones(len(update_dims_mlp)) * 1e-7, requires_grad=True)
+        self.gamma_res_mlp = nn.Parameter(torch.ones(len(target_zooms)) * 1e-7, requires_grad=True)
+        self.gamma_mlp = nn.Parameter(torch.ones(len(target_zooms)) * 1e-7, requires_grad=True)
         
 
         self.pattern_tokens = 'b v (T t) N n (D d) f ->  b v T N D t n d f'
@@ -702,6 +702,7 @@ class FieldAttentionBlock(nn.Module):
                 if self.scale_shift:
                     scale, shift = x_out.chunk(2, dim=-1)
                     shift = insert_matching_time_patch(x_zooms[zoom], shift, zoom, max(self.q_zooms), sample_configs)
+                    scale = insert_matching_time_patch(x_zooms[zoom], scale, zoom, max(self.q_zooms), sample_configs)
                     x_zooms[zoom] = x_zooms[zoom] * (1 + self.gamma_res_mlp[k] * scale) + self.gamma_mlp[k] * shift
                 else:
                     x_out = insert_matching_time_patch(x_zooms[zoom], x_out, zoom, max(self.q_zooms), sample_configs)
