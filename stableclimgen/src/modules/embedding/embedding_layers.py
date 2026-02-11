@@ -1,4 +1,6 @@
 import math
+from typing import Any, Dict, Optional, Sequence
+
 import torch
 import torch.nn as nn
 
@@ -22,17 +24,30 @@ class RandomFourierLayer(nn.Module):
             in_features: int = 3,
             n_neurons: int = 512,
             wave_length: float = 1.0,
-            wave_length_2: float = None
+            wave_length_2: Optional[float] = None
     ) -> None:
+        """
+        Initialize the random Fourier feature layer.
+
+        :param in_features: Number of input features.
+        :param n_neurons: Number of neurons (output features).
+        :param wave_length: Primary wavelength for random features.
+        :param wave_length_2: Optional secondary wavelength for mixed scales.
+        :return: None.
+        """
         super().__init__()
         # Initialize the weights parameter with a random normal distribution
 
         if wave_length_2 is None:
             wave_length_2 = wave_length
   
-        weights = torch.concat((
-            torch.randn(in_features, n_neurons // 4)/ wave_length,
-            torch.randn(in_features, n_neurons // 4)/ wave_length_2),dim=1)
+        weights = torch.concat(
+            (
+                torch.randn(in_features, n_neurons // 4) / wave_length,
+                torch.randn(in_features, n_neurons // 4) / wave_length_2,
+            ),
+            dim=1,
+        )
 
         self.register_parameter(
             "weights",
@@ -40,18 +55,19 @@ class RandomFourierLayer(nn.Module):
                 weights, requires_grad=False
             )
         )
+        self.weights: nn.Parameter
         # Scaling constant to normalize the output
-        self.constant = math.sqrt(2 / n_neurons)
+        self.constant: float = math.sqrt(2 / n_neurons)
 
     def forward(self, in_tensor: torch.Tensor) -> torch.Tensor:
         """
         Perform the forward pass of the layer, applying Random Fourier Feature transformation.
 
-        :param in_tensor: Input tensor to be transformed.
-        :return: Transformed output tensor.
+        :param in_tensor: Input tensor of shape ``(b, ..., in_features)``.
+        :return: Transformed output tensor of shape ``(b, ..., n_neurons)``.
         """
         # Normalize input tensor by the wave length
-        in_tensor = in_tensor #/ self.wave_length
+        in_tensor = in_tensor
         # Apply a linear transformation using random weights
         out_tensor = 2 * torch.pi * in_tensor @ self.weights
         # Apply sine and cosine functions and concatenate the results
@@ -64,17 +80,28 @@ class RandomFourierLayer(nn.Module):
 class TimeScaleLayer(nn.Module):
     def __init__(
             self,
-            in_features = 1,
+            in_features: int = 1,
             n_neurons: int = 512,
             # Pass periods in the unit of your input data (Hours)
-            time_scales=None,
+            time_scales: Optional[Sequence[float]] = None,
             time_min: float = 0.0,
             time_max: float = 1.0,
             use_linear: bool = True
     ) -> None:
+        """
+        Initialize a time-scale embedding layer.
+
+        :param in_features: Number of input features.
+        :param n_neurons: Output feature count.
+        :param time_scales: Periods for sinusoidal components.
+        :param time_min: Minimum time value for normalization.
+        :param time_max: Maximum time value for normalization.
+        :param use_linear: Whether to include a linear trend component.
+        :return: None.
+        """
         super().__init__()
 
-        self.use_linear = use_linear
+        self.use_linear: bool = use_linear
         # 1. Setup Periodic Components
         # We need 2 features (sin + cos) per scale
         if time_scales is None:
@@ -83,6 +110,7 @@ class TimeScaleLayer(nn.Module):
         periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
 
         self.register_buffer('periodic_scales', periodic_scales.view(1, 1, -1))
+        self.periodic_scales: torch.Tensor
 
         n_periodic_features = len(time_scales) * 2
 
@@ -91,21 +119,23 @@ class TimeScaleLayer(nn.Module):
         
         n_linear_features = n_neurons - n_periodic_features if use_linear else 0
 
-        self.time_min = time_min
-        self.time_range = time_max - time_min + 1e-8
+        self.time_min: float = time_min
+        self.time_range: float = time_max - time_min + 1e-8
 
         # Projection for the linear trend (Global warming/Decadal shifts)
-        self.linear_trend = nn.Linear(in_features, n_linear_features) if use_linear else nn.Identity()
+        self.linear_trend: nn.Module = nn.Linear(in_features, n_linear_features) if use_linear else nn.Identity()
 
         # We also want to learn how to mix the sin/cos features
         out_features_periodic = n_periodic_features if use_linear else n_neurons
-        self.periodic_projection = nn.Linear(n_periodic_features, out_features_periodic)
+        self.periodic_projection: nn.Module = nn.Linear(n_periodic_features, out_features_periodic)
 
 
     def forward(self, times: torch.Tensor) -> torch.Tensor:
         """
-        times: Tensor of shape (Batch, Seq_Len) or (Batch, Seq_Len, 1)
-               Values should be integers of hours (12, 36, 60...)
+        Encode time values with periodic and optional linear components.
+
+        :param times: Tensor of shape ``(b, t)`` or ``(b, t, 1)`` with time values.
+        :return: Embedded tensor of shape ``(b, t, n_neurons)``.
         """
        # times = time_zooms[max(time_zooms.keys())]
 
@@ -148,19 +178,25 @@ class SinusoidalLayer(nn.Module):
     :param max_period: Controls the minimum frequency of the embeddings.
                        Higher values lead to more gradual frequency changes.
     """
-    def __init__(self, in_channels: int, max_period: int = 10000):
+    def __init__(self, in_channels: int, max_period: int = 10000) -> None:
+        """
+        Initialize sinusoidal embeddings.
+
+        :param in_channels: Number of input features.
+        :param max_period: Controls the minimum frequency of the embeddings.
+        :return: None.
+        """
         super().__init__()
-        self.in_channels = in_channels
-        self.freqs = torch.exp(
+        self.in_channels: int = in_channels
+        self.freqs: torch.Tensor = torch.exp(
             -math.log(max_period) * torch.arange(start=0, end=in_channels // 2,
                                                  dtype=torch.float32) / (in_channels // 2)
         )
 
-    def forward(self, diffusion_steps):
+    def forward(self, diffusion_steps: torch.Tensor) -> torch.Tensor:
         """
-        :param diffusion_steps: A 1-D Tensor of shape [N], where N is the batch size.
-                        Each element represents the diffusion step and can be fractional.
-        :return: A Tensor of shape [N x dim] containing the positional embeddings for each diffusion step.
+        :param diffusion_steps: A 1-D tensor of shape ``(b,)`` with diffusion steps.
+        :return: Positional embeddings of shape ``(b, in_channels)``.
         """
 
         # Calculate arguments for sine and cosine functions
@@ -175,16 +211,25 @@ class SinusoidalLayer(nn.Module):
         return embedding
 
 
-    
+def get_mg_embeddings(mg_emb_confs: Dict[str, Any], grid_layers: Dict[str, GridLayer]) -> nn.ParameterDict:
+    """
+    Build multigrid embeddings for each zoom.
 
-
-def get_mg_embeddings(mg_emb_confs, grid_layers):
+    :param mg_emb_confs: Configuration dict containing zooms, features, variables, and init methods.
+    :param grid_layers: Mapping from zoom string to grid layer.
+    :return: ParameterDict of embeddings by zoom.
+    """
     mg_emeddings = nn.ParameterDict()
     diff_mode = mg_emb_confs.get('diff_mode', True)
     
     amplitude = 1
     wavelength_max = None
-    for zoom, features, n_variables, init_method in zip(mg_emb_confs['zooms'], mg_emb_confs['features'], mg_emb_confs["n_variables"], mg_emb_confs['init_methods']):
+    for zoom, features, n_variables, init_method in zip(
+        mg_emb_confs['zooms'],
+        mg_emb_confs['features'],
+        mg_emb_confs["n_variables"],
+        mg_emb_confs['init_methods'],
+    ):
         
         wavelength_min = estimate_healpix_cell_radius_rad(grid_layers[str(zoom)].adjc.shape[0])
 
@@ -208,21 +253,36 @@ def get_mg_embeddings(mg_emb_confs, grid_layers):
 
 
 def get_mg_embedding(
-        grid_layer_emb: GridLayer, 
-        features, 
-        n_variables, 
-        init_mode='fourier_sphere',
-        wavelength=1,
-        wavelength_min=None,
-        wavelength_max=None,
-        random_rotation=False,
-        amplitude=1):
+        grid_layer_emb: GridLayer,
+        features: int,
+        n_variables: int,
+        init_mode: str = 'fourier_sphere',
+        wavelength: float = 1,
+        wavelength_min: Optional[float] = None,
+        wavelength_max: Optional[float] = None,
+        random_rotation: bool = False,
+        amplitude: float = 1
+) -> nn.Parameter:
+    """
+    Generate a multigrid embedding parameter tensor.
+
+    :param grid_layer_emb: Grid layer providing coordinates.
+    :param features: Number of embedding features.
+    :param n_variables: Number of variables to repeat embeddings for.
+    :param init_mode: Initialization strategy.
+    :param wavelength: Base wavelength for Fourier features.
+    :param wavelength_min: Minimum wavelength for spherical harmonics.
+    :param wavelength_max: Maximum wavelength for spherical harmonics.
+    :param random_rotation: Whether to randomize the coordinate system.
+    :param amplitude: Amplitude scaling for embeddings.
+    :return: Trainable embedding parameter of shape ``(n_variables, n_cells, features)``.
+    """
     
     coords = grid_layer_emb.get_coordinates()       
 
     clon, clat = coords[...,0], coords[...,1]
 
-    if init_mode=='random':
+    if init_mode == 'random':
         embs = amplitude*torch.randn(1, coords.shape[-2], features)
     
     elif 'fourier_sphere' == init_mode:

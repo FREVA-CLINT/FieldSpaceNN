@@ -1,5 +1,7 @@
-import torch
+from typing import List, Optional
+
 import numpy as np
+import torch
 
 
 class AbstractDistribution:
@@ -7,14 +9,14 @@ class AbstractDistribution:
     Abstract base class for probability distributions.
     """
 
-    def sample(self, noise: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, noise: Optional[torch.Tensor] = None):
         """
         Generate a sample from the distribution.
         Raises NotImplementedError if not implemented in subclass.
         """
         raise NotImplementedError()
 
-    def mode(self) -> torch.Tensor:
+    def mode(self):
         """
         Get the mode of the distribution.
         Raises NotImplementedError if not implemented in subclass.
@@ -31,17 +33,17 @@ class DiracDistribution(AbstractDistribution):
         """
         Initialize the Dirac distribution with a fixed mean.
 
-        :param mean: Fixed value of the distribution.
+        :param mean: Fixed value of the distribution with shape ``(b, v, t, n, d, f)``.
         """
-        self.mean = mean
+        self.mean: torch.Tensor = mean
 
-    def sample(self, noise: torch.Tensor = None, gamma: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, noise: Optional[torch.Tensor] = None, gamma: Optional[torch.Tensor] = None):
         """
         Return the fixed mean as a sample.
         """
         return self.mean
 
-    def mode(self) -> torch.Tensor:
+    def mode(self):
         """
         Return the fixed mean as the mode.
         """
@@ -57,30 +59,35 @@ class DiagonalGaussianDistribution(AbstractDistribution):
         """
         Initialize the distribution with mean and log-variance parameters.
 
-        :param parameters: Tensor containing concatenated mean and log-variance values.
+        :param parameters: Tensor containing concatenated mean and log-variance values
+            of shape ``(b, v, t, n, d, 2f)``.
         :param deterministic: Boolean flag to determine if the distribution should be deterministic.
         """
-        self.parameters = parameters
+        self.parameters: torch.Tensor = parameters
         # Split parameters into mean and log-variance, clamping log-variance values
+        self.mean: torch.Tensor
+        self.logvar: torch.Tensor
         self.mean, self.logvar = torch.chunk(parameters, 2, dim=-1)
+        # Clamp log-variance for numerical stability.
         self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
-        self.deterministic = deterministic
-        self.std = torch.exp(0.5 * self.logvar)  # Standard deviation
-        self.var = torch.exp(self.logvar)  # Variance
+        self.deterministic: bool = deterministic
+        self.std: torch.Tensor = torch.exp(0.5 * self.logvar)  # Standard deviation
+        self.var: torch.Tensor = torch.exp(self.logvar)  # Variance
 
         # Dimension indices for summing over all dimensions except batch dimension
-        self.dims = [i for i in range(1, self.mean.dim())]
+        self.dims: List[int] = [i for i in range(1, self.mean.dim())]
 
         # Override std and var with zeros if deterministic
         if self.deterministic:
             self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
-    def sample(self, noise: torch.Tensor = None, gamma: torch.Tensor = None) -> torch.Tensor:
+    def sample(self, noise: Optional[torch.Tensor] = None, gamma: Optional[torch.Tensor] = None):
         """
         Generate a sample from the distribution.
 
-        :param noise: Optional noise tensor for sampling; if None, generates standard Gaussian noise.
-        :return: Sampled tensor from the distribution.
+        :param noise: Optional noise tensor of shape ``(b, v, t, n, d, f)``.
+        :param gamma: Optional scaling tensor of shape ``(b, v, t, n, d, f)``.
+        :return: Sampled tensor of shape ``(b, v, t, n, d, f)``.
         """
         if noise is None:
             noise = torch.randn(self.mean.shape)
@@ -92,12 +99,12 @@ class DiagonalGaussianDistribution(AbstractDistribution):
         x = self.mean + self.std * noise.to(device=self.parameters.device) * gamma.to(device=self.parameters.device)
         return x
 
-    def kl(self, other: 'DiagonalGaussianDistribution' = None) -> torch.Tensor:
+    def kl(self, other: Optional['DiagonalGaussianDistribution'] = None):
         """
         Compute the KL divergence to another distribution or the standard normal.
 
         :param other: Another DiagonalGaussianDistribution instance, or None for standard normal.
-        :return: KL divergence value as a tensor.
+        :return: KL divergence tensor of shape ``(b,)``.
         """
         if self.deterministic:
             return torch.Tensor([0.])
@@ -116,12 +123,12 @@ class DiagonalGaussianDistribution(AbstractDistribution):
                     dim=self.dims
                 )
 
-    def nll(self, sample: torch.Tensor) -> torch.Tensor:
+    def nll(self, sample: torch.Tensor):
         """
         Compute the negative log-likelihood of a sample.
 
-        :param sample: Sample tensor for likelihood calculation.
-        :return: Negative log-likelihood as a tensor.
+        :param sample: Sample tensor of shape ``(b, v, t, n, d, f)``.
+        :return: Negative log-likelihood tensor of shape ``(b,)``.
         """
         if self.deterministic:
             return torch.Tensor([0.])
@@ -133,22 +140,22 @@ class DiagonalGaussianDistribution(AbstractDistribution):
             dim=self.dims
         )
 
-    def mode(self) -> torch.Tensor:
+    def mode(self):
         """
         Get the mode of the distribution (mean for Gaussian).
         """
         return self.mean
 
 
-def normal_kl(mean1: torch.Tensor, logvar1: torch.Tensor, mean2: torch.Tensor, logvar2: torch.Tensor) -> torch.Tensor:
+def normal_kl(mean1: torch.Tensor, logvar1: torch.Tensor, mean2: torch.Tensor, logvar2: torch.Tensor):
     """
     Compute the KL divergence between two Gaussian distributions.
 
-    :param mean1: Mean of the first Gaussian.
-    :param logvar1: Log-variance of the first Gaussian.
-    :param mean2: Mean of the second Gaussian.
-    :param logvar2: Log-variance of the second Gaussian.
-    :return: KL divergence as a tensor.
+    :param mean1: Mean of the first Gaussian, shape ``(b, ..., f)``.
+    :param logvar1: Log-variance of the first Gaussian, shape ``(b, ..., f)``.
+    :param mean2: Mean of the second Gaussian, shape ``(b, ..., f)``.
+    :param logvar2: Log-variance of the second Gaussian, shape ``(b, ..., f)``.
+    :return: KL divergence tensor with broadcasted shape ``(b, ..., f)``.
     """
     # Determine which argument is a Tensor to set device
     tensor = None

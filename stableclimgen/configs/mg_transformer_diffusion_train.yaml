@@ -1,0 +1,19 @@
+defaults:
+  - trainer: mg_transformer
+  - logger: wandb
+  - model: mg_transformer_diffusion
+  - mgrids: healpix
+  - data_zooms: default
+  - data_variables: default
+  - data_split: default
+  - dataloader: zarr_healpix
+  - embedding: default
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+run_name: mg_transformer
+config_name: default
+project_name: test
+run_dir: ../..

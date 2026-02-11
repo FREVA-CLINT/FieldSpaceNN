@@ -1,0 +1,41 @@
+_target_: stableclimgen.src.models.cnn.pl_model.LightningCNN
+lr: 1e-4
+lr_warmup: 5000
+model:
+  _target_: stableclimgen.src.models.cnn.model.CNN
+  init_in_ch: 1
+  final_out_ch: 1
+  skip_connections: true
+  model_channels: 64
+  block_configs:
+    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 1
+      enc: true
+      ch_mult: 2
+      sub_confs:
+        blocks: ["normal", "normal", "down"]
+    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 3
+      enc: true
+      ch_mult: 2
+      sub_confs:
+        blocks: ["normal", "normal", "down"]
+    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 3
+      ch_mult: 2
+      sub_confs:
+        blocks: ["normal"]
+    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+      block_type: "ResnetBlock"
+      depth: 4
+      dec: true
+      ch_mult: 0.5
+      sub_confs:
+        blocks: ["normal", "normal", "up"]
+  patch_emb_config:
+    block_type: "ConvBlock"
+    patch_emb_size: [ 1, 1 ]
+    patch_emb_kernel: [ 3, 3 ]

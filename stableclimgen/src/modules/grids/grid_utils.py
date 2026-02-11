@@ -1,15 +1,22 @@
+import math
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
+
+import healpy as hp
+import numpy as np
 import torch
 import xarray as xr
-import numpy as np
-import math
-import healpy as hp
-from typing import Dict
 
 from scipy.interpolate import griddata
 
-radius_earth= 6371
+radius_earth = 6371
 
-def get_zoom_from_npix(npix):
+def get_zoom_from_npix(npix: int):
+    """
+    Get the zoom level for a Healpix grid from its pixel count.
+
+    :param npix: Total number of pixels in the Healpix grid.
+    :return: Zoom level (log2 of nside) or None if the input is invalid.
+    """
     try:
         nside = hp.npix2nside(npix)
         zoom_level = int(np.log2(nside))
@@ -17,7 +24,13 @@ def get_zoom_from_npix(npix):
     except ValueError:
         return None
 
-def get_lon_lat_names(grid_type):
+def get_lon_lat_names(grid_type: Optional[str]):
+    """
+    Resolve longitude/latitude variable names for a grid type.
+
+    :param grid_type: Grid type identifier (cell, vertex, edge, lonlat, longitudelatitude).
+    :return: Tuple of (longitude_name, latitude_name).
+    """
     if grid_type == 'cell':
         lon, lat = 'clon', 'clat'
 
@@ -37,18 +50,28 @@ def get_lon_lat_names(grid_type):
         lon, lat = 'vlon', 'vlat'
     return lon, lat
 
-def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_type:str=None, target='torch'):
-    """
-    :param ds: Input Xarray Dataset to read data from
-    :param lon: Input longitude variable to read
-    :param lat: Input latitude variable to read
-    :param grid_type: Either cell,edge or vertex to read different coordinates
 
-    :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
+def get_coords_as_tensor(
+    ds: xr.Dataset,
+    lon: str = 'vlon',
+    lat: str = 'vlat',
+    grid_type: Optional[str] = None,
+    target: str = 'torch'
+):
+    """
+    Load coordinates from a dataset and return a stacked (lon, lat) array.
+
+    :param ds: Input Xarray Dataset to read data from.
+    :param lon: Input longitude variable to read (overridden by grid_type).
+    :param lat: Input latitude variable to read (overridden by grid_type).
+    :param grid_type: Either cell, edge, vertex, lonlat, or longitudelatitude.
+    :param target: Output backend ("torch" or "numpy").
+    :return: Coordinates of shape ``(n, 2)`` or ``(n_lon * n_lat, 2)``.
     """
     lon, lat = get_lon_lat_names(grid_type)
     
     if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
+        # Fallback to Healpix coordinates when cell coordinates are absent.
         zoom = get_zoom_from_npix(len(ds.cell))
         if zoom is not None:
             return healpix_pixel_lonlat_torch(zoom, return_numpy=target=='numpy')
@@ -56,11 +79,12 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
     elif (lon not in ds.keys()) or (lat not in ds.keys()):
         return None
 
-    if target=='torch':
+    if target == 'torch':
         lons = torch.tensor(ds[lon].values)
         lats = torch.tensor(ds[lat].values)
 
-        if grid_type=='lonlat' or grid_type =='longitudelatitude':
+        if grid_type == 'lonlat' or grid_type == 'longitudelatitude':
+            # Expand lon/lat grids into flattened coordinate pairs.
             lons, lats = torch.meshgrid((lons.deg2rad(),lats.deg2rad()), indexing='xy')
             lons = lons.reshape(-1)
             lats = lats.reshape(-1)
@@ -71,7 +95,8 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
         lons = np.array(ds[lon].values)
         lats = np.array(ds[lat].values)
 
-        if grid_type=='lonlat':
+        if grid_type == 'lonlat':
+            # Expand lon/lat grids into flattened coordinate pairs.
             lons, lats = np.meshgrid(np.deg2rad(lons),np.deg2rad(lats),indexing='xy')
             lons = lons.reshape(-1)
             lats = lats.reshape(-1) 
@@ -79,7 +104,15 @@ def get_coords_as_tensor(ds: xr.Dataset, lon:str='vlon', lat:str='vlat', grid_ty
 
     return coords
 
-def get_grid_type_from_var(ds:xr.Dataset, variable:str) -> dict:
+
+def get_grid_type_from_var(ds: xr.Dataset, variable: str):
+    """
+    Infer the grid type from a variable's spatial dimension.
+
+    :param ds: Input Xarray Dataset.
+    :param variable: Variable name to inspect.
+    :return: Grid type string or None if it cannot be inferred.
+    """
     dims = ds[variable].dims
     spatial_dim = dims[-1]
 
@@ -100,11 +133,13 @@ def get_grid_type_from_var(ds:xr.Dataset, variable:str) -> dict:
     
 
 
-def get_coord_dict_from_var(ds:xr.Dataset, variable:str) -> dict:
+def get_coord_dict_from_var(ds: xr.Dataset, variable: str):
     """
-    :param ds: Input Xarray Dataset to read data from
-    :param variable: Input variable to read
-    :returns: Dictionary of the longitude and latitude coordinates (pytorch tensors)
+    Get longitude/latitude coordinate variable names for a dataset variable.
+
+    :param ds: Input Xarray Dataset to read data from.
+    :param variable: Input variable to read.
+    :return: Dictionary with keys "lon" and "lat".
     """
     dims = ds[variable].dims
     spatial_dim = dims[-1]
@@ -133,36 +168,32 @@ def get_coord_dict_from_var(ds:xr.Dataset, variable:str) -> dict:
     return {'lon':lon_c[0],'lat':lat_c[0]}
 
 
-def scale_coordinates(coords: torch.tensor, scale_factor:float)->torch.tensor:
+def scale_coordinates(coords: torch.Tensor, scale_factor: float):
     """
-    Scale a set of coordinates around their centroid by a given scaling factor.
+    Scale coordinates around their centroid by a factor.
 
-    Parameters:
-    ----------
-    coords : torch.Tensor
-        Tensor containing coordinate points, with shape (dim, num_points), where `dim` is 
-        the number of spatial dimensions (e.g., 2 for 2D coordinates) and `num_points` is 
-        the number of coordinate points.
-    scale_factor : float
-        Factor by which to scale the coordinates around their mean.
-
-    Returns:
-    -------
-    torch.Tensor
-        The scaled coordinates, adjusted around their centroid by the specified scaling factor.
+    :param coords: Coordinate tensor of shape ``(d, n)``.
+    :param scale_factor: Factor by which to scale coordinates around their mean.
+    :return: Scaled coordinates of shape ``(d, n)``.
     """
     m = coords.mean(dim=1, keepdim=True)
     return (coords - m) * scale_factor + m
 
 
-def distance_on_sphere(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor) -> torch.tensor:
+def distance_on_sphere(
+    lon1: torch.Tensor,
+    lat1: torch.Tensor,
+    lon2: torch.Tensor,
+    lat2: torch.Tensor
+):
     """
-    :param lon1: target longitude 
-    :param lat1: target latitude 
-    :param lon2: source longitude 
-    :param lat2: source latitude 
+    Compute great-circle distances between target and source coordinates.
 
-    :returns: distances on the sphere between lon1,lat1 and lon2,lat2
+    :param lon1: Target longitude tensor (radians) of shape ``(...,)``.
+    :param lat1: Target latitude tensor (radians) of shape ``(...,)``.
+    :param lon2: Source longitude tensor (radians) of shape ``(...,)``.
+    :param lat2: Source latitude tensor (radians) of shape ``(...,)``.
+    :return: Distance tensor (radians) with broadcasted shape ``(...,)``.
     """
     d_lat = torch.abs(lat1-lat2)
     d_lon = torch.abs(lon1-lon2)
@@ -172,14 +203,20 @@ def distance_on_sphere(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
     return d_rad
 
 
-def rotate_coord_system(lons: torch.tensor, lats: torch.tensor, rotation_lon: torch.tensor, rotation_lat: torch.tensor):
+def rotate_coord_system(
+    lons: torch.Tensor,
+    lats: torch.Tensor,
+    rotation_lon: torch.Tensor,
+    rotation_lat: torch.Tensor
+):
     """
-    :param lons: input longitudes
-    :param lats: input latitudes 
-    :param rotation_lon: longitude of rotation angles 
-    :param rotation_lat: latitudes of rotation angles 
+    Rotate spherical coordinates by a given rotation origin.
 
-    :returns: rotated coordinates as tuple(longitudes, latitudes)
+    :param lons: Input longitudes (radians) of shape ``(n,)``.
+    :param lats: Input latitudes (radians) of shape ``(n,)``.
+    :param rotation_lon: Rotation longitudes (radians) of shape ``(b,)``.
+    :param rotation_lat: Rotation latitudes (radians) of shape ``(b,)``.
+    :return: Tuple of rotated (lon, lat) tensors of shape ``(b, n)``.
     """
 
     theta = rotation_lat
@@ -199,30 +236,32 @@ def rotate_coord_system(lons: torch.tensor, lats: torch.tensor, rotation_lon: to
     rot_lon = torch.atan2(rotated_y, rotated_x)
     rot_lat = torch.arcsin(rotated_z)
 
-    #lat = arcsin(cos(ϑ) sin(lat') - cos(lon') sin(ϑ) cos(lat'))
-    #lon = atan2(sin(lon'), tan(lat') sin(ϑ) + cos(lon') cos(ϑ)) - φ
-    
     return rot_lon, rot_lat
 
 
-
-
-def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tensor, lat2: torch.tensor, base:str='polar', periodic_fov:list=None, rotate_coords=True) -> torch.tensor:
+def get_distance_angle(
+    lon1: torch.Tensor,
+    lat1: torch.Tensor,
+    lon2: torch.Tensor,
+    lat2: torch.Tensor,
+    base: str = 'polar',
+    periodic_fov: Optional[Tuple[float, float]] = None,
+    rotate_coords: bool = True
+):
     """
-    :param lon1: target longitude 
-    :param lat1: target latitude 
-    :param lon2: source longitude 
-    :param lat2: source latitude 
-    :param base: Optional: Returns relative coordinates in either polat coordinates (distance, angle) or cartesian coordiantes (distance longitude, distance latitude)
-    :param periodic_fov: Optinal if data is defined on a local patch with periodic boundary conditions
+    Compute relative distances/angles between two sets of coordinates.
 
-    :returns: distances on the sphere between lon1,lat1 and lon2,lat2
+    :param lon1: Target longitude tensor (radians) of shape ``(b, m)``.
+    :param lat1: Target latitude tensor (radians) of shape ``(b, m)``.
+    :param lon2: Source longitude tensor (radians) of shape ``(b, n)``.
+    :param lat2: Source latitude tensor (radians) of shape ``(b, n)``.
+    :param base: Output basis ("polar" for distance/angle or "cartesian" for lon/lat deltas).
+    :param periodic_fov: Optional (min, max) longitude bounds for periodic wrapping.
+    :param rotate_coords: Whether to rotate coordinates to the target frame.
+    :return: Tuple of tensors with shape ``(b, m, n)`` for (distance, angle) or (d_lon, d_lat).
     """
-    # does not produce proper results for now
-    #lat2 = torch.arcsin(torch.cos(theta)*torch.sin(lat2) - torch.cos(lon2)*torch.sin(theta)*torch.cos(lat2))
-    #lon2 = torch.atan2(torch.sin(lon2), torch.tan(lat2)*torch.sin(theta) + torch.cos(lon2)*torch.cos(theta)) - phi
-
     if rotate_coords:
+        # Rotate sources into the target reference frame to stabilize distances.
         theta = lat1
         phi = lon1
 
@@ -240,17 +279,19 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
         lat1=lon1=0
 
         d_lons = (lon2).abs()
-        d_lats = (lat2).abs() 
+        d_lats = (lat2).abs()
 
         sgn_lat = torch.sign(lat2)
         sgn_lon = torch.sign(lon2)
 
     else:
+        # Use direct angular distances without rotation.
         d_lons =  2*torch.arcsin(torch.cos(lat1)*torch.sin(torch.abs(lon2-lon1)/2))
         d_lats = (lat2-lat1).abs() 
         sgn_lat = torch.sign(lat1-lat2)
         sgn_lon = torch.sign(lon1-lon2)
      
+    # Correct sign ambiguities across the pi boundary.
     sgn_lat[(d_lats).abs()/torch.pi>1] = sgn_lat[(d_lats).abs()/torch.pi>1]*-1
     d_lats = d_lats*sgn_lat
 
@@ -258,6 +299,7 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
     d_lons = d_lons*sgn_lon
 
     if periodic_fov is not None:
+        # Wrap longitude distances for periodic patches.
         rng_lon = (periodic_fov[1] - periodic_fov[0])
         d_lons[d_lons > rng_lon] = d_lons[d_lons > rng_lon] - rng_lon
         d_lons[d_lons < -rng_lon] = d_lons[d_lons < -rng_lon] + rng_lon
@@ -270,22 +312,21 @@ def get_distance_angle(lon1: torch.tensor, lat1: torch.tensor, lon2: torch.tenso
 
     else:
         return d_lons.float(), d_lats.float()
-    
 
-
-
-def global_indices_to_paths_dict(global_indices, zoom=None, sizes=None):
+def global_indices_to_paths_dict(
+    global_indices: torch.Tensor,
+    zoom: Optional[int] = None,
+    sizes: Optional[Union[torch.Tensor, Sequence[int]]] = None
+):
     """
-    global_indices: 1D torch.Tensor of int64, shape [n]
-    zoom: int, optional. If provided and sizes is None, sets the number of zoom levels (len(sizes)=zoom+1).
-    sizes: list or 1D tensor of int, optional. If provided, gives the number of children per zoom level.
-           If both are None, raises an error.
-    Returns: dict {z: tensor of shape [n]} with z in [0, ..., num_levels-1], each tensor is the index at that zoom.
-    """
-   # global_indices = torch.as_tensor(global_indices, dtype=torch.long)
+    Convert global indices into per-zoom paths.
 
+    :param global_indices: Global index tensor of shape ``(n,)``.
+    :param zoom: Optional max zoom level (used when sizes is None).
+    :param sizes: Optional list or tensor with number of children per zoom level.
+    :return: Dict mapping zoom level to index tensor of shape ``(n,)``.
+    """
     if sizes is not None:
-    #    sizes = torch.as_tensor(sizes, dtype=torch.long, device=global_indices.device)
         num_levels = len(sizes)
     elif zoom is not None:
         num_levels = zoom + 1
@@ -293,20 +334,29 @@ def global_indices_to_paths_dict(global_indices, zoom=None, sizes=None):
     else:
         raise ValueError("At least one of 'sizes' or 'zoom' must be provided.")
 
-    # Compute strides: product of later sizes
+    # Compute strides as the product of later sizes.
     rev_sizes = sizes.flip(0)
     rev_cumprod = torch.cumprod(rev_sizes, 0)
     strides = torch.ones_like(sizes)
     strides[:-1] = rev_cumprod.flip(0)[1:]
 
-    # Compute indices for all levels at once
+    # Compute indices for all levels at once.
     indices_matrix = (global_indices.unsqueeze(1) // strides) % sizes
 
-    # Return as dict {zoom_level: 1D tensor}
+    # Return as dict {zoom_level: 1D tensor}.
     out = {z: indices_matrix[:, z] for z in range(num_levels)}
     return out
 
-def get_zoom_x(x, zoom_patch_sample=None, **kwargs):
+
+def get_zoom_x(x: torch.Tensor, zoom_patch_sample: Optional[int] = None, **kwargs: Any):
+    """
+    Infer zoom level from an input tensor's spatial dimension.
+
+    :param x: Input tensor with spatial dimension at index 2, shape ``(..., s, ...)``.
+    :param zoom_patch_sample: Optional patch zoom adjustment.
+    :param kwargs: Additional keyword arguments (unused).
+    :return: Inferred zoom level.
+    """
     s = x.shape[2]
     zoom_x = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample else int(math.log(s/5) / math.log(4))
     return zoom_x
@@ -314,12 +364,10 @@ def get_zoom_x(x, zoom_patch_sample=None, **kwargs):
 
 def healpix_get_adjacent_cell_indices(zoom: int):
     """
-    Function to get neighbored cell indices for Healpix grid.
+    Get neighbor indices for a Healpix grid.
 
-    :param nside: Healpix resolution parameter
-    :param nh: number of neighbor levels
-
-    :returns: adjacent cell indices, duplicates mask
+    :param zoom: Healpix zoom level.
+    :return: Tuple of (adjacency, duplicates_mask), both shape ``(npix, 9)``.
     """
 
     nside = 2**zoom
@@ -328,28 +376,21 @@ def healpix_get_adjacent_cell_indices(zoom: int):
     adjc = torch.tensor(hp.get_all_neighbours(nside, np.arange(npix),nest=True)).transpose(0,1)
 
     adjc = torch.concat((torch.arange(npix).view(-1,1),adjc),dim=-1)
-    duplicates = adjc ==-1
+    duplicates = adjc == -1
 
     c,n = torch.where(duplicates)
     adjc[c,n] = adjc[c,0]
 
-    #adjc[c,n] = adjc[c,0]
-
-   # for k in range(adjc.shape[-1]):
-   #     counts = torch.bincount(adjc[:,k], minlength=adjc.shape[0])
-   #     missing_targets = torch.where(counts == 0)[0]
-
-    #    adjc[adjc[missing_targets,opposite_indices[k]], k] = missing_targets
-
     return adjc, duplicates
 
 
-def healpix_pixel_lonlat_torch(zoom, return_numpy=False):
+def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
     """
-    Get the longitude and latitude coordinates of each pixel in a Healpix grid using PyTorch tensors.
+    Get Healpix pixel coordinates (lon, lat) for a zoom level.
 
-    :param nside: Healpix resolution parameter
-    :return: A tuple of PyTorch tensors (lon, lat) with the longitude and latitude of each pixel.
+    :param zoom: Healpix zoom level.
+    :param return_numpy: Whether to return a NumPy array.
+    :return: Coordinate array of shape ``(npix, 2)``.
     """
     nside = 2**zoom
 
@@ -373,49 +414,24 @@ def healpix_pixel_lonlat_torch(zoom, return_numpy=False):
         return coords
 
 
-def healpix_grid_to_mgrid(zoom_max:int=10, nh:int=1)->list:
-    
-    zooms = []
-    grids = []
+def estimate_healpix_cell_radius_rad(n_cells: int):
+    """
+    Estimate the average angular radius for Healpix cells.
 
-    for zoom in range(zoom_max + 1):
-        zooms.append(zoom)
-
-        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom)
-
-        grid_lvl = {
-            "coords": healpix_pixel_lonlat_torch(zoom),
-            "adjc": adjc,
-            "adjc_mask": adjc_mask,
-            "zoom": zoom
-        }
-        grids.append(grid_lvl)
-
-    return grids
-
-
-def estimate_healpix_cell_radius_rad(n_cells):
+    :param n_cells: Number of Healpix cells.
+    :return: Cell radius in radians.
+    """
     return math.sqrt(4*math.pi / n_cells)
 
-
-def hierarchical_zoom_distance_map(input_coords, max_zoom):
+def hierarchical_zoom_distance_map(input_coords: torch.Tensor, max_zoom: int):
     """
     Iteratively computes distances between HEALPix cell centers and input_coords across zoom levels.
 
-    Args:
-        input_coords: (1, N, 2) in radians (lon, lat)
-        max_zoom: int
-
-    Returns:
-        A dict of zoom_level → {
-            "cell_centers": (B, 1, 2),
-            "closest_input_coords": (B, K, 2),
-            "distances": (B, K)
-        }
+    :param input_coords: Coordinate tensor of shape ``(1, n, 2)`` in radians.
+    :param max_zoom: Maximum zoom level to evaluate.
+    :return: Dict mapping zoom levels to tensors with shapes
+        ``indices: (n_cells, k)``, ``distances: (n_cells, k)``, ``resolution: ()``.
     """
-    #if input_coords.dim()==2:
-    #    input_coords=input_coords.unsqueeze(dim=0)
-
     current_input = input_coords  # (1, N, 2)
     results = {}
     global_indices = torch.arange(input_coords.shape[0]).view(1,-1)
@@ -433,7 +449,7 @@ def hierarchical_zoom_distance_map(input_coords, max_zoom):
             # Next levels: batch size = current_input.shape[0]
             c = c.view(current_input.shape[0], -1, 1, 2)
 
-        # Compute distance and angle
+        # Compute distance and angle for all pairs.
         d, _ = get_distance_angle(
             c[..., 0], c[..., 1],                   # shape: (B, M, 1)
             current_input[..., 0].unsqueeze(dim=-2), current_input[..., 1].unsqueeze(dim=-2),  # shape: (B, 1, N)
@@ -441,16 +457,13 @@ def hierarchical_zoom_distance_map(input_coords, max_zoom):
             rotate_coords=False
         )  # Output: (B, M, N)
 
+        # Keep neighbors within a local search radius.
         in_search_radius = d <= r * 2
         n_radius = in_search_radius.sum(dim=-1)  # (B, M)
         n_keep = n_radius.max().item()   # scalar
 
         # Get top-k distances and indices
         d_sorted, idx_sorted = torch.topk(d, k=n_keep, dim=-1, largest=False)  # (B, M, k)
-
-
-       # gathered_coords = torch.gather(current_input, dim=1,index=idx_sorted.view(idx_sorted.shape[0],-1,1).expand(-1,-1,2))
-     #   gathered_coords = gathered_coords.view(gathered_coords.shape[0], c.shape[1], n_keep, 2)
 
         global_indices = torch.gather(global_indices, dim=1,index=idx_sorted.view(idx_sorted.shape[0],-1))
         global_indices = global_indices.view(idx_sorted.shape[0]*idx_sorted.shape[1], n_keep)
@@ -460,43 +473,40 @@ def hierarchical_zoom_distance_map(input_coords, max_zoom):
         c = c.view(-1,2)
         dim_out = c.shape[0]
 
-        # Save current zoom level
+        # Save current zoom level.
         results[zoom] = {
- #           "cell_centers": c.view(-1,2),                 
             "indices": global_indices.view(dim_out,-1),
-  #          "closest_input_coords": gathered_coords.view(dim_out,-1,2),           
             "distances": d_sorted.view(dim_out,-1),
             "resolution": r/2
         }
         
-    #    current_input = gathered_coords.view(-1, gathered_coords.shape[-2], 2)
-
     return results
 
 
-def get_mapping_weights_zoom(mapping_zooms: Dict, drop_mask=None,  mode='binary'): 
+def get_mapping_weights(
+    mapping: Dict[str, torch.Tensor],
+    drop_mask: Optional[torch.Tensor] = None,
+    mode: str = 'binary'
+):
+    """
+    Compute mapping weights for neighborhood aggregation.
 
-    weights_zooms = {}
-
-    for zoom, mapping in mapping_zooms.items():
-        weights_zooms[zoom] = get_mapping_weights(mapping, drop_mask=drop_mask, mode=mode)
-
-    return weights_zooms
-
-def get_mapping_weights(mapping, drop_mask=None,  mode='binary'): 
+    :param mapping: Mapping dict with "distances" of shape ``(m, k)`` and "indices" of shape ``(m, k)``.
+    :param drop_mask: Optional drop mask broadcastable to ``mapping["indices"]``.
+    :param mode: Weighting mode ("1/r", "normal", or "binary").
+    :return: Weight tensor of shape ``(m, k)`` aligned to mapping["distances"].
+    """
 
     weights = mapping['distances'] 
 
     if drop_mask is not None:
+        # Penalize dropped indices to push them out of selection.
         drop_mask_zoom = drop_mask[mapping['indices']]
         weights = weights + (drop_mask_zoom * 1e5)
 
     if mode == '1/r':
         weights = mapping["resolution"]/weights 
-
         weights[weights> 1.] = 1.
-
-        #weights = weights.mean(dim=-1)
     
     elif mode == 'normal':
         pass
@@ -507,17 +517,26 @@ def get_mapping_weights(mapping, drop_mask=None,  mode='binary'):
         weights[weights> 1.] = 1.
         weights[weights< 1.] = 0.
 
-        #weights = weights.mean(dim=-1).bool()
-
         weights = weights.bool()
 
     return weights
 
-
-def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = None, binarize_mask=False):
+def to_zoom(
+    x: torch.Tensor,
+    in_zoom: int,
+    out_zoom: int,
+    mask: Optional[torch.Tensor] = None,
+    binarize_mask: bool = False
+):
     """
-    Rescales tensor x from in_zoom to out_zoom by averaging (zoom in) or repeating (zoom out).
-    If mask is provided, performs masked averaging.
+    Rescale a tensor between zoom levels by averaging or repeating.
+
+    :param x: Input tensor of shape ``(p, q, n, d, f)``.
+    :param in_zoom: Input zoom level.
+    :param out_zoom: Output zoom level.
+    :param mask: Optional mask tensor of shape ``(p, q, n, d, m)``.
+    :param binarize_mask: Whether to binarize the mask after downsampling.
+    :return: Tuple of (x_zoom, mask_zoom) with spatial dimension rescaled by the zoom factor.
     """
     if in_zoom == out_zoom:
         mask = mask.bool() if (binarize_mask and mask is not None) else mask
@@ -529,7 +548,7 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
     dc = x.shape[-2:]
 
     if in_zoom > out_zoom:
-        # Downsample by averaging
+        # Downsample by averaging.
         x = x.view(*vt, -1, scale_factor, *dc)
         if mask is not None:
             mask = mask.reshape(*vt, -1, scale_factor, *mask.shape[-2:])
@@ -550,7 +569,7 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
             return x_zoom, None
 
     else:
-        # Upsample by repeating
+        # Upsample by repeating.
         x_zoom = x.unsqueeze(-3).repeat_interleave(scale_factor, dim=-3)
         if mask is not None:
             mask_zoom = mask.unsqueeze(-3).repeat_interleave(scale_factor, dim=-3)
@@ -559,21 +578,25 @@ def to_zoom(x: torch.Tensor, in_zoom: int, out_zoom: int, mask: torch.Tensor = N
         else:
             return x_zoom, None
 
-def get_sample_configs(sample_configs_zoom, zoom):
-    if zoom in sample_configs_zoom:
-        return sample_configs_zoom[zoom]
-    
-    else:
-        for zoom_s in range(zoom+1, max(sample_configs_zoom.keys())+1):
-            if zoom_s in sample_configs_zoom.keys():
-                break
-        
-        cfgs = {'zoom_patch_sample': sample_configs_zoom[zoom_s]['zoom_patch_sample'],
-                'patch_index': sample_configs_zoom[zoom_s]['patch_index'] // (4**(zoom_s-zoom))}
-        return cfgs
+def insert_matching_time_patch(
+    x_h: torch.Tensor,
+    x_s: torch.Tensor,
+    zoom_h: int,
+    zoom_target: int,
+    sample_configs: Dict,
+    base: int = 12
+):
+    """
+    Insert a lower-zoom patch into a higher-zoom tensor at aligned timesteps.
 
-
-def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, base=12):
+    :param x_h: High-zoom tensor of shape ``(b, v, t, n, d, f)``.
+    :param x_s: Patch tensor to insert with shape ``(b, v, t_patch, n_patch, d, f)``.
+    :param zoom_h: Zoom level of x_h.
+    :param zoom_target: Target zoom level for the patch.
+    :param sample_configs: Sampling configuration per zoom.
+    :param base: Base patch count multiplier.
+    :return: Tensor with patch inserted, same shape as x_h.
+    """
     if zoom_h == zoom_target:
         return x_s
 
@@ -583,7 +606,7 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
         x_s = x_s.unsqueeze(0)
         batched = False
 
-    # Validate sizes
+    # Validate temporal coverage and patch sampling consistency.
     assert sample_configs[zoom_h]['n_past_ts'] >= sample_configs[zoom_target]['n_past_ts'], \
         f'zoom {zoom_h} has a smaller number of past timesteps than {zoom_target}'
     assert sample_configs[zoom_h]['n_future_ts'] >= sample_configs[zoom_target]['n_future_ts'], \
@@ -594,12 +617,12 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
     ts_start = sample_configs[zoom_h]['n_past_ts'] - sample_configs[zoom_target]['n_past_ts']
     ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
 
-
     b, nv, nt, n = x_h.shape[:4]
     c = x_h.shape[4:]
     t_range = slice(ts_start, nt - ts_end)
 
     if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
+        # Global case: patch is the whole field at the aligned time range.
         x_h_ = x_h.clone()
         x_h_[:, :, t_range] = x_s
         return x_h_ if batched else x_h_[0]
@@ -616,9 +639,8 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
         n_patches = base**base_exp * 4**zoom_patch_diff
         patch_index = sample_configs[zoom_target]['patch_index'] % n_patches
 
+        # Reshape into patches and insert the patch by index.
         x_h_ = x_h.view(b, nv, nt, n_patches, -1, *c).clone()
-
-        
 
         if isinstance(patch_index, int) or (isinstance(patch_index, torch.Tensor) and patch_index.numel() == 1):
             # Fill in the patch directly at index
@@ -638,8 +660,25 @@ def insert_matching_time_patch(x_h, x_s, zoom_h, zoom_target, sample_configs, ba
 
         return x_h_ if batched else x_h_[0]
 
+def get_matching_time_patch(
+    x_h: torch.Tensor,
+    zoom_h: int,
+    zoom_target: int,
+    sample_configs: Dict,
+    patch_index_zooms: Optional[Dict[int, torch.Tensor]] = None,
+    base: int = 12
+):
+    """
+    Extract a time-aligned patch from a high-zoom tensor.
 
-def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_index_zooms=None, base=12):
+    :param x_h: High-zoom tensor of shape ``(b, v, t, n, d, f)``.
+    :param zoom_h: Zoom level of x_h.
+    :param zoom_target: Target zoom to extract.
+    :param sample_configs: Sampling configuration per zoom.
+    :param patch_index_zooms: Optional per-zoom patch indices.
+    :param base: Base patch count multiplier.
+    :return: Extracted tensor patch aligned in time, shape ``(b, v, t_patch, n_patch, d, f)``.
+    """
 
     if zoom_h==zoom_target:
         return x_h
@@ -663,11 +702,11 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_inde
     ts_start = sample_configs[zoom_h]['n_past_ts'] - sample_configs[zoom_target]['n_past_ts']
     ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
     
-
     b,nv,nt,n = x_h.shape[:4]
     c = x_h.shape[-2:]
     
     if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
+        # Global case: just slice the aligned time range.
 
         x_h = x_h[:, :, ts_start:(nt-ts_end)]
         return x_h if batched else x_h[0]
@@ -686,6 +725,7 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_inde
 
         
 
+        # Reshape into patches and gather the target patch.
         x_h = x_h.view(b,nv,nt, n_patches, -1 ,*c)
 
         if isinstance(patch_index, int) or patch_index.numel()==1:
@@ -703,12 +743,95 @@ def get_matching_time_patch(x_h, zoom_h, zoom_target, sample_configs, patch_inde
             return x_h
         else:
             return x_h[0]
+        
+def healpix_get_adjacent_cell_indices(zoom: int):
+    """
+    Get neighbor indices for a Healpix grid.
 
+    :param zoom: Healpix zoom level.
+    :return: Tuple of (adjacency, duplicates_mask), both shape ``(npix, 9)``.
+    """
 
+    nside = 2**zoom
+    npix = hp.nside2npix(nside)
 
+    adjc = torch.tensor(hp.get_all_neighbours(nside, np.arange(npix),nest=True)).transpose(0,1)
 
+    adjc = torch.concat((torch.arange(npix).view(-1,1),adjc),dim=-1)
+    duplicates = adjc == -1
 
-def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patch_index_zooms: Dict):
+    c,n = torch.where(duplicates)
+    adjc[c,n] = adjc[c,0]
+    return adjc, duplicates
+
+def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
+    """
+    Get Healpix pixel coordinates (lon, lat) for a zoom level.
+
+    :param zoom: Healpix zoom level.
+    :param return_numpy: Whether to return a NumPy array.
+    :return: Coordinate array of shape ``(npix, 2)``.
+    """
+    nside = 2**zoom
+
+    npix = hp.nside2npix(nside)  # Total number of pixels
+
+    # Get pixel indices as a PyTorch tensor
+    pixel_indices = torch.arange(npix, dtype=torch.long)
+
+    # Get theta (colatitude) and phi (longitude) for each pixel using healpy
+    theta, phi = hp.pix2ang(nside, pixel_indices.numpy(), nest=True)
+
+    # Convert theta and phi to PyTorch tensors
+    theta_tensor = torch.tensor(theta, dtype=torch.float32) - 0.5 * torch.pi
+    phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
+
+    coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
+
+    if return_numpy:
+        return coords.numpy()
+    else:
+        return coords
+
+def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
+    """
+    Build a list of Healpix grid levels with coordinates and adjacency.
+
+    :param zoom_max: Maximum zoom level to include.
+    :param nh: Neighborhood depth (unused).
+    :return: List of grid dicts with "coords", "adjc", "adjc_mask", and "zoom".
+    """
+    zooms = []
+    grids = []
+
+    for zoom in range(zoom_max + 1):
+        zooms.append(zoom)
+
+        adjc, adjc_mask = healpix_get_adjacent_cell_indices(zoom)
+
+        grid_lvl = {
+            "coords": healpix_pixel_lonlat_torch(zoom),
+            "adjc": adjc,
+            "adjc_mask": adjc_mask,
+            "zoom": zoom
+        }
+        grids.append(grid_lvl)
+
+    return grids
+
+def encode_zooms(
+    x_zooms: Dict[int, torch.Tensor],
+    sample_configs: Dict,
+    patch_index_zooms: Dict
+):
+    """
+    Encode zoom levels as residuals from their next-coarser zoom.
+
+    :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
+    :param sample_configs: Sampling configuration per zoom.
+    :param patch_index_zooms: Patch indices per zoom.
+    :return: Updated dict with residualized tensors.
+    """
 
     zooms = sorted(x_zooms.keys(),reverse=True)
 
@@ -726,7 +849,7 @@ def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patc
         else:
             batched = True
 
-
+        # Align higher zoom to current zoom and compute residuals.
         bvt = x.shape[:-3]
         x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs, patch_index_zooms)
 
@@ -739,57 +862,14 @@ def apply_zoom_diff(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, patc
 
     return x_zooms
     
-
-
-
-def encode_zooms(x: torch.Tensor, in_zoom: int, out_zooms:int, apply_diff=True, mask: torch.Tensor=None, binarize_mask=False):
-    bvt = x.shape[:-2]
-    c = x.shape[-1]
-    
-    if mask is not None:
-        mask = mask==0
-    
-    x_zooms = {}
-    mask_zooms = {}
-    for out_zoom in sorted(out_zooms, reverse=False):
-        x = x.view(*bvt, -1, 4**(in_zoom - out_zoom), c)
-
-        if mask is not None:
-            mask = mask.view(*bvt,-1,4**(in_zoom - out_zoom),1)
-            weight = mask.sum(dim=-2,keepdim=True)
-            x_zoom = (x * mask).sum(dim=-2,keepdim=True)/weight
-            x_zoom[weight == 0] = 0
-            mask_zooms[out_zoom] = 1-(weight)/4**(in_zoom - out_zoom)
-            if binarize_mask:
-                mask_zooms[out_zoom][mask_zooms[out_zoom] < 1]=0
-                mask_zooms[out_zoom] = mask_zooms[out_zoom].bool()
-            
-            mask_zooms[out_zoom] = mask_zooms[out_zoom].view(*bvt,-1)
-        else:
-            x_zoom = x.mean(dim=-2, keepdim=True)
-
-        x_zooms[out_zoom] = x_zoom.view(*bvt,-1,c)
-        
-        if apply_diff:
-            x = (x - x_zoom).view(*bvt,-1,c)
-        else:
-            x = x.view(*bvt,-1,c)
-
-    return x_zooms, mask_zooms
-
-
-def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
+def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoom: int):
     """
-    Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
+    Reconstruct a target zoom by summing contributions from multiple levels.
 
-    Args:
-        x_zooms (dict): Dictionary mapping zoom levels (int) to tensors of shape [..., N, C]
-                        representing residuals or features at each zoom level.
-        in_zoom (int): The coarsest (lowest resolution) zoom level available in x_zooms.
-        out_zoom (int): The target (finest) zoom level to decode to.
-
-    Returns:
-        torch.Tensor: The reconstructed tensor at the desired out_zoom level, shape [..., 4**(in_zoom - out_zoom)*N, C]
+    :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
+    :param sample_configs: Sampling configuration per zoom.
+    :param out_zoom: Target zoom level to decode.
+    :return: Dict containing the reconstructed tensor at out_zoom.
     """
     x = 0
     remove_batch_dim = False
@@ -801,6 +881,7 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
             remove_batch_dim = True
         else:
             x_zoom = x_zooms[zoom]
+        # Align time and patches to the target zoom.
         x_zoom = get_matching_time_patch(x_zoom,zoom,out_zoom, sample_configs)  # shape [..., N, C]
         up_factor = 4 ** (out_zoom - zoom)
         x_zoom = x_zoom.unsqueeze(-3).repeat_interleave(up_factor, dim=-3)
@@ -809,103 +890,5 @@ def decode_zooms(x_zooms: dict, sample_configs, out_zoom):
     
     if remove_batch_dim:
         return {out_zoom: x.squeeze(dim=0)}
-    
     else:
         return {out_zoom: x}
-
-
-def decode_masks(mask_zooms: dict, sample_configs, out_zoom):
-    """
-    Reconstructs the signal at a desired zoom level by summing contributions from multiple levels.
-
-    Args:
-        x_zooms (dict): Dictionary mapping zoom levels (int) to tensors of shape [..., N, C]
-                        representing residuals or features at each zoom level.
-        in_zoom (int): The coarsest (lowest resolution) zoom level available in x_zooms.
-        out_zoom (int): The target (finest) zoom level to decode to.
-
-    Returns:
-        torch.Tensor: The reconstructed tensor at the desired out_zoom level, shape [..., 4**(in_zoom - out_zoom)*N, C]
-    """
-    mask = 0
-    norm_mask = 0
-    remove_batch_dim = False
-    is_bool = mask_zooms[max(mask_zooms.keys())].dtype == torch.bool
-
-    for zoom in sorted(mask_zooms.keys(),reverse=True):
-        if zoom > out_zoom:
-            continue  # Skip higher-resolution than target
-        if mask_zooms[zoom].ndim == 4:
-            mask_zoom = mask_zooms[zoom].unsqueeze(dim=0)
-            remove_batch_dim = True
-        else:
-            mask_zoom = mask_zooms[zoom]
-        mask_zoom = get_matching_time_patch(mask_zoom,zoom,out_zoom, sample_configs)  # shape [..., N, C]
-        up_factor = 4 ** (out_zoom - zoom)
-        mask_zoom = mask_zoom.unsqueeze(-2).repeat_interleave(up_factor, dim=-2)
-
-        mask = mask + mask_zoom.view(*mask_zoom.shape[:-3],-1,mask_zoom.shape[-1])
-
-        if not is_bool:
-            norm_mask = norm_mask + (mask_zoom.view(*mask_zoom.shape[:-3],-1,mask_zoom.shape[-1]) > 0).float()
-    
-    if is_bool:
-        mask = mask == len(mask_zooms.keys())
-    else:
-        mask = mask/norm_mask
-        mask.nan_to_num()
-
-    if remove_batch_dim:
-        return {out_zoom: mask.squeeze(dim=0)}
-    
-    else:
-        return {out_zoom: mask}
-
-
-def remap_healpix_to_any(output, variables, indices, lat_dim, lon_dim):
-    output_remapped = {}
-    for var in variables:
-        s = 3
-        leading_dims = output[var].shape[:s]
-        trailing_dims = output[var].shape[s + 1:]
-
-        output_flat_shape = leading_dims + (lat_dim * lon_dim,) + trailing_dims
-        output_rem = torch.full(output_flat_shape, float('nan'), dtype=output[var].dtype,
-                                device=output[var].device)
-
-        map_shape = [1] * output[var].dim()
-        map_shape[s] = output[var].shape[s]
-        map_reshaped = indices.view(map_shape)
-
-        expanded_map = map_reshaped.expand(output[var].shape)
-        output_rem.scatter_(s, expanded_map, output[var])
-
-        output_grid_nan = output_rem.reshape(leading_dims + (lat_dim, lon_dim) + trailing_dims)
-
-        tensor_np = output_grid_nan.float().cpu().numpy()
-        interpolated_tensor_np = np.copy(tensor_np)
-
-        it = np.nditer(tensor_np[..., 0, 0, :], flags=['multi_index'], op_flags=['readonly'])
-
-        while not it.finished:
-            idx = it.multi_index
-            grid_2d = tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]]
-
-            if np.isnan(grid_2d).any():
-                y, x = np.mgrid[0:lat_dim, 0:lon_dim]
-                valid_mask = ~np.isnan(grid_2d)
-                if not np.any(valid_mask):
-                    it.iternext()
-                    continue
-
-                points = np.array([y[valid_mask], x[valid_mask]]).T
-                values = grid_2d[valid_mask]
-
-                interpolated_grid = griddata(points, values, (y, x), method='nearest')
-                interpolated_tensor_np[idx[:s] + (slice(None), slice(None)) + idx[s:]] = interpolated_grid
-
-            it.iternext()
-
-        output_remapped[var] = torch.from_numpy(interpolated_tensor_np).to(output[var].device).reshape(
-            output_flat_shape)
-    return output_remapped

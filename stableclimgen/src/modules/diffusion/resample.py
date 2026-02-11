@@ -2,11 +2,10 @@ from abc import ABC, abstractmethod
 import numpy as np
 import torch as th
 import torch.distributed as dist
-from torch import optim
-from typing import Tuple, List
+from typing import List, Tuple
 
 
-def create_named_schedule_sampler(name: str, diffusion_steps: int) -> 'ScheduleSampler':
+def create_named_schedule_sampler(name: str, diffusion_steps: int) -> "ScheduleSampler":
     """
     Create a ScheduleSampler instance based on the specified name.
 
@@ -42,8 +41,9 @@ class ScheduleSampler(ABC):
 
         :param batch_size: Number of timesteps to sample.
         :return: A tuple containing:
-                 - timesteps (torch.Tensor): Tensor of sampled timestep indices.
-                 - weights (torch.Tensor): Tensor of weights corresponding to each sampled index.
+                 - timesteps (torch.Tensor): Tensor of sampled timestep indices of shape ``(b,)``.
+                 - weights (torch.Tensor): Tensor of weights corresponding to each sampled index
+                   of shape ``(b,)``.
         """
         w = self.weights()  # Retrieve the weights
         p = w / np.sum(w)   # Normalize weights to form a probability distribution
@@ -59,14 +59,15 @@ class UniformSampler(ScheduleSampler):
     Uniform sampler that assigns equal weight to each diffusion step.
     """
 
-    def __init__(self, diffusion_steps: int):
+    def __init__(self, diffusion_steps: int) -> None:
         """
         Initialize the uniform sampler with the specified diffusion steps.
 
         :param diffusion_steps: The number of diffusion steps in the process.
+        :return: None.
         """
-        self.diffusion_steps = diffusion_steps
-        self._weights = np.ones([diffusion_steps])  # Equal weight for each step
+        self.diffusion_steps: int = diffusion_steps
+        self._weights: np.ndarray = np.ones([diffusion_steps])  # Equal weight for each step
 
     def weights(self) -> np.ndarray:
         """
@@ -82,12 +83,13 @@ class LossAwareSampler(ScheduleSampler):
     Base class for samplers that update weights based on model losses at each timestep.
     """
 
-    def update_with_local_losses(self, local_ts: th.Tensor, local_losses: th.Tensor):
+    def update_with_local_losses(self, local_ts: th.Tensor, local_losses: th.Tensor) -> None:
         """
         Synchronize weights across distributed nodes based on local timestep losses.
 
-        :param local_ts: Tensor of sampled timesteps.
-        :param local_losses: 1D Tensor of losses corresponding to each timestep.
+        :param local_ts: Tensor of sampled timesteps of shape ``(b,)``.
+        :param local_losses: Tensor of losses corresponding to each timestep of shape ``(b,)``.
+        :return: None.
         """
         batch_sizes = [th.tensor([0], dtype=th.int32, device=local_ts.device)
                        for _ in range(dist.get_world_size())]
@@ -109,12 +111,13 @@ class LossAwareSampler(ScheduleSampler):
         self.update_with_all_losses(timesteps, losses)
 
     @abstractmethod
-    def update_with_all_losses(self, ts: List[int], losses: List[float]):
+    def update_with_all_losses(self, ts: List[int], losses: List[float]) -> None:
         """
         Update the reweighting using losses from a model.
 
         :param ts: List of timesteps as integers.
         :param losses: List of losses corresponding to each timestep.
+        :return: None.
         """
 
 
@@ -123,19 +126,20 @@ class LossSecondMomentResampler(LossAwareSampler):
     Sampler that reweights diffusion steps based on the second moment of past losses.
     """
 
-    def __init__(self, diffusion_steps: int, history_per_term: int = 10, uniform_prob: float = 0.001):
+    def __init__(self, diffusion_steps: int, history_per_term: int = 10, uniform_prob: float = 0.001) -> None:
         """
         Initialize with diffusion steps, history per term, and uniform probability.
 
         :param diffusion_steps: Total number of diffusion steps.
         :param history_per_term: Number of past loss values to store per diffusion step.
         :param uniform_prob: Probability for uniform sampling as a regularization factor.
+        :return: None.
         """
-        self.diffusion_steps = diffusion_steps
-        self.history_per_term = history_per_term
-        self.uniform_prob = uniform_prob
-        self._loss_history = np.zeros([diffusion_steps, history_per_term], dtype=np.float64)
-        self._loss_counts = np.zeros([diffusion_steps], dtype=np.int32)
+        self.diffusion_steps: int = diffusion_steps
+        self.history_per_term: int = history_per_term
+        self.uniform_prob: float = uniform_prob
+        self._loss_history: np.ndarray = np.zeros([diffusion_steps, history_per_term], dtype=np.float64)
+        self._loss_counts: np.ndarray = np.zeros([diffusion_steps], dtype=np.int32)
 
     def weights(self) -> np.ndarray:
         """
@@ -151,12 +155,13 @@ class LossSecondMomentResampler(LossAwareSampler):
         weights += self.uniform_prob / len(weights)
         return weights
 
-    def update_with_all_losses(self, ts: List[int], losses: List[float]):
+    def update_with_all_losses(self, ts: List[int], losses: List[float]) -> None:
         """
         Update the loss history and reweighting for each timestep.
 
         :param ts: List of timesteps.
         :param losses: List of losses corresponding to each timestep.
+        :return: None.
         """
         for t, loss in zip(ts, losses):
             if self._loss_counts[t] == self.history_per_term:
@@ -174,40 +179,3 @@ class LossSecondMomentResampler(LossAwareSampler):
         :return: Boolean indicating if the sampler has sufficient history.
         """
         return (self._loss_counts == self.history_per_term).all()
-
-
-class LinearWarmUpScheduler(optim.lr_scheduler._LRScheduler):
-    """
-    Linear warm-up scheduler for learning rates, interpolating between base and target rates.
-    """
-
-    def __init__(self, optimizer: optim.Optimizer, warm_up_iters: int, base_lr: float, target_lr: float, last_epoch: int = -1):
-        """
-        Initialize the linear warm-up scheduler.
-
-        :param optimizer: Optimizer whose learning rate needs to be scheduled.
-        :param warm_up_iters: Number of iterations for linear warm-up.
-        :param base_lr: Starting learning rate.
-        :param target_lr: Target learning rate after warm-up.
-        :param last_epoch: Last epoch for the scheduler.
-        """
-        self.warm_up_iters = warm_up_iters
-        self.base_lr = base_lr
-        self.target_lr = target_lr
-        super(LinearWarmUpScheduler, self).__init__(optimizer, last_epoch)
-
-    def get_lr(self) -> List[float]:
-        """
-        Compute the learning rate for the current epoch based on the warm-up schedule.
-
-        :return: List of learning rates for each parameter group in the optimizer.
-        """
-        if self.last_epoch > self.warm_up_iters:
-            raise ValueError("Warm-up phase is complete")
-
-        # Linear interpolation between base and target learning rate
-        lr = [
-            self.base_lr + (self.target_lr - self.base_lr) * (self.last_epoch / self.warm_up_iters)
-            for base_lr in self.base_lrs
-        ]
-        return lr

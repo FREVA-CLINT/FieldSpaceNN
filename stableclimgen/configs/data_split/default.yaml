@@ -5,7 +5,7 @@ train:
   target:
     ${data_zooms}
 
-  timesteps: [2,3]
+  timesteps: ["1-10"]
   variables: ${data_variables}
 
 val:
@@ -15,7 +15,7 @@ val:
   target:
     ${data_zooms}
 
-  timesteps: [10]
+  timesteps: ["1-10"]
   variables: ${data_variables}
 
 test:
@@ -25,5 +25,5 @@ test:
   target:
     ${data_zooms}
     
-  timesteps: [10]
+  timesteps: ["1-100"]
   variables: ${data_variables}

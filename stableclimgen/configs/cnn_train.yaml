@@ -1,14 +1,14 @@
 defaults:
   - trainer: trainer
   - logger: wandb
-  - model: diffusion_cnn
+  - model: cnn
   - dataloader: netcdf_regular
+  - data_split: regular
   - hydra: default
-  - embedding: default
   - _self_
 
 ckpt_path: null
 
-project_name: diffusion
+project_name: cnn
 run_name: default
 run_dir: ../..

@@ -1,10 +1,11 @@
 import numpy as np
 import torch
-from typing import Union, List, Set, Dict
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Union
+
 from .mg_gaussian_diffusion import MGGaussianDiffusion
 
 
-def space_diffusion_steps(num_diffusion_steps: int, section_counts: Union[str, List[int]]) -> Set[int]:
+def space_diffusion_steps(num_diffusion_steps: int, section_counts: Union[str, Sequence[int]]) -> Set[int]:
     """
     Create a set of diffusion steps from an original diffusion process based on specified counts or
     a DDIM-inspired striding scheme.
@@ -70,21 +71,28 @@ class SpacedDiffusion(MGGaussianDiffusion):
     Allows for diffusion steps to be spaced out according to specified criteria.
     """
 
-    def __init__(self, respacing: Union[None, str, List[int]] = None, diffusion_steps: int = 1000, **kwargs):
+    def __init__(
+        self,
+        respacing: Optional[Union[str, Sequence[int]]] = None,
+        diffusion_steps: int = 1000,
+        **kwargs: Any
+    ) -> None:
         """
         Initialize the SpacedDiffusion object with specified step spacing.
 
         :param respacing: Specifies how to space out diffusion steps. Accepts a string for DDIM striding
-                          or a list for custom section counts.
+            or a list for custom section counts.
         :param diffusion_steps: Total number of diffusion steps in the base process.
+        :param kwargs: Additional keyword arguments forwarded to `MGGaussianDiffusion`.
+        :return: None.
         """
         if respacing is None:
             respacing = [diffusion_steps]
         use_steps = space_diffusion_steps(diffusion_steps, respacing)
 
-        self.use_steps = set(use_steps)  # Set of diffusion steps to use
-        self.diffusion_step_map = []  # Mapping for diffusion steps
-        self.original_num_steps = diffusion_steps
+        self.use_steps: Set[int] = set(use_steps)  # Set of diffusion steps to use
+        self.diffusion_step_map: List[int] = []  # Mapping for diffusion steps
+        self.original_num_steps: int = diffusion_steps
 
         base_diffusion = MGGaussianDiffusion(diffusion_steps=diffusion_steps, **kwargs)  # Initialize base GaussianDiffusion
         last_alpha_cumprod_zooms = {int(zoom): 1.0 for zoom in base_diffusion.alphas_cumprod_zooms.keys()}
@@ -96,26 +104,37 @@ class SpacedDiffusion(MGGaussianDiffusion):
                 if i in self.use_steps:
                     new_betas_zooms[zoom].append(1 - alpha_cumprod / last_alpha_cumprod_zooms[zoom])
                     last_alpha_cumprod_zooms[zoom] = alpha_cumprod
-                    if k==0:
+                    # Only compute the step map once, shared across zooms.
+                    if k == 0:
                         self.diffusion_step_map.append(i)
             new_betas_zooms[zoom] = np.array(new_betas_zooms[zoom])
 
         kwargs["betas_zooms"] = new_betas_zooms
         super().__init__(diffusion_steps=diffusion_steps, **kwargs)
 
-    def p_mean_variance(self, model, *args, **kwargs):
+    def p_mean_variance(self, model: Callable, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         """
         Wrap the p_mean_variance method with a custom model for spaced diffusion steps.
+
+        :param model: Model callable used for denoising.
+        :param args: Positional arguments forwarded to `MGGaussianDiffusion.p_mean_variance`.
+        :param kwargs: Keyword arguments forwarded to `MGGaussianDiffusion.p_mean_variance`.
+        :return: Dictionary of diffusion statistics. See base class for details.
         """
         return super().p_mean_variance(self._wrap_model(model), *args, **kwargs)
 
-    def training_losses(self, model, *args, **kwargs):
+    def training_losses(self, model: Callable, *args: Any, **kwargs: Any) -> list:
         """
         Wrap the training_losses method with a custom model for spaced diffusion steps.
+
+        :param model: Model callable used for denoising.
+        :param args: Positional arguments forwarded to `MGGaussianDiffusion.training_losses`.
+        :param kwargs: Keyword arguments forwarded to `MGGaussianDiffusion.training_losses`.
+        :return: Training loss tuples per group. See base class for details.
         """
         return super().training_losses(self._wrap_model(model), *args, **kwargs)
 
-    def _wrap_model(self, model):
+    def _wrap_model(self, model: Callable) -> "_WrappedModel":
         """
         Wrap the given model with a diffusion step mapping.
 
@@ -132,8 +151,8 @@ class SpacedDiffusion(MGGaussianDiffusion):
         """
         Rescale diffusion steps. Actual scaling is handled in the wrapped model.
 
-        :param t: Original diffusion steps.
-        :return: Scaled diffusion steps.
+        :param t: Original diffusion steps of shape ``(b,)``.
+        :return: Scaled diffusion steps of shape ``(b,)``.
         """
         return t
 
@@ -143,7 +162,13 @@ class _WrappedModel:
     A wrapper class for models in the spaced diffusion process. Rescales and remaps steps as needed.
     """
 
-    def __init__(self, model, diffusion_step_map: List[int], rescale_steps: bool, original_num_steps: int):
+    def __init__(
+        self,
+        model: Callable,
+        diffusion_step_map: List[int],
+        rescale_steps: bool,
+        original_num_steps: int
+    ) -> None:
         """
         Initialize the wrapped model with the given parameters.
 
@@ -151,18 +176,21 @@ class _WrappedModel:
         :param diffusion_step_map: List of diffusion steps mapped from the original process.
         :param rescale_steps: Whether to rescale steps.
         :param original_num_steps: The original number of diffusion steps.
+        :return: None.
         """
-        self.model = model
-        self.diffusion_step_map = diffusion_step_map
-        self.rescale_steps = rescale_steps
-        self.original_num_steps = original_num_steps
+        self.model: Callable = model
+        self.diffusion_step_map: List[int] = diffusion_step_map
+        self.rescale_steps: bool = rescale_steps
+        self.original_num_steps: int = original_num_steps
 
-    def __call__(self, x, **kwargs) -> torch.Tensor:
+    def __call__(self, x: Any, **kwargs: Any) -> Any:
         """
         Call the wrapped model with rescaled diffusion steps.
 
-        :param x: Input tensor or list of input tensors (groups).
+        :param x: Input tensor or list of grouped zoom tensors. Individual tensors
+            are expected to have shape ``(b, v, t, n, d, f)``.
         :param kwargs: Keyword arguments including emb_groups, mask_zooms_groups, etc.
+            `emb_groups` may contain "DiffusionStepEmbedder" tensors of shape ``(b,)``.
         :return: Output from the model with rescaled diffusion steps.
         """
         emb_groups = kwargs.get("emb_groups")

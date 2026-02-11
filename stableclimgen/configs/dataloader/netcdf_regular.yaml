@@ -1,5 +1,5 @@
 dataset:
-  _target_: stableclimgen.src.data.datasets_regular.MaskClimateDataset
+  _target_: stableclimgen.src.data.datasets_regular.MaskRegularDataset
   norm_dict: ${run_dir}/input/norm_dict.json
   n_sample_timesteps: 1
   p_dropout: 0.99

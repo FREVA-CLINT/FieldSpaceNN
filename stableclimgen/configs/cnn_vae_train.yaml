@@ -1,7 +1,7 @@
 defaults:
   - trainer: trainer
   - logger: wandb
-  - model: vae_cnn
+  - model: cnn_vae
   - dataloader: netcdf_regular
   - data_split: regular
   - hydra: default
@@ -9,6 +9,6 @@ defaults:
 
 ckpt_path: null
 
-project_name: vae
+project_name: cnn_vae
 run_name: default
 run_dir: ../..

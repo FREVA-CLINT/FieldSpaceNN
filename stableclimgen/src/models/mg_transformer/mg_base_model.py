@@ -1,14 +1,47 @@
+from typing import Any, Mapping, Sequence
+
 import torch
 import torch.nn as nn
-from ...modules.multi_grid.mg_base import ConservativeLayer,ConservativeLayerConfig
-from ...modules.multi_grid.field_layer import FieldLayerModule, FieldLayerConfig
-from ...modules.multi_grid.field_attention import FieldAttentionModule,FieldAttentionConfig
+from ...modules.field_space.field_space_base import ConservativeLayer,ConservativeLayerConfig
+from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, FieldSpaceLayerConfig
+from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
 from ...modules.grids.grid_layer import GridLayer
 from ...utils.helpers import check_get
-from .confs import defaults
 
+defaults = {
+    "predict_var":False,
+    'n_head_channels': 32,
+    'att_dim': 256,
+    'layer_confs': {},
+    'layer_confs_emb': {},
+    'input_layer_confs': {},
+    'embed_confs': {},
+    'dropout': 0,
+    'learn_residual': False,
+    'with_residual': False,
+    'masked_residual': False,
+    'use_mask': False
+}
 
-def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_variables,  grid_layers, **kwargs):
+def create_encoder_decoder_block(
+    block_conf: Any,
+    in_zooms: Sequence[int],
+    in_features: Sequence[int],
+    n_groups_variables: Sequence[int],
+    grid_layers: nn.ModuleDict,
+    **kwargs: Any,
+) -> nn.Module:
+    """
+    Build an encoder or decoder block based on the configuration type.
+
+    :param block_conf: Block configuration object (e.g., FieldLayerConfig).
+    :param in_zooms: Input zoom levels for the block.
+    :param in_features: Feature counts per zoom.
+    :param n_groups_variables: Number of variable groups for attention layers.
+    :param grid_layers: Grid layers used to map spatial neighborhoods.
+    :param kwargs: Additional configuration overrides.
+    :return: Instantiated block module with ``out_features`` set.
+    """
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
     layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
     layer_confs_emb = check_get([block_conf, kwargs, defaults], "layer_confs_emb")
@@ -18,12 +51,13 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
     n_head_channels = check_get([block_conf,kwargs,defaults], "n_head_channels")
     att_dim = check_get([block_conf,kwargs,defaults], "att_dim")
 
+    # Select the correct block implementation based on the config type.
     if isinstance(block_conf, ConservativeLayerConfig):
         block = ConservativeLayer(in_zooms)
         block.out_features = in_features
     
-    elif isinstance(block_conf, FieldAttentionConfig):
-        block = FieldAttentionModule(
+    elif isinstance(block_conf, FieldSpaceAttentionConfig):
+        block = FieldSpaceAttentionModule(
                 grid_layers,
                 in_zooms,
                 out_zooms,
@@ -64,8 +98,8 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
                 layer_confs_emb = layer_confs_emb)
         block.out_features = in_features
 
-    elif isinstance(block_conf, FieldLayerConfig):
-        block = FieldLayerModule(
+    elif isinstance(block_conf, FieldSpaceLayerConfig):
+        block = FieldSpaceLayerModule(
                 grid_layers,
                 in_zooms,
                 block_conf.in_zooms,
@@ -87,21 +121,30 @@ def create_encoder_decoder_block(block_conf, in_zooms, in_features, n_groups_var
     return block
 
 class MG_base_model(nn.Module):
-    def __init__(self,
-                 mgrids
-                 ) -> None:
-        
-                
+    """
+    Base class for multi-grid models with shared grid layers.
+    """
+
+    def __init__(
+        self,
+        mgrids: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """
+        Initialize grid layers for each zoom level in the multi-grid configuration.
+
+        :param mgrids: List of grid dictionaries containing adjacency and coordinate data.
+        :return: None.
+        """
         super().__init__()
 
         # Create grid layers for each unique global level
         zooms = []
-        self.grid_layers = nn.ModuleDict()
+        self.grid_layers: nn.ModuleDict = nn.ModuleDict()
         for zoom, mgrid in enumerate(mgrids):
             self.grid_layers[str(int(zoom))] = GridLayer(zoom, mgrid['adjc'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar')
             zooms.append(zoom)
 
         self.register_buffer('zooms', torch.tensor(zooms), persistent=False)
-        self.zoom_max = int(self.zooms[-1])
+        self.zoom_max: int = int(self.zooms[-1])
 
-        self.grid_layer_max = self.grid_layers[str(int(self.zooms[-1]))]
+        self.grid_layer_max: GridLayer = self.grid_layers[str(int(self.zooms[-1]))]

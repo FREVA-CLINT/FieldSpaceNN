@@ -1,20 +1,18 @@
-# gaussian_diffusion.py
 import enum
 import math
 import numpy as np
 import torch
-from typing import Callable, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, Union
 
 from .resample import create_named_schedule_sampler
-from .loss import normal_kl, continuous_gaussian_log_likelihood
 
 
 def mean_flat(tensor: torch.Tensor) -> torch.Tensor:
     """
     Calculate the mean over all non-batch dimensions.
 
-    :param tensor: A PyTorch tensor of arbitrary shape.
-    :return: Mean of the tensor across all dimensions except the first (batch dimension).
+    :param tensor: A tensor of shape ``(b, ...)``.
+    :return: Mean of the tensor across all dimensions except the first, shape ``(b,)``.
     """
     return tensor.mean(dim=list(range(1, len(tensor.shape))))
 
@@ -106,9 +104,7 @@ class ModelMeanType(enum.Enum):
     PREVIOUS_X = enum.auto()  # Model predicts x_{t-1}
     START_X = enum.auto()     # Model predicts x_0
     EPSILON = enum.auto()     # Model predicts epsilon
-    # <<< START NEW CODE >>>
     V_PREDICTION = enum.auto() # Model predicts v = sqrt(alpha_bar) * eps - sqrt(1-alpha_bar) * x_0
-    # <<< END NEW CODE >>>
 
 
 class ModelVarType(enum.Enum):
@@ -165,20 +161,39 @@ class MGGaussianDiffusion:
     def __init__(
         self,
         *,
-        betas_zooms: Optional[dict] = None,
-        model_mean_type: ModelMeanType = "epsilon", # Default remains EPSILON
+        betas_zooms: Optional[Mapping[int, np.ndarray]] = None,
+        model_mean_type: Union[ModelMeanType, str] = "epsilon",
         model_var_type: ModelVarType = ModelVarType.FIXED_LARGE,
         loss_type: LossType = LossType.MSE,
         rescale_timesteps: bool = False,
         clip_denoised: bool = False,
         use_dynamic_clipping: bool = False,
         diffusion_steps: int = 1000,
-        diffusion_step_scheduler: dict | str = "linear",
+        diffusion_step_scheduler: Mapping[int, str] | str = "linear",
         diffusion_step_sampler: Optional[Callable] = None,
-        uncertainty_diffusion = False,
-        density_diffusion=False,
-        separate_noise_on_zoom=True
-    ):
+        uncertainty_diffusion: bool = False,
+        density_diffusion: bool = False,
+        separate_noise_on_zoom: bool = True
+    ) -> None:
+        """
+        Initialize diffusion schedules and precompute per-zoom coefficients.
+
+        :param betas_zooms: Optional mapping from zoom to beta schedules.
+        :param model_mean_type: Model output type ("epsilon", "v_prediction", etc.).
+        :param model_var_type: Variance prediction type.
+        :param loss_type: Loss criterion used during training.
+        :param rescale_timesteps: Whether to rescale timesteps to [0, 1000].
+        :param clip_denoised: Whether to clip x_0 predictions.
+        :param use_dynamic_clipping: Whether to use dynamic clipping.
+        :param diffusion_steps: Number of diffusion steps.
+        :param diffusion_step_scheduler: Scheduler name(s) per zoom or a single string.
+        :param diffusion_step_sampler: Optional sampler for diffusion steps.
+        :param uncertainty_diffusion: Whether to use uncertainty-aware diffusion.
+        :param density_diffusion: Whether to use density-aware diffusion.
+        :param separate_noise_on_zoom: Whether to sample noise per zoom level.
+        :return: None.
+        """
+        self.model_mean_type: ModelMeanType
         if model_mean_type == "epsilon":
             self.model_mean_type = ModelMeanType.EPSILON
         elif model_mean_type == "v_prediction":
@@ -187,14 +202,16 @@ class MGGaussianDiffusion:
             self.model_mean_type = ModelMeanType.PREVIOUS_X
         elif model_mean_type == "start_x":
             self.model_mean_type = ModelMeanType.START_X
+        elif isinstance(model_mean_type, ModelMeanType):
+            self.model_mean_type = model_mean_type
         else:
             raise NotImplementedError
-        self.model_var_type = model_var_type
-        self.loss_type = loss_type
-        self.rescale_steps = rescale_timesteps
-        self.clip_denoised = clip_denoised
-        self.use_dynamic_clipping = use_dynamic_clipping
-        self.separate_noise_on_zoom = separate_noise_on_zoom
+        self.model_var_type: ModelVarType = model_var_type
+        self.loss_type: LossType = loss_type
+        self.rescale_steps: bool = rescale_timesteps
+        self.clip_denoised: bool = clip_denoised
+        self.use_dynamic_clipping: bool = use_dynamic_clipping
+        self.separate_noise_on_zoom: bool = separate_noise_on_zoom
 
         # Use float64 for accuracy.
         if betas_zooms is None:
@@ -202,44 +219,60 @@ class MGGaussianDiffusion:
             for zoom in diffusion_step_scheduler.keys():
                 betas_zooms[zoom] = get_named_beta_schedule(diffusion_step_scheduler[zoom], diffusion_steps)
                 betas_zooms[zoom] = np.array(betas_zooms[zoom], dtype=np.float64)
-        self.betas_zooms = betas_zooms
+        self.betas_zooms: Dict[int, np.ndarray] = betas_zooms
 
         if diffusion_step_sampler is None:
             diffusion_step_sampler = create_named_schedule_sampler("uniform", diffusion_steps)
-        self.diffusion_step_sampler = diffusion_step_sampler
-        self.diffusion_steps = int(betas_zooms[list(betas_zooms.keys())[0]].shape[0])
+        self.diffusion_step_sampler: Any = diffusion_step_sampler
+        self.diffusion_steps: int = int(betas_zooms[list(betas_zooms.keys())[0]].shape[0])
 
         alphas_zooms = {int(zoom): 1.0 - betas_zooms[zoom] for zoom in betas_zooms.keys()}
-        self.alphas_cumprod_zooms = {int(zoom): np.cumprod(alphas_zooms[zoom], axis=0) for zoom in betas_zooms.keys()}
-        self.alphas_cumprod_prev_zooms = {int(zoom): np.append(1.0, self.alphas_cumprod_zooms[zoom][:-1]) for zoom in betas_zooms.keys()}
-        self.alphas_cumprod_next_zooms = {int(zoom): np.append(self.alphas_cumprod_zooms[zoom][1:], 0.0) for zoom in betas_zooms.keys()}
+        self.alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.cumprod(alphas_zooms[zoom], axis=0) for zoom in betas_zooms.keys()
+        }
+        self.alphas_cumprod_prev_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.append(1.0, self.alphas_cumprod_zooms[zoom][:-1]) for zoom in betas_zooms.keys()
+        }
+        self.alphas_cumprod_next_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.append(self.alphas_cumprod_zooms[zoom][1:], 0.0) for zoom in betas_zooms.keys()
+        }
 
         # calculations for diffusion q(x_t | x_{t-1}) and others
-        self.sqrt_alphas_cumprod_zooms = {int(zoom): np.sqrt(self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
-        self.sqrt_one_minus_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
-        self.log_one_minus_alphas_cumprod_zooms = {int(zoom): np.log(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
-        self.sqrt_recip_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()}
-        self.sqrt_recipm1_alphas_cumprod_zooms = {int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom] - 1) for zoom in betas_zooms.keys()}
+        self.sqrt_alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.sqrt(self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()
+        }
+        self.sqrt_one_minus_alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.sqrt(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()
+        }
+        self.log_one_minus_alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.log(1.0 - self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()
+        }
+        self.sqrt_recip_alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom]) for zoom in betas_zooms.keys()
+        }
+        self.sqrt_recipm1_alphas_cumprod_zooms: Dict[int, np.ndarray] = {
+            int(zoom): np.sqrt(1.0 / self.alphas_cumprod_zooms[zoom] - 1) for zoom in betas_zooms.keys()
+        }
 
         # calculations for posterior q(x_{t-1} | x_t, x_0)
-        self.posterior_variance_zooms = {int(zoom): (
+        self.posterior_variance_zooms: Dict[int, np.ndarray] = {int(zoom): (
                 betas_zooms[zoom] * (1.0 - self.alphas_cumprod_prev_zooms[zoom]) / (1.0 - self.alphas_cumprod_zooms[zoom])
         ) for zoom in betas_zooms.keys()}
         # log calculation clipped because the posterior variance is 0 at the
         # beginning of the diffusion chain.
-        self.posterior_log_variance_clipped_zooms = {int(zoom): np.log(
+        self.posterior_log_variance_clipped_zooms: Dict[int, np.ndarray] = {int(zoom): np.log(
             np.append(self.posterior_variance_zooms[zoom][1], self.posterior_variance_zooms[zoom][1:])
         ) for zoom in betas_zooms.keys()}
-        self.posterior_mean_coef1_zooms = {int(zoom): (
+        self.posterior_mean_coef1_zooms: Dict[int, np.ndarray] = {int(zoom): (
                 betas_zooms[zoom] * np.sqrt(self.alphas_cumprod_prev_zooms[zoom]) / (1.0 - self.alphas_cumprod_zooms[zoom])
         ) for zoom in betas_zooms.keys()}
-        self.posterior_mean_coef2_zooms = {int(zoom): (
+        self.posterior_mean_coef2_zooms: Dict[int, np.ndarray] = {int(zoom): (
             (1.0 - self.alphas_cumprod_prev_zooms[zoom])
             * np.sqrt(alphas_zooms[zoom])
             / (1.0 - self.alphas_cumprod_zooms[zoom])
         ) for zoom in betas_zooms.keys()}
-        self.uncertainty_diffusion = uncertainty_diffusion
-        self.density_diffusion = density_diffusion
+        self.uncertainty_diffusion: bool = uncertainty_diffusion
+        self.density_diffusion: bool = density_diffusion
 
     def q_mean_variance(
         self, x_start: torch.Tensor, t: torch.Tensor
@@ -247,9 +280,10 @@ class MGGaussianDiffusion:
         """
         Get the distribution q(x_t | x_0).
 
-        :param x_start: the [N x C x ...] tensor of noiseless inputs.
-        :param t: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :return: A tuple (mean, variance, log_variance), all of x_start's shape.
+        :param x_start: Noiseless input tensor of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :return: A tuple (mean, variance, log_variance), each of shape
+            ``(b, v, t, n, d, f)``.
         """
         mean = extract_into_tensor(self.sqrt_alphas_cumprod_zooms, t, x_start.shape) * x_start
         variance = extract_into_tensor(1.0 - self.alphas_cumprod_zooms, t, x_start.shape)
@@ -257,17 +291,22 @@ class MGGaussianDiffusion:
         return mean, variance, log_variance
 
     def q_sample(
-        self, x_start_zooms: dict, diff_steps: torch.Tensor, noise_zooms: Optional[dict] = None
-    ) -> dict:
+        self,
+        x_start_zooms: Mapping[int, torch.Tensor],
+        diff_steps: torch.Tensor,
+        noise_zooms: Optional[Mapping[int, torch.Tensor]] = None,
+    ) -> Dict[int, torch.Tensor]:
         """
         Diffuse the data for a given number of diffusion steps.
 
         In other words, sample from q(x_t | x_0).
 
-        :param x_start_zooms: the initial data batch.
-        :param diff_steps: the number of diffusion steps (minus 1). Here, 0 means one step.
-        :param noise_zooms: if specified, the split-out normal noise.
-        :return: A noisy version of x_start.
+        :param x_start_zooms: Initial data batch per zoom with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param diff_steps: Diffusion step indices of shape ``(b,)``.
+        :param noise_zooms: Optional noise per zoom with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :return: A noisy version of x_start per zoom, shape ``(b, v, t, n, d, f)``.
         """
         if noise_zooms is None:
             noise_zooms = self.generate_noise(x_start_zooms)
@@ -277,13 +316,23 @@ class MGGaussianDiffusion:
         ) for zoom in x_start_zooms.keys()}
 
     def q_posterior_mean_variance(
-        self, x_start_zooms: dict, x_t_zooms: dict, diff_steps: torch.Tensor
-    ) -> Tuple[dict, dict, dict]:
+        self,
+        x_start_zooms: Mapping[int, torch.Tensor],
+        x_t_zooms: Mapping[int, torch.Tensor],
+        diff_steps: torch.Tensor,
+    ) -> Tuple[Dict[int, torch.Tensor], Dict[int, torch.Tensor], Dict[int, torch.Tensor]]:
         """
         Compute the mean and variance of the diffusion posterior:
 
             q(x_{t-1} | x_t, x_0)
 
+        :param x_start_zooms: Predicted x_start per zoom with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param x_t_zooms: Noisy inputs per zoom with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param diff_steps: Diffusion step indices of shape ``(b,)``.
+        :return: Tuple of (mean, variance, log_variance) per zoom, each matching
+            the input tensor shapes.
         """
         posterior_mean_zooms = {int(zoom): (
                 extract_into_tensor(self.posterior_mean_coef1_zooms[zoom], diff_steps, x_t_zooms[zoom].shape) * x_start_zooms[zoom]
@@ -295,7 +344,12 @@ class MGGaussianDiffusion:
         ) for zoom in x_t_zooms.keys()}
         return posterior_mean_zooms, posterior_variance_zooms, posterior_log_variance_clipped_zooms
 
-    def process_xstart(self, in_zooms: dict, t: torch.Tensor, denoised_fn: Optional[Callable] = None) -> dict:
+    def process_xstart(
+        self,
+        in_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        denoised_fn: Optional[Callable] = None,
+    ) -> Dict[int, torch.Tensor]:
         """
         Applies optional denoising function and clipping to the predicted x_start.
 
@@ -306,10 +360,11 @@ class MGGaussianDiffusion:
         - If `self.clip_denoised` is True and `self.use_dynamic_clipping` is False,
           applies standard hard clamping to [-1.0, 1.0].
 
-        :param in_zooms: The predicted x_start tensor.
-        :param t: The timestep tensor.
+        :param in_zooms: Predicted x_start per zoom with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param t: The timestep tensor of shape ``(b,)``.
         :param denoised_fn: An optional function to apply to the tensor first.
-        :return: The processed x_start tensor.
+        :return: The processed x_start per zoom of shape ``(b, v, t, n, d, f)``.
         """
         if denoised_fn is not None:
             # Apply custom denoising function if provided
@@ -336,21 +391,23 @@ class MGGaussianDiffusion:
     def p_mean_variance(
         self,
         model: Callable,
-        x_groups: list,
+        x_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         diff_steps: torch.Tensor,
-        mask_groups: list = None,
-        emb_groups: list = None,
+        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
         denoised_fn: Optional[Callable] = None,
         **model_kwargs
-    ) -> Dict[str, torch.Tensor]:
+    ) -> Dict[str, Any]:
         """
         Apply the model to get p(x_{t-1} | x_t) and predict the model output.
 
         :param model: the model, which takes a list of groups and a batch of timesteps as input.
-        :param x_groups: a list of dictionaries, where each dictionary represents a group of tensors at time t.
-        :param diff_steps: a 1-D Tensor of timesteps.
-        :param mask_groups: a list of mask dictionaries.
-        :param emb_groups: a list of embedding dictionaries.
+        :param x_groups: List of per-group zoom mappings with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param diff_steps: Diffusion step indices of shape ``(b,)``.
+        :param mask_groups: Optional list of per-group mask dictionaries with tensors
+            of shape ``(b, v, t, n, d, f)`` or broadcastable to it.
+        :param emb_groups: Optional list of embedding dictionaries.
         :param denoised_fn: if not None, a function which applies to the
             x_start prediction before it is used to compute means and variances.
         :param model_kwargs: if not None, a dict of extra keyword arguments to
@@ -360,6 +417,7 @@ class MGGaussianDiffusion:
                  - 'variance': a list of model variance output dictionaries.
                  - 'log_variance': a list of log of 'variance' dictionaries.
                  - 'pred_xstart': a list of predicted x_start dictionaries.
+                 Each dictionary maps zoom to tensors of shape ``(b, v, t, n, d, f)``.
         """
         if emb_groups is None:
             emb_groups = [{} for _ in x_groups]
@@ -441,13 +499,39 @@ class MGGaussianDiffusion:
             "pred_xstart": output_pred_xstart_groups,
         }
 
-    def _predict_xstart_from_eps(self, x_t_zooms: dict, t: torch.Tensor, eps_zooms: dict) -> dict:
+    def _predict_xstart_from_eps(
+        self,
+        x_t_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        eps_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Recover x_start from epsilon predictions.
+
+        :param x_t_zooms: Noisy inputs per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :param eps_zooms: Predicted epsilon per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Predicted x_start per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_recip_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
                 - extract_into_tensor(self.sqrt_recipm1_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * eps_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
-    def _predict_xstart_from_xprev(self, x_t_zooms: dict, t: torch.Tensor, xprev_zooms: dict) -> dict:
+    def _predict_xstart_from_xprev(
+        self,
+        x_t_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        xprev_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Recover x_start from predictions of x_{t-1}.
+
+        :param x_t_zooms: Noisy inputs per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :param xprev_zooms: Predicted x_{t-1} per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Predicted x_start per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(1.0 / self.posterior_mean_coef1_zooms[zoom], t, x_t_zooms[zoom].shape) * xprev_zooms[zoom]
                 - extract_into_tensor(
@@ -456,25 +540,77 @@ class MGGaussianDiffusion:
                 * x_t_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
-    def _predict_xstart_from_v(self, x_t_zooms: dict, t: torch.Tensor, v_zooms: dict) -> dict:
+    def _predict_xstart_from_v(
+        self,
+        x_t_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        v_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Recover x_start from v-prediction outputs.
+
+        :param x_t_zooms: Noisy inputs per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :param v_zooms: Predicted v per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Predicted x_start per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
                 - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
-    def _predict_eps_from_v(self, x_t_zooms: dict, t: torch.Tensor, v_zooms: dict) -> dict:
+    def _predict_eps_from_v(
+        self,
+        x_t_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        v_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Recover epsilon from v-prediction outputs.
+
+        :param x_t_zooms: Noisy inputs per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :param v_zooms: Predicted v per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Predicted epsilon per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
                 + extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * v_zooms[zoom]
         ) for zoom in x_t_zooms.keys()}
 
-    def _predict_v_from_eps_and_xstart(self, eps_zooms: dict, x_start_zooms: dict, t: torch.Tensor) -> dict:
+    def _predict_v_from_eps_and_xstart(
+        self,
+        eps_zooms: Mapping[int, torch.Tensor],
+        x_start_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Compute v-prediction from epsilon and x_start.
+
+        :param eps_zooms: Predicted epsilon per zoom of shape ``(b, v, t, n, d, f)``.
+        :param x_start_zooms: Predicted x_start per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :return: Predicted v per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_alphas_cumprod_zooms[zoom], t, eps_zooms[zoom].shape) * eps_zooms[zoom]
                 - extract_into_tensor(self.sqrt_one_minus_alphas_cumprod_zooms[zoom], t, eps_zooms[zoom].shape) * x_start_zooms[zoom]
         ) for zoom in eps_zooms.keys()}
 
-    def predict_eps_from_xstart(self, x_t_zooms: dict, t: torch.Tensor, pred_xstart_zooms: dict) -> dict:
+    def predict_eps_from_xstart(
+        self,
+        x_t_zooms: Mapping[int, torch.Tensor],
+        t: torch.Tensor,
+        pred_xstart_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """
+        Recover epsilon from x_start predictions.
+
+        :param x_t_zooms: Noisy inputs per zoom of shape ``(b, v, t, n, d, f)``.
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :param pred_xstart_zooms: Predicted x_start per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Predicted epsilon per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         return {int(zoom): (
                 extract_into_tensor(self.sqrt_recip_alphas_cumprod_zooms[zoom], t, x_t_zooms[zoom].shape) * x_t_zooms[zoom]
                 - pred_xstart_zooms[zoom]
@@ -482,7 +618,10 @@ class MGGaussianDiffusion:
 
     def _scale_steps(self, t: torch.Tensor) -> torch.Tensor:
         """
-        Optional: Scale t to [0, 1000] if rescale_timesteps is True.
+        Scale timesteps to match the original [0, 1000] convention.
+
+        :param t: Diffusion step indices of shape ``(b,)``.
+        :return: Rescaled timesteps of shape ``(b,)``.
         """
         if self.rescale_steps:
             return t.float() * (1000.0 / self.diffusion_steps)
@@ -491,21 +630,39 @@ class MGGaussianDiffusion:
     def training_losses(
         self,
         model: Callable,
-        gt_groups: list,
+        gt_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         diff_steps: torch.Tensor,
-        mask_groups: list = None,
-        emb_groups: list = None,
-        noise_groups: list = None,
+        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]] = None,
+        noise_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         create_pred_xstart: bool = False,
         **model_kwargs
     ) -> list:
+        """
+        Compute per-group diffusion training losses.
+
+        :param model: Model callable that consumes grouped inputs and embeddings.
+        :param gt_groups: List of per-group zoom mappings with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param diff_steps: Diffusion step indices of shape ``(b,)``.
+        :param mask_groups: Optional list of mask dictionaries per group with tensors
+            of shape ``(b, v, t, n, d, f)`` or broadcastable to it.
+        :param emb_groups: Optional list of embedding dictionaries per group.
+        :param noise_groups: Optional list of noise tensors per group with shape
+            ``(b, v, t, n, d, f)``.
+        :param create_pred_xstart: Whether to also return predicted x_start.
+        :param model_kwargs: Additional keyword arguments forwarded to the model.
+        :return: List of tuples ``(target, model_output, pred_xstart)`` per group,
+            where each element is a zoom-to-tensor mapping with shape
+            ``(b, v, t, n, d, f)`` or ``None``.
+        """
         if noise_groups is None:
             noise_groups = [self.generate_noise(group) if group else None for group in gt_groups]
 
         if mask_groups is not None:
             for i, (mask_zooms, gt_zooms, noise_zooms) in enumerate(zip(mask_groups, gt_groups, noise_groups)):
                 if mask_zooms and gt_zooms and noise_zooms:
-                    print(mask_zooms[3].shape, gt_zooms[3].shape, noise_zooms[3].shape)
+                    # Zero out noise where the mask disables supervision.
                     noise_groups[i] = {int(zoom): torch.where(~mask_zooms[zoom], torch.zeros_like(gt_zooms[zoom]), noise_zooms[zoom]) for zoom in gt_zooms.keys()}
 
         x_t_groups = [self.q_sample(gt_zooms, diff_steps, noise_zooms=noise_zooms) if gt_zooms else None
@@ -572,18 +729,35 @@ class MGGaussianDiffusion:
 
 
     def get_diffusion_steps(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        """ samples diffusion steps """
+        """
+        Sample diffusion steps and associated weights.
+
+        :param batch_size: Number of samples to draw.
+        :param device: Target device for the returned tensors.
+        :return: Tuple of (diffusion_steps, weights), both of shape ``(batch_size,)``.
+        """
         t, weights = self.diffusion_step_sampler.sample(batch_size)
         return t.to(device), weights.to(device)
 
-    def get_uncertainty_timesteps(self, uncertainty_embedding):
-        """ Maps uncertainty [0, 1] to discrete timesteps [0, num_timesteps-1]. """
+    def get_uncertainty_timesteps(self, uncertainty_embedding: torch.Tensor) -> torch.Tensor:
+        """
+        Map uncertainty values in [0, 1] to discrete timesteps.
+
+        :param uncertainty_embedding: Uncertainty tensor of shape ``(b,)``.
+        :return: Timestep indices of shape ``(b,)``.
+        """
         # Ensure uncertainty is clipped
         # Linear mapping: u=0 -> t=0, u=1 -> t = num_timesteps - 1
         t_map = (uncertainty_embedding * (self.diffusion_steps - 1)).round().long()
         return t_map
 
-    def generate_noise(self, x_zooms):
+    def generate_noise(self, x_zooms: Mapping[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+        """
+        Generate Gaussian noise per zoom level.
+
+        :param x_zooms: Input tensors per zoom of shape ``(b, v, t, n, d, f)``.
+        :return: Noise tensors per zoom of shape ``(b, v, t, n, d, f)``.
+        """
         if self.separate_noise_on_zoom:
             noise_zooms = {int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()}
         else:
@@ -591,20 +765,26 @@ class MGGaussianDiffusion:
             noise = torch.randn_like(x_zooms[max_zoom])
             noise_zooms = {}
             for zoom in x_zooms.keys():
+                # Reshape to share noise across zooms by spatially pooling.
                 noise_zooms[zoom] = noise.view(*x_zooms[zoom].shape[:3], -1, 4 ** (max_zoom - zoom),
                                                x_zooms[zoom].shape[-2], x_zooms[zoom].shape[-1]).mean(dim=-3)
         return noise_zooms
 
 
-def extract_into_tensor(arr: Union[np.ndarray, torch.Tensor], diffusion_steps: torch.Tensor, broadcast_shape: Tuple[int, ...]) -> torch.Tensor:
+def extract_into_tensor(
+    arr: Union[np.ndarray, torch.Tensor],
+    diffusion_steps: torch.Tensor,
+    broadcast_shape: Tuple[int, ...],
+) -> torch.Tensor:
     """
     Extract values from a 1-D numpy array or tensor for a batch of indices.
 
     :param arr: the 1-D numpy array or torch tensor.
-    :param diffusion_steps: a tensor of indices into the array to extract.
+    :param diffusion_steps: a tensor of indices into the array to extract,
+        of shape ``(b,)``.
     :param broadcast_shape: a larger shape of K dimensions with the batch
                             dimension equal to the length of timesteps.
-    :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
+    :return: a tensor with shape ``broadcast_shape``.
     """
     # Convert numpy array to tensor if necessary
     if isinstance(arr, np.ndarray):

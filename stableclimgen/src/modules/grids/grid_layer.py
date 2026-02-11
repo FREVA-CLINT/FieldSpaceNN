@@ -2,43 +2,79 @@ import math
 
 import torch
 import torch.nn as nn
-from typing import List,Dict
+from typing import Any, Dict, Optional, Tuple
 
 from .grid_utils import get_distance_angle
 
 
-def get_nh_idx_of_patch(adjc, patch_index=0, zoom_patch_sample=-1, return_local=True, **kwargs):
+def get_nh_idx_of_patch(
+    adjc: torch.Tensor,
+    patch_index: int = 0,
+    zoom_patch_sample: int = -1,
+    return_local: bool = True,
+    **kwargs: Any
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Get neighborhood indices and mask for a patch.
 
-    # for icon and healpix
-    zoom = int(math.log((adjc.shape[0])/4, 4))
+    :param adjc: Adjacency tensor of shape ``(n, k)``.
+    :param patch_index: Patch index to select.
+    :param zoom_patch_sample: Patch sampling zoom.
+    :param return_local: Whether to return local indices within the patch.
+    :param kwargs: Additional keyword arguments (unused).
+    :return: Tuple of (adjacency_patch, adjacency_mask) with shape ``(p, s, k)``,
+        where ``p`` is the number of selected patches (1 for a scalar index) and
+        ``s`` is the points per patch.
+    """
+    # Infer the global zoom from the adjacency size.
+    zoom = int(math.log((adjc.shape[0]) / 4, 4))
 
     if zoom_patch_sample > -1:
 
         n_pts_patch = 4**(zoom-zoom_patch_sample)
 
+        # Reshape adjacency into patches and select the requested patch.
         adjc_patch = adjc.reshape(-1, n_pts_patch, adjc.shape[-1])[patch_index].clone()
 
         index_range = (patch_index * n_pts_patch, (patch_index + 1) * n_pts_patch)
 
-        adjc_mask = (adjc_patch < index_range[0].view(-1,1,1)) | (adjc_patch >= index_range[1].view(-1,1,1))
+        # Mask indices that fall outside the selected patch.
+        adjc_mask = (adjc_patch < index_range[0].view(-1, 1, 1)) | (adjc_patch >= index_range[1].view(-1, 1, 1))
     else:
         adjc_patch = adjc.clone().unsqueeze(dim=0)
         adjc_mask = (adjc_patch < 0) | (adjc_patch >= adjc_patch.shape[1])
 
     
+    # Replace invalid entries with a valid index to keep downstream gathers safe.
     ind = torch.where(adjc_mask)
     adjc_patch[ind] = adjc_patch[ind[0],ind[1],0]
 
     if return_local:
+        # Convert global indices to local patch indices.
         adjc_patch = adjc_patch - index_range[0].view(-1,1,1)
     
     return adjc_patch, adjc_mask
 
+def get_idx_of_patch(
+    adjc: torch.Tensor,
+    patch_index: int,
+    zoom_patch_sample: int,
+    return_local: bool = True,
+    **kwargs: Any
+) -> torch.Tensor:
+    """
+    Get patch indices from adjacency.
 
-def get_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True,**kwargs):
+    :param adjc: Adjacency tensor of shape ``(n, k)``.
+    :param patch_index: Patch index to select.
+    :param zoom_patch_sample: Patch sampling zoom.
+    :param return_local: Whether to return local indices within the patch.
+    :param kwargs: Additional keyword arguments (unused).
+    :return: Patch index tensor of shape ``(s,)`` or ``(p, s)``.
+    """
     
     # for icon and healpix
-    zoom = int(math.log((adjc.shape[0])/4, 4))
+    zoom = int(math.log((adjc.shape[0]) / 4, 4))
     
     n_pts_patch = 4**(zoom-zoom_patch_sample) if zoom_patch_sample != -1 else adjc.shape[0]
 
@@ -52,6 +88,14 @@ def get_idx_of_patch(adjc, patch_index, zoom_patch_sample, return_local=True,**k
 
 
 def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
+    """
+    Gather neighborhood data for a batched tensor.
+
+    :param x: Input tensor of shape ``(bvt, n, f)``, where ``bvt = b * v * t``.
+    :param adjc_patch: Adjacency patch of shape ``(b, n, nh)``.
+    :return: Neighborhood tensor of shape ``(bvt, n, nh, f)``, where ``f`` may
+        represent flattened ``(d, f)`` features from the base shape.
+    """
     bvt,s,f = x.shape
     b = adjc_patch.shape[0]
 
@@ -59,7 +103,7 @@ def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
 
     nh = adjc_patch.shape[-1]
     
-    #unsqueeze time and feature dim
+    # Expand adjacency to gather across time and feature dimensions.
     adjc_patch = adjc_patch.view(adjc_patch.shape[0], 1, adjc_patch.shape[1]*adjc_patch.shape[2], 1)
 
     adjc_patch = adjc_patch.expand(-1, x.shape[1], -1, x.shape[-1])
@@ -70,30 +114,29 @@ def gather_nh_data(x: torch.Tensor, adjc_patch: torch.Tensor) -> torch.Tensor:
 
     return x
 
+def propagate_assignments(
+    adjc: torch.Tensor,
+    adjc_mask: torch.Tensor,
+    coords: torch.Tensor,
+    nh_k: int = 2
+):
+    """
+    Propagate missing neighborhood assignments.
 
-def get_relative_positions(coords1, coords2, polar=False, periodic_fov=None):
-    
-    if coords2.dim() > coords1.dim():
-        coords1 = coords1.unsqueeze(dim=-1)
-
-    if coords1.dim() > coords2.dim():
-        coords2 = coords2.unsqueeze(dim=-2)
-
-    if coords1.dim() == coords2.dim():
-        coords1 = coords1.unsqueeze(dim=-1)
-        coords2 = coords2.unsqueeze(dim=-2)
-
-    distances, phis = get_distance_angle(coords1[0], coords1[1], coords2[0], coords2[1], base="polar" if polar else "cartesian", periodic_fov=periodic_fov)
-
-    return distances.float(), phis.float()
-
-
-def propagate_assignments(adjc, adjc_mask, coords, nh_k=2):
+    :param adjc: Adjacency tensor of shape ``(n, k)``.
+    :param adjc_mask: Boolean mask for adjacency entries of shape ``(n, k)``.
+    :param coords: Coordinate tensor of shape ``(n, 2)``.
+    :param nh_k: Neighborhood index to propagate.
+    :return: Tuple of (assignment_index, assignment_target) index tensors of shape
+        ``(m,)``. Returns empty lists when no propagation is required.
+    """
 
     shift_dir = 1 if nh_k <= 4 else -1 
 
 
+    # Candidates are nodes with valid neighbors in direction nh_k.
     candidates = torch.where(~adjc_mask[:, nh_k])[0]
+    # Missing targets are nodes that are never referenced by that neighbor slot.
     missing_targets = torch.where(
         torch.bincount(adjc[:, nh_k], minlength=adjc.shape[0]) == 0
     )[0]
@@ -105,16 +148,17 @@ def propagate_assignments(adjc, adjc_mask, coords, nh_k=2):
 
     all_missing_in_candidates = False
     while not all_missing_in_candidates and len(candidates) > 0:
+        # Choose a lateral shift based on hemisphere to find a viable target.
         shift = torch.ones_like(candidates)
         shift[coords[candidates, 1] > 0] = -1
         shift = nh_k + shift_dir*shift
-        #shift[shift==9] = 1
-        #shift[shift==0] = 8
 
+        # Map candidates to their shifted neighbor target.
         candidates_target = adjc[candidates, shift]
         assignment_index.append(candidates)
         assignment_target.append(candidates_target)
 
+        # Keep propagating along the chain of targets.
         candidates = torch.stack(
             [torch.where(adjc[:, nh_k] == t)[0] for t in candidates_target]
         ).view(-1)
@@ -126,40 +170,38 @@ def propagate_assignments(adjc, adjc_mask, coords, nh_k=2):
 
     return torch.concat(assignment_index), torch.concat(assignment_target)
 
+
 class GridLayer(nn.Module):
     """
-    A neural network module representing a grid layer with specific functionalities
-    like coordinate transformations, neighborhood gathering, and relative positioning.
-
-    Attributes:
-        zoom (int): The global hierarchical zoom.
-        coord_system (str): The coordinate system, e.g., "polar".
-        periodic_fov (Any): The periodic field of view.
-        coordinates (torch.Tensor): The coordinates of the grid.
-        adjc (torch.Tensor): Adjacency tensor for the grid.
-        adjc_mask (torch.Tensor): Mask indicating adjacency relations.
-        fov_mask (torch.Tensor): Mask for field of view.
-        min_dist (torch.Tensor): Minimum distance in the relative coordinates.
-        max_dist (torch.Tensor): Maximum distance in the relative coordinates.
-        mean_dist (torch.Tensor): Mean distance in the relative coordinates.
-        median_dist (torch.Tensor): Median distance in the relative coordinates.
+    A grid layer with coordinate transforms, neighborhood gathering, and relative positioning.
     """
     
-    def __init__(self, zoom: int, adjc: torch.Tensor, adjc_mask: torch.Tensor, coordinates: torch.Tensor, coord_system: str = "polar", periodic_fov=None, nh_shift_indices=None) -> None:
+    def __init__(
+        self,
+        zoom: int,
+        adjc: torch.Tensor,
+        adjc_mask: torch.Tensor,
+        coordinates: torch.Tensor,
+        coord_system: str = "polar",
+        periodic_fov: Optional[float] = None,
+        nh_shift_indices: Optional[Dict[str, int]] = None
+    ) -> None:
         """
         Initializes the GridLayer with given parameters.
 
         :param zoom: The global zoom for hierarchy.
-        :param adjc: The adjacency tensor.
-        :param adjc_mask: Mask for the adjacency tensor.
-        :param coordinates: The coordinates of grid points.
+        :param adjc: The adjacency tensor of shape ``(n, k)``.
+        :param adjc_mask: Mask for the adjacency tensor of shape ``(n, k)``.
+        :param coordinates: The coordinates of grid points of shape ``(n, 2)``.
         :param coord_system: The coordinate system. Defaults to "polar".
         :param periodic_fov: The periodic field of view. Defaults to None.
+        :param nh_shift_indices: Optional custom neighborhood shift indices.
+        :return: None.
         """
         super().__init__()
 
         if nh_shift_indices is None:
-            self.nh_shift_indices = {
+            self.nh_shift_indices: Dict[str, int] = {
                 'south': 8,
                 'southwest': 7,
                 'west': 6,
@@ -172,7 +214,7 @@ class GridLayer(nn.Module):
         else:
             self.nh_shift_indices = nh_shift_indices
 
-        self.reverse_shift = {
+        self.reverse_shift: Dict[str, str] = {
             'south': 'north',
             'north': 'south',
             'northeast': 'southwest',
@@ -184,36 +226,42 @@ class GridLayer(nn.Module):
         }
 
         # Initialize attributes
-        self.zoom = zoom
-        self.coord_system = coord_system
-        self.periodic_fov = periodic_fov
+        self.zoom: int = zoom
+        self.coord_system: str = coord_system
+        self.periodic_fov: Optional[float] = periodic_fov
 
         # Register buffers for coordinates and adjacency information
         self.register_buffer("coordinates", coordinates, persistent=False)
+        self.coordinates: torch.Tensor
         
-        if zoom >=1:
+        if zoom >= 1:
+            # Propagate missing assignments for polar discontinuities.
             for k in [2,6]:
                 i_shift, i_target = propagate_assignments(adjc, adjc_mask==False, coordinates, nh_k=k)
-                if len(i_shift)>0:
+                if len(i_shift) > 0:
                     adjc[i_shift, k] = i_target 
         
         for k in [1,3,4,5,7,8]:
+            # Fill missing adjacency entries with a consistent fallback direction.
             c = torch.where(adjc_mask[:,k])[0]
             adjc[c,k] = k -1 if k>1 else 8
 
         self.register_buffer("adjc", adjc, persistent=False)
+        self.adjc: torch.Tensor
 
         # Create mask where adjacency is false
         self.register_buffer("adjc_mask", adjc_mask == False, persistent=False)
+        self.adjc_mask: torch.Tensor
         # Mask for the field of view
         self.register_buffer("fov_mask", ((adjc_mask == False).sum(dim=-1) == adjc_mask.shape[1]).view(-1, 1), persistent=False)
+        self.fov_mask: torch.Tensor
 
-        # Sample distances for statistical analysis
+        # Sample distances for neighborhood statistics.
         n_samples = torch.min(torch.tensor([self.adjc.shape[0] - 1, 500]))
         nh_samples = self.adjc[:n_samples]
 
         coords_nh = coordinates[nh_samples]
-        # Calculate relative distances
+        # Calculate relative distances in both polar and cartesian frames.
 
         coords_lon_nh, coords_lat_nh = coords_nh[...,0], coords_nh[...,1]
         
@@ -221,61 +269,96 @@ class GridLayer(nn.Module):
         dists_lon, dists_lat = get_distance_angle(coords_lon_nh[:,[0]], coords_lat_nh[:,[0]], coords_lon_nh, coords_lat_nh, base="cartesian", rotate_coords=True)
 
         
-        self.nh_dist = dists[:,1:].mean()
-        self.nh_dist_lon = dists_lon[:,1:].abs().mean()
-        self.nh_dist_lat = dists_lat[:,1:].abs().mean()
+        self.nh_dist: torch.Tensor = dists[:,1:].mean()
+        self.nh_dist_lon: torch.Tensor = dists_lon[:,1:].abs().mean()
+        self.nh_dist_lat: torch.Tensor = dists_lat[:,1:].abs().mean()
         # Compute distance statistics
-        self.dist_quantiles = dists[dists > 1e-10].quantile(torch.linspace(0.01,0.99,20))
+        self.dist_quantiles: torch.Tensor = dists[dists > 1e-10].quantile(torch.linspace(0.01,0.99,20))
 
-        self.min_dist = dists[dists > 1e-6].min()
-        self.max_dist = dists[dists > 1e-10].max()
-        self.mean_dist = dists[dists > 1e-10].mean()
-        self.median_dist = dists[dists > 1e-10].median()
+        self.min_dist: torch.Tensor = dists[dists > 1e-6].min()
+        self.max_dist: torch.Tensor = dists[dists > 1e-10].max()
+        self.mean_dist: torch.Tensor = dists[dists > 1e-10].mean()
+        self.median_dist: torch.Tensor = dists[dists > 1e-10].median()
 
 
-    def get_sample_patch_with_nh(self, x: torch.Tensor, patch_index: torch.Tensor=None, zoom_patch_sample: torch.Tensor=None, mask: torch.Tensor = None, zoom_patch_out=None) -> tuple:
+    def get_sample_patch_with_nh(
+        self,
+        x: torch.Tensor,
+        patch_index: int = 0,
+        zoom_patch_sample: int = -1,
+        mask: Optional[torch.Tensor] = None,
+        zoom_patch_out: Optional[int] = None
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Gather neighborhood data for a sampled patch.
 
-        # Get neighborhood indices and adjacency mask
+        :param x: Input tensor of shape ``(bvt, n, f)``, where ``bvt = b * v * t``.
+        :param patch_index: Patch index to sample.
+        :param zoom_patch_sample: Patch sampling zoom.
+        :param mask: Optional mask tensor of shape ``(bvt, n, m)``.
+        :param zoom_patch_out: Optional output zoom override.
+        :return: Tuple of (x_with_nh, mask_with_nh) with shapes ``(bvt, n, nh, f)``
+            and ``(b, ..., n, nh, m)`` respectively.
+        """
+
+        # Get neighborhood indices and adjacency mask.
         adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
         
-       # x_shape = x.shape
-       # x = x.reshape(*x_shape[:3],-1)
         # Gather neighborhood data
         x = gather_nh_data(x, adjc_patch)
 
         if mask is not None:
-            # Combine provided mask with adjacency mask
+            # Combine provided mask with adjacency mask.
             mask = gather_nh_data(mask, adjc_patch)
             mask = mask.view(adjc_mask.shape[0], -1, *mask.shape[1:])
-            if mask.dtype==torch.bool:
+            if mask.dtype == torch.bool:
+                # Mark invalid neighbors as masked.
                 mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
             else:
-                #mask = mask * (adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask).fill(-torch.inf) * -torch.inf)
+                # Fill invalid neighbors for float masks (e.g., additive attention masks).
                 mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("inf"))
         else:
-            # Use adjacency mask if no mask is provided
+            # Use adjacency mask if no mask is provided.
             mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)
         
         return x, mask
     
-    def get_global_with_nh(self, x: torch.Tensor, mask: torch.Tensor = None, zoom_patch_out=None) -> tuple:
+    def get_global_with_nh(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        zoom_patch_out: Optional[int] = None
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Gather global neighborhood data at the requested output zoom.
+
+        :param x: Input tensor of shape ``(b, n, f)`` or compatible.
+        :param mask: Optional mask tensor of shape ``(b, n, m)``.
+        :param zoom_patch_out: Output zoom for patching.
+        :return: Tuple of (x_with_nh, mask_with_nh) with shapes ``(b, p, s, f)``
+            and ``(b, p, s, m)``, where ``p`` is the number of patches and ``s``
+            is the patch size plus neighborhood points.
+        """
         
         zoom_patch_out = self.zoom if zoom_patch_out is None else zoom_patch_out
-        #indices = self.adjc[:,[4,8]]
+        # Select full or reduced neighborhood indices depending on zoom.
         if (zoom_patch_out - self.zoom) == 0:
             indices = self.adjc
         else:
             # this removes rundundancy, but still has some
             indices = self.adjc[:,[2,4,6,8]]
       
+        # Build patch start indices and group adjacency into patches.
         patch_indices = torch.arange(0, indices.shape[0] + 4**(self.zoom - zoom_patch_out), 4**(self.zoom - zoom_patch_out), device=x.device, dtype=indices.dtype).view(-1,1,1)
 
         indices = indices.view(-1, 4**(self.zoom - zoom_patch_out),  indices.shape[-1])
 
+        # Identify neighbors that fall outside each patch.
         out_of_patch = (indices < patch_indices[:-1]) | (indices >= patch_indices[1:])
 
         assert len(out_of_patch.sum(dim=[-1,-2]).unique())==1, "neighbourhood not consistent"
 
+        # Append out-of-patch neighbors to the patch indices.
         nh_indices = indices[out_of_patch].view(indices.shape[0], int(out_of_patch.sum(dim=[-1,-2])[0]))
 
         patch_indices = torch.concat((indices[:,:,0].view(indices.shape[0],-1), nh_indices), dim=-1)
@@ -287,7 +370,13 @@ class GridLayer(nn.Module):
                 
         return x, mask
     
-    def get_number_of_points_in_patch(self, zoom_patch_out):
+    def get_number_of_points_in_patch(self, zoom_patch_out: int) -> int:
+        """
+        Compute the number of points in a patch at the given zoom.
+
+        :param zoom_patch_out: Output zoom for patching.
+        :return: Number of points in the patch.
+        """
         if zoom_patch_out > -1:
             x_ = torch.zeros_like(self.adjc[:,0].unsqueeze(dim=0))
             n = self.get_global_with_nh(x_, zoom_patch_out=zoom_patch_out)[0].shape[-1]
@@ -296,11 +385,34 @@ class GridLayer(nn.Module):
         return n
 
 
-    def apply_shift(self, x, shift_direction, patch_index=0, zoom_patch_sample=-1, reverse=False, mask=None, **kwargs):
+    def apply_shift(
+        self,
+        x: torch.Tensor,
+        shift_direction: str,
+        patch_index: int = 0,
+        zoom_patch_sample: int = -1,
+        reverse: bool = False,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Apply a directional neighborhood shift.
+
+        :param x: Input tensor of shape ``(b, v, t, n, d, f)`` or compatible.
+        :param shift_direction: Direction key for the shift.
+        :param patch_index: Patch index to sample.
+        :param zoom_patch_sample: Patch sampling zoom.
+        :param reverse: Whether to apply the reverse direction.
+        :param mask: Optional mask tensor of shape ``(b, v, t, n, m)``.
+        :param kwargs: Additional keyword arguments forwarded to `get_nh`.
+        :return: Tuple of (shifted_x, shifted_mask) with shapes ``(b, v, t, n', f)``
+            and ``(b, v, t, n', m)``, where ``n'`` may include flattened depth.
+        """
         x, mask = self.get_nh(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask, **kwargs)
 
         x = x.view(*x.shape[:4],self.adjc.shape[-1],-1,x.shape[-1])
 
+        # Choose forward or reverse neighbor index.
         if reverse:
             index = self.nh_shift_indices[self.reverse_shift[shift_direction]]
         else:
@@ -315,7 +427,30 @@ class GridLayer(nn.Module):
         return x, mask
     
         
-    def get_nh(self, x, input_zoom=None, patch_index=0, zoom_patch_sample=-1, mask=None, zoom_patch_out=None, **kwargs):
+    def get_nh(
+        self,
+        x: torch.Tensor,
+        input_zoom: Optional[int] = None,
+        patch_index: int = 0,
+        zoom_patch_sample: int = -1,
+        mask: Optional[torch.Tensor] = None,
+        zoom_patch_out: Optional[int] = None,
+        **kwargs: Any
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Gather neighborhood data for a tensor at the configured zooms.
+
+        :param x: Input tensor of shape ``(b, v, t, n, d, f)`` or compatible.
+        :param input_zoom: Optional input zoom override.
+        :param patch_index: Patch index to sample.
+        :param zoom_patch_sample: Patch sampling zoom.
+        :param mask: Optional mask tensor of shape ``(b, v, t, n, m)``.
+        :param zoom_patch_out: Output zoom override.
+        :param kwargs: Additional keyword arguments forwarded to sampling methods.
+        :return: Tuple of (x_with_nh, mask_with_nh) with shapes
+            ``(b, v, t, n_out, nh, d, f)`` (or ``(b, v, t, n_out, nh, f)``)
+            and ``(b, v, t, n_out, nh, m)``.
+        """
         
         if zoom_patch_out is None:
             zoom_patch_out = self.zoom
@@ -325,10 +460,12 @@ class GridLayer(nn.Module):
         fs = x.shape[4:]
     
         if input_zoom is None:
+            # Infer the input zoom from the spatial dimension.
             input_zoom = int(math.log(s) / math.log(4) + zoom_patch_sample) if zoom_patch_sample > -1 else int(math.log(s/5) / math.log(4))
 
         zoom_diff = input_zoom - self.zoom
 
+        # Flatten extra feature dimensions so neighborhood gathering operates on 3D tensors.
         x = x.reshape(-1, s//4**zoom_diff, math.prod(fs)*4**zoom_diff)
 
         bvt_mask = mask.shape[:-3] if mask is not None else None
@@ -342,9 +479,11 @@ class GridLayer(nn.Module):
             x, mask = self.get_global_with_nh(x, mask=mask, zoom_patch_out=zoom_patch_out)
 
         if bvt_mask is not None:
+            # Restore original batch/variable/time grouping for masks.
             mask = mask.view(*bvt, s//4**zoom_diff, -1)
 
         elif mask is not None:
+            # Broadcast masks when they do not include b/v/t axes.
             mask = mask.unsqueeze(dim=1).expand(-1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1)
 
         x = x.view(*bvt, s//4**(input_zoom - zoom_patch_out), -1, *fs)
@@ -352,14 +491,45 @@ class GridLayer(nn.Module):
         return x, mask
 
 
-    def get_idx_of_patch(self, patch_index=None, zoom_patch_sample=None, return_local=True,**kwargs):
+    def get_idx_of_patch(
+        self,
+        patch_index: Optional[int] = None,
+        zoom_patch_sample: Optional[int] = None,
+        return_local: bool = True,
+        **kwargs: Any
+    ) -> torch.Tensor:
+        """
+        Get indices for a patch.
+
+        :param patch_index: Optional patch index.
+        :param zoom_patch_sample: Optional patch sampling zoom.
+        :param return_local: Whether to return local indices within the patch.
+        :param kwargs: Additional keyword arguments (unused).
+        :return: Patch index tensor of shape ``(p, s)`` or ``(s,)``.
+        """
         if patch_index is None:
             return self.adjc[:,0].unsqueeze(dim=0)
         else:
             return get_idx_of_patch(self.adjc, patch_index, zoom_patch_sample, return_local=return_local)
 
 
-    def get_coordinates(self, patch_index=None, zoom_patch_sample=None, with_nh=False, **kwargs):
+    def get_coordinates(
+        self,
+        patch_index: Optional[int] = None,
+        zoom_patch_sample: Optional[int] = None,
+        with_nh: bool = False,
+        **kwargs: Any
+    ) -> torch.Tensor:
+        """
+        Get coordinates for a patch or neighborhood.
+
+        :param patch_index: Optional patch index.
+        :param zoom_patch_sample: Optional patch sampling zoom.
+        :param with_nh: Whether to include neighborhood coordinates.
+        :param kwargs: Additional keyword arguments (unused).
+        :return: Coordinate tensor of shape ``(b, s, 2)`` or ``(b, s, nh, 2)``
+            when neighborhoods are included.
+        """
         
         if patch_index is not None and not with_nh:
             indices = get_idx_of_patch(
@@ -380,452 +550,3 @@ class GridLayer(nn.Module):
             indices = self.adjc[:,[0]].unsqueeze(dim=0)
 
         return self.coordinates[indices]
-
-
-
-class MultiRelativeCoordinateManager(nn.Module):
-
-    def __init__(self,  
-                grid_layers: Dict[str, GridLayer], 
-                rotate_coord_system=True) -> None:
-                
-        super().__init__()
-
-        self.rotate_coord_system = rotate_coord_system
-        self.rcms = nn.ModuleDict()
-
-        zooms = [int(zoom) for zoom in grid_layers.keys()]
-        nh_dists = [grid_layer.nh_dist for grid_layer in grid_layers.values()]
-
-        self.nh_dists = dict(zip(zooms, nh_dists))
-        self.grid_layers = grid_layers
-        
-    
-    def register_rcm(self,
-                     in_zoom, 
-                     out_zoom, 
-                     nh_in,
-                     precompute,
-                     coord_system,
-                     ref='out'):
-        
-        in_zoom_str = str(in_zoom)
-        out_zoom_str = str(out_zoom)
-
-        if in_zoom_str not in self.rcms.keys():
-            self.rcms[in_zoom_str] = nn.ModuleDict()
-            
-      
-        if out_zoom_str not in self.rcms[in_zoom_str].keys():
-            self.rcms[in_zoom_str][out_zoom_str] = RelativeCoordinateManager(
-                    grid_layer_in=self.grid_layers[in_zoom_str],
-                    grid_layer_out=self.grid_layers[out_zoom_str],
-                    nh_in=nh_in,
-                    precompute=precompute,
-                    coord_system=coord_system,
-                    rotate_coord_system=self.rotate_coord_system,
-                    ref=ref
-                )
-            
-
-    def forward(self, in_zoom, out_zoom, sample_configs={}, x=None, mask=None):
-        #indices_in  = sample_configs["indices_layers"][in_zoom] if sample_configs is not None else None
-        #indices_out = sample_configs["indices_layers"][out_zoom] if sample_configs is not None else None
-        
-        rcm = self.rcms[str(in_zoom)][str(out_zoom)]
-        coordinates_rel = rcm(sample_configs=sample_configs)
-
-        if x is None:
-            return coordinates_rel
-        else:
-            if rcm.nh_in:
-                x, mask = self.grid_layers[str(in_zoom)].get_nh(x, **sample_configs, mask=mask)
-            else:
-                x = x.unsqueeze(dim=4)
-                if mask is not None:
-                    mask = mask.unsqueeze(dim=-1)
-            
-            return coordinates_rel, x, mask
-    
-
-class RelativeCoordinateManager(nn.Module):
-    def __init__(self,  
-                grid_layer_in:GridLayer, 
-                grid_layer_out: GridLayer,
-                nh_in:bool= False,
-                seq_lvl:int = -1,
-                precompute:bool=False,
-                coord_system:str='polar',
-                rotate_coord_system=True,
-                ref='out') -> None:
-                
-        super().__init__()
-
-        self.grid_layer_in = grid_layer_in
-        self.grid_layer_out = grid_layer_out
-        self.nh_in = nh_in
-        self.seq_lvl = seq_lvl
-        self.rotate_coord_system = rotate_coord_system
-
-        self.coord_system = coord_system
-        self.precomputed = precompute
-        self.ref = ref
-
-        if precompute:
-            coordinates_rel = self.compute_rel_coordinates(nh_in=nh_in)
-            
-            self.register_buffer("coordinates_rel", torch.stack(coordinates_rel, dim=-1).squeeze(dim=1), persistent=False)
-            
-
-
-    def compute_rel_coordinates(self, patch_index=None, zoom_patch_sample=None, coordinates_in=None, coordinates_out=None, nh_in=False, **kwargs):
-
-        if coordinates_in is None:
-            coordinates_in = self.grid_layer_in.get_coordinates(patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, with_nh=nh_in)
-            coordinates_in = coordinates_in.unsqueeze(dim=-2)
-
-        elif coordinates_in is not None and nh_in:
-            coordinates_in,_ = self.grid_layer_in.get_nh(coordinates_in, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample)
-
-        if coordinates_out is None:
-            coordinates_out = self.grid_layer_out.get_coordinates(patch_index=patch_index, zoom_patch_sample=zoom_patch_sample)
-            coordinates_out = coordinates_out.unsqueeze(dim=-2)
-
-        seq_dim_out_total = coordinates_out.shape[1]
-        if coordinates_out.shape[1] > coordinates_in.shape[1]:
-            coordinates_out = coordinates_out.view(coordinates_out.shape[0],coordinates_in.shape[1],-1,2)
-
-        #if self.seq_lvl != -1:
-        #    coordinates_out = sequenize(coordinates_out, max_seq_zoom=self.seq_lvl)[:,:,[0]]
-        #    coordinates_in = sequenize(coordinates_in, max_seq_zoom=self.seq_lvl)
-
-        b, seq_dim_in, n_nh_in = coordinates_in.shape[:3]
-        _, seq_dim_out, _ = coordinates_out.shape[:3]
-
-      
-        coordinates_in = coordinates_in.view(b, seq_dim_out, -1, 2)
-        coordinates_out = coordinates_out.view(b, seq_dim_out, -1, 2)
-
-        if self.ref =='out':
-            coordinates_in = coordinates_in.unsqueeze(dim=-3)
-            coordinates_out = coordinates_out.unsqueeze(dim=-2)
-
-            coordinates_rel = get_distance_angle(
-                                    coordinates_out[...,0], coordinates_out[...,1], 
-                                    coordinates_in[...,0], coordinates_in[...,1], 
-                                    base=self.coord_system, periodic_fov=None,
-                                    rotate_coords=self.rotate_coord_system
-                                )
-        else:
-            coordinates_out = coordinates_out.unsqueeze(dim=-2)
-            coordinates_in = coordinates_in.unsqueeze(dim=-3)
-
-            coordinates_rel = get_distance_angle(
-                                    coordinates_in[...,0], coordinates_in[...,1], 
-                                    coordinates_out[...,0], coordinates_out[...,1], 
-                                    base=self.coord_system, periodic_fov=None,
-                                    rotate_coords=self.rotate_coord_system
-                                )
-        
-        return coordinates_rel
-    
-
-    def forward(self, coordinates_in=None, coordinates_out=None, sample_configs={}):
-        
-        if not self.precomputed:
-            coordinates_rel = self.compute_rel_coordinates(**sample_configs,
-                                         coordinates_in=coordinates_in,
-                                         coordinates_out=coordinates_out,
-                                         sample_configs=sample_configs,
-                                         nh_in = self.nh_in)
-        else:
-          
-            coordinates_rel = self.coordinates_rel
-
-            c_shape = coordinates_rel.shape
-                        
-            if self.ref == 'in':
-                indices = self.grid_layer_in.get_idx_of_patch(**sample_configs)
-                coordinates_rel = coordinates_rel[0,indices].view(*indices.shape[:2],*c_shape[2:])
-            else:
-                indices = self.grid_layer_out.get_idx_of_patch(**sample_configs)
-                coordinates_rel = coordinates_rel[0,indices].view(*indices.shape[:2],*c_shape[2:])
-      
-
-            coordinates_rel = (coordinates_rel[...,0],
-                           coordinates_rel[...,1])
-
-        return coordinates_rel
-
-
-
-
-def get_density_map(grid_dist_output, dists, mask_value=1e6, power=2):
-
-    area_ref = grid_dist_output**power
-    
-    dists_weights = 1/((dists < mask_value).sum(dim=-1, keepdim=True)+1e-10)
-
-    dists[dists >= mask_value] = 0
-
-    area_m = ((dists*dists_weights).sum(dim=-1,keepdim=True))**power
-
-    area_m[area_m==0] = mask_value
-
-    density = (area_ref/area_m)
-
-    return density
-
-
-
-def get_interpolation(x: torch.tensor, 
-                      mask: torch.tensor, 
-                      cutoff_dist: float,
-                      dist: torch.tensor,
-                      n_nh: int=3, 
-                      power:int=2, 
-                      mask_value:int=1e6,
-                      grid_layer_search: GridLayer = None, 
-                      sample_configs: dict=None):
-    
-  
-
-    b, nv, nt, n, nh, f = x.shape
-   
-    x = x.clone()
-   
-    n_l = dist.shape[1]
-    l = n // n_l
-    
-    x = x.view(*x.shape[:-2],-1)
-   
-    if grid_layer_search is not None:
-
-        x, mask = grid_layer_search.get_nh(
-            x, 
-            **sample_configs,
-            mask=mask
-            )
-    
-    x = x.view(b, nv, nt, n_l, -1, f)
-
-    n = dist.shape[1]
-
-    if mask is not None:
-        mask = mask.view(*x.shape[:4], -1) if mask is not None else None
-        dist_ = dist.unsqueeze(dim=1).unsqueeze(dim=1) + (mask.unsqueeze(dim=-2) * mask_value)
-    else:
-        dist_ = dist.unsqueeze(dim=1).unsqueeze(dim=1).expand(b,nv,nt,-1,-1,-1)
-
-    dist_ = dist_[...,:x.shape[-2]]
-
-    dist_vals, indices = torch.topk(dist_, n_nh, dim=-1, largest=False)
-
-    indices_offset = torch.arange(indices.shape[3], device=indices.device)
-    offset = dist_.shape[-1]
-
-    indices = indices + (indices_offset * offset).view(1, 1, 1, indices.shape[-3], 1, 1)
-
-    x = x.reshape(b, nv, nt, -1, f)
-    
-    indices = indices.reshape(b, nv, nt, -1, 1).expand(-1, -1, -1, -1, f)
-
-    x = torch.gather(x, -2, indices)
-
-    x = x.view(b, nv, nt, -1, n_nh, f)
-    
-    dist_vals = dist_vals.view(*dist_vals.shape[:3], -1, n_nh, 1)
-    dist_vals[dist_vals <= cutoff_dist] = cutoff_dist
-
-    weights = 1 / (dist_vals) ** power
-
-    weights = weights / weights.sum(dim=-2, keepdim=True)
-
-    x = (x * weights).sum(dim=-2)
-
-    dist_vals = dist_vals.squeeze(dim=-1).expand(-1, nv,-1,-1, -1)
-
-    return x, dist_vals
-
-
-def get_dists_interpolation(grid_layers: Dict,
-                            search_zoom_rel: int=2, 
-                            input_zoom: int=7, 
-                            target_zoom: int=0, 
-                            sample_configs: dict=None,
-                            input_coords: torch.tensor = None):
-
-    if input_coords is None:
-        coords = grid_layers[str(input_zoom)].get_coordinates(
-            patch_index = sample_configs['patch_index'],
-            zoom_patch_sample = sample_configs['zoom_patch_sample']
-            )
-
-        coords = coords.unsqueeze(dim=-2)
-    else:
-        coords = input_coords
-
-    nh = coords.shape[-2]
-    coords = coords.view(coords.shape[0], -1, nh*2)
-
-    search_zoom = max([input_zoom - search_zoom_rel, 0])
-
-    coords_nh, _ = grid_layers[str(search_zoom)].get_nh(
-        coords, 
-        patch_index = sample_configs['patch_index'],
-        zoom_patch_sample = sample_configs['zoom_patch_sample']
-        )
-    
-    target_coords = grid_layers[str(target_zoom)].get_coordinates(
-            patch_index = sample_configs['patch_index'],
-            zoom_patch_sample = sample_configs['zoom_patch_sample']
-            )
-
-    n_l = min([coords_nh.shape[1], target_coords.shape[1]])
-
-    b = coords_nh.shape[0]
-    coords_nh = coords_nh.view(b,n_l,-1,2)
-
-    target_coords = target_coords.view(b, n_l,-1, 2)
-
-    dist,_ = get_distance_angle(target_coords[...,0].unsqueeze(dim=-1),target_coords[...,1].unsqueeze(dim=-1), coords_nh[...,0].unsqueeze(dim=-2), coords_nh[...,1].unsqueeze(dim=-2))
-
-    return dist
-
-
-class Interpolator(nn.Module):
-
-    def __init__(self,  
-                grid_layers, 
-                search_zoom_rel: int=2, 
-                input_zoom: int=0, 
-                target_zoom: int=0, 
-                precompute = True,
-                nh_inter=3,
-                power=2,
-                cutoff_dist_zoom=None,
-                cutoff_dist=None,
-                input_coords=None,
-                input_dists=None
-                ) -> None:
-                
-
-        super().__init__()
-
-        self.precompute = precompute
-
-        if precompute:
-            if input_dists is None:
-                dists = get_dists_interpolation(grid_layers, 
-                                                search_zoom_rel=search_zoom_rel, 
-                                                input_zoom=input_zoom,
-                                                target_zoom=target_zoom,
-                                                input_coords=input_coords,
-                                                sample_configs={'patch_index': None, 'zoom_patch_sample': None})
-            
-            else:
-                dists = input_dists
-
-
-            self.register_buffer('dists', dists, persistent=False)
-
-        self.grid_layers = grid_layers
-        self.search_zoom_rel = search_zoom_rel
-        self.input_zoom = input_zoom
-        self.target_zoom = target_zoom
-        self.nh_inter = nh_inter
-        self.power = power
-
-        self.cutoff_dist_zoom = input_zoom if cutoff_dist_zoom is None else cutoff_dist_zoom
-        self.cutoff_dist = cutoff_dist
-
-    def forward(self,
-                x,
-                mask=None,
-                calc_density=False,
-                sample_configs={},
-                input_zoom=None,
-                target_zoom=None,
-                search_zoom_rel=None,
-                input_coords=None,
-                input_dists=None):
-        
-        compute_dists = (input_zoom is not None) | (target_zoom is not None) | (search_zoom_rel is not None) | (input_coords is not None)
-
-        compute_dists = compute_dists & (input_dists is None)
-
-
-        search_zoom_rel = self.search_zoom_rel if search_zoom_rel is None else search_zoom_rel
-        input_zoom = self.input_zoom if input_zoom is None else input_zoom
-        target_zoom = self.target_zoom if target_zoom is None else target_zoom
-
-        compute_dists = compute_dists | (self.precompute == False)
-
-        zoom_search = max([0,input_zoom - search_zoom_rel])
-        grid_layer_search = self.grid_layers[str(zoom_search)]
-
-        nh_inter = self.nh_inter
-        if not compute_dists and sample_configs is not None and input_dists is None:
-            
-            indices = self.grid_layers[str(zoom_search)].get_idx_of_patch(**sample_configs, return_local=False)
-
-            dist = self.dists[0,indices]
-
-
-        elif not compute_dists and sample_configs is None and input_dists is None:
-            dist = self.dists
-        
-        elif compute_dists:
-            dist = get_dists_interpolation(self.grid_layers, 
-                                    search_zoom_rel = search_zoom_rel,
-                                    input_zoom = input_zoom,
-                                    target_zoom = target_zoom,
-                                    input_coords=input_coords,
-                                    sample_configs=sample_configs)
-        else:
-            grid_layer_search = None
-            nh_inter = input_dists.shape[-1]
-            dist = input_dists.view(*input_dists.shape[:2],1,input_dists.shape[-1])
-
-        
-        if self.cutoff_dist is None:
-            cutoff_dist = max([self.grid_layers[str(self.cutoff_dist_zoom)].nh_dist, self.grid_layers[str(target_zoom)].nh_dist])
-        else:
-            cutoff_dist = self.cutoff_dist
-  
-
-        x, dist_ = get_interpolation(x,
-                                    mask, 
-                                    cutoff_dist, 
-                                    dist, 
-                                    nh_inter, 
-                                    power=self.power,
-                                    sample_configs=sample_configs,
-                                    grid_layer_search=grid_layer_search)
-        
-
-        if calc_density:
-            grid_dist_output = self.grid_layers[str(target_zoom)].nh_dist
-            density = get_density_map(grid_dist_output, dist_, power=self.power)
-
-        else:
-            density = None
-
-        return x, density
-    
-"""
-class Interpolator_downscale(nn.Module):
-
-    def __init__(self,  
-                grid_layers, 
-                input_zoom: int=0, 
-                target_zoom: int=0, 
-                precompute = True,
-                nh_inter=3,
-                power=2,
-                cutoff_dist_zoom=None,
-                cutoff_dist=None,
-                input_coords=None,
-                input_dists=None
-                ) -> None
-"""

@@ -1,15 +1,18 @@
-from typing import List,Dict
-from ..modules.grids.grid_utils import global_indices_to_paths_dict
-
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Union
 import math
 
 import torch
 import torch.nn as nn
 
-#import tensorly as tl
-#from tensorly.decomposition import tucker,parafac
+def get_ranks(shape: Sequence[int], rank: Union[int, float], rank_decay: float = 0):
+    """
+    Compute per-dimension ranks with optional decay.
 
-def get_ranks(shape, rank, rank_decay=0):
+    :param shape: Input tensor shape as a sequence of ints.
+    :param rank: Base rank value (absolute or relative).
+    :param rank_decay: Linear decay applied across dimensions.
+    :return: List of computed ranks per dimension.
+    """
     rank_ = []
     for k in range(len(shape)):
         r = rank * (1 - rank_decay*k/(max([1,len(shape)-1]))) 
@@ -29,7 +32,14 @@ def get_ranks(shape, rank, rank_decay=0):
     return ranks
 
 
-def get_fac_matrix(dim, rank):
+def get_fac_matrix(dim: int, rank: Union[int, float]):
+    """
+    Initialize a factor matrix with orthogonal columns.
+
+    :param dim: Input dimension.
+    :param rank: Factorization rank (absolute or relative).
+    :return: Learnable parameter matrix of shape ``(dim, rank)``.
+    """
     if isinstance(rank, float):
         rank = int(rank * dim)
 
@@ -41,14 +51,24 @@ def get_fac_matrix(dim, rank):
 
 
 class TuckerFacLayer(nn.Module):
+    """
+    Tucker factorization layer supporting variable-wise cores.
+
+    :param in_features: Input feature shape(s).
+    :param out_features: Output feature shape(s).
+    :param ranks: Per-dimension ranks for factorization.
+    :param rank_variables: Optional rank for variable factorization.
+    :param n_variables: Number of variables for variable-wise cores.
+    :param bias: Whether to include a bias term.
+    """
     def __init__(self,
-                 in_features: List|int, 
-                 out_features: List|int, 
-                 ranks: int = None,
-                 rank_variables = None,
-                 n_variables = 1,
-                 bias = False,
-                 **kwargs):
+                 in_features: Union[List[int], int], 
+                 out_features: Union[List[int], int], 
+                 ranks: Optional[List[Union[int, float]]] = None,
+                 rank_variables: Optional[int] = None,
+                 n_variables: int = 1,
+                 bias: bool = False,
+                 **kwargs: Any):
 
         super().__init__()
 
@@ -64,20 +84,23 @@ class TuckerFacLayer(nn.Module):
 
         assert len(in_features)==len(out_features), f"unmachting len of in_features {in_features} and out_features {out_features}"
         #contract_features = [rank_feat > 0 for k in in_features]
-        self.factor_letters =  iter("aefghijklmopqruwxyz")
-        self.core_letters = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
+        self.factor_letters: Iterator[str] = iter("aefghijklmopqruwxyz")
+        self.core_letters: Iterator[str] = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
 
         
         factorize_vars = rank_variables is not None
 
-        self.subscripts = {
+        self.subscripts: Dict[str, Any] = {
             'factors': [],
             'core': '',
             'x_in': 'bvtnd',
             'x_out': 'bvtnd',
             }
         
-        self.core_dims = []
+        self.core_dims: List[int] = []
+        self.factor_vars: Optional[nn.Parameter] = None
+        self.get_var_fac_fcn: Callable[..., List[torch.Tensor]]
+        self.get_core_fcn: Callable[..., torch.Tensor]
         
         # variables -----
         scale = 0
@@ -101,7 +124,7 @@ class TuckerFacLayer(nn.Module):
             self.get_core_fcn = self.get_core
             self.get_var_fac_fcn = self.get_empty1
 
-        self.factors = nn.ParameterList()
+        self.factors: nn.ParameterList = nn.ParameterList()
         in_dims = []
         for rank, f_in in zip(ranks, in_features):
 
@@ -116,8 +139,8 @@ class TuckerFacLayer(nn.Module):
             self.subscripts['x_out'] += x_sub
             out_dims.append(core_dim)
 
-        self.in_features = in_features
-        self.out_features = out_features
+        self.in_features: List[int] = in_features
+        self.out_features: List[int] = out_features
 
         core = torch.empty(self.core_dims)
 
@@ -131,8 +154,9 @@ class TuckerFacLayer(nn.Module):
                 nn.init.kaiming_normal_(c_)
                 core[k] = c_.reshape(self.core_dims[1:])
 
-        self.core = nn.Parameter(core, requires_grad=True)
+        self.core: nn.Parameter = nn.Parameter(core, requires_grad=True)
 
+        self.bias: Optional[nn.Parameter] = None
         if bias:
             if len(out_features)==1:
                 bias = torch.randn(out_features)
@@ -140,12 +164,20 @@ class TuckerFacLayer(nn.Module):
                 bias = torch.empty(out_features)
                 nn.init.kaiming_uniform_(bias)
                 
-            self.bias = nn.Parameter(bias)
-            self.return_fcn = self.return_w_bias
+            self.bias: nn.Parameter = nn.Parameter(bias)
+            self.return_fcn: Callable[[torch.Tensor], torch.Tensor] = self.return_w_bias
         else:
+            self.bias = None
             self.return_fcn = self.return_wo_bias
     
-    def add(self, rank, features):
+    def add(self, rank: Optional[Union[int, float]], features: int):
+        """
+        Register a factor matrix or passthrough dimension for a given feature size.
+
+        :param rank: Rank to use for this feature (None to skip factorization).
+        :param features: Feature dimension size.
+        :return: Tuple of (subscript, core_dim) for einsum construction.
+        """
 
         core_sub = next(self.core_letters)
 
@@ -166,26 +198,58 @@ class TuckerFacLayer(nn.Module):
 
         return x_sub, core_dim
 
-    def get_core_from_var_idx(self, emb=None):
+    def get_core_from_var_idx(self, emb: Optional[Dict[str, Any]] = None):
+        """
+        Select a variable-specific core tensor.
+
+        :param emb: Embedding dict containing variable indices.
+        :return: Core tensor for the selected variables.
+        """
         return self.core[emb['VariableEmbedder']]
     
-    def get_core(self,**kwargs):
+    def get_core(self, **kwargs: Any):
+        """
+        Return the full core tensor.
+        """
         return self.core
     
-    def get_empty1(self,**kwargs):
+    def get_empty1(self, **kwargs: Any):
+        """
+        Return an empty list for cases without variable factors.
+        """
         return []
     
-    def get_variable_factors(self, emb):
+    def get_variable_factors(self, emb: Dict[str, Any]):
+        """
+        Return variable-specific factor matrices.
+
+        :param emb: Embedding dict containing variable indices.
+        :return: List with variable factor matrix.
+        """
         return [self.factor_vars[emb['VariableEmbedder']]]
         
-    def return_w_bias(self, x):
+    def return_w_bias(self, x: torch.Tensor):
+        """
+        Add bias to the output tensor.
+        """
         return x + self.bias
     
-    def return_wo_bias(self, x):
+    def return_wo_bias(self, x: torch.Tensor):
+        """
+        Return the output tensor unchanged.
+        """
         return x
     
 
-    def forward(self, x: torch.Tensor, emb: Dict=None, sample_configs={}):
+    def forward(self, x: torch.Tensor, emb: Optional[Dict[str, Any]] = None, sample_configs: Dict[str, Any] = {}):
+        """
+        Apply Tucker factorized transformation.
+
+        :param x: Input tensor of shape ``(b, v, t, n, d, f_in...)``.
+        :param emb: Optional embedding dictionary.
+        :param sample_configs: Optional sampling configuration (unused).
+        :return: Output tensor of shape ``(b, v, t, n, d, f_out...)``.
+        """
         
         f_v = self.get_var_fac_fcn(emb=emb)
 
@@ -206,191 +270,9 @@ class TuckerFacLayer(nn.Module):
 
         factors = f_v + list(self.factors)
 
+        # Contract input, core, and factors using the constructed einsum equation.
         x = torch.einsum(einsum_eq, x, core, *factors)
         
         x = x.reshape(x_dims_out)
 
         return self.return_fcn(x)
-
-
-class CPFacLayer(nn.Module):
-    def __init__(self,
-                 in_features: List[int], 
-                 out_features: List[int], 
-                 rank: int,
-                 rank_groups: int = None,
-                 n_variables: int = 1,
-                 keys: List[str] = [],
-                 contract_feats: bool = True,
-                 contract_channel: bool = True,
-                 init: str = 'std_scale',
-                 std: float = 0.1,
-                 bias: bool = False,
-                 skip_dims=None,
-                 **kwargs):
-        """
-        CPFacLayer initializes one CP tensor per (in_features, out_features) pair.
-        - Uses get_cp_tensors internally.
-        - Can optionally use keys for ParameterDict.
-        """
-
-        super().__init__()
-        self.n_variables = n_variables
-        # Handle single int inputs
-        if isinstance(in_features, int):
-            in_features = [in_features]
-        if isinstance(out_features, int):
-            out_features = [out_features]
-
-        assert len(in_features) == len(out_features), "`in_features` and `out_features` must be same length"
-        if keys:
-            assert len(keys) == len(in_features), "`keys` must match length of `in_features` and `out_features`"
-
-        if skip_dims is not None:
-            pass
-        # CP tensors (using your get_cp_tensors function)
-        in_features_f =[] 
-        out_features_f = []
-        for k,in_feats in enumerate(in_features):
-            skip = skip_dims[k] if skip_dims is not None else False
-            if k < len(in_features)-1 and not skip:
-                in_features_f.append(in_feats)
-                out_features_f.append(out_features[k])
-
-        cp_tensors = get_cp_tensors(
-            in_features=in_features_f,
-            out_features=out_features_f,
-            rank=rank,
-            n_variables=n_variables,
-            keys=keys,
-            contract=contract_feats,
-            init=init,
-            std=std
-        )
-
-        cp_tensor = get_cp_tensor(
-            in_features=in_features[-1],
-            out_features=out_features[-1],
-            rank=rank,
-            n_variables=n_variables,
-            contract=contract_channel,
-            init=init,
-            std=std
-        )
-        
-        cp_tensors.append(cp_tensor)
-
-        self.cp_tensors = cp_tensors
-        self.in_feats = in_features
-        self.out_feats = out_features
-
-        # Optional: bias per output tensor
-        """
-        if bias:
-            if keys:
-                self.bias = nn.ParameterDict({
-                    str(k): nn.Parameter(torch.zeros(out_f)) for k, out_f in zip(keys, out_features)
-                })
-            else:
-                self.bias = nn.ParameterList([
-                    nn.Parameter(torch.zeros(out_f)) for out_f in out_features
-                ])
-        else:
-            self.bias = None
-        """
-        self.equation = get_cp_equation(len(in_features), n_variables=n_variables, contract_feats=contract_feats, contract_channel=contract_channel, skip_dims=skip_dims)
-
-    def get_tensors(self, emb):
-        return [self.get_tensor(tensor, emb) for tensor in self.cp_tensors]
-
-    def get_tensor(self, tensor, emb):
-        if self.n_variables==1:
-            return tensor
-        else:
-            return tensor[emb['VariableEmbedder']]
-
-    def forward(self, x, emb={}, sample_configs={}):
-        x = x.view(*x.shape[:3],-1,*self.in_feats)
-        x = torch.einsum(self.equation, x, *self.get_tensors(emb))
-
-        x = x.view(*x.shape[:3],-1,*self.out_feats)
-        return x
-
-def get_cp_tensor(in_features, out_features, rank, n_variables=1, init='std_scale', std=0.1, contract=True):
-    
-    if contract:
-        c_dims = [n_variables, in_features, out_features, rank]
-
-    elif in_features==out_features:
-        c_dims = [n_variables, out_features, rank]
-
-    else:
-        ValueError("in_features != out_features with no contraction")
-
-    weight = torch.empty(c_dims)
-    nn.init.normal_(weight)
-
-    if init=='std_scale' and not contract:
-        weight = (1 + std*weight)/math.sqrt(rank * out_features)
-
-    elif init=='std_scale' and contract:
-        weight = (1 + std*weight)/math.sqrt(rank * in_features * out_features)
-        
-    return nn.Parameter(weight, requires_grad=True)
-
-
-def get_cp_tensors(in_features, out_features, rank, n_variables=1, keys=[], contract=True, init='std_scale',std=0.1):
-    
-    if len(keys)==0:
-        tensors = nn.ParameterList()
-        for in_f, out_f in zip(in_features,out_features):
-            tensors.append(get_cp_tensor(in_f, out_f, rank, n_variables=n_variables,contract=contract, init=init, std=std))
-    else:
-        tensors = nn.ParameterDict()
-        for key,in_f, out_f in zip(keys,in_features,out_features):
-            tensors[str(key)] = get_cp_tensor(in_f, out_f, rank, n_variables=n_variables,contract=contract, init=init, std=std)
-    
-    return tensors
-
-
-    
-def get_cp_equation(n_dims, n_variables=1, contract_feats=True, contract_channel=True, nh_dim=False, skip_dims=None):
-
-    x_letters =  iter("adefgijklmopqruwxyz")
-    tensor_letters = iter("ABCDEFGHIJKLMNOPQSTUVWXYZ") 
-    
-    x_in_subscript = 'bvtn' if not nh_dim else 'bvtnh'
-    x_out_subscript = 'bvtn' if not nh_dim else 'bvtnh'
-    
-    tensors_subscripts = []
-    for k in range(n_dims):
-        subs = '' if n_variables==1 else 'bv'
-        skip = skip_dims[k] if skip_dims is not None else False
-
-        if skip:
-            sub = next(tensor_letters)
-            x_in_subscript += sub
-            x_out_subscript += sub
-
-        else:
-            if (contract_feats) or (contract_channel and k==n_dims-1):
-                subs_in = next(tensor_letters)
-                subs_out = next(tensor_letters)
-                x_in_subscript += subs_in
-                x_out_subscript += subs_out
-
-                subs += subs_in + subs_out + 'R'
-            else:
-                subs_in_out  = next(x_letters)
-                x_in_subscript += subs_in_out
-                x_out_subscript += subs_in_out
-                subs += subs_in_out + 'R'
-
-        if not skip:
-            tensors_subscripts.append(subs)
-
-
-    lhs = f','.join([x_in_subscript] + tensors_subscripts)
-    equation = f'{lhs}->{x_out_subscript}'
-
-    return equation

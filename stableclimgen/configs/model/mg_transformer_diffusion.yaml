@@ -26,7 +26,7 @@ model:
     aggregation: 'shift_scale'
   block_configs:
     "0":
-      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3]
       kv_zooms: [3]
@@ -54,7 +54,7 @@ model:
         embed_mode: "sum"
         token_overlap_space: False
     "0_0":
-      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
@@ -79,7 +79,7 @@ model:
         embed_confs: ${embedding}
         embed_mode: "sum"
     "conservative": 
-      _target_: stableclimgen.src.modules.multi_grid.mg_base.ConservativeLayerConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_base.ConservativeLayerConfig
 gaussian_diffusion:
   _target_: stableclimgen.src.modules.diffusion.mg_respace.SpacedDiffusion
   diffusion_steps: 1000

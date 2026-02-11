@@ -10,14 +10,13 @@ from omegaconf import DictConfig
 from einops import rearrange
 
 from stableclimgen.src.data.datasets_base import BaseDataset
-from stableclimgen.src.utils.file_export import export_healpix_to_netcdf
 from stableclimgen.src.data.pl_data_module import DataModule
 from stableclimgen.src.utils.helpers import load_from_state_dict
 import healpy as hp
 
 
 
-@hydra.main(version_base=None, config_path="../configs/", config_name="healpix_vae_test")
+@hydra.main(version_base=None, config_path="../configs/", config_name="mg_transformer_test")
 def test(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,
@@ -87,12 +86,6 @@ def test(cfg: DictConfig) -> None:
     torch.save(output, cfg.output_path)
     mask = dict(zip(test_dataset.var_groups, (mask).split(1, dim=1)))
     torch.save(mask, cfg.output_path.replace(".pt", "_mask.pt"))
-
-    if hasattr(cfg, "save_netcdf") and cfg.save_netcdf:
-        logger_conf = cfg.logger.logger
-        export_healpix_to_netcdf(test_dataset, max_zoom, output, mask,
-                                 logger_conf.run_id if "MLFlowLogger" in logger_conf['_target_'] else logger_conf.id,
-                                 cfg.output_path)
 
 if __name__ == "__main__":
     test()

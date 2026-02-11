@@ -1,17 +1,40 @@
+from typing import Any, Dict, Tuple
+
 import torch
 
 import lightning.pytorch as pl
 
-from stableclimgen.src.models.mg_transformer.pl_mg_model import merge_sampling_dicts
-
 
 class LightningProbabilisticModel(pl.LightningModule):
-    def __init__(self, n_samples=1, max_batchsize=-1):
-        super().__init__()
-        self.n_samples = n_samples
-        self.max_batchsize = max_batchsize
+    """
+    LightningModule mixin that expands batches for probabilistic sampling.
+    """
 
-    def predict_step(self, batch, batch_index):
+    def __init__(self, n_samples: int = 1, max_batchsize: int = -1) -> None:
+        """
+        Initialize the probabilistic wrapper.
+
+        :param n_samples: Number of samples per input in prediction.
+        :param max_batchsize: Maximum expanded batch size per chunk (-1 for no limit).
+        :return: None.
+        """
+        super().__init__()
+        self.n_samples: int = n_samples
+        self.max_batchsize: int = max_batchsize
+
+    def predict_step(
+        self,
+        batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
+        batch_index: int,
+    ) -> Dict[str, Any]:
+        """
+        Expand the batch for probabilistic sampling and call the model-specific prediction.
+
+        :param batch: Tuple ``(source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms)``
+            with tensors shaped ``(b, v, t, n, d, f)`` per zoom.
+        :param batch_index: Index of the current batch.
+        :return: Dictionary with output groups and masks.
+        """
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         first_valid_target = next((g for g in target_groups if g), None)
@@ -21,7 +44,7 @@ class LightningProbabilisticModel(pl.LightningModule):
         batch_size = first_valid_target[max(first_valid_target.keys())].shape[0]
         total_samples = batch_size * self.n_samples  # Total expanded batch size
 
-        # Repeat each sample n_samples times for each group
+        # Repeat each sample n_samples times for each group.
         source_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in source_groups]
         target_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in target_groups]
         mask_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in mask_groups] if mask_groups else [None] * len(source_groups)

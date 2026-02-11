@@ -1,7 +1,12 @@
 _target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
 lambda_loss_dict:
   zooms:
-    MSE_masked_loss: 1
+    3:
+      MSE_loss: 1
+    5:
+      MSE_loss: 1
+    6:
+      MSE_loss: 1
 weight_decay: 0
 lr_groups:
   default:
@@ -21,7 +26,7 @@ model:
     aggregation: 'shift_scale'
   block_configs:
     "0":
-      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3]
       kv_zooms: [3]
@@ -49,7 +54,7 @@ model:
         embed_mode: "sum"
         token_overlap_space: False
     "0_0":
-      _target_: stableclimgen.src.modules.multi_grid.field_attention.FieldAttentionConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
@@ -74,4 +79,4 @@ model:
         embed_confs: ${embedding}
         embed_mode: "sum"
     "conservative": 
-      _target_: stableclimgen.src.modules.multi_grid.mg_base.ConservativeLayerConfig
+      _target_: stableclimgen.src.modules.field_space.field_space_base.ConservativeLayerConfig
