@@ -15,7 +15,7 @@ class BatchReshapeAllocator:
     def __init__(self, dataset):
         self.dataset = dataset
 
-    def _merge_time_batch_groups(self, source_groups, target_groups, mask_groups, emb_groups):
+    def _merge_time_batch_groups(self, source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms):
         n_samples_time = getattr(self.dataset, "load_n_samples_time", 1)
 
 
@@ -40,8 +40,9 @@ class BatchReshapeAllocator:
         target_groups = [_merge_obj(group) for group in target_groups]
         mask_groups = [_merge_obj(group) for group in mask_groups]
         emb_groups = [_merge_obj(group) for group in emb_groups]
+        patch_index_zooms = _merge_obj(patch_index_zooms)
 
-        return source_groups, target_groups, mask_groups, emb_groups
+        return source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms
 
     def __call__(self, batch):
         # Use the default collate function to create the initial batch.
@@ -49,8 +50,8 @@ class BatchReshapeAllocator:
         # The shape will be (batch_size, n, C, H, W).
         source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = default_collate(batch)
 
-        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups = self._merge_time_batch_groups(
-            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups
+        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = self._merge_time_batch_groups(
+            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
         )
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms

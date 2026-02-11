@@ -224,10 +224,13 @@ class ScaledLogNormalizer(DataNormalizer):
 
         self.scale = definition_dict.get('scale', 1e6)
 
-        for key, val in stat_dict['quantiles'].items():
-            stat_dict['quantiles'][key] = float(torch.log1p(torch.tensor(val * self.scale)))
+        stat_dict_ = stat_dict.copy()
+        stat_dict_['quantiles'] = stat_dict['quantiles'].copy()
 
-        self.quantile_normalizer = QuantileNormalizer(stat_dict, definition_dict)
+        for key, val in stat_dict['quantiles'].items():
+            stat_dict_['quantiles'][key] = float(torch.log1p(torch.tensor(val * self.scale)))
+
+        self.quantile_normalizer = QuantileNormalizer(stat_dict_, definition_dict)
         self.zero_offset = float(
             self.quantile_normalizer.normalize(torch.tensor(0.0))
         )

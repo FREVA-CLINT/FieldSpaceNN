@@ -7,16 +7,12 @@ import xarray as xr
 from omegaconf import ListConfig
 from einops import rearrange
 from torch.utils.data import Dataset
-from zarr.errors import ZarrUserWarning
 import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
 
-
-
 warnings.filterwarnings(
     "ignore",
-    message="",
-    category=ZarrUserWarning,
+    message="ZarrUserWarning*",
 )
 
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, apply_zoom_diff, decode_zooms
@@ -702,6 +698,9 @@ class BaseDataset(Dataset):
             source_zooms_groups_out = [source_zooms_groups_out_]
             target_zooms_groups_out = [target_zooms_groups_out_]
             mask_zooms_groups = [mask_zooms_groups_]
+        
+        for zoom, indices in patch_index_zooms.items():
+            patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 
