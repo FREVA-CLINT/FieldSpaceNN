@@ -1,4 +1,4 @@
-_target_: stableclimgen.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
+_target_: fieldspacenn.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
 kl_weight: 1.0e-10
 lambda_loss_dict:
   zooms:
@@ -20,7 +20,7 @@ lr_groups:
     lr: 0.0005
     warmup: 500
 model:
-  _target_: stableclimgen.src.models.mg_autoencoder.mg_autoencoder.MG_AutoEncoder
+  _target_: fieldspacenn.src.models.mg_autoencoder.mg_autoencoder.MG_AutoEncoder
   mgrids: ${mgrids}
   in_zooms: [3,5,6]
   in_features: 1
@@ -32,7 +32,7 @@ model:
     aggregation: 'shift_scale'
   encoder_block_configs:
     "att_0":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
@@ -57,7 +57,7 @@ model:
         embed_confs: ${embedding}
         embed_mode: "sum"
     "down_0":
-      _target_: stableclimgen.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
       in_zooms: [5,6]
       target_zooms: [5]
       field_zoom: 4
@@ -65,7 +65,7 @@ model:
       with_nh: true
       type: "mlp"
     "att_1":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5]
       kv_zooms: [3,5]
@@ -91,7 +91,7 @@ model:
         embed_mode: "sum"
   decoder_block_configs:
     "att_0":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5]
       kv_zooms: [3,5]
@@ -116,7 +116,7 @@ model:
         embed_confs: ${embedding}
         embed_mode: "sum"
     "up_0":
-      _target_: stableclimgen.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
       in_zooms: [5]
       target_zooms: [6]
       field_zoom: 3
@@ -124,7 +124,7 @@ model:
       with_nh: true
       type: "mlp"
     "att_1":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]

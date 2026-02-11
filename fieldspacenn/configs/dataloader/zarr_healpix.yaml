@@ -1,5 +1,5 @@
 dataset:
-  _target_: stableclimgen.src.data.datasets_healpix.HealPixLoader
+  _target_: fieldspacenn.src.data.datasets_healpix.HealPixLoader
   norm_dict: ${run_dir}/input/norm_dict.json
   p_dropout: 0
   random_p: false
@@ -27,7 +27,7 @@ dataset:
       mask_n_last_ts: 1
   output_max_zoom_only: false
 datamodule:
-  _target_: stableclimgen.src.data.pl_data_module.DataModule
+  _target_: fieldspacenn.src.data.pl_data_module.DataModule
   batch_size: 2
   num_workers: 0
   use_costum_ddp_sampler: false

@@ -1,14 +1,14 @@
 [tool.poetry]
-name = "stableclimgen"
+name = "fieldspacenn"
 version = "0.1.0"
 description = "A framework of AI methods for generating unstructured climate data."
 authors = ["Climate Informatics and Technology group at DKRZ (Deutsches Klimarechenzentrum)"]
 license = "CC0"
 readme = "README.md"
 
-homepage = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
-repository = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
-documentation = "https://github.com/FREVA-CLINT/stableclimgen/tree/main"
+homepage = "https://github.com/FREVA-CLINT/fieldspacenn/tree/main"
+repository = "https://github.com/FREVA-CLINT/fieldspacenn/tree/main"
+documentation = "https://github.com/FREVA-CLINT/fieldspacenn/tree/main"
 classifiers = [
     'Development Status :: 3 - Alpha',
     'Intended Audience :: Science/Research',
@@ -66,5 +66,5 @@ requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-stableclimgen-train = "stableclimgen.src.train:train"
-stableclimgen-test-healpix = "stableclimgen.src.test_healpix:test"
+fieldspacenn-train = "fieldspacenn.src.train:train"
+fieldspacenn-test-healpix = "fieldspacenn.src.test_healpix:test"

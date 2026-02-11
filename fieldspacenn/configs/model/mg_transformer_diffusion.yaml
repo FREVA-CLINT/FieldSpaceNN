@@ -1,4 +1,4 @@
-_target_: stableclimgen.src.models.mg_transformer.pl_mg_diffusion_model.Lightning_MG_diffusion_transformer
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_diffusion_model.Lightning_MG_diffusion_transformer
 lambda_loss_dict:
   zooms:
     3:
@@ -13,7 +13,7 @@ lr_groups:
     lr: 0.001
     warmup: 2000
 model:
-  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
   in_zooms: [3,5,6]
   in_features: 1
@@ -26,7 +26,7 @@ model:
     aggregation: 'shift_scale'
   block_configs:
     "0":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3]
       kv_zooms: [3]
@@ -54,7 +54,7 @@ model:
         embed_mode: "sum"
         token_overlap_space: False
     "0_0":
-      _target_: stableclimgen.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
       separate_mlp_norm: True
       q_zooms: [3,5,6]
       kv_zooms: [3,5,6]
@@ -79,9 +79,9 @@ model:
         embed_confs: ${embedding}
         embed_mode: "sum"
     "conservative": 
-      _target_: stableclimgen.src.modules.field_space.field_space_base.ConservativeLayerConfig
+      _target_: fieldspacenn.src.modules.field_space.field_space_base.ConservativeLayerConfig
 gaussian_diffusion:
-  _target_: stableclimgen.src.modules.diffusion.mg_respace.SpacedDiffusion
+  _target_: fieldspacenn.src.modules.diffusion.mg_respace.SpacedDiffusion
   diffusion_steps: 1000
   diffusion_step_scheduler:
     6: "linear"

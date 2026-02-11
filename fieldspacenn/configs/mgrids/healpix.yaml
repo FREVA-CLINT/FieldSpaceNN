@@ -1,0 +1,2 @@
+_target_: fieldspacenn.src.modules.grids.grid_utils.healpix_grid_to_mgrid
+zoom_max: 6

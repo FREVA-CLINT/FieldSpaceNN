@@ -3,7 +3,7 @@ from typing import Optional, List, Tuple
 import torch
 import torch.nn as nn
 
-from stableclimgen.src.modules.vae.quantization import Quantization
+from fieldspacenn.src.modules.vae.quantization import Quantization
 from ..cnn.confs import CNNBlockConfig, QuantConfig
 from ...modules.cnn.cnn_base import ConvBlockSequential, PatchEmbedderND, ConvUnpatchify
 from ...modules.cnn.resnet import ResBlockSequential

@@ -1,22 +1,22 @@
-_target_: stableclimgen.src.models.cnn_vae.pl_model.LightningVAE
+_target_: fieldspacenn.src.models.cnn_vae.pl_model.LightningVAE
 lr: 1e-4
 lr_warmup: 5000
 model:
-  _target_: stableclimgen.src.models.cnn_vae.model.CNN_VAE
+  _target_: fieldspacenn.src.models.cnn_vae.model.CNN_VAE
   init_in_ch: 1
   final_out_ch: 1
   model_channels: 64
   patch_emb_size: [1, 1]
   patch_emb_kernel: [3, 3]
   block_configs:
-    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+    - _target_: fieldspacenn.src.models.cnn.confs.CNNBlockConfig
       block_type: "ResnetBlock"
       depth: 1
       enc: true
       ch_mult: [1, 1, 1, 2, 2, 2, 2, 2, 2, 4, 4]
       sub_confs:
         blocks: [ "id", "id", "down", "id", "id", "down", "id", "id", "down", "id", "id" ]
-    - _target_: stableclimgen.src.models.cnn.confs.CNNBlockConfig
+    - _target_: fieldspacenn.src.models.cnn.confs.CNNBlockConfig
       block_type: "ResnetBlock"
       depth: 1
       dec: true
@@ -24,7 +24,7 @@ model:
       sub_confs:
         blocks: [ "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id", "up", "id", "id", "id" ]
   quant_config:
-    _target_: stableclimgen.src.models.cnn.confs.QuantConfig
+    _target_: fieldspacenn.src.models.cnn.confs.QuantConfig
     block_type: "ConvBlock"
     latent_ch: [4, 4]
     sub_confs:

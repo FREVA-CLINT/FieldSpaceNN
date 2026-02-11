@@ -5,8 +5,8 @@ import torch.nn as nn
 
 from einops import rearrange
 
-from stableclimgen.src.modules.cnn.cnn_base import Upsample, Downsample, conv_nd, EmbedBlock, EmbedBlockSequential
-from stableclimgen.src.utils.helpers import check_value
+from fieldspacenn.src.modules.cnn.cnn_base import Upsample, Downsample, conv_nd, EmbedBlock, EmbedBlockSequential
+from fieldspacenn.src.utils.helpers import check_value
 
 
 class ResBlock(EmbedBlock):

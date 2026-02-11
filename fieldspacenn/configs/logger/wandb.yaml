@@ -1,4 +1,4 @@
-_target_: stableclimgen.src.utils.logger.CustomImageLogger
+_target_: fieldspacenn.src.utils.logger.CustomImageLogger
 logger_type: wandb
 save_snapshot_images: true
 log_snapshot_images: false

@@ -1,4 +1,4 @@
-_target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_model.LightningMGModel
 lambda_loss_dict:
   zooms:
     MSE_loss: 1
@@ -8,7 +8,7 @@ lr_groups:
     lr: 2e-4
     warmup: 2000
 model:
-  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
   mgrids: ${mgrids}
   in_zooms: [6]
   in_features: 1
@@ -24,14 +24,14 @@ model:
     aggregation: 'shift_scale'
   block_configs:
     "patch-to-token":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      _target_: fieldspacenn.src.modules.multi_grid.confs.MGFieldLayerConfig
       target_features: [512]
       in_zooms: [6]
       target_zooms: [3]
       field_zoom: 3
       out_zooms: [3]
     "embed":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      _target_: fieldspacenn.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [512]
       zooms: [3]
       identity_if_equal: true
@@ -42,7 +42,7 @@ model:
           embed_confs: ${embedding}
           embed_mode: "sum"
     "0":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      _target_: fieldspacenn.src.modules.multi_grid.confs.MGProcessingConfig
       out_features: [512]
       zooms: [3]
       layer_settings:
@@ -51,11 +51,11 @@ model:
         seq_lengths: [10]
         mlp_mult: 2
     "token-to-patch":
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      _target_: fieldspacenn.src.modules.multi_grid.confs.MGFieldLayerConfig
       target_features: [1]
       in_zooms: [3]
       target_zooms: [6]
       field_zoom: 3
       out_zooms: [6]
     "conservative": 
-      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig
+      _target_: fieldspacenn.src.modules.multi_grid.confs.MGConservativeConfig

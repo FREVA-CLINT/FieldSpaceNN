@@ -9,9 +9,9 @@ from lightning.pytorch import Trainer
 from omegaconf import DictConfig
 from einops import rearrange
 
-from stableclimgen.src.data.datasets_base import BaseDataset
-from stableclimgen.src.data.pl_data_module import DataModule
-from stableclimgen.src.utils.helpers import load_from_state_dict
+from .data.datasets_base import BaseDataset
+from .data.pl_data_module import DataModule
+from .utils.helpers import load_from_state_dict
 import healpy as hp
 
 
