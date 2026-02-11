@@ -255,7 +255,7 @@ class BaseDataset(Dataset):
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
         if file_path_target is None:
-            ds_target = ds_source
+            ds_target = None
 
         elif file_path_target==file_path_source and not drop_source:
             ds_target = None
@@ -425,6 +425,13 @@ class BaseDataset(Dataset):
                 if key in sample_configs:
                     sample_configs[key]['patch_index'] = value
             return {}, {}, {}, sample_configs
+        if data_target is None:
+            # Defer target construction until here to avoid masking it with source dropouts.
+            data_target = {zoom: data_source[zoom].clone() for zoom in data_source.keys()}
+        else:
+            for zoom in list(data_source.keys()):
+                if zoom not in data_target or data_target[zoom] is None:
+                    data_target[zoom] = data_source[zoom].clone()
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
@@ -586,10 +593,10 @@ class BaseDataset(Dataset):
                     self.mapping[mapping_zoom],
                     mapping_zoom,
                     zoom)
-            target_dataset = ds_target if ds_target is not None else ds_source
-            if target_dataset is not None:
+            
+            if ds_target is not None:
                 ds_target_zoom = self.select_ranges(
-                    target_dataset,
+                    ds_target,
                     time_indices,
                     patch_index,
                     self.mapping[mapping_zoom],
@@ -621,7 +628,7 @@ class BaseDataset(Dataset):
                         zoom,
                     )
                 else:
-                    data_target = data_source.clone()
+                    data_target = None
                     data_time_target_zoom_group = data_time_zoom_group
 
                 source_zooms_groups[group_idx][zoom] = data_source
