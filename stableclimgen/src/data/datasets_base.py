@@ -255,7 +255,7 @@ class BaseDataset(Dataset):
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
         if file_path_target is None:
-            ds_target = copy.deepcopy(ds_source)
+            ds_target = ds_source
 
         elif file_path_target==file_path_source and not drop_source:
             ds_target = None
@@ -301,8 +301,8 @@ class BaseDataset(Dataset):
 
                 if patch_dim:
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
-            #print(isel_dict, ds.sizes)
-            ds_zoom = ds.isel(isel_dict)
+
+        ds_zoom = ds.isel(isel_dict)
     
         return ds_zoom
     
@@ -345,7 +345,7 @@ class BaseDataset(Dataset):
                     drop_mask_ = drop_mask_[:, :, patch_indices]
 
             if data_time_zoom is None:
-                data_time_zoom = torch.tensor(ds["time"].values).float()
+                data_time_zoom = torch.from_numpy(ds["time"].values).float()
 
             for variable in variables:
                 values = ds[variable].values
@@ -357,7 +357,7 @@ class BaseDataset(Dataset):
                 if not patch_dim:
                     values = values.reshape(nt, d, -1)[:, :, :, indices.view(-1) if post_map else indices[patch_indices].view(-1)]
 
-                data = torch.tensor(values).view(nt, d, -1)
+                data = torch.from_numpy(values).view(nt, d, -1)
 
                 if self.normalize_data:
                     data = self.var_normalizers[zoom][variable].normalize(data)
