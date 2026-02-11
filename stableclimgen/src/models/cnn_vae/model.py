@@ -5,10 +5,9 @@ import torch.nn as nn
 
 from stableclimgen.src.modules.vae.quantization import Quantization
 from ..cnn.confs import CNNBlockConfig, QuantConfig
-from ...modules.cnn.cnn_base import ConvBlockSequential
+from ...modules.cnn.cnn_base import ConvBlockSequential, PatchEmbedderND, ConvUnpatchify
 from ...modules.cnn.resnet import ResBlockSequential
 from ...modules.vae.distributions import AbstractDistribution
-from ...modules.cnn.patch import PatchEmbedderND, ConvUnpatchify
 from ...modules.rearrange import RearrangeConvCentric
 from ...modules.transformer.transformer_base import TransformerBlock
 from ...modules.cnn.cnn_base import EmbedBlockSequential

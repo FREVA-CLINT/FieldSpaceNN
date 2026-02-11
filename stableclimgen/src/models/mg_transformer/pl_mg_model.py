@@ -309,7 +309,7 @@ class LightningMGModel(pl.LightningModule):
 
             output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
 
-            self.logger.log_tensor_plot(source, output, target, mask, sample_configs, emb, max_zoom, self.current_epoch, output_comp=output_comp)
+            self.logger.log_healpix_tensor_plot(source, output, target, mask, sample_configs, emb, max_zoom, self.current_epoch, output_comp=output_comp)
             
         return loss
 

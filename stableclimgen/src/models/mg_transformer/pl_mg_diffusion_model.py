@@ -205,7 +205,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 else:
                     pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
-                self.logger.log_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs_p, emb_p, max_zoom, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
+                self.logger.log_healpix_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs_p, emb_p, max_zoom, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
 
         return loss
 

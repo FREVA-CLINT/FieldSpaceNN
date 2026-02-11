@@ -1,5 +1,5 @@
 defaults:
-  - trainer: mg_transformer
+  - trainer: trainer
   - logger: wandb
   - model: mg_transformer_diffusion
   - mgrids: healpix

@@ -1,4 +1,4 @@
-from typing import Any, Sequence
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
 from lightning.pytorch import LightningDataModule
@@ -13,6 +13,12 @@ class IdentityAllocator:
     A callable class to be used as a collate_fn.
     """
     def __call__(self, batch: Sequence[Any]):
+        """
+        Collate a batch using the default PyTorch collate.
+
+        :param batch: Sequence of dataset samples.
+        :return: Collated batch.
+        """
         return default_collate(batch)
 
 
@@ -37,7 +43,7 @@ class BatchReshapeAllocator:
         target_groups: Any,
         mask_groups: Any,
         emb_groups: Any,
-        patch_index_zooms
+        patch_index_zooms: Any
     ):
         """
         Merge the time-sample dimension into the batch dimension when present.
@@ -46,6 +52,7 @@ class BatchReshapeAllocator:
         :param target_groups: Batched target group tensors or nested containers.
         :param mask_groups: Batched mask group tensors or nested containers.
         :param emb_groups: Batched embedding group tensors or nested containers.
+        :param patch_index_zooms: Patch index mapping or tensor.
         :return: Tuple of merged ``(source_groups, target_groups, mask_groups, emb_groups)``.
             If a tensor has shape ``(b, s, ...)`` with ``s=load_n_samples_time``, it is
             reshaped to ``(b * s, ...)`` so the leading dimension matches the base
@@ -108,9 +115,11 @@ class DataModule(LightningDataModule):
         dataset_test: Any = None,
         batch_size: int = 16,
         num_workers: int = 16,
+        num_val_workers: Optional[int] = None,
         use_costum_ddp_sampler: bool = False,
-        prefetch_factor=None,persistent_workers=False
-    ) -> None:
+        prefetch_factor: Optional[int] = None,
+        persistent_workers: bool = False
+    ):
         """
         Initialize the data module and its datasets/collators.
 
@@ -119,7 +128,10 @@ class DataModule(LightningDataModule):
         :param dataset_test: Test dataset instance.
         :param batch_size: Batch size for all dataloaders.
         :param num_workers: Number of worker processes for dataloaders.
+        :param num_val_workers: Number of workers for validation dataloader.
         :param use_costum_ddp_sampler: Whether to use a custom DDP sampler.
+        :param prefetch_factor: Optional prefetch factor for dataloaders.
+        :param persistent_workers: Whether to keep dataloader workers alive.
         :return: None.
         """
         super().__init__()
@@ -133,12 +145,12 @@ class DataModule(LightningDataModule):
         self.dataset_test: Any = dataset_test
         self.test_collator: BatchReshapeAllocator = IdentityAllocator() if isinstance(dataset_train, RegularDataset) else BatchReshapeAllocator(dataset_test)
 
-        self.batch_size=batch_size
-        self.num_workers= num_workers
-        self.use_costum_ddp_sampler = use_costum_ddp_sampler
-        self.num_val_workers = num_workers if num_val_workers is None else num_val_workers
-        self.prefetch_factor = prefetch_factor
-        self.persistent_workers = persistent_workers
+        self.batch_size: int = batch_size
+        self.num_workers: int = num_workers
+        self.use_costum_ddp_sampler: bool = use_costum_ddp_sampler
+        self.num_val_workers: int = num_workers if num_val_workers is None else num_val_workers
+        self.prefetch_factor: Optional[int] = prefetch_factor
+        self.persistent_workers: bool = persistent_workers
 
     def train_dataloader(self):
         """
