@@ -17,7 +17,7 @@ FieldSpaceNN is a research codebase for climate data generation and emulation ac
 - `scripts/` example training scripts.
 
 **Setup**
-From the repo root (`/home/joe/PycharmProjects/fieldspacenn/src/fieldspacenn`):
+From the repo root:
 
 ```bash
 pip install -e .
