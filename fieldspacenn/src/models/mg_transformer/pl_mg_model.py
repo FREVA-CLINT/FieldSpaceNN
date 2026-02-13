@@ -1,5 +1,5 @@
 import math
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, List
 
 import lightning.pytorch as pl
 import torch
@@ -18,6 +18,7 @@ class LightningMGModel(pl.LightningModule):
         lr_groups: Mapping[str, Mapping[str, Any]],
         lambda_loss_dict: Mapping[str, Any],
         weight_decay: float = 0.0,
+        lambda_loss_groups: List = []
     ) -> None:
         """
         Initialize the Lightning wrapper for multi-grid transformer models.
@@ -46,6 +47,7 @@ class LightningMGModel(pl.LightningModule):
         self.loss_composed: MGMultiLoss = MGMultiLoss(
             comp_loss_dict, grid_layers=model.grid_layers
         )
+        self.lambda_loss_groups = lambda_loss_groups
 
 
     def forward(
@@ -190,22 +192,26 @@ class LightningMGModel(pl.LightningModule):
                     sample_configs=sample_configs,
                 )
 
-        for source, output, target, mask, emb in zip(
-            source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+        lambda_groups = self.lambda_loss_groups if len(self.lambda_loss_groups)>0 else [1.0]*len(source_groups)
+        weight_groups = torch.tensor([list(t.values())[0].shape[1] for t in source_groups], device=emb_groups[0]['VariableEmbedder'].device)
+        weight_groups = weight_groups/weight_groups.sum()
+
+        for source, output, target, mask, emb, lambda_group, weight_group in zip(
+            source_groups_list, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
         ):
-            if len(source) > 0:
-                loss, loss_dict = self.loss_zooms(
-                    output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb
-                )
-                total_loss += loss
-                loss_dict_total.update(loss_dict)
+        
+            loss, loss_dict = self.loss_zooms(
+                output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb
+            )
+            total_loss += loss * (float(lambda_group) * weight_group)
+            loss_dict_total.update(loss_dict)
 
         if self.loss_composed.has_elements:
             max_zooms = [max(target.keys()) for target in target_groups if target]
             if max_zooms:
                 max_zoom = max(max_zooms)
-                for source, output, target, mask, emb in zip(
-                    source_groups_list, output_groups, target_groups, mask_groups, emb_groups
+                for source, output, target, mask, emb, lambda_group, weight_group in zip(
+                    source_groups_list, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
                 ):
                     if len(source) > 0:
                         output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
@@ -219,7 +225,7 @@ class LightningMGModel(pl.LightningModule):
                             prefix=f'{prefix}/composed_',
                             emb=emb,
                         )
-                        total_loss += loss
+                        total_loss += loss * (float(lambda_group) * weight_group)
                         loss_dict_total.update(loss_dict)
 
 
