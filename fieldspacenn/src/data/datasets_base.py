@@ -574,6 +574,9 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
+        data_source = encode_zooms(data_source, sample_configs, patch_index_zooms)
+        data_target = encode_zooms(data_target, sample_configs, patch_index_zooms)
+
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
             for zoom in sorted(self.sampling_zooms.keys()):
@@ -601,7 +604,7 @@ class BaseDataset(Dataset):
                 data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
 
                 if mask_mapping_zooms[zoom] is None:
-                    mask_mapping_zooms[zoom] = torch.empty((self.load_n_samples_time))
+                    mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
                 else:
                     mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
             else:
@@ -609,7 +612,7 @@ class BaseDataset(Dataset):
                 data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
                 if mask_mapping_zooms[zoom] is None:
-                    mask_mapping_zooms[zoom] = torch.empty((self.load_n_samples_time))
+                    mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
                 else:
                     mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
@@ -617,14 +620,7 @@ class BaseDataset(Dataset):
             if key in sample_configs:
                 sample_configs[key]['patch_index'] = value
         
-        if self.output_max_zoom_only:
-            max_zoom = max(data_source.keys())
-            data_source = data_source[max_zoom]
-            data_target = data_target[max_zoom]
-        else:
-            data_source = encode_zooms(data_source, sample_configs, patch_index_zooms)
-            data_target = encode_zooms(data_target, sample_configs, patch_index_zooms)
-
+        
         # Optionally mask the last timesteps and repeat or zero them out.
         if any([z.get('mask_n_last_ts', 0) > 0 for z in self.sampling_zooms.values()]):
             for zoom, sampling_zoom in self.sampling_zooms.items():
@@ -645,6 +641,12 @@ class BaseDataset(Dataset):
                         data_source[zoom][:, :, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, :, -n_mask:])
                     else:
                         data_source[zoom][:, :, -n_mask:] = 0.
+
+        if self.output_max_zoom_only:
+            max_zoom = max(data_source.keys())
+            data_source = decode_zooms(data_source, sample_configs, max_zoom)
+            data_target = decode_zooms(data_target, sample_configs, max_zoom)
+            mask_mapping_zooms = {max_zoom: mask_mapping_zooms[max_zoom]}
 
         return data_source, data_target, sample_configs, mask_mapping_zooms
 

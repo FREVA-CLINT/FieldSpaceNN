@@ -101,16 +101,22 @@ class MGMultiLoss(nn.Module):
             for loss_fcn in self.common_losses:
                 loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
                 name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
-                loss_dict[name] = loss.item()
-                total_loss += loss_fcn.lambda_val * loss
+                if isinstance(loss, torch.Tensor):
+                    loss_dict[name] = loss.item()
+                    total_loss += loss_fcn.lambda_val * loss
+                else:
+                    loss_dict[name] = loss
 
             # Apply level-specific losses
             if str(zoom_level) in self.level_specific_losses:
                 for loss_fcn in self.level_specific_losses[str(zoom_level)]:
                     loss = loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
                     name = f"{prefix}level{zoom_level}_{loss_fcn._get_name()}"
-                    loss_dict[name] = loss.item()
-                    total_loss += loss_fcn.lambda_val * loss
+                    if isinstance(loss, torch.Tensor):
+                        loss_dict[name] = loss.item()
+                        total_loss += loss_fcn.lambda_val * loss
+                    else:
+                        loss_dict[name] = loss
         return total_loss, loss_dict
 
 
@@ -175,7 +181,10 @@ class MSE_masked_loss(nn.Module):
         :param kwargs: Additional keyword arguments (unused).
         :return: Loss scalar tensor.
         """
-        loss = self.loss_fcn(output[mask], target.view(output.shape)[mask])
+        if mask.any():
+            loss = self.loss_fcn(output[mask], target.view(output.shape)[mask])
+        else:            
+            loss = 0.0
         return loss
     
 class NHInt_loss(nn.Module):
