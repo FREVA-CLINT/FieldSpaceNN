@@ -26,7 +26,7 @@ pip install -e .
 **Training (CLI Examples)**
 The training entrypoint is `fieldspacenn/src/train.py` and uses Hydra configs in `fieldspacenn/configs/`.
 
-Example based on `scripts/train_transformer.sh`:
+Example:
 
 ```bash
 python -m fieldspacenn.src.train \
@@ -36,23 +36,13 @@ python -m fieldspacenn.src.train \
   dataloader.datamodule.batch_size=1
 ```
 
-Other training configs (matching scripts):
+Other training configs:
 
 ```bash
 python -m fieldspacenn.src.train -cp fieldspacenn/configs -cn mg_autoencoder_train
 python -m fieldspacenn.src.train -cp fieldspacenn/configs -cn mg_transformer_diffusion_train
 python -m fieldspacenn.src.train -cp fieldspacenn/configs -cn cnn_train
 python -m fieldspacenn.src.train -cp fieldspacenn/configs -cn cnn_vae_train
-```
-
-You can also use the provided scripts:
-
-```bash
-bash scripts/train_transformer.sh
-bash scripts/train_autoencoder.sh
-bash scripts/train_diffusion.sh
-bash scripts/train_cnn.sh
-bash scripts/train_cnn_vae.sh
 ```
 
 **Validation / Inference (CLI Examples)**
