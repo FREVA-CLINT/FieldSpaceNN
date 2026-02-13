@@ -175,11 +175,13 @@ class BaseDataset(Dataset):
 
         self.time_steps_files: List[int] = []
         for k, file in enumerate(self.data_dict['source'][self.zooms[0]]['files']):
-            ds = xr.open_dataset(file)
-            self.time_steps_files.append(len(ds.time))
+            with xr.open_dataset(file) as ds:
+                self.time_steps_files.append(len(ds.time))
 
         # Build index map of (file, time window, region) per zoom.
-        self.index_map: Dict[int, List[Tuple[int, List[int], int]]] = dict(
+        # Store index maps as compact numpy arrays to reduce Python object overhead.
+        # Each row is: [file_idx, region_idx, t0, t1, ..., t(load_n_samples_time-1)]
+        self.index_map: Dict[int, List[List[int]]] = dict(
             zip(self.zooms, [[] for _ in self.zooms])
         )
         for file_idx, total_timesteps in enumerate(self.time_steps_files):
@@ -222,9 +224,12 @@ class BaseDataset(Dataset):
                         else:
                             region_idx_zoom = region_idx_max//4**(self.sampling_zooms[max(self.zooms)]['zoom_patch_sample'] - self.sampling_zooms[zoom]['zoom_patch_sample'])
 
-                        self.index_map[zoom].append((file_idx, list(time_entry), region_idx_zoom))
+                        row = [int(file_idx), int(region_idx_zoom)] + [int(t) for t in time_entry]
+                        self.index_map[zoom].append(row)
                 
-        #self.index_map = {z: np.array(idx_map) for z, idx_map in self.index_map.items()}
+        self.index_map = {
+            z: np.asarray(idx_map, dtype=np.int32) for z, idx_map in self.index_map.items()
+        }
 
         # Build variable group indices for embedding and masking.
         all_variables = []
@@ -267,9 +272,9 @@ class BaseDataset(Dataset):
                 # Multi-source: build a per-zoom mapping using that zoom's grid.
                 mapping_grid_type = {}
                 for grid_type in self.grid_types:
-                    ds = xr.open_dataset(self.data_dict['source'][zoom]['files'][0])
-                    coords = get_coords_as_tensor(ds, grid_type=grid_type)
-                    mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
+                    with xr.open_dataset(self.data_dict['source'][zoom]['files'][0]) as ds:
+                        coords = get_coords_as_tensor(ds, grid_type=grid_type)
+                        mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
         self.load_once: bool = (
@@ -447,7 +452,10 @@ class BaseDataset(Dataset):
                     drop_mask_ = drop_mask_[:, :, patch_indices]
 
             ds_variables = ds[variables]
-            data_g = torch.from_numpy(ds_variables.to_array().to_numpy()).unsqueeze(dim=-1)
+            arr = ds_variables.to_array().to_numpy()
+            if arr.dtype == np.float64:
+                arr = arr.astype(np.float32, copy=False)
+            data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
 
             if self.normalize_data:
                 for k, variable in enumerate(variables):
@@ -710,8 +718,13 @@ class BaseDataset(Dataset):
         patch_index_zooms = {}
 
         loaded = False
+        ds_source = None
+        ds_target = None
         for zoom in self.zooms:
-            file_index, time_indices, patch_index = self.index_map[zoom][index]
+            row = self.index_map[zoom][index]
+            file_index = int(row[0])
+            patch_index = int(row[1])
+            time_indices = row[2:].tolist()
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
@@ -798,12 +811,12 @@ class BaseDataset(Dataset):
                 target_zooms_groups[group_idx][zoom] = data_target
                 mask_mapping_zooms_groups[group_idx][zoom] = drop_mask_zoom_group
 
-            patch_index_zooms[zoom] = torch.tensor(self.index_map[zoom][index][-1])
+            patch_index_zooms[zoom] = torch.tensor(patch_index)
             
-        ds_source_zoom.close()
-
-        if ds_target_zoom is not None:
-            ds_target_zoom.close()
+        
+        ds_source.close()
+        if ds_target is not None:
+            ds_target.close()
 
         source_zooms_groups_out = []
         target_zooms_groups_out = []
