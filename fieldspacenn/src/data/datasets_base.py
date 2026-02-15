@@ -568,7 +568,7 @@ class BaseDataset(Dataset):
             when ``variables_as_features`` is enabled), aligning with the base
             ``(b, v, t, n, d, f)`` convention.
         """
-        sample_configs = copy.deepcopy(self.sampling_zooms)
+        sample_configs = self.sampling_zooms.copy()
         if not data_source:
             for key, value in patch_index_zooms.items():
                 if key in sample_configs:
