@@ -118,7 +118,8 @@ class DataModule(LightningDataModule):
         num_val_workers: Optional[int] = None,
         use_costum_ddp_sampler: bool = False,
         prefetch_factor: Optional[int] = None,
-        persistent_workers: bool = False
+        persistent_workers: bool = False,
+        shuffle: bool = False
     ):
         """
         Initialize the data module and its datasets/collators.
@@ -132,6 +133,7 @@ class DataModule(LightningDataModule):
         :param use_costum_ddp_sampler: Whether to use a custom DDP sampler.
         :param prefetch_factor: Optional prefetch factor for dataloaders.
         :param persistent_workers: Whether to keep dataloader workers alive.
+        :param shuffle: Whether to shuffle training dataset.
         :return: None.
         """
         super().__init__()
@@ -151,6 +153,7 @@ class DataModule(LightningDataModule):
         self.num_val_workers: int = num_workers if num_val_workers is None else num_val_workers
         self.prefetch_factor: Optional[int] = prefetch_factor
         self.persistent_workers: bool = persistent_workers
+        self.shuffle: bool = shuffle
 
     def train_dataloader(self):
         """
@@ -162,7 +165,7 @@ class DataModule(LightningDataModule):
             sampler = DistributedSampler(dataset=self.dataset_train, shuffle=False)
         else:
             sampler = None
-        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.train_collator, prefetch_factor=self.prefetch_factor, persistent_workers=self.persistent_workers)
+        dataloader = DataLoader(self.dataset_train, sampler=sampler, batch_size=self.batch_size, num_workers=self.num_workers, collate_fn=self.train_collator, prefetch_factor=self.prefetch_factor, persistent_workers=self.persistent_workers, shuffle=self.shuffle)
 
         return dataloader
     
