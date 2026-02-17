@@ -288,7 +288,7 @@ class FieldSpaceLayerBlock(nn.Module):
         else:
             self.layer = MLP_fac(in_features_full, out_features_full, mult=mult, layer_confs=layer_confs_)
 
-        self.pattern_tokens_reverse: str = 'b v T N D t n d f -> b v (T t) (N n) (D d) f'
+        self.pattern_tokens_reverse: str = 'b v T N D t (n f) d 1 -> b v (T t) (N n) (D d) f'
 
 
     def update_time_embedder(self, emb: Dict[str, Any]) -> None:
@@ -299,7 +299,7 @@ class FieldSpaceLayerBlock(nn.Module):
         :return: None.
         """
         for zoom in self.in_zooms:
-            emb['TimeEmbedder'][zoom] = emb['TimeEmbedder'][max(self.in_zooms)]
+            emb['TimeEmbedder'][zoom] = emb['TimeEmbedder'][max(self.in_zooms) if max(self.in_zooms) in emb['TimeEmbedder'].keys() else max(emb['TimeEmbedder'].keys())]
 
     def get_time_depth_overlaps(self, x: torch.Tensor) -> torch.Tensor:
         """

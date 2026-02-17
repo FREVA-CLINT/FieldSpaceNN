@@ -249,12 +249,9 @@ class Tokenizer(nn.Module):
         :return: Tokenized tensor of shape ``(b, v, T, N, D, t, n, d, f)``.
         """
         
-        if self.token_size[1] > 1:
-            if not isinstance(x_zooms, Dict):
-                x_zooms = {self.input_zooms[0]: x_zooms}
-            x = self.token_fcn(x_zooms, sample_configs=sample_configs, mask=mask)
-        else:
-            x = x_zooms.unsqueeze(dim=-3)
+        if not isinstance(x_zooms, Dict):
+            x_zooms = {self.input_zooms[0]: x_zooms}
+        x = self.token_fcn(x_zooms, sample_configs=sample_configs, mask=mask)
 
         x = rearrange(x, self.pattern_tokens, t=self.token_size[0], n=self.token_size[1], d=self.token_size[2])
         return x
