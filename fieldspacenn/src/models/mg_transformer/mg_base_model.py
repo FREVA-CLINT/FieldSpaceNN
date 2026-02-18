@@ -5,6 +5,7 @@ import torch.nn as nn
 from ...modules.field_space.field_space_base import ConservativeLayer,ConservativeLayerConfig
 from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, FieldSpaceLayerConfig
 from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
+from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
 from ...modules.grids.grid_layer import GridLayer
 from ...utils.helpers import check_get
 
@@ -97,6 +98,36 @@ def create_encoder_decoder_block(
                 layer_confs=layer_confs,
                 layer_confs_emb = layer_confs_emb)
         block.out_features = in_features
+
+    elif isinstance(block_conf, MultiZoomHealpixConvConfig):
+        in_features_by_zoom = dict(zip(in_zooms, in_features))
+        missing_zooms = [zoom for zoom in block_conf.in_zooms if zoom not in in_features_by_zoom]
+        if missing_zooms:
+            raise ValueError(
+                f"MultiZoomHealpixConvConfig expects input zooms {missing_zooms} "
+                f"which are not available in current in_zooms={list(in_zooms)}."
+            )
+
+        conv_in_features = [in_features_by_zoom[zoom] for zoom in block_conf.in_zooms]
+        conv_target_features = check_get(
+            [block_conf, {"target_features": conv_in_features}],
+            "target_features",
+        )
+
+        block = MultiZoomHealpixConvBase(
+            in_zooms=block_conf.in_zooms,
+            target_zooms=block_conf.target_zooms,
+            in_features=conv_in_features,
+            target_features=conv_target_features,
+            share_weights=check_get([block_conf, {"share_weights": False}], "share_weights"),
+            grid_layers=grid_layers,
+            use_neighborhood=check_get([block_conf, {"use_neighborhood": True}], "use_neighborhood"),
+            norm=check_get([block_conf, {"norm": "group"}], "norm"),
+            act=check_get([block_conf, {"act": "silu"}], "act"),
+            residual=check_get([block_conf, {"residual": True}], "residual"),
+            num_groups=check_get([block_conf, {"num_groups": 8}], "num_groups"),
+            eps=check_get([block_conf, {"eps": 1e-5}], "eps"),
+        )
 
     elif isinstance(block_conf, FieldSpaceLayerConfig):
         block = FieldSpaceLayerModule(
