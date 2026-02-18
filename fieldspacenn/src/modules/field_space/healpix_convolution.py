@@ -235,8 +235,15 @@ class MultiZoomHealpixConvBase(nn.Module):
         self,
         inputs: Mapping[Any, torch.Tensor],
         sample_configs: Optional[Mapping[Any, Any]],
-    ) -> Dict[int, torch.Tensor]:
-        outputs: Dict[int, torch.Tensor] = {}
+    ) -> Dict[Any, torch.Tensor]:
+        # Pass through zooms that this block does not consume.
+        outputs: Dict[Any, torch.Tensor] = {}
+        for zoom_key, tensor in inputs.items():
+            zoom_key_int = int(zoom_key) if isinstance(zoom_key, str) and zoom_key.isdigit() else zoom_key
+            if zoom_key_int not in self.in_zooms:
+                outputs[zoom_key] = tensor
+
+        # Apply configured zoom mappings.
         for idx, (in_zoom, target_zoom) in enumerate(zip(self.in_zooms, self.target_zooms)):
             x = self._get_input_tensor(inputs, in_zoom)
             sample_config = self._get_sample_config(sample_configs, in_zoom=in_zoom, target_zoom=target_zoom)
@@ -245,72 +252,28 @@ class MultiZoomHealpixConvBase(nn.Module):
 
     def forward(
         self,
-        inputs: Union[
-            Mapping[int, torch.Tensor],
-            Sequence[Mapping[int, torch.Tensor]],
-            Sequence[torch.Tensor],
-        ],
+        inputs: List[Mapping[Any, torch.Tensor]],
         sample_configs: Optional[Mapping[Any, Any]] = None,
         **kwargs: Any
-    ) -> Union[
-        Dict[int, torch.Tensor],
-        List[Dict[int, torch.Tensor]],
-        Tuple[torch.Tensor, ...],
-        List[torch.Tensor],
-    ]:
+    ) -> List[Dict[Any, torch.Tensor]]:
         """
-        Apply per-zoom HEALPix convolution blocks.
+        Apply per-zoom HEALPix convolution blocks to zoom groups.
 
-        :param inputs: Zoom tensor collection.
+        Inputs must be a list of dictionaries mapping ``zoom -> tensor``, where
+        tensors use shape ``(b, v, t, n, d, f)``.
+        Zooms not listed in ``self.in_zooms`` are passed through unchanged.
+
+        :param inputs: List of per-group zoom tensor mappings.
         :param sample_configs: Sampling config dictionary indexed by zoom.
         :param kwargs: Extra unused kwargs for compatibility with existing block calls.
-        :return: Output tensors in the same outer structure as ``inputs``.
+        :return: List of output zoom mappings.
         """
-        _ = kwargs
 
-        if isinstance(inputs, Mapping):
-            return self._forward_mapping(inputs, sample_configs=sample_configs)
+        outputs_groups: List[Dict[Any, torch.Tensor]] = []
+        for idx, group_inputs in enumerate(inputs):
+            outputs_groups.append(self._forward_mapping(group_inputs, sample_configs=sample_configs))
 
-        if isinstance(inputs, tuple):
-            inputs_seq: Sequence[Any] = list(inputs)
-            return_tuple = True
-        elif isinstance(inputs, list):
-            inputs_seq = inputs
-            return_tuple = False
-        else:
-            raise TypeError(
-                "`inputs` must be a mapping, a list/tuple of mappings, or a list/tuple of tensors."
-            )
-
-        if len(inputs_seq) == 0:
-            return tuple() if return_tuple else []
-
-        if isinstance(inputs_seq[0], Mapping):
-            outputs_groups = [
-                self._forward_mapping(group_inputs, sample_configs=sample_configs)
-                for group_inputs in inputs_seq
-            ]
-            return tuple(outputs_groups) if return_tuple else outputs_groups
-
-        if len(inputs_seq) != len(self.blocks):
-            raise ValueError(
-                "When `inputs` is a tensor sequence, it must match the number of zoom mappings. "
-                f"Got {len(inputs_seq)} tensors for {len(self.blocks)} mappings."
-            )
-
-        tensor_outputs: List[torch.Tensor] = []
-        for idx, x in enumerate(inputs_seq):
-            if not torch.is_tensor(x):
-                raise TypeError(
-                    "Tensor sequence input contains a non-tensor entry at index "
-                    f"{idx}: {type(x)}"
-                )
-            sample_config = self._get_sample_config(
-                sample_configs, in_zoom=self.in_zooms[idx], target_zoom=self.target_zooms[idx]
-            )
-            tensor_outputs.append(self.blocks[idx](x, sample_config=sample_config))
-
-        return tuple(tensor_outputs) if return_tuple else tensor_outputs
+        return outputs_groups
 
 
 class HealpixConvBlock(nn.Module):
@@ -493,4 +456,3 @@ class HealpixConvBlock(nn.Module):
             y = y + residual
 
         return y
-
