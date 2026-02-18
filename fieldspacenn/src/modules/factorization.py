@@ -105,7 +105,7 @@ class TuckerFacLayer(nn.Module):
         # variables -----
         scale = 0
         if factorize_vars and n_variables>1:
-            self.factor_vars = get_fac_matrix(n_variables, rank_variables, init_ones=True)
+            self.factor_vars = get_fac_matrix(n_variables, rank_variables)
             self.core_dims.append(rank_variables)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core

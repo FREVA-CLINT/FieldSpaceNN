@@ -78,6 +78,7 @@ def create_encoder_decoder_block(
                 token_overlap_depth = block_conf.token_overlap_depth,
                 token_overlap_mlp_time = block_conf.token_overlap_mlp_time,
                 token_overlap_mlp_depth = block_conf.token_overlap_mlp_depth,
+                rank_variables = block_conf.rank_variables,
                 rank_space = block_conf.rank_space,
                 rank_time = block_conf.rank_time,
                 rank_depth = block_conf.rank_depth,

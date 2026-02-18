@@ -78,6 +78,7 @@ class FieldSpaceAttentionConfig:
         :param rank_time: Optional rank for time.
         :param rank_depth: Optional rank for depth.
         :param rank_features: Optional rank for features.
+        :param rank_variables: Optional rank for features.
         :param seq_len_zoom: Sequence zoom for attention.
         :param seq_len_time: Sequence length along time.
         :param seq_len_depth: Sequence length along depth.
@@ -109,6 +110,7 @@ class FieldSpaceAttentionConfig:
         self.rank_time: Union[List[int], int, None]
         self.rank_depth: Union[List[int], int, None]
         self.rank_features: Union[List[int], int, None]
+        self.rank_variables: Union[List[int], int, None]
         self.seq_len_zoom: int
         self.seq_len_time: Union[List[int], int]
         self.seq_len_depth: Union[List[int], int]
@@ -152,6 +154,7 @@ class FieldSpaceAttentionModule(nn.Module):
         token_overlap_depth: Union[List[bool], bool] = False,
         token_overlap_mlp_time: Union[List[bool], bool] = False,
         token_overlap_mlp_depth: Union[List[bool], bool] = False,
+        rank_variables: Union[List[int], int, None] = None,
         rank_space: Union[List[int], int, None] = None,
         rank_time: Union[List[int], int, None] = None,
         rank_depth: Union[List[int], int, None] = None,
@@ -199,6 +202,7 @@ class FieldSpaceAttentionModule(nn.Module):
         :param rank_time: Optional rank for time.
         :param rank_depth: Optional rank for depth.
         :param rank_features: Optional rank for features.
+        :param rank_variables: Optional rank for variables.
         :param seq_len_zoom: Sequence zoom for attention.
         :param seq_len_time: Sequence length along time.
         :param seq_len_depth: Sequence length along depth.
@@ -240,6 +244,7 @@ class FieldSpaceAttentionModule(nn.Module):
         rank_space = check_value(rank_space, n_groups)
         rank_time = check_value(rank_time, n_groups)
         rank_depth = check_value(rank_depth, n_groups)
+        rank_variables = check_value(rank_variables, n_groups)
         rank_features = check_value(rank_features, n_groups)
         
 
@@ -305,6 +310,7 @@ class FieldSpaceAttentionModule(nn.Module):
                         rank_time = rank_time[k],
                         rank_depth = rank_depth[k],
                         rank_features = rank_features[k],
+                        rank_variables = rank_variables[k],
                         seq_len_time= seq_len_time,
                         seq_len_depth= seq_len_depth,
                         seq_overlap_space = seq_overlap_space,
@@ -483,6 +489,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
         rank_features: Optional[int] = None,
+        rank_variables: Optional[int] = None,
         dropout: float = 0.0,
         n_head_channels: int = 32,
         embed_confs: Dict[str, Any] = {},
@@ -562,9 +569,11 @@ class FieldSpaceAttentionBlock(nn.Module):
         # Build rank configuration used by linear embedding layers.
         layer_confs_ = layer_confs.copy()
         layer_confs_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
+        layer_confs_['rank_variables'] = rank_variables
 
         layer_confs_emb_ = layer_confs_emb.copy()
         layer_confs_emb_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
+        layer_confs_emb_['rank_variables'] = rank_variables
 
         self.scale_shift: bool = update == 'shift_scale'
         
