@@ -69,7 +69,23 @@ class QuantileNormalizer(DataNormalizer):
 
         # Set the output range for the normalized data
         self.output_range: list = output_range
+    
+    def add_offset(self, data: torch.Tensor):
+        """
+        Normalize data using min-max scaling between the specified quantiles.
 
+        :param data: Input data tensor of shape ``(b, v, t, n, d, f)``.
+        """
+        return data + self.q_low
+
+    def subtract_offset(self, data: torch.Tensor):
+        """
+        Normalize data using min-max scaling between the specified quantiles.
+
+        :param data: Input data tensor of shape ``(b, v, t, n, d, f)``.
+        """
+        return data - self.q_low
+    
     def normalize(self, data: torch.Tensor):
         """
         Normalize data using min-max scaling between the specified quantiles.
@@ -194,6 +210,22 @@ class MeanStdNormalizer(DataNormalizer):
         # Standardize data by subtracting the mean and dividing by the standard deviation
         return (data - self.mean) / self.std
 
+    def add_offset(self, data: torch.Tensor):
+        """
+        Normalize data using min-max scaling between the specified quantiles.
+
+        :param data: Input data tensor of shape ``(b, v, t, n, d, f)``.
+        """
+        return data + self.mean
+
+    def subtract_offset(self, data: torch.Tensor):
+        """
+        Normalize data using min-max scaling between the specified quantiles.
+
+        :param data: Input data tensor of shape ``(b, v, t, n, d, f)``.
+        """
+        return data - self.mean
+    
     def denormalize(self, data: torch.Tensor):
         """
         Reverse the standardization and return data to its original scale.
