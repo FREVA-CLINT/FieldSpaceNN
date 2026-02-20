@@ -140,6 +140,7 @@ def create_encoder_decoder_block(
                 in_features=in_features,
                 target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                 mult = block_conf.mult,
+                hidden_dim = block_conf.hidden_dim,
                 in_token_len_time = block_conf.in_token_len_time,
                 in_token_len_depth = block_conf.in_token_len_depth,
                 out_token_len_time = block_conf.out_token_len_time,

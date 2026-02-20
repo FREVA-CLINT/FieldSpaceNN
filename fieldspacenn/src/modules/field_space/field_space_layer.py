@@ -34,6 +34,7 @@ class FieldSpaceLayerConfig:
         out_token_len_depth: int = 1,
         n_groups_variables: List[int] = [1],
         mult: int = 2,
+        hidden_dim: int = None,
         type: str = 'linear',
         **kwargs: Any
     ) -> None:
@@ -56,6 +57,7 @@ class FieldSpaceLayerConfig:
         :param out_token_len_depth: Output token length along depth.
         :param n_groups_variables: Number of variable groups.
         :param mult: MLP multiplier when using non-linear type.
+        :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param type: Layer type ("linear" or "mlp").
         :param kwargs: Additional keyword arguments assigned as attributes.
         :return: None.
@@ -76,6 +78,7 @@ class FieldSpaceLayerConfig:
         self.out_token_len_depth: int
         self.n_groups_variables: List[int]
         self.mult: int
+        self.hidden_dim: int
         self.type: str
 
         inputs = copy.deepcopy(locals())
@@ -193,6 +196,7 @@ class FieldSpaceLayerBlock(nn.Module):
         rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
         mult: int = 2,
+        hidden_dim: int = None,
         layer_confs: Dict[str, Any] = {}
     ) -> None:
         """
@@ -218,6 +222,7 @@ class FieldSpaceLayerBlock(nn.Module):
         :param rank_time: Optional rank for time.
         :param rank_depth: Optional rank for depth.
         :param mult: MLP multiplier when using non-linear type.
+        :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param layer_confs: Layer configuration dictionary.
         :return: None.
         """
@@ -286,7 +291,7 @@ class FieldSpaceLayerBlock(nn.Module):
         if type == 'linear':
             self.layer: nn.Module = get_layer(in_features_full, out_features_full, layer_confs=layer_confs_)
         else:
-            self.layer = MLP_fac(in_features_full, out_features_full, mult=mult, layer_confs=layer_confs_)
+            self.layer = MLP_fac(in_features_full, out_features_full, mult=mult, hidden_dim=hidden_dim, layer_confs=layer_confs_)
 
         self.pattern_tokens_reverse: str = 'b v T N D t (n f) d 1 -> b v (T t) (N n) (D d) f'
 

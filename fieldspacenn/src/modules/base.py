@@ -150,8 +150,11 @@ class MLP_fac(nn.Module):
             else:
                 out_features_1 = int(in_features*mult)
         else:
-            out_features_1 = hidden_dim
-        
+            if isinstance(hidden_dim, list) or not isinstance(in_features, list):
+                out_features_1 = hidden_dim
+            else:
+                out_features_1 = [int(in_feat) for in_feat in in_features]
+                out_features_1[1] = hidden_dim       
 
         self.layer1: nn.Module = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
         self.layer2: nn.Module = get_layer(out_features_1, out_features, layer_confs=layer_confs, bias=True)
