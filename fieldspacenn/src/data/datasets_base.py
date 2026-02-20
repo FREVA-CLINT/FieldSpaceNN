@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
 warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 
-from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms
+from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
 
 def skewed_random_p(
@@ -457,10 +457,6 @@ class BaseDataset(Dataset):
                 arr = arr.astype(np.float32, copy=False)
             data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
 
-            if self.normalize_data:
-                for k, variable in enumerate(variables):
-                    data_g[k] = self.var_normalizers[zoom][variable].normalize(data_g[k])
-
             if 'level' not in ds_variables.dims:
                 data_g = data_g.unsqueeze(dim=2)
 
@@ -554,6 +550,7 @@ class BaseDataset(Dataset):
         mask_mapping_zooms: Mapping[int, torch.Tensor],
         patch_index_zooms: Mapping[int, torch.Tensor],
         hr_dopout: bool,
+        variables_sample: Sequence[str],
     ) -> Tuple[Any, Any, Dict[int, Dict[str, Any]], Dict[int, torch.Tensor]]:
         """
         Finalize group data by applying masks, reshaping, and zoom transforms.
@@ -584,6 +581,14 @@ class BaseDataset(Dataset):
 
         data_source = encode_zooms(data_source, sample_configs, patch_index_zooms)
         data_target = encode_zooms(data_target, sample_configs, patch_index_zooms)
+
+        if self.normalize_data:
+            for zoom in data_source.keys():
+                for k, variable in enumerate(variables_sample):
+                    if variable == 'total_precipitation_6hr':
+                        pass
+                    data_source[zoom][k] = self.var_normalizers[zoom][variable].normalize(data_source[zoom][k])
+                    data_target[zoom][k] = self.var_normalizers[zoom][variable].normalize(data_target[zoom][k])
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
@@ -728,12 +733,12 @@ class BaseDataset(Dataset):
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                mapping_zoom = max(self.zooms)
-                
             else:
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
-                mapping_zoom = zoom
+            
+            with xr.open_dataset(source_file) as ds:
+                mapping_zoom = get_zoom_from_npix(ds.cell.size)
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
@@ -840,7 +845,8 @@ class BaseDataset(Dataset):
                     target_zooms_groups[group_idx],
                     mask_mapping_zooms_groups[group_idx],
                     patch_index_zooms,
-                    hr_dopout
+                    hr_dopout,
+                    variables_sample=selected_vars[group].tolist() if hasattr(selected_vars[group], "tolist") else list(selected_vars[group]),
                 )
                 source_zooms_groups_out.append(source_zooms)
                 target_zooms_groups_out.append(target_zooms)

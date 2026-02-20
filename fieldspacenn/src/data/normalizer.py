@@ -248,11 +248,11 @@ class ScaledLogNormalizer(DataNormalizer):
         :param data: Input data tensor of shape ``(b, v, t, n, d, f)``.
         :return: Standardized data tensor.
         """
-        # Standardize data by subtracting the mean and dividing by the standard deviation
-
-        data = torch.log1p(data * self.scale)
-
-        return self.quantile_normalizer.normalize(data) - self.zero_offset
+        sign = torch.sign(data)
+        data_mag = torch.abs(data)
+        data_log_mag = torch.log1p(data_mag * self.scale)
+        norm_mag = self.quantile_normalizer.normalize(data_log_mag) - self.zero_offset
+        return norm_mag * sign
 
     def denormalize(self, data: torch.Tensor):
         """
@@ -261,11 +261,11 @@ class ScaledLogNormalizer(DataNormalizer):
         :param data: Standardized data tensor of shape ``(b, v, t, n, d, f)``.
         :return: Data tensor in the original scale.
         """
-        data = self.quantile_normalizer.denormalize(data + self.zero_offset)
-        # Rescale data to the original scale by multiplying by std and adding the mean
-        data = torch.expm1(data)/self.scale
-
-        return data
+        sign = torch.sign(data)
+        data_mag = torch.abs(data)
+        data_log_mag = self.quantile_normalizer.denormalize(data_mag + self.zero_offset)
+        data_mag = torch.expm1(data_log_mag) / self.scale
+        return data_mag * sign
 
     def denormalize_var(self, data_var: torch.Tensor, data: Optional[torch.Tensor] = None):
         """
@@ -275,5 +275,8 @@ class ScaledLogNormalizer(DataNormalizer):
         :param data: Standardized data tensor used for scale.
         :return: Denormalized variance tensor.
         """
-        # Rescale data to the original scale by multiplying by std and adding the mean
-        return data_var*(torch.expm1(data)/self.scale)**2
+        if data is None:
+            raise ValueError("ScaledLogNormalizer.denormalize_var requires `data` (normalized mean) to rescale variance.")
+        # Approximate variance rescaling in original space by scaling with the (denormalized) magnitude.
+        data_denorm = self.denormalize(data)
+        return data_var * (data_denorm ** 2)

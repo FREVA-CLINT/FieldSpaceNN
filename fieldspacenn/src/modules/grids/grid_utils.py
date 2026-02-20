@@ -685,19 +685,19 @@ def get_matching_time_patch(
     
     batched = True
 
-    if x_h.dim()<5:
+    if x_h.dim() < 6:
         x_h = x_h.unsqueeze(dim=0)
         batched = False
     
 
-    if sample_configs[zoom_h]['n_past_ts'] < sample_configs[zoom_target]['n_past_ts']:
-        assert f'zoom {zoom_h} has a smaller number of past timesteps than {zoom_target}'
+    assert sample_configs[zoom_h]['n_past_ts'] >= sample_configs[zoom_target]['n_past_ts'], \
+        f'zoom {zoom_h} has a smaller number of past timesteps than {zoom_target}'
 
-    if sample_configs[zoom_h]['n_future_ts'] < sample_configs[zoom_target]['n_future_ts']:
-        assert f'zoom {zoom_h} has a smaller number of future timesteps than {zoom_target}'
+    assert sample_configs[zoom_h]['n_future_ts'] >= sample_configs[zoom_target]['n_future_ts'], \
+        f'zoom {zoom_h} has a smaller number of future timesteps than {zoom_target}'
 
-    if sample_configs[zoom_h]['zoom_patch_sample'] > sample_configs[zoom_target]['zoom_patch_sample']:
-        assert f'zoom {zoom_h} has a higher zoom_patch_sample than {zoom_target}'
+    assert sample_configs[zoom_h]['zoom_patch_sample'] <= sample_configs[zoom_target]['zoom_patch_sample'], \
+        f'zoom {zoom_h} has a higher zoom_patch_sample than {zoom_target}'
 
     ts_start = sample_configs[zoom_h]['n_past_ts'] - sample_configs[zoom_target]['n_past_ts']
     ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
