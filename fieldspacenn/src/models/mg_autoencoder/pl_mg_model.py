@@ -71,8 +71,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_groups,
             emb_groups,
-            prefix='val',
-            mode="vae",
+            prefix='train'
         )
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
@@ -108,8 +107,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_groups,
             emb_groups,
-            prefix='val',
-            mode="vae",
+            prefix='val'
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups
         output_comp = None
