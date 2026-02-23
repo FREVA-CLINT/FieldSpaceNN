@@ -44,6 +44,7 @@ class MultiZoomHealpixConvConfig:
         self,
         in_zooms: List[int],
         target_zooms: List[int],
+        out_zooms: Optional[List[int]] = None,
         target_features: Union[int, List[int]] = 1,
         share_weights: bool = False,
         use_neighborhood: bool = True,
@@ -63,6 +64,7 @@ class MultiZoomHealpixConvConfig:
 
         :param in_zooms: Input zoom levels for each mapping entry.
         :param target_zooms: Target zoom levels for each mapping entry.
+        :param out_zooms: Optional zoom levels to keep in block outputs.
         :param target_features: Output feature count per mapping entry.
         :param share_weights: If true, reuse compatible block weights across entries.
         :param use_neighborhood: If true, include HEALPix neighbors in each convolution.
@@ -76,6 +78,7 @@ class MultiZoomHealpixConvConfig:
         """
         self.in_zooms: List[int]
         self.target_zooms: List[int]
+        self.out_zooms: Optional[List[int]]
         self.target_features: Union[int, List[int]]
         self.share_weights: bool
         self.use_neighborhood: bool
@@ -101,6 +104,7 @@ class MultiZoomHealpixConvBase(nn.Module):
         target_zooms: Sequence[int],
         in_features: Union[int, Sequence[int]],
         target_features: Union[int, Sequence[int]],
+        out_zooms: Optional[Sequence[int]] = None,
         share_weights: bool = False,
         **block_kwargs: Any
     ) -> None:
@@ -119,6 +123,7 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         :param in_zooms: Input zoom levels.
         :param target_zooms: Target zoom levels.
+        :param out_zooms: Optional zoom levels to keep in returned outputs.
         :param in_features: Input feature counts (scalar or per-level list).
         :param target_features: Output feature counts (scalar or per-level list).
         :param share_weights: If true, share weights only across compatible mappings.
@@ -130,8 +135,16 @@ class MultiZoomHealpixConvBase(nn.Module):
         super().__init__()
 
         self.in_zooms: List[int] = [int(z) for z in in_zooms]
-        self.out_zooms: List[int] = [int(z) for z in target_zooms]
-        self.target_zooms: List[int] = self.out_zooms
+        self.target_zooms: List[int] = [int(z) for z in target_zooms]
+        self._output_filter_zooms: Optional[List[int]] = (
+            [int(z) for z in out_zooms] if out_zooms is not None else None
+        )
+        # Keep constructor-chain behavior backward compatible when `out_zooms` is omitted.
+        self.out_zooms: List[int] = (
+            copy.deepcopy(self.target_zooms)
+            if self._output_filter_zooms is None
+            else copy.deepcopy(self._output_filter_zooms)
+        )
 
         if len(self.in_zooms) != len(self.target_zooms):
             raise ValueError(
@@ -145,7 +158,20 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         n_levels = len(self.in_zooms)
         self.in_features: List[int] = [int(v) for v in _expand_to_list(in_features, n_levels, "in_features")]
-        self.out_features: List[int] = [int(v) for v in _expand_to_list(target_features, n_levels, "target_features")]
+        self.target_features: List[int] = [int(v) for v in _expand_to_list(target_features, n_levels, "target_features")]
+        self.in_features_dict: Dict[int, int] = dict(zip(self.in_zooms, self.in_features))
+        self.target_features_dict: Dict[int, int] = dict(zip(self.target_zooms, self.target_features))
+        self.out_features: List[int] = []
+        for zoom in self.out_zooms:
+            if zoom in self.target_features_dict:
+                self.out_features.append(self.target_features_dict[zoom])
+            elif zoom in self.in_features_dict:
+                self.out_features.append(self.in_features_dict[zoom])
+            else:
+                raise ValueError(
+                    f"Requested out_zooms contains zoom {zoom}, which is not present in "
+                    f"in_zooms={self.in_zooms} or target_zooms={self.target_zooms}."
+                )
 
         self.share_weights: bool = share_weights
 
@@ -158,7 +184,7 @@ class MultiZoomHealpixConvBase(nn.Module):
         shared_blocks: Dict[Tuple[int, int, int, int, int], HealpixConvBlock] = {}
 
         for idx, (in_zoom, target_zoom, in_ch, out_ch) in enumerate(
-            zip(self.in_zooms, self.target_zooms, self.in_features, self.out_features)
+            zip(self.in_zooms, self.target_zooms, self.in_features, self.target_features)
         ):
             grid_layer = self._resolve_grid_layer(
                 target_zoom=target_zoom,
@@ -250,6 +276,12 @@ class MultiZoomHealpixConvBase(nn.Module):
             outputs[target_zoom] = self.blocks[idx](x, sample_config=sample_config)
         return outputs
 
+    def _select_out_zooms(self, outputs: Mapping[Any, torch.Tensor]) -> Dict[int, torch.Tensor]:
+        selected_outputs: Dict[int, torch.Tensor] = {}
+        for zoom in self.out_zooms:
+            selected_outputs[zoom] = self._get_input_tensor(outputs, zoom)
+        return selected_outputs
+
     def forward(
         self,
         inputs: List[Mapping[Any, torch.Tensor]],
@@ -271,7 +303,11 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         outputs_groups: List[Dict[Any, torch.Tensor]] = []
         for idx, group_inputs in enumerate(inputs):
-            outputs_groups.append(self._forward_mapping(group_inputs, sample_configs=sample_configs))
+            outputs = self._forward_mapping(group_inputs, sample_configs=sample_configs)
+            if self._output_filter_zooms is None:
+                outputs_groups.append(outputs)
+            else:
+                outputs_groups.append(self._select_out_zooms(outputs))
 
         return outputs_groups
 

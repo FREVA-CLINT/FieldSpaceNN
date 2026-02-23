@@ -113,10 +113,17 @@ def create_encoder_decoder_block(
             [block_conf, {"target_features": conv_in_features}],
             "target_features",
         )
+        conv_out_zooms = check_get(
+            [block_conf, {"out_zooms": block_conf.target_zooms}],
+            "out_zooms",
+        )
+        if conv_out_zooms is None:
+            conv_out_zooms = block_conf.target_zooms
 
         block = MultiZoomHealpixConvBase(
             in_zooms=block_conf.in_zooms,
             target_zooms=block_conf.target_zooms,
+            out_zooms=conv_out_zooms,
             in_features=conv_in_features,
             target_features=conv_target_features,
             share_weights=check_get([block_conf, {"share_weights": False}], "share_weights"),

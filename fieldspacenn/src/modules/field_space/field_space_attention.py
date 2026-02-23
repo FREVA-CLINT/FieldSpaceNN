@@ -1004,7 +1004,7 @@ class FieldSpaceAttentionBlock(nn.Module):
             x = x_base * (1 + self.gamma_res * self.dropout_att(scale)) + self.gamma * self.dropout_att(shift)
         else:
             # Simple residual update when only shift is used.
-            x = self.gamma_res * x_base + self.gamma * self.dropout_att(att_out)
+            x = (1 + self.gamma_res) * x_base + self.gamma * self.dropout_att(att_out)
 
         if self.separate_mlp_norm and self.emb_layer_mlp is not None:
             x = self.emb_layer_mlp(x, emb=emb_tokenized, sample_configs=sample_configs)
