@@ -50,17 +50,34 @@ class LightningProbabilisticModel(pl.LightningModule):
         mask_groups_rep = [{int(z): g[z].repeat_interleave(self.n_samples, dim=0) for z in g} if g else None for g in mask_groups] if mask_groups else [None] * len(source_groups)
         patch_index_zooms_rep = {k: v.repeat_interleave(self.n_samples, dim=0) for k, v in patch_index_zooms.items()}
         
+        def _normalize_emb_key(key: Any) -> Any:
+            try:
+                return int(key)
+            except (TypeError, ValueError):
+                return key
+
+        def _repeat_emb_value(value: Any) -> Any:
+            if isinstance(value, torch.Tensor):
+                if value.ndim > 0 and value.shape[0] == batch_size:
+                    return value.repeat_interleave(self.n_samples, dim=0)
+                return value
+            if isinstance(value, dict):
+                return {_normalize_emb_key(k): _repeat_emb_value(v) for k, v in value.items()}
+            return value
+
+        def _slice_emb_value(value: Any, start: int, end: int) -> Any:
+            if isinstance(value, torch.Tensor):
+                if value.ndim > 0 and value.shape[0] == total_samples:
+                    return value[start:end]
+                return value
+            if isinstance(value, dict):
+                return {_normalize_emb_key(k): _slice_emb_value(v, start, end) for k, v in value.items()}
+            return value
+
         emb_groups_rep = []
         if emb_groups:
             for emb in emb_groups:
-                if emb:
-                    emb_rep = {
-                        'VariableEmbedder': emb['VariableEmbedder'].repeat_interleave(self.n_samples, dim=0),
-                        'TimeEmbedder': {int(z): emb['TimeEmbedder'][z].repeat_interleave(self.n_samples, dim=0) for z in emb['TimeEmbedder']}
-                    }
-                    emb_groups_rep.append(emb_rep)
-                else:
-                    emb_groups_rep.append(None)
+                emb_groups_rep.append({k: _repeat_emb_value(v) for k, v in emb.items()} if emb else None)
 
         output_groups_chunks = []
         max_batchsize = self.max_batchsize if self.max_batchsize != -1 else total_samples
@@ -76,8 +93,7 @@ class LightningProbabilisticModel(pl.LightningModule):
             if emb_groups_rep:
                 for emb_rep in emb_groups_rep:
                     if emb_rep:
-                        chunk = {'VariableEmbedder': emb_rep['VariableEmbedder'][start:end],
-                                 'TimeEmbedder': {int(z): emb_rep['TimeEmbedder'][z][start:end] for z in emb_rep['TimeEmbedder']}}
+                        chunk = {k: _slice_emb_value(v, start, end) for k, v in emb_rep.items()}
                         emb_chunk.append(chunk)
                     else:
                         emb_chunk.append(None)
