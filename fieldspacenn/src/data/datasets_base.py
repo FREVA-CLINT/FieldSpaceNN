@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
 warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 
-from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms
+from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
 
 def skewed_random_p(
@@ -728,12 +728,13 @@ class BaseDataset(Dataset):
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                mapping_zoom = max(self.zooms)
                 
             else:
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
-                mapping_zoom = zoom
+
+            with xr.open_dataset(source_file) as ds:
+                mapping_zoom = get_zoom_from_npix(ds.cell.size)
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
