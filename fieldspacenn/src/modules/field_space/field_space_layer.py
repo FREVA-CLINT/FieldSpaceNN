@@ -10,7 +10,11 @@ import torch.nn as nn
 import copy
 from ..base import get_layer, MLP_fac
 from ...utils.helpers import check_value
-from .field_space_base import Tokenizer, add_time_overlap_from_neighbor_patches, add_depth_overlap_from_neighbor_patches
+from .field_space_base import (
+    Tokenizer,
+    add_time_overlap_from_neighbor_patches,
+    add_depth_overlap_from_neighbor_patches,
+)
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 
@@ -33,6 +37,7 @@ class FieldSpaceLayerConfig:
         out_token_len_time: int = 1,
         out_token_len_depth: int = 1,
         n_groups_variables: List[int] = [1],
+        residual: bool = False,
         mult: int = 2,
         hidden_dim: int = None,
         type: str = 'linear',
@@ -56,6 +61,7 @@ class FieldSpaceLayerConfig:
         :param out_token_len_time: Output token length along time.
         :param out_token_len_depth: Output token length along depth.
         :param n_groups_variables: Number of variable groups.
+        :param residual: Whether to add a residual connection around the layer.
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param type: Layer type ("linear" or "mlp").
@@ -77,6 +83,7 @@ class FieldSpaceLayerConfig:
         self.out_token_len_time: int
         self.out_token_len_depth: int
         self.n_groups_variables: List[int]
+        self.residual: bool
         self.mult: int
         self.hidden_dim: int
         self.type: str
@@ -122,12 +129,14 @@ class FieldSpaceLayerModule(nn.Module):
         # Handle other kwargs that might be group-specific
         in_features = check_value(kwargs.get('in_features', 1), n_groups)
         target_features = check_value(kwargs.get('target_features', [1]), n_groups)
+        residual = check_value(kwargs.get('residual', False), n_groups)
 
         for i in range(n_groups):
             block_kwargs = kwargs.copy()
             block_kwargs['layer_confs'] = layer_confs[i]
             block_kwargs['in_features'] = in_features[i]
             block_kwargs['target_features'] = target_features[i]
+            block_kwargs['residual'] = residual[i]
 
             block = FieldSpaceLayerBlock(
                 grid_layers=grid_layers,
@@ -197,6 +206,7 @@ class FieldSpaceLayerBlock(nn.Module):
         rank_depth: Optional[int] = None,
         mult: int = 2,
         hidden_dim: int = None,
+        residual: bool = False,
         layer_confs: Dict[str, Any] = {}
     ) -> None:
         """
@@ -223,6 +233,7 @@ class FieldSpaceLayerBlock(nn.Module):
         :param rank_depth: Optional rank for depth.
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
+        :param residual: Whether to add a residual connection around the layer.
         :param layer_confs: Layer configuration dictionary.
         :return: None.
         """
@@ -236,6 +247,7 @@ class FieldSpaceLayerBlock(nn.Module):
         self.token_overlap_space: bool = token_overlap_space
         self.token_overlap_time: bool = token_overlap_time
         self.token_overlap_depth: bool = token_overlap_depth
+        self.residual: bool = residual
 
         self.out_zooms: Optional[List[int]] = out_zooms
         self.in_zooms: List[int] = in_zooms
@@ -293,6 +305,50 @@ class FieldSpaceLayerBlock(nn.Module):
         else:
             self.layer = MLP_fac(in_features_full, out_features_full, mult=mult, hidden_dim=hidden_dim, layer_confs=layer_confs_)
 
+        # Residual is taken from input `x_zooms` at matching output zoom keys.
+        self.skip_projection_by_zoom: nn.ModuleDict = nn.ModuleDict()
+        self.residual_source_zoom_by_target: Dict[int, int] = {}
+        self.residual_zoom_mode_by_target: Dict[int, str] = {}
+        self.residual_zoom_factor_by_target: Dict[int, int] = {}
+        if self.residual:
+            if len(x_zooms) == 0:
+                raise ValueError("`x_zooms` must be non-empty when `residual=True`.")
+
+            for target_zoom, out_features_zoom in self.target_features_dict.items():
+                source_zoom = min(x_zooms, key=lambda z: abs(int(z) - int(target_zoom)))
+                self.residual_source_zoom_by_target[target_zoom] = source_zoom
+
+                in_features_zoom = self.in_features_dict[source_zoom]
+                if source_zoom == target_zoom:
+                    self.residual_zoom_mode_by_target[target_zoom] = "same"
+                    self.residual_zoom_factor_by_target[target_zoom] = 1
+                    use_projection = in_features_zoom != out_features_zoom
+                    self.skip_projection_by_zoom[str(target_zoom)] = (
+                        nn.Linear(in_features_zoom, out_features_zoom, bias=False)
+                        if use_projection
+                        else nn.Identity()
+                    )
+                elif source_zoom > target_zoom:
+                    # Learn down-projection from child group features to parent features.
+                    factor = 4 ** (source_zoom - target_zoom)
+                    self.residual_zoom_mode_by_target[target_zoom] = "down"
+                    self.residual_zoom_factor_by_target[target_zoom] = factor
+                    self.skip_projection_by_zoom[str(target_zoom)] = nn.Linear(
+                        factor * in_features_zoom,
+                        out_features_zoom,
+                        bias=False,
+                    )
+                else:
+                    # Learn up-projection from parent features to child group features.
+                    factor = 4 ** (target_zoom - source_zoom)
+                    self.residual_zoom_mode_by_target[target_zoom] = "up"
+                    self.residual_zoom_factor_by_target[target_zoom] = factor
+                    self.skip_projection_by_zoom[str(target_zoom)] = nn.Linear(
+                        in_features_zoom,
+                        factor * out_features_zoom,
+                        bias=False,
+                    )
+
         self.pattern_tokens_reverse: str = 'b v T N D t (n f) d 1 -> b v (T t) (N n) (D d) f'
 
 
@@ -321,6 +377,45 @@ class FieldSpaceLayerBlock(nn.Module):
 
         return x
 
+    def _apply_residual_projection(
+        self,
+        residual: torch.Tensor,
+        target_zoom: int
+    ) -> torch.Tensor:
+        """
+        Apply learned residual projection for same/down/up zoom mappings.
+
+        :param residual: Source residual tensor of shape ``(b, v, t, n_src, d, f_src)``.
+        :param target_zoom: Target zoom key used to select/create projection weights.
+        :return: Projected tensor aligned to ``target_zoom`` output shape.
+        """
+        mode = self.residual_zoom_mode_by_target[target_zoom]
+        factor = self.residual_zoom_factor_by_target[target_zoom]
+        projection = self.skip_projection_by_zoom[str(target_zoom)]
+        if mode == "same":
+            return projection(residual)
+
+        b, v, t, n_src, d, f_src = residual.shape
+        f_tgt = self.target_features_dict[target_zoom]
+
+        if mode == "down":
+            if n_src % factor != 0:
+                raise ValueError(
+                    f"Cannot apply residual down-projection for zoom {target_zoom}: "
+                    f"spatial dimension {n_src} is not divisible by {factor}."
+                )
+            n_tgt = n_src // factor
+            x = residual.view(b, v, t, n_tgt, factor, d, f_src)
+            x = x.permute(0, 1, 2, 3, 5, 4, 6).contiguous().view(b, v, t, n_tgt, d, factor * f_src)
+            return projection(x)
+
+        if mode == "up":
+            x = projection(residual)
+            x = x.view(b, v, t, n_src, d, factor, f_tgt)
+            return x.reshape(b, v, t, n_src * factor, d, f_tgt)
+
+        raise ValueError(f"Unsupported residual zoom mode `{mode}` for zoom {target_zoom}.")
+
     def forward(
         self,
         x_zooms: Dict[int, torch.Tensor],
@@ -338,6 +433,12 @@ class FieldSpaceLayerBlock(nn.Module):
         :return: Updated zoom tensors shaped like ``(b, v, t, n, d, f)``.
         """
         nv = x_zooms[list(self.n_in_features_zooms.keys())[0]].shape[1]
+        residual_inputs: Dict[int, torch.Tensor] = {}
+        if self.residual:
+            for target_zoom, source_zoom in self.residual_source_zoom_by_target.items():
+                if source_zoom not in x_zooms:
+                    continue
+                residual_inputs[target_zoom] = x_zooms[source_zoom]
 
         x = self.tokenizer(x_zooms, sample_configs=sample_configs)
 
@@ -347,11 +448,14 @@ class FieldSpaceLayerBlock(nn.Module):
         x = self.get_time_depth_overlaps(x)
 
         x = self.layer(x, emb=emb, sample_configs=sample_configs[self.field_zoom])
-
         x = x.split(tuple(self.n_out_features_zooms.values()), dim=-3)
         
         for k, (zoom, n) in enumerate(self.n_out_features_zooms.items()):
-            x_zooms[zoom] = rearrange(x[k], self.pattern_tokens_reverse, f=self.target_features_dict[zoom], v=nv)
+            x_zoom_out = rearrange(x[k], self.pattern_tokens_reverse, f=self.target_features_dict[zoom], v=nv)
+            if zoom in residual_inputs:
+                residual = self._apply_residual_projection(residual_inputs[zoom], zoom)
+                x_zoom_out = x_zoom_out + residual
+            x_zooms[zoom] = x_zoom_out
         
         if self.out_zooms is None:
             return x_zooms

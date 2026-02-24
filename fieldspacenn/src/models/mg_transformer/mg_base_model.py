@@ -155,6 +155,7 @@ def create_encoder_decoder_block(
                 token_overlap_space = block_conf.token_overlap_space,
                 token_overlap_time = block_conf.token_overlap_time,
                 token_overlap_depth = block_conf.token_overlap_depth,
+                residual = check_get([block_conf, {"residual": False}], "residual"),
                 type= block_conf.type,
                 layer_confs=layer_confs)
     return block
