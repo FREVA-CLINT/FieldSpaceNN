@@ -585,10 +585,8 @@ class BaseDataset(Dataset):
         if self.normalize_data:
             for zoom in data_source.keys():
                 for k, variable in enumerate(variables_sample):
-                    if zoom > min(data_source.keys()) and hasattr(self.var_normalizers[zoom][variable], 'add_offset'):
-                        data_source[zoom][k] = self.var_normalizers[zoom][variable].add_offset(data_source[zoom][k])
-                        data_target[zoom][k] = self.var_normalizers[zoom][variable].add_offset(data_target[zoom][k])
-                    
+                    if variable == 'total_precipitation_6hr':
+                        pass
                     data_source[zoom][k] = self.var_normalizers[zoom][variable].normalize(data_source[zoom][k])
                     data_target[zoom][k] = self.var_normalizers[zoom][variable].normalize(data_target[zoom][k])
 
