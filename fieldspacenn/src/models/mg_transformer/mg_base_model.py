@@ -100,32 +100,13 @@ def create_encoder_decoder_block(
         block.out_features = in_features
 
     elif isinstance(block_conf, MultiZoomHealpixConvConfig):
-        in_features_by_zoom = dict(zip(in_zooms, in_features))
-        missing_zooms = [zoom for zoom in block_conf.in_zooms if zoom not in in_features_by_zoom]
-        if missing_zooms:
-            raise ValueError(
-                f"MultiZoomHealpixConvConfig expects input zooms {missing_zooms} "
-                f"which are not available in current in_zooms={list(in_zooms)}."
-            )
-
-        conv_in_features = [in_features_by_zoom[zoom] for zoom in block_conf.in_zooms]
-        conv_target_features = check_get(
-            [block_conf, {"target_features": conv_in_features}],
-            "target_features",
-        )
-        conv_out_zooms = check_get(
-            [block_conf, {"out_zooms": block_conf.target_zooms}],
-            "out_zooms",
-        )
-        if conv_out_zooms is None:
-            conv_out_zooms = block_conf.target_zooms
-
         block = MultiZoomHealpixConvBase(
+            x_zooms=in_zooms,
             in_zooms=block_conf.in_zooms,
             target_zooms=block_conf.target_zooms,
-            out_zooms=conv_out_zooms,
-            in_features=conv_in_features,
-            target_features=conv_target_features,
+            out_zooms=check_get([block_conf, {"out_zooms": block_conf.target_zooms}], "out_zooms"),
+            in_features=in_features,
+            target_features=check_get([block_conf, {"target_features": in_features}], "target_features"),
             share_weights=check_get([block_conf, {"share_weights": False}], "share_weights"),
             grid_layers=grid_layers,
             use_neighborhood=check_get([block_conf, {"use_neighborhood": True}], "use_neighborhood"),

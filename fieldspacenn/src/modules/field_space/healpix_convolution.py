@@ -100,6 +100,7 @@ class MultiZoomHealpixConvConfig:
 class MultiZoomHealpixConvBase(nn.Module):
     def __init__(
         self,
+        x_zooms: List[int],
         in_zooms: Sequence[int],
         target_zooms: Sequence[int],
         in_features: Union[int, Sequence[int]],
@@ -121,6 +122,7 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         It returns the same outer structure with transformed tensors.
 
+        :param x_zooms: Zoom levels present in inputs.
         :param in_zooms: Input zoom levels.
         :param target_zooms: Target zoom levels.
         :param out_zooms: Optional zoom levels to keep in returned outputs.
@@ -134,7 +136,9 @@ class MultiZoomHealpixConvBase(nn.Module):
         """
         super().__init__()
 
+        self.x_zooms: List[int] = [int(z) for z in x_zooms]
         self.in_zooms: List[int] = [int(z) for z in in_zooms]
+        self.out_zooms: List[int] = [int(z) for z in out_zooms]
         self.target_zooms: List[int] = [int(z) for z in target_zooms]
         self._output_filter_zooms: Optional[List[int]] = (
             [int(z) for z in out_zooms] if out_zooms is not None else None
@@ -156,22 +160,14 @@ class MultiZoomHealpixConvBase(nn.Module):
                 "`target_zooms` must be unique so output mappings are unambiguous."
             )
 
-        n_levels = len(self.in_zooms)
-        self.in_features: List[int] = [int(v) for v in _expand_to_list(in_features, n_levels, "in_features")]
-        self.target_features: List[int] = [int(v) for v in _expand_to_list(target_features, n_levels, "target_features")]
-        self.in_features_dict: Dict[int, int] = dict(zip(self.in_zooms, self.in_features))
+        self.in_features: List[int] = [int(v) for v in _expand_to_list(in_features, len(x_zooms), "in_features")]
+        self.target_features: List[int] = [int(v) for v in _expand_to_list(target_features, len(target_zooms), "target_features")]
+        self.in_features_dict: Dict[int, int] = dict(zip(self.x_zooms, self.in_features))
         self.target_features_dict: Dict[int, int] = dict(zip(self.target_zooms, self.target_features))
-        self.out_features: List[int] = []
-        for zoom in self.out_zooms:
-            if zoom in self.target_features_dict:
-                self.out_features.append(self.target_features_dict[zoom])
-            elif zoom in self.in_features_dict:
-                self.out_features.append(self.in_features_dict[zoom])
-            else:
-                raise ValueError(
-                    f"Requested out_zooms contains zoom {zoom}, which is not present in "
-                    f"in_zooms={self.in_zooms} or target_zooms={self.target_zooms}."
-                )
+        self.out_features: List[int] = [
+            self.target_features_dict[zoom] if zoom in self.target_features_dict.keys() else self.in_features_dict[zoom]
+            for zoom in out_zooms
+        ]
 
         self.share_weights: bool = share_weights
 
@@ -183,9 +179,9 @@ class MultiZoomHealpixConvBase(nn.Module):
         self.blocks: nn.ModuleList = nn.ModuleList()
         shared_blocks: Dict[Tuple[int, int, int, int, int], HealpixConvBlock] = {}
 
-        for idx, (in_zoom, target_zoom, in_ch, out_ch) in enumerate(
-            zip(self.in_zooms, self.target_zooms, self.in_features, self.target_features)
-        ):
+        for idx, (in_zoom, target_zoom) in enumerate(zip(self.in_zooms, self.target_zooms)):
+            in_ch = self.in_features_dict[in_zoom]
+            out_ch = self.target_features_dict[target_zoom]
             grid_layer = self._resolve_grid_layer(
                 target_zoom=target_zoom,
                 grid_layers=grid_layers,
@@ -265,8 +261,7 @@ class MultiZoomHealpixConvBase(nn.Module):
         # Pass through zooms that this block does not consume.
         outputs: Dict[Any, torch.Tensor] = {}
         for zoom_key, tensor in inputs.items():
-            zoom_key_int = int(zoom_key) if isinstance(zoom_key, str) and zoom_key.isdigit() else zoom_key
-            if zoom_key_int not in self.in_zooms:
+            if int(zoom_key) not in self.in_zooms and int(zoom_key) in self.out_zooms:
                 outputs[zoom_key] = tensor
 
         # Apply configured zoom mappings.
