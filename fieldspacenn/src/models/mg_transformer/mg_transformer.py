@@ -6,7 +6,7 @@ import torch.nn as nn
 from ...utils.helpers import check_get
 from ...modules.field_space.field_space_base import DiffDecoder
 from ...modules.grids.grid_utils import decode_zooms
-from .mg_base_model import MG_base_model, create_encoder_decoder_block, defaults
+from .mg_base_model import MG_base_model, create_encoder_decoder_block, create_missing_zooms, defaults
 
 class MG_Transformer(MG_base_model):
     """
@@ -102,12 +102,9 @@ class MG_Transformer(MG_base_model):
         :return: Output zoom-group mappings.
         """
 
-        if x_zooms_groups is None:
-            x_zooms_groups = []
-        if mask_zooms_groups is None:
-            mask_zooms_groups = [None] * len(x_zooms_groups)
-        if emb_groups is None:
-            emb_groups = [{} for _ in range(len(x_zooms_groups))]
+        x_zooms_groups, mask_zooms_groups, emb_groups, sample_configs = create_missing_zooms(
+            x_zooms_groups, self.in_zooms, mask_zooms_groups, emb_groups, sample_configs=sample_configs)
+
 
         x_zooms_groups_res = None
         # Keep a residual copy for optional additive updates.

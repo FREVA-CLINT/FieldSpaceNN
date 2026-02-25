@@ -3,7 +3,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 import torch
 import torch.nn as nn
 
-from ..mg_transformer.mg_base_model import MG_base_model, create_encoder_decoder_block
+from ..mg_transformer.mg_base_model import MG_base_model, create_encoder_decoder_block, create_missing_zooms
 from ..mg_transformer.mg_transformer import DiffDecoder
 from ...modules.field_space.field_space_base import DiffDecoder
 
@@ -149,6 +149,8 @@ class MG_AutoEncoder(MG_base_model):
         :param out_zoom: Optional target zoom level to decode outputs into.
         :return: Decoded zoom-group mappings aligned with ``out_zoom`` when provided.
         """
+        x_zooms_groups, mask_zooms_groups, emb_groups, sample_configs = create_missing_zooms(
+            x_zooms_groups, self.in_zooms, mask_zooms_groups, emb_groups, sample_configs=sample_configs)
 
         posterior_zooms_groups = self.ae_encode(x_zooms_groups, sample_configs=sample_configs, mask_groups=mask_zooms_groups, emb_groups=emb_groups)
 

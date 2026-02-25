@@ -1,4 +1,5 @@
-from typing import Any, Mapping, Sequence
+import copy
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -23,6 +24,130 @@ defaults = {
     'masked_residual': False,
     'use_mask': False
 }
+
+def create_missing_zooms(
+    in_zooms_groups: Optional[Sequence[Optional[Mapping[Any, torch.Tensor]]]],
+    in_zooms: Sequence[int],
+    mask_zooms_groups: Optional[Sequence[Optional[Mapping[Any, torch.Tensor]]]] = None,
+    embedding_groups: Optional[Sequence[Optional[Dict[str, Any]]]] = None,
+    sample_configs: Optional[Mapping[Any, Any]] = None,
+) -> Union[
+    List[Optional[Dict[int, torch.Tensor]]],
+    Tuple[
+        List[Optional[Dict[int, torch.Tensor]]],
+        Optional[List[Optional[Dict[int, torch.Tensor]]]],
+        Optional[List[Optional[Dict[str, Any]]]],
+        Optional[Dict[Any, Any]],
+    ],
+]:
+    """
+    Create missing zoom levels for data groups and optionally for mask/embedding/config groups.
+
+    Data tensors are filled with zeros. Mask tensors are filled with either ``True``
+    (for bool masks) or ``1.0`` (for floating masks), preserving mask dtype.
+    Embedding dictionaries are only extended for zoom-keyed sub-mappings
+    (e.g. ``TimeEmbedder``); non-zoom entries (e.g. ``VariableEmbedder`` tensors)
+    are left unchanged. For ``sample_configs``, missing zoom entries are copied from
+    the highest existing zoom level.
+    """
+
+    def _normalize_zoom_tensor_dict(group: Optional[Mapping[Any, torch.Tensor]]) -> Dict[int, torch.Tensor]:
+        return {int(zoom): tensor for zoom, tensor in group.items()}
+
+    def _compute_n_cells(ref_ncells: int, ref_zoom: int, zoom: int) -> int:
+        delta = int(zoom) - int(ref_zoom)
+        if delta >= 0:
+            return int(ref_ncells * (4 ** delta))
+        return int(ref_ncells // (4 ** (-delta)))
+
+    def _copy_embedding_zoom_entries(
+        emb_group: Optional[Dict[str, Any]],
+        missing_zooms: Sequence[int],
+        existing_zooms: Sequence[int],
+    ) -> Dict[str, Any]:
+        emb_group_out = dict(emb_group)
+        existing_zooms_set = {int(zoom) for zoom in existing_zooms}
+
+        for emb_key, emb_val in emb_group.items():
+            if not isinstance(emb_val, Mapping):
+                continue
+
+            zoom_map = {}
+            for zoom_key, zoom_value in emb_val.items():
+                try:
+                    zoom_map[int(zoom_key)] = zoom_value
+                except (TypeError, ValueError):
+                    zoom_map = {}
+                    break
+
+            if not zoom_map:
+                continue
+
+            # Do not touch mappings that are not zoom keyed.
+            if not (set(zoom_map.keys()) & existing_zooms_set):
+                continue
+
+            ref_zoom_emb = max(zoom_map.keys())
+            for zoom in missing_zooms:
+                if zoom not in zoom_map:
+                    zoom_map[zoom] = zoom_map[ref_zoom_emb]
+
+            emb_group_out[emb_key] = {zoom: zoom_map[zoom] for zoom in sorted(zoom_map.keys())}
+
+        return emb_group_out
+
+    required_zooms = [int(zoom) for zoom in in_zooms]
+    output_groups, output_mask_groups, output_embedding_groups = [], [], []
+    output_sample_configs = {}
+    for key, value in sample_configs.items():
+        output_sample_configs[key] = copy.deepcopy(value)
+
+    for group_idx, group in enumerate(in_zooms_groups):
+        x_zooms = _normalize_zoom_tensor_dict(group)
+
+        ref_zoom = max(x_zooms.keys())
+        ref_tensor = x_zooms[ref_zoom]
+
+        missing_zooms: List[int] = []
+        ref_ncells = int(ref_tensor.shape[3])
+        for zoom in required_zooms:
+            if zoom in x_zooms:
+                continue
+
+            missing_zooms.append(zoom)
+            n_cells = _compute_n_cells(ref_ncells, ref_zoom, zoom)
+            target_shape = list(ref_tensor.shape)
+            target_shape[3] = n_cells
+            x_zooms[zoom] = ref_tensor.new_zeros(tuple(target_shape))
+
+        output_groups.append({zoom: x_zooms[zoom] for zoom in sorted(x_zooms.keys())})
+
+        if output_mask_groups is not None:
+            mask_group_in = mask_zooms_groups[group_idx] if group_idx < len(mask_zooms_groups) else None
+            mask_zooms = _normalize_zoom_tensor_dict(mask_group_in)
+            ref_zoom_mask = max(mask_zooms.keys())
+            ref_mask = mask_zooms[ref_zoom_mask]
+            for zoom in missing_zooms:
+                if zoom in mask_zooms:
+                    continue
+                target_mask_shape = list(x_zooms[zoom].shape)
+                fill_value: Union[bool, float] = True if ref_mask.dtype == torch.bool else 1.0
+                mask_zooms[zoom] = ref_mask.new_full(tuple(target_mask_shape), fill_value)
+
+            output_mask_groups.append({zoom: mask_zooms[zoom] for zoom in sorted(mask_zooms.keys())})
+
+        emb_group_in = embedding_groups[group_idx] if group_idx < len(embedding_groups) else None
+        output_embedding_groups.append(
+            _copy_embedding_zoom_entries(emb_group_in, missing_zooms, existing_zooms=x_zooms.keys())
+        )
+
+    sample_zoom_keys = [key for key in output_sample_configs.keys() if isinstance(key, int)]
+    ref_zoom_cfg = max(sample_zoom_keys)
+    for zoom in required_zooms:
+        if zoom not in output_sample_configs:
+            output_sample_configs[zoom] = copy.deepcopy(output_sample_configs[ref_zoom_cfg])
+
+    return output_groups, output_mask_groups, output_embedding_groups, output_sample_configs
 
 def create_encoder_decoder_block(
     block_conf: Any,
