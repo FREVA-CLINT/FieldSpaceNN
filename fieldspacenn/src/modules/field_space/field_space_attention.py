@@ -41,6 +41,7 @@ class FieldSpaceAttentionConfig:
         token_overlap_depth: Union[List[int], int, bool] = False,
         token_overlap_mlp_time: Union[List[bool], bool] = False,
         token_overlap_mlp_depth: Union[List[bool], bool] = False,
+        rank_variables: Union[List[int], int, None] = None,
         rank_space: Union[List[int], int, None] = None,
         rank_time: Union[List[int], int, None] = None,
         rank_depth: Union[List[int], int, None] = None,

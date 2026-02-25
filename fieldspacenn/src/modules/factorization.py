@@ -101,6 +101,7 @@ class TuckerFacLayer(nn.Module):
         self.factor_vars: Optional[nn.Parameter] = None
         self.get_var_fac_fcn: Callable[..., List[torch.Tensor]]
         self.get_core_fcn: Callable[..., torch.Tensor]
+        self.get_bias_fcn: Callable[..., Optional[torch.Tensor]]
         
         # variables -----
         scale = 0
@@ -158,17 +159,18 @@ class TuckerFacLayer(nn.Module):
 
         self.bias: Optional[nn.Parameter] = None
         if bias:
-            if len(out_features)==1:
-                bias = torch.randn(out_features)
+            if n_variables > 1:
+                bias_ = torch.empty([n_variables, *out_features])
+                nn.init.kaiming_uniform_(bias_)
+                self.get_bias_fcn = self.get_bias_from_var_idx
             else:
-                bias = torch.empty(out_features)
-                nn.init.kaiming_uniform_(bias)
-                
-            self.bias: nn.Parameter = nn.Parameter(bias)
-            self.return_fcn: Callable[[torch.Tensor], torch.Tensor] = self.return_w_bias
+                bias_ = torch.empty(out_features)
+                nn.init.kaiming_uniform_(bias_)
+                self.get_bias_fcn = self.get_bias
+
+            self.bias = nn.Parameter(bias_)
         else:
-            self.bias = None
-            self.return_fcn = self.return_wo_bias
+            self.get_bias_fcn = self.get_none
     
     def add(self, rank: Optional[Union[int, float]], features: int):
         """
@@ -228,17 +230,33 @@ class TuckerFacLayer(nn.Module):
         """
         return [self.factor_vars[emb['VariableEmbedder']]]
         
-    def return_w_bias(self, x: torch.Tensor):
+    def get_bias(self, **kwargs: Any):
         """
-        Add bias to the output tensor.
+        Return the shared bias tensor.
         """
-        return x + self.bias
-    
-    def return_wo_bias(self, x: torch.Tensor):
+        return self.bias
+
+    def get_bias_from_var_idx(self, emb: Dict[str, Any]):
         """
-        Return the output tensor unchanged.
+        Return variable-specific bias selected by variable indices.
         """
-        return x
+        return self.bias[emb['VariableEmbedder']]
+
+    def get_none(self, **kwargs: Any):
+        """
+        Return None for optional tensors (e.g., disabled bias).
+        """
+        return None
+
+    def add_bias(self, x: torch.Tensor, bias: torch.Tensor):
+        """
+        Add shared or variable-specific bias with correct broadcasting over ``(t, n, d)``.
+        """
+        if bias.ndim == len(self.out_features):
+            bias = bias.view(*([1] * 5), *self.out_features)
+        elif bias.ndim == len(self.out_features) + 2:
+            bias = bias.view(*bias.shape[:2], *([1] * 3), *self.out_features)
+        return x + bias
     
 
     def forward(self, x: torch.Tensor, emb: Optional[Dict[str, Any]] = None, sample_configs: Dict[str, Any] = {}):
@@ -275,4 +293,8 @@ class TuckerFacLayer(nn.Module):
         
         x = x.reshape(x_dims_out)
 
-        return self.return_fcn(x)
+        bias = self.get_bias_fcn(emb=emb)
+        if bias is not None:
+            x = self.add_bias(x, bias)
+
+        return x
