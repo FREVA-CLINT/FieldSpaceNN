@@ -107,7 +107,7 @@ class TimeScaleLayer(nn.Module):
         if time_scales is None:
             time_scales = [168.0, 8766.0]
 
-        periodic_scales = torch.tensor(time_scales, dtype=torch.float32)
+        periodic_scales = torch.tensor(time_scales)
 
         self.register_buffer('periodic_scales', periodic_scales.view(1, 1, -1))
         self.periodic_scales: torch.Tensor
@@ -137,8 +137,6 @@ class TimeScaleLayer(nn.Module):
         :param times: Tensor of shape ``(b, t)`` or ``(b, t, 1)`` with time values.
         :return: Embedded tensor of shape ``(b, t, n_neurons)``.
         """
-       # times = time_zooms[max(time_zooms.keys())]
-
         if times.dim() == 2:
             times = times.unsqueeze(-1)  # Ensure (B, S, 1)
 
@@ -149,7 +147,7 @@ class TimeScaleLayer(nn.Module):
             trend_embed = self.linear_trend(normalized_time)
 
         # Shape magic to broadcast: (B, S, 1) / (Num_Scales) -> (B, S, Num_Scales)
-        phase = 2 * torch.pi * times / self.periodic_scales
+        phase = 2 * torch.pi * times / self.periodic_scales.to(device=times.device, dtype=times.dtype)
 
         # Compute Sin and Cos to fix phase ambiguity
         sin_features = torch.sin(phase)
