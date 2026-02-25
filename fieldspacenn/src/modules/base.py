@@ -241,6 +241,7 @@ def get_layer(
         layer = TuckerFacLayer(
             in_features,
             out_features,
+            bias = bias,
             **layer_confs)
         
     else:

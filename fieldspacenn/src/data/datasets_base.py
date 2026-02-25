@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings("ignore", message=".*fails while guessing")
 warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 
-from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms
+from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
 
 def skewed_random_p(
@@ -568,7 +568,7 @@ class BaseDataset(Dataset):
             when ``variables_as_features`` is enabled), aligning with the base
             ``(b, v, t, n, d, f)`` convention.
         """
-        sample_configs = copy.deepcopy(self.sampling_zooms)
+        sample_configs = self.sampling_zooms.copy()
         if not data_source:
             for key, value in patch_index_zooms.items():
                 if key in sample_configs:
@@ -728,12 +728,13 @@ class BaseDataset(Dataset):
             if self.single_source:
                 source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
                 target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                mapping_zoom = max(self.zooms)
                 
             else:
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
-                mapping_zoom = zoom
+
+            with xr.open_dataset(source_file) as ds:
+                mapping_zoom = get_zoom_from_npix(ds.cell.size)
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
@@ -772,7 +773,7 @@ class BaseDataset(Dataset):
             data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1).to(torch.float32)
             
             if ds_target is not None or self.shift_n_ts_target.get(zoom,0)>0:
-                ds_target = ds_source if ds_target is not None else ds_target
+                ds_target = ds_source if ds_target is None else ds_target
                 ds_target_zoom = self.select_ranges(
                     ds_target,
                     time_indices + self.shift_n_ts_target.get(zoom,0),
