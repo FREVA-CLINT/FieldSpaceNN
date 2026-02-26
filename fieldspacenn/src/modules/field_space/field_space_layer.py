@@ -127,15 +127,15 @@ class FieldSpaceLayerModule(nn.Module):
             layer_confs = [copy.deepcopy(layer_confs) for _ in range(n_groups)]
         
         # Handle other kwargs that might be group-specific
-        in_features = check_value(kwargs.get('in_features', 1), n_groups)
-        target_features = check_value(kwargs.get('target_features', [1]), n_groups)
+        in_features = kwargs.get('in_features', 1)
+        target_features = kwargs.get('target_features', 1)
         residual = check_value(kwargs.get('residual', False), n_groups)
 
         for i in range(n_groups):
             block_kwargs = kwargs.copy()
             block_kwargs['layer_confs'] = layer_confs[i]
-            block_kwargs['in_features'] = in_features[i]
-            block_kwargs['target_features'] = target_features[i]
+            block_kwargs['in_features'] = in_features
+            block_kwargs['target_features'] = target_features
             block_kwargs['residual'] = residual[i]
 
             block = FieldSpaceLayerBlock(
@@ -239,7 +239,6 @@ class FieldSpaceLayerBlock(nn.Module):
         """
 
         super().__init__()
-
         if isinstance(in_features, int):
             in_features = [in_features] * len(x_zooms)
         if isinstance(target_features, int):
