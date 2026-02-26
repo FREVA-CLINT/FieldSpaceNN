@@ -1,3 +1,4 @@
+import copy
 import os
 import time
 from collections.abc import Mapping, Sequence
@@ -182,8 +183,12 @@ def test(cfg: DictConfig) -> None:
     if not predictions:
         raise ValueError("`trainer.predict` returned no predictions.")
 
-    max_zoom = max(test_dataset.zooms)
+    max_zoom = max(model.model.in_zooms)
     sampling = test_dataset.sampling_zooms_collate or test_dataset.sampling_zooms
+    ref_zoom_cfg = max(sampling.keys())
+    for zoom in model.model.in_zooms:
+        if zoom not in sampling.keys():
+            sampling[zoom] = copy.deepcopy(sampling[ref_zoom_cfg])
     sampling = sampling[max_zoom]["zoom_patch_sample"]
     if sampling == -1:
         n_patches = 1
@@ -201,15 +206,6 @@ def test(cfg: DictConfig) -> None:
         max_zoom,
         expected_group_sizes=expected_group_sizes,
     )
-    mask, mask_group_sizes, mask_var_axis = _concat_prediction_groups(
-        predictions,
-        "mask",
-        max_zoom,
-        expected_group_sizes=expected_group_sizes,
-    )
-
-    if output_group_sizes != mask_group_sizes:
-        raise ValueError(f"Output/mask group sizes differ: {output_group_sizes} vs {mask_group_sizes}")
 
     if expected_group_sizes != output_group_sizes:
         raise ValueError(
@@ -218,17 +214,11 @@ def test(cfg: DictConfig) -> None:
         )
 
     output = _merge_patch_dimension(output, n_patches, output_var_axis)
-    mask = _merge_patch_dimension(mask, n_patches, mask_var_axis)
 
     if output.shape[1] != len(output_keys):
         raise ValueError(
             "Output variable axis does not match variable list length. "
             f"output.shape={tuple(output.shape)}, expected_vars={len(output_keys)}"
-        )
-    if mask.shape[1] != len(output_keys):
-        raise ValueError(
-            "Mask variable axis does not match variable list length. "
-            f"mask.shape={tuple(mask.shape)}, expected_vars={len(output_keys)}"
         )
 
     normalizer_zoom = max(test_dataset.var_normalizers.keys())
@@ -262,9 +252,9 @@ def test(cfg: DictConfig) -> None:
         output[:, var_idx] = test_dataset.var_normalizers[normalizer_zoom][var_name].denormalize(output[:, var_idx])
 
     output_dict = dict(zip(output_keys, output.split(1, dim=1)))
+    print(output_dict["tas"].shape)
+    print(output_dict["uas"][0])
     torch.save(output_dict, cfg.output_path)
-    mask_dict = dict(zip(output_keys, mask.split(1, dim=1)))
-    torch.save(mask_dict, cfg.output_path.replace(".pt", "_mask.pt"))
 
 
 if __name__ == "__main__":

@@ -336,8 +336,7 @@ class LightningMGModel(pl.LightningModule):
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
-        max_zooms = [max(target.keys()) for target in target_groups if target]
-        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
+        max_zoom = max(self.model.in_zooms)
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         output = self([group.copy() for group in source_groups], sample_configs=sample_configs, mask_zooms=mask_groups, emb=emb_groups,

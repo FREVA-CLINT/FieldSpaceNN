@@ -96,7 +96,6 @@ def create_missing_zooms(
 
         return emb_group_out
 
-    required_zooms = [int(zoom) for zoom in in_zooms]
     output_groups, output_mask_groups, output_embedding_groups = [], [], []
     output_sample_configs = {}
     for key, value in sample_configs.items():
@@ -110,7 +109,7 @@ def create_missing_zooms(
 
         missing_zooms: List[int] = []
         ref_ncells = int(ref_tensor.shape[3])
-        for zoom in required_zooms:
+        for zoom in in_zooms:
             if zoom in x_zooms:
                 continue
 
@@ -143,7 +142,7 @@ def create_missing_zooms(
 
     sample_zoom_keys = [key for key in output_sample_configs.keys() if isinstance(key, int)]
     ref_zoom_cfg = max(sample_zoom_keys)
-    for zoom in required_zooms:
+    for zoom in in_zooms:
         if zoom not in output_sample_configs:
             output_sample_configs[zoom] = copy.deepcopy(output_sample_configs[ref_zoom_cfg])
 
