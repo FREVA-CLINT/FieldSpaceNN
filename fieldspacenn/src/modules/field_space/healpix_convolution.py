@@ -138,17 +138,8 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         self.x_zooms: List[int] = [int(z) for z in x_zooms]
         self.in_zooms: List[int] = [int(z) for z in in_zooms]
-        self.out_zooms: List[int] = [int(z) for z in out_zooms]
         self.target_zooms: List[int] = [int(z) for z in target_zooms]
-        self._output_filter_zooms: Optional[List[int]] = (
-            [int(z) for z in out_zooms] if out_zooms is not None else None
-        )
-        # Keep constructor-chain behavior backward compatible when `out_zooms` is omitted.
-        self.out_zooms: List[int] = (
-            copy.deepcopy(self.target_zooms)
-            if self._output_filter_zooms is None
-            else copy.deepcopy(self._output_filter_zooms)
-        )
+        self.out_zooms: List[int] = self.target_zooms if out_zooms is None else [int(z) for z in out_zooms]
 
         if len(self.in_zooms) != len(self.target_zooms):
             raise ValueError(
@@ -166,7 +157,7 @@ class MultiZoomHealpixConvBase(nn.Module):
         self.target_features_dict: Dict[int, int] = dict(zip(self.target_zooms, self.target_features))
         self.out_features: List[int] = [
             self.target_features_dict[zoom] if zoom in self.target_features_dict.keys() else self.in_features_dict[zoom]
-            for zoom in out_zooms
+            for zoom in self.out_zooms
         ]
 
         self.share_weights: bool = share_weights
@@ -245,14 +236,6 @@ class MultiZoomHealpixConvBase(nn.Module):
                 return sample_configs[key]
         return {}
 
-    @staticmethod
-    def _get_input_tensor(inputs: Mapping[Any, torch.Tensor], zoom: int) -> torch.Tensor:
-        if zoom in inputs:
-            return inputs[zoom]
-        if str(zoom) in inputs:
-            return inputs[str(zoom)]
-        raise KeyError(f"Input collection does not contain zoom {zoom}. Available keys: {list(inputs.keys())}.")
-
     def _forward_mapping(
         self,
         inputs: Mapping[Any, torch.Tensor],
@@ -266,7 +249,7 @@ class MultiZoomHealpixConvBase(nn.Module):
 
         # Apply configured zoom mappings.
         for idx, (in_zoom, target_zoom) in enumerate(zip(self.in_zooms, self.target_zooms)):
-            x = self._get_input_tensor(inputs, in_zoom)
+            x = inputs[in_zoom]
             sample_config = self._get_sample_config(sample_configs, in_zoom=in_zoom, target_zoom=target_zoom)
             outputs[target_zoom] = self.blocks[idx](x, sample_config=sample_config)
         return outputs
@@ -274,7 +257,7 @@ class MultiZoomHealpixConvBase(nn.Module):
     def _select_out_zooms(self, outputs: Mapping[Any, torch.Tensor]) -> Dict[int, torch.Tensor]:
         selected_outputs: Dict[int, torch.Tensor] = {}
         for zoom in self.out_zooms:
-            selected_outputs[zoom] = self._get_input_tensor(outputs, zoom)
+            selected_outputs[zoom] = outputs[zoom]
         return selected_outputs
 
     def forward(
@@ -299,10 +282,7 @@ class MultiZoomHealpixConvBase(nn.Module):
         outputs_groups: List[Dict[Any, torch.Tensor]] = []
         for idx, group_inputs in enumerate(inputs):
             outputs = self._forward_mapping(group_inputs, sample_configs=sample_configs)
-            if self._output_filter_zooms is None:
-                outputs_groups.append(outputs)
-            else:
-                outputs_groups.append(self._select_out_zooms(outputs))
+            outputs_groups.append(self._select_out_zooms(outputs))
 
         return outputs_groups
 
