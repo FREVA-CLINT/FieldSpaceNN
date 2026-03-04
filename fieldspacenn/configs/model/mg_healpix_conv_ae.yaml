@@ -1,0 +1,72 @@
+_target_: fieldspacenn.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
+kl_weight: 1.0e-10
+lambda_loss_dict:
+  zooms:
+    3:
+      MSE_loss: 1
+    5:
+      MSE_loss: 1
+    6:
+      MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.0005
+    warmup: 0
+model:
+  _target_: fieldspacenn.src.models.mg_autoencoder.mg_autoencoder.MG_AutoEncoder
+  mgrids: ${mgrids}
+  in_zooms: [3, 5, 6]
+  in_features: 1
+  out_features: 1
+  n_groups_variables: [2]
+  encoder_block_configs:
+    "conv_0":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3, 5, 6]
+      target_zooms: [3, 5, 6]
+      target_features: [8, 8, 8]
+      share_weights: false
+      use_neighborhood: true
+      norm: group
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1_down":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3, 5, 6]
+      target_zooms: [3, 4, 5]
+      target_features: [16, 16, 16]
+      share_weights: false
+      use_neighborhood: true
+      norm: group
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+  decoder_block_configs:
+    "conv_0_up":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3, 4, 5]
+      target_zooms: [3, 5, 6]
+      target_features: [8, 8, 8]
+      share_weights: false
+      use_neighborhood: true
+      norm: group
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1_out":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3, 5, 6]
+      target_zooms: [3, 5, 6]
+      target_features: [1, 1, 1]
+      share_weights: false
+      use_neighborhood: true
+      norm: group
+      act: silu
+      residual: true
+      num_groups: 1
+      eps: 1.0e-5

@@ -88,6 +88,7 @@ class TuckerFacLayer(nn.Module):
         self.core_letters: Iterator[str] = iter("ABCDEFGHIJKLMNOPQRSTUVWXYZ") 
 
         
+        self.n_variables: int = int(n_variables)
         factorize_vars = rank_variables is not None
 
         self.subscripts: Dict[str, Any] = {
@@ -102,11 +103,9 @@ class TuckerFacLayer(nn.Module):
         self.get_var_fac_fcn: Callable[..., List[torch.Tensor]]
         self.get_core_fcn: Callable[..., torch.Tensor]
         self.get_bias_fcn: Callable[..., Optional[torch.Tensor]]
-        
-        # variables -----
-        scale = 0
-        if factorize_vars and n_variables>1:
-            self.factor_vars = get_fac_matrix(n_variables, rank_variables)
+
+        if factorize_vars:
+            self.factor_vars = get_fac_matrix(self.n_variables, rank_variables)
             self.core_dims.append(rank_variables)
             self.get_var_fac_fcn = self.get_variable_factors
             self.get_core_fcn = self.get_core
@@ -114,16 +113,11 @@ class TuckerFacLayer(nn.Module):
             sub_c = next(self.core_letters)
             self.subscripts['core'] = sub_c
             self.subscripts['factors'].append('bv' + sub_c)
-
-        elif n_variables>1:
-            self.core_dims.append(n_variables)
-            self.get_core_fcn = self.get_core_from_var_idx
-            self.get_var_fac_fcn = self.get_empty1
-            self.subscripts['core'] = 'bv'
-
         else:
-            self.get_core_fcn = self.get_core
+            self.core_dims.append(self.n_variables)
             self.get_var_fac_fcn = self.get_empty1
+            self.get_core_fcn = self.get_core_from_var_idx
+            self.subscripts['core'] = 'bv'
 
         self.factors: nn.ParameterList = nn.ParameterList()
         in_dims = []
@@ -143,32 +137,20 @@ class TuckerFacLayer(nn.Module):
         self.in_features: List[int] = in_features
         self.out_features: List[int] = out_features
 
+        fan_in = math.prod(in_dims)
+        bound = 1.0 / math.sqrt(fan_in)
         core = torch.empty(self.core_dims)
-
-        if n_variables == 1:
-            core = core.reshape(math.prod(in_dims),math.prod(out_dims))
-            nn.init.kaiming_normal_(core)
-            core = core.reshape(self.core_dims)
-        else:
-            for k, c_ in enumerate(core):
-                c_ = c_.reshape(math.prod(in_dims),math.prod(out_dims))
-                nn.init.kaiming_normal_(c_)
-                core[k] = c_.reshape(self.core_dims[1:])
-
+        nn.init.uniform_(core, -bound, bound)
         self.core: nn.Parameter = nn.Parameter(core, requires_grad=True)
 
-        self.bias: Optional[nn.Parameter] = None
+        self.bias = None
         if bias:
-            if n_variables > 1:
-                bias_ = torch.empty([n_variables, *out_features])
-                nn.init.kaiming_uniform_(bias_)
-                self.get_bias_fcn = self.get_bias_from_var_idx
-            else:
-                bias_ = torch.empty(out_features)
-                nn.init.kaiming_uniform_(bias_)
-                self.get_bias_fcn = self.get_bias
+            bias_ = torch.empty([n_variables, *out_features])
+            bound = 1.0 / math.sqrt(fan_in)
+            nn.init.uniform_(bias_, -bound, bound)
 
-            self.bias = nn.Parameter(bias_)
+            self.bias = nn.Parameter(bias_, requires_grad=True)
+            self.get_bias_fcn = self.get_bias_from_var_idx
         else:
             self.get_bias_fcn = self.get_none
     
@@ -207,8 +189,11 @@ class TuckerFacLayer(nn.Module):
         :param emb: Embedding dict containing variable indices.
         :return: Core tensor for the selected variables.
         """
+        if self.n_variables <= 1:
+            return self.core.unsqueeze(0)
+
         return self.core[emb['VariableEmbedder']]
-    
+
     def get_core(self, **kwargs: Any):
         """
         Return the full core tensor.
@@ -228,6 +213,9 @@ class TuckerFacLayer(nn.Module):
         :param emb: Embedding dict containing variable indices.
         :return: List with variable factor matrix.
         """
+        if self.n_variables <= 1:
+            return [self.factor_vars.unsqueeze(0)]
+
         return [self.factor_vars[emb['VariableEmbedder']]]
         
     def get_bias(self, **kwargs: Any):
@@ -240,6 +228,9 @@ class TuckerFacLayer(nn.Module):
         """
         Return variable-specific bias selected by variable indices.
         """
+        if self.n_variables <= 1:
+            return self.bias[0]
+
         return self.bias[emb['VariableEmbedder']]
 
     def get_none(self, **kwargs: Any):

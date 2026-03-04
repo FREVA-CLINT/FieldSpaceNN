@@ -71,8 +71,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_groups,
             emb_groups,
-            prefix='val',
-            mode="vae",
+            prefix='train'
         )
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
@@ -108,8 +107,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_groups,
             emb_groups,
-            prefix='val',
-            mode="vae",
+            prefix='val'
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups
         output_comp = None
@@ -188,7 +186,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
 
         if self.mode == "encode_decode":
             # The self() call routes to the model's forward method, which does encode and decode.
-            output_groups, _ = self(x_zooms_groups=processed_source_groups, sample_configs=sample_configs,
+            output_groups = self(x_zooms_groups=processed_source_groups, sample_configs=sample_configs,
                                     mask_zooms_groups=mask_groups, emb_groups=emb_groups, out_zoom=max_zoom)
         elif self.mode == "encode":
             output_groups = self.model.ae_encode(processed_source_groups, sample_configs=sample_configs,

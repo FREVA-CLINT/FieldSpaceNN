@@ -770,7 +770,7 @@ class BaseDataset(Dataset):
                     mapping_zoom,
                     zoom)
             
-            data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1)
+            data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1).to(torch.float32)
             
             if ds_target is not None or self.shift_n_ts_target.get(zoom,0)>0:
                 ds_target = ds_source if ds_target is None else ds_target

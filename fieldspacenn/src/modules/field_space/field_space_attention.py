@@ -338,7 +338,7 @@ class FieldSpaceAttentionModule(nn.Module):
         self.refine_zooms: Dict[int, int] = refine_zooms
         self.coarse_zooms: Dict[int, int] = invert_dict(refine_zooms)
 
-        self.block: "FieldSpaceAttentionBlock" = block
+        self.block: FieldSpaceAttentionBlock = block
 
 
     def refine_groups(self, x_zooms_groups: List[Dict[int, torch.Tensor]]) -> List[Dict[int, torch.Tensor]]:
