@@ -146,7 +146,7 @@ class FieldSpaceAttentionModule(nn.Module):
         kv_zooms: Union[List[int], int],
         token_zoom: int,
         target_zooms: Optional[List[int]] = None,
-        in_features: int = 1,
+        in_features: Union[List[int], int] = 1,
         n_groups_variables: List[int] = [1],
         token_len_depth: Union[List[int], int] = 1,
         token_len_time: Union[List[int], int] = 1,
@@ -190,7 +190,8 @@ class FieldSpaceAttentionModule(nn.Module):
         :param kv_zooms: Key/value zoom levels or -1 to default to input zooms.
         :param token_zoom: Token zoom level.
         :param target_zooms: Optional target zooms for updates.
-        :param in_features: Number of input features.
+        :param in_features: Number of input features, or per-zoom feature counts aligned
+            with ``in_zooms``.
         :param n_groups_variables: Number of variable groups.
         :param token_len_depth: Token length along depth.
         :param token_len_time: Token length along time.
@@ -251,7 +252,16 @@ class FieldSpaceAttentionModule(nn.Module):
 
         self.out_zooms: List[int] = copy.deepcopy(out_zooms)
         in_zooms = copy.deepcopy(in_zooms)
+        in_zooms_base = copy.deepcopy(in_zooms)
         self.use_mask: bool = use_mask
+
+        if isinstance(in_features, (List, ListConfig)):
+            in_features_dict = {
+                int(zoom): int(n_features)
+                for zoom, n_features in zip(in_zooms_base, in_features)
+            }
+        else:
+            in_features_dict = {int(zoom): int(in_features) for zoom in in_zooms_base}
 
         # Default q/kv zooms to input zooms when not explicitly configured.
         if not isinstance(q_zooms, (List,ListConfig)) and (q_zooms == -1):
@@ -273,12 +283,26 @@ class FieldSpaceAttentionModule(nn.Module):
             if zoom in refine_zooms.keys():
                 in_zooms[k] = refine_zooms[zoom]
 
+        for in_zoom, out_zoom in refine_zooms.items():
+            if in_zoom in in_features_dict and out_zoom not in in_features_dict:
+                in_features_dict[out_zoom] = in_features_dict[in_zoom]
+
         for k, zoom in enumerate(kv_zooms):
             if zoom not in in_zooms:
                 raise ValueError(f"Zoom level {zoom} at index {k} of kv_zooms not found in in_zooms")
         
         # Compute unique set of zooms participating in attention.
         self.qkv_zooms: List[int] = torch.tensor(q_zooms + kv_zooms).unique().tolist()
+
+        target_zooms_block = q_zooms if target_zooms is None else target_zooms
+        zoom_channels = {
+            int(zoom): int(in_features_dict[zoom])
+            for zoom in torch.tensor(q_zooms + kv_zooms + target_zooms_block).unique().tolist()
+            if zoom in in_features_dict
+        }
+        block_in_features = (
+            max(zoom_channels.values()) if len(zoom_channels) > 0 else max(in_features_dict.values())
+        )
 
         seq_zoom = min((min(q_zooms + kv_zooms)), seq_len_zoom)  
 
@@ -299,7 +323,8 @@ class FieldSpaceAttentionModule(nn.Module):
                         kv_zooms,
                         att_dim,
                         target_zooms = target_zooms,
-                        in_features = in_features,
+                        in_features = block_in_features,
+                        zoom_in_features = zoom_channels,
                         token_len_depth= token_len_depth[k],
                         token_len_time= token_len_time[k],
                         token_overlap_space= token_overlap_space[k],
@@ -479,6 +504,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         att_dim: int,
         target_zooms: Optional[List[int]] = None,
         in_features: int = 1,
+        zoom_in_features: Optional[Dict[int, int]] = None,
         token_len_depth: int = 1,
         token_len_time: int = 1,
         token_overlap_space: bool = False,
@@ -517,6 +543,8 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param att_dim: Attention feature dimension.
         :param target_zooms: Optional target zooms for updates.
         :param in_features: Number of input features.
+        :param zoom_in_features: Optional per-zoom channel counts used to map zooms to a
+            shared channel dimension for attention/MLP tokenization.
         :param token_len_depth: Token length along depth.
         :param token_len_time: Token length along time.
         :param token_overlap_space: Token overlap along space.
@@ -548,6 +576,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         super().__init__()
 
         target_zooms = q_zooms if target_zooms is None else target_zooms
+        self.target_zooms: List[int] = target_zooms
         self.seq_overlap_time: bool = seq_overlap_time
         self.seq_overlap_depth: bool = seq_overlap_depth
         self.seq_overlap_space: bool = seq_overlap_space if seq_zoom > -1 else False
@@ -596,6 +625,19 @@ class FieldSpaceAttentionBlock(nn.Module):
 
         self.q_zooms: List[int] = q_zooms
         self.kv_zooms: List[int] = kv_zooms
+        self.qkv_zooms: List[int] = torch.tensor(q_zooms + kv_zooms).unique().tolist()
+        self.zoom_in_features: Dict[int, int] = (
+            {int(zoom): int(n_features) for zoom, n_features in zoom_in_features.items()}
+            if zoom_in_features is not None else {}
+        )
+        self.max_zoom_channels: int = (
+            max(self.zoom_in_features.values()) if len(self.zoom_in_features) > 0 else in_features
+        )
+        self.zoom_projection_up_layers: nn.ModuleDict = nn.ModuleDict()
+        self.zoom_projection_down_layers: nn.ModuleDict = nn.ModuleDict()
+        self.last_zoom_channels: Dict[int, int] = {}
+        self.last_max_zoom_channels: int = self.max_zoom_channels
+        self.init_zoom_channel_projection_layers()
 
         # Output update size depends on whether we emit shift+scale or shift-only.
         update_dim = in_features
@@ -802,6 +844,90 @@ class FieldSpaceAttentionBlock(nn.Module):
                 features[zoom] = max([4**(zoom - self.token_zoom),1])
         return features
     
+    def init_zoom_channel_projection_layers(self) -> None:
+        for zoom in self.qkv_zooms:
+            in_channels = self.zoom_in_features.get(zoom, self.max_zoom_channels)
+            if in_channels < self.max_zoom_channels:
+                layer_key = f"{zoom}_{in_channels}_{self.max_zoom_channels}"
+                self.zoom_projection_up_layers[layer_key] = get_layer(
+                    in_channels, self.max_zoom_channels, bias=False
+                )
+
+        for zoom in self.target_zooms:
+            out_channels = self.zoom_in_features.get(zoom, self.max_zoom_channels)
+            if out_channels < self.max_zoom_channels:
+                layer_key = f"{zoom}_{self.max_zoom_channels}_{out_channels}"
+                self.zoom_projection_down_layers[layer_key] = get_layer(
+                    self.max_zoom_channels, out_channels, bias=False
+                )
+
+    def get_zoom_channel_projection_layer(
+        self,
+        zoom: int,
+        in_channels: int,
+        out_channels: int,
+        reverse: bool = False
+    ) -> nn.Module:
+        projection_layers = self.zoom_projection_down_layers if reverse else self.zoom_projection_up_layers
+        layer_key = f"{zoom}_{in_channels}_{out_channels}"
+        if layer_key not in projection_layers:
+            projection_layers[layer_key] = get_layer(in_channels, out_channels, bias=False)
+        return projection_layers[layer_key]
+
+    def map_zoom_channels(
+        self,
+        x: torch.Tensor,
+        zoom: int,
+        out_channels: int,
+        reverse: bool = False
+    ) -> torch.Tensor:
+        in_channels = x.shape[-1]
+        if in_channels == out_channels:
+            return x
+
+        projection_layer = self.get_zoom_channel_projection_layer(
+            zoom=zoom,
+            in_channels=in_channels,
+            out_channels=out_channels,
+            reverse=reverse,
+        ).to(device=x.device)
+
+        return projection_layer(x)
+
+    def project_zoom_dict_to_max_channels(
+        self,
+        x_zooms: Dict[int, torch.Tensor]
+    ) -> Dict[int, torch.Tensor]:
+        zoom_channels = {zoom: x_zooms[zoom].shape[-1] for zoom in self.qkv_zooms if zoom in x_zooms}
+        self.last_zoom_channels = {
+            zoom: x_zooms[zoom].shape[-1] for zoom in self.target_zooms if zoom in x_zooms
+        }
+
+        max_zoom_channels = max(zoom_channels.values()) if len(zoom_channels) > 0 else self.max_zoom_channels
+        self.last_max_zoom_channels = max_zoom_channels
+
+        x_zooms_projected = dict(x_zooms)
+        for zoom, n_channels in zoom_channels.items():
+            if n_channels < max_zoom_channels:
+                x_zooms_projected[zoom] = self.map_zoom_channels(
+                    x_zooms[zoom],
+                    zoom=zoom,
+                    out_channels=max_zoom_channels,
+                )
+
+        return x_zooms_projected
+
+    def restore_zoom_channels(self, x: torch.Tensor, zoom: int) -> torch.Tensor:
+        out_channels = self.last_zoom_channels.get(
+            zoom,
+            self.zoom_in_features.get(zoom, self.last_max_zoom_channels)
+        )
+
+        if x.shape[-1] > out_channels:
+            x = self.map_zoom_channels(x, zoom=zoom, out_channels=out_channels, reverse=True)
+
+        return x
+
 
     def get_time_depth_overlaps(
         self,
@@ -871,8 +997,10 @@ class FieldSpaceAttentionBlock(nn.Module):
         """
         zoom_field = self.grid_layer_field.zoom
 
+        x_zooms_att = self.project_zoom_dict_to_max_channels(x_zooms)
+
         # Tokenize input zoom tensors for attention.
-        x = self.tokenizer(x_zooms, sample_configs)
+        x = self.tokenizer(x_zooms_att, sample_configs)
 
         emb_tokenized = emb#self.select_emb(emb)
 
@@ -886,7 +1014,7 @@ class FieldSpaceAttentionBlock(nn.Module):
 
         # KV tokens come from a dedicated tokenizer for cross-attention.
         if not self.self_att:
-            kv = self.kv_tokenizer(x_zooms, sample_configs)
+            kv = self.kv_tokenizer(x_zooms_att, sample_configs)
             kv = self.emb_layer_kv(kv, emb=emb_tokenized, sample_configs=sample_configs[zoom_field])
             kv = self.get_time_depth_overlaps(kv, overlap_time=self.token_overlap_time, overlap_depth=self.token_overlap_depth)
         else:
@@ -1031,10 +1159,13 @@ class FieldSpaceAttentionBlock(nn.Module):
 
                 if self.scale_shift:
                     scale, shift = x_out.chunk(2, dim=-1)
+                    scale = self.restore_zoom_channels(scale, zoom)
+                    shift = self.restore_zoom_channels(shift, zoom)
                     shift = insert_matching_time_patch(x_zooms[zoom], shift, zoom, max(self.q_zooms), sample_configs)
                     scale = insert_matching_time_patch(x_zooms[zoom], scale, zoom, max(self.q_zooms), sample_configs)
                     x_zooms[zoom] = x_zooms[zoom] * (1 + self.gamma_res_mlp[k] * scale) + self.gamma_mlp[k] * shift
                 else:
+                    x_out = self.restore_zoom_channels(x_out, zoom)
                     x_out = insert_matching_time_patch(x_zooms[zoom], x_out, zoom, max(self.q_zooms), sample_configs)
                     # Simple residual update at each zoom.
                     x_zooms[zoom] = (1 + self.gamma_res_mlp[k]) * x_zooms[zoom] + self.gamma_mlp[k] * x_out
