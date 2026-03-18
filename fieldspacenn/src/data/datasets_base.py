@@ -421,8 +421,21 @@ class BaseDataset(Dataset):
         """
         # Fetch raw patch indices
         drop_mask_ = drop_mask.clone() if drop_mask is not None else None
-        if drop_mask_ is not None and drop_mask_.ndim == 2:
-            drop_mask_ = drop_mask_.unsqueeze(0)
+        if drop_mask_ is not None:
+            # Accept (t, n), (v, t, n), or (1, v, t, n), then normalize to (v, t, n).
+            if drop_mask_.ndim == 4:
+                if drop_mask_.shape[0] != 1:
+                    raise ValueError(
+                        f"Expected drop_mask leading batch dim to be 1, got shape {tuple(drop_mask_.shape)}"
+                    )
+                drop_mask_ = drop_mask_.squeeze(0)
+            if drop_mask_.ndim == 2:
+                drop_mask_ = drop_mask_.unsqueeze(0)
+            if drop_mask_.ndim != 3:
+                raise ValueError(
+                    f"Expected drop_mask to have 2, 3, or 4 dims, got shape {tuple(drop_mask_.shape)}"
+                )
+            drop_mask_ = drop_mask_.to(dtype=torch.bool)
 
         patch_dim_candidates = [d for d in ds.dims if "cell" in d or "ncells" in d]
         patch_dim = patch_dim_candidates[0] if patch_dim_candidates else None
@@ -449,7 +462,7 @@ class BaseDataset(Dataset):
                 mask = mask[:, :, patch_indices]
 
                 if drop_mask_ is not None:
-                    drop_mask_ = drop_mask_[:, :, patch_indices]
+                    drop_mask_ = drop_mask_[..., patch_indices]
 
             ds_variables = ds[variables]
             arr = ds_variables.to_array().to_numpy()
@@ -469,12 +482,15 @@ class BaseDataset(Dataset):
             if not patch_dim and post_map:
                 data_g = data_g.reshape(data_g.shape[0], data_g.shape[1], -1)[:, :, indices.view(-1)]
 
-        if drop_mask_ is not None and mask.dtype!=torch.bool:
-            mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
+        if drop_mask_ is not None and mask.dtype != torch.bool:
+            drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1)
+            mask = (1 - drop_mask_expanded.to(mask.dtype)) * mask
             mask = mask.expand_as(data_g)
 
         elif drop_mask_ is not None:
-            mask = torch.logical_or(drop_mask, mask.expand_as(drop_mask))
+            mapping_mask = mask.expand_as(data_g)
+            drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1).expand_as(mapping_mask)
+            mask = torch.logical_and(mapping_mask, torch.logical_not(drop_mask_expanded))
 
         else:
             mask = None
