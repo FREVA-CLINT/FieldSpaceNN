@@ -12,7 +12,9 @@ class HealPixLoader(BaseDataset):
     def __init__(
         self,
         data_dict: Mapping[str, Any],
-        sampling_zooms: Mapping[int, Mapping[str, Any]],
+        sampling_zooms: Optional[Mapping[int, Mapping[str, Any]]] = None,
+        sampling_zooms_source: Optional[Mapping[int, Mapping[str, Any]]] = None,
+        sampling_zooms_target: Optional[Mapping[int, Mapping[str, Any]]] = None,
         sampling_zooms_collate: Optional[Mapping[int, Mapping[str, Any]]] = None,
         **kwargs: Any,
     ) -> None:
@@ -20,24 +22,61 @@ class HealPixLoader(BaseDataset):
         Initialize a HealPix dataset loader and build per-zoom patch indices.
 
         :param data_dict: Dataset configuration including source/target file paths.
-        :param sampling_zooms: Sampling configuration keyed by zoom level.
+        :param sampling_zooms: Shared sampling configuration keyed by zoom level.
+        :param sampling_zooms_source: Optional source sampling configuration keyed by zoom.
+        :param sampling_zooms_target: Optional target sampling configuration keyed by zoom.
         :param sampling_zooms_collate: Optional collate configuration keyed by zoom level.
         :param kwargs: Additional arguments forwarded to the base dataset initializer.
         :return: None.
         """
         self.data_dict: Mapping[str, Any] = data_dict
+        if sampling_zooms is None:
+            if sampling_zooms_source is None and sampling_zooms_target is None:
+                raise ValueError(
+                    "Expected either 'sampling_zooms' or at least one of "
+                    "'sampling_zooms_source'/'sampling_zooms_target'."
+                )
+            if sampling_zooms_source is None:
+                sampling_zooms_source = sampling_zooms_target
+            if sampling_zooms_target is None:
+                sampling_zooms_target = sampling_zooms_source
+        else:
+            if sampling_zooms_source is None:
+                sampling_zooms_source = sampling_zooms
+            if sampling_zooms_target is None:
+                sampling_zooms_target = sampling_zooms
+
+        if isinstance(sampling_zooms_source, (DictConfig, ListConfig)):
+            sampling_zooms_source = OmegaConf.to_container(sampling_zooms_source, resolve=True)
+        if isinstance(sampling_zooms_target, (DictConfig, ListConfig)):
+            sampling_zooms_target = OmegaConf.to_container(sampling_zooms_target, resolve=True)
         if isinstance(sampling_zooms, (DictConfig, ListConfig)):
             sampling_zooms = OmegaConf.to_container(sampling_zooms, resolve=True)
         if isinstance(sampling_zooms_collate, (DictConfig, ListConfig)):
             sampling_zooms_collate = OmegaConf.to_container(sampling_zooms_collate, resolve=True)
-        self.sampling_zooms: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms)
+        self.sampling_zooms_source: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms_source)
+        self.sampling_zooms_target: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms_target)
+        overlapping_zooms = set(self.sampling_zooms_source.keys()).intersection(
+            set(self.sampling_zooms_target.keys())
+        )
+        for zoom in overlapping_zooms:
+            if self.sampling_zooms_source[zoom] != self.sampling_zooms_target[zoom]:
+                raise ValueError(
+                    f"Zoom {zoom} is defined in both source and target with different "
+                    "sampling configs. Use distinct zoom keys or identical configs."
+                )
+
+        self.sampling_zooms: Mapping[int, Mapping[str, Any]] = copy.deepcopy(self.sampling_zooms_source)
+        for zoom, sampling in self.sampling_zooms_target.items():
+            if zoom not in self.sampling_zooms:
+                self.sampling_zooms[zoom] = copy.deepcopy(sampling)
         self.sampling_zooms_collate: Optional[Mapping[int, Mapping[str, Any]]] = copy.deepcopy(
             sampling_zooms_collate
         )
 
         # Build patch indices per zoom from the HealPix pixelization scheme.
         self.indices: Dict[int, np.ndarray] = {}
-        for zoom, sampling in sampling_zooms.items():
+        for zoom, sampling in self.sampling_zooms.items():
             npix = hp.nside2npix(2**zoom)
 
             if sampling['zoom_patch_sample'] == -1:

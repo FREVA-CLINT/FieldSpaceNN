@@ -115,39 +115,68 @@ class BaseDataset(Dataset):
 
         self.load_n_samples_time: int = load_n_samples_time
 
-        # shift target timesteps per zoom; default to no shift
-        self.shift_n_ts_target: Dict[int, int] = dict(
-            zip(
-                self.sampling_zooms.keys(),
-                [int(v.get("shift_n_ts_target", 0)) for v in self.sampling_zooms.values()],
-            )
-        )
+        if not hasattr(self, "sampling_zooms_source") or self.sampling_zooms_source is None:
+            self.sampling_zooms_source = copy.deepcopy(self.sampling_zooms)
+        if not hasattr(self, "sampling_zooms_target") or self.sampling_zooms_target is None:
+            self.sampling_zooms_target = copy.deepcopy(self.sampling_zooms)
+
+        self.sampling_zooms_source = {
+            int(z): copy.deepcopy(v) for z, v in self.sampling_zooms_source.items()
+        }
+        self.sampling_zooms_target = {
+            int(z): copy.deepcopy(v) for z, v in self.sampling_zooms_target.items()
+        }
+        self.sampling_zooms = {int(z): copy.deepcopy(v) for z, v in self.sampling_zooms.items()}
+        for zoom, sampling in self.sampling_zooms_target.items():
+            if zoom not in self.sampling_zooms:
+                self.sampling_zooms[zoom] = copy.deepcopy(sampling)
+
+        self.zooms_source: List[int] = sorted(list(self.sampling_zooms_source.keys()))
+        self.zooms_target: List[int] = sorted(list(self.sampling_zooms_target.keys()))
+        self.zooms: List[int] = sorted(list(self.sampling_zooms.keys()))
+        self.max_zoom_source: int = max(self.zooms_source)
+        self.max_zoom_target: int = max(self.zooms_target)
 
         self.mask_ts_mode: str = mask_ts_mode
         self.p_dropout_all_zooms: Dict[int, float] = dict(
-            zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()])
+            zip(
+                self.sampling_zooms_source.keys(),
+                [v.get("p_drop", 0) for v in self.sampling_zooms_source.values()],
+            )
         )
         self.mask_n_last_ts_zooms: Dict[int, int] = dict(
-            zip(self.sampling_zooms.keys(), [v.get("mask_n_last_ts", 0) for v in self.sampling_zooms.values()])
+            zip(
+                self.sampling_zooms_source.keys(),
+                [v.get("mask_n_last_ts", 0) for v in self.sampling_zooms_source.values()],
+            )
+        )
+        # shift target timesteps per zoom; default to no shift
+        self.shift_n_ts_target: Dict[int, int] = dict(
+            zip(
+                self.sampling_zooms_target.keys(),
+                [int(v.get("shift_n_ts_target", 0)) for v in self.sampling_zooms_target.values()],
+            )
         )
 
         self.p_dropout_all: float = p_dropout_all
 
-
-        if "files" in self.data_dict['source'].keys():
-            all_files = self.data_dict['source']["files"]
-
-        all_files = []
+        all_source_files: List[str] = []
         for data in self.data_dict['source'].values():
             if isinstance(data['files'], list) or isinstance(data['files'], ListConfig):
-                all_files += data['files']
+                all_source_files += data['files']
             else:
-                all_files.append(data['files'])
+                all_source_files.append(data['files'])
+
+        all_target_files: List[str] = []
+        for data in self.data_dict['target'].values():
+            if isinstance(data['files'], list) or isinstance(data['files'], ListConfig):
+                all_target_files += data['files']
+            else:
+                all_target_files.append(data['files'])
         
         self.zoom_patch_sample: List[int] = [v['zoom_patch_sample'] for v in self.sampling_zooms.values()]
         self.zoom_time_steps_past: List[int] = [v['n_past_ts'] for v in self.sampling_zooms.values()]
         self.zoom_time_steps_future: List[int] = [v['n_future_ts'] for v in self.sampling_zooms.values()]
-        self.zooms: List[int] = [z for z in self.sampling_zooms.keys()]
         
         self.max_time_step_past: int = max(self.zoom_time_steps_past)
         self.max_time_step_future: int = max(self.zoom_time_steps_future)
@@ -174,7 +203,10 @@ class BaseDataset(Dataset):
             self.sample_timesteps: Optional[List[int]] = None
 
         self.time_steps_files: List[int] = []
-        for k, file in enumerate(self.data_dict['source'][self.zooms[0]]['files']):
+        source_ref = self.data_dict['source'].get(self.max_zoom_source) or self.data_dict['source'].get(
+            str(self.max_zoom_source)
+        )
+        for k, file in enumerate(source_ref['files']):
             with xr.open_dataset(file) as ds:
                 self.time_steps_files.append(len(ds.time))
 
@@ -232,20 +264,51 @@ class BaseDataset(Dataset):
         }
 
         # Build variable group indices for embedding and masking.
-        all_variables = []
-        variable_ids = {}
-        all_ids = []
+        self.variables_source_groups: Mapping[str, Sequence[str]] = self.data_dict.get(
+            'source_variables',
+            self.data_dict.get('variables', {}),
+        )
+        self.variables_target_groups: Mapping[str, Sequence[str]] = self.data_dict.get(
+            'target_variables',
+            self.data_dict.get('variables', {}),
+        )
+
+        if not self.variables_source_groups or not self.variables_target_groups:
+            raise ValueError(
+                "Expected variable groups in data_dict via 'variables' or "
+                "'source_variables'/'target_variables'."
+            )
+
+        if set(self.variables_source_groups.keys()) != set(self.variables_target_groups.keys()):
+            raise ValueError(
+                "source_variables and target_variables must use the same group keys."
+            )
+
+        all_variables_source: List[str] = []
+        all_variables_target: List[str] = []
+        variable_ids: Dict[str, np.ndarray] = {}
+        all_ids: List[int] = []
         self.group_ids: Dict[str, int] = {}
         offset = 0
-        for group_id, (group, vars) in enumerate(self.data_dict['variables'].items()):
-            all_variables += vars
-            variable_ids[group] = np.arange(len(vars)) + offset
+        for group_id, group in enumerate(self.variables_source_groups.keys()):
+            vars_source = list(self.variables_source_groups[group])
+            vars_target = list(self.variables_target_groups[group])
+            if len(vars_source) != len(vars_target):
+                raise ValueError(
+                    f"Group '{group}' must have equal source/target variable counts "
+                    "for aligned sampling."
+                )
+
+            all_variables_source += vars_source
+            all_variables_target += vars_target
+            variable_ids[group] = np.arange(len(vars_source)) + offset
             all_ids = all_ids+list(variable_ids[group])
             offset = len(variable_ids[group])
             self.group_ids[group] = (group_id)
-        
-        self.all_variable_ids: Dict[str, int] = dict(zip(all_variables, all_ids))
 
+        self.all_variable_ids: Dict[str, int] = dict(zip(all_variables_source, all_ids))
+
+        all_variables = list(dict.fromkeys(all_variables_source + all_variables_target))
         grid_types = [get_grid_type_from_var(ds, var) for var in all_variables]
         self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
         self.grid_types: np.ndarray = np.unique(grid_types)
@@ -254,15 +317,18 @@ class BaseDataset(Dataset):
         for var, gtype in zip(all_variables, grid_types):
             self.grid_types_vars[gtype].append(var)
 
-        unique_files = np.unique(np.array(all_files))
+        unique_source_files = np.unique(np.array(all_source_files))
+        unique_target_files = np.unique(np.array(all_target_files))
 
-        self.single_source: bool = len(unique_files) == 1
+        self.single_source: bool = len(unique_source_files) == 1
+        self.single_target: bool = len(unique_target_files) == 1
         self.mapping: Dict[int, Dict[Any, Any]] = {}
         if self.single_source:
             # Single-source: build a shared mapping at the highest zoom and reuse across zooms.
-            coords = [
-                get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
-            ]
+            with xr.open_dataset(source_ref['files'][0]) as ds:
+                coords = [
+                    get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
+                ]
             mapping_hr = dict(
                 zip(self.grid_types, [mapping_fcn(coords_, max(self.zooms))[max(self.zooms)] for coords_ in coords])
             )
@@ -272,13 +338,25 @@ class BaseDataset(Dataset):
                 # Multi-source: build a per-zoom mapping using that zoom's grid.
                 mapping_grid_type = {}
                 for grid_type in self.grid_types:
-                    with xr.open_dataset(self.data_dict['source'][zoom]['files'][0]) as ds:
+                    source_entry = (
+                        self.data_dict['source'].get(zoom)
+                        or self.data_dict['source'].get(str(zoom))
+                        or self.data_dict['target'].get(zoom)
+                        or self.data_dict['target'].get(str(zoom))
+                    )
+                    if source_entry is None:
+                        continue
+                    with xr.open_dataset(source_entry['files'][0]) as ds:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
                         mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
         self.load_once: bool = (
-            unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
+            unique_time_steps_past
+            and unique_time_steps_future
+            and unique_zoom_patch_sample
+            and self.single_source
+            and self.single_target
         )
 
         with open(norm_dict) as json_file:
@@ -616,7 +694,7 @@ class BaseDataset(Dataset):
             for key, value in patch_index_zooms.items():
                 if key in sample_configs:
                     sample_configs[key]['patch_index'] = value
-            return {}, {}, {}, sample_configs
+            return {}, {}, sample_configs, {}
         if data_target is None:
             # Defer target construction until here to avoid masking it with source dropouts.
             data_target = {zoom: data_source[zoom].clone() for zoom in data_source.keys()}
@@ -630,10 +708,10 @@ class BaseDataset(Dataset):
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
-            for zoom in sorted(self.sampling_zooms.keys()):
+            for zoom in sorted(data_source.keys()):
 
-                if self.p_dropout_all_zooms[zoom] > 0 and not drop:
-                    drop = torch.rand(1) < self.p_dropout_all_zooms[zoom]
+                if self.p_dropout_all_zooms.get(zoom, 0) > 0 and not drop:
+                    drop = torch.rand(1) < self.p_dropout_all_zooms.get(zoom, 0)
 
                 if drop:
                     mask_mapping_zooms[zoom] = torch.ones_like(data_source[zoom], dtype=bool)
@@ -673,9 +751,9 @@ class BaseDataset(Dataset):
         
         
         # Optionally mask the last timesteps and repeat or zero them out.
-        if any([z.get('mask_n_last_ts', 0) > 0 for z in self.sampling_zooms.values()]):
-            for zoom, sampling_zoom in self.sampling_zooms.items():
-                mask_n_last_ts = sampling_zoom.get('mask_n_last_ts', 0)
+        if any([self.mask_n_last_ts_zooms.get(z, 0) > 0 for z in data_source.keys()]):
+            for zoom in data_source.keys():
+                mask_n_last_ts = self.mask_n_last_ts_zooms.get(zoom, 0)
                 if mask_n_last_ts > 0:
                     time_len = data_source[zoom].shape[2]
                     n_mask = min(mask_n_last_ts, time_len)
@@ -718,20 +796,28 @@ class BaseDataset(Dataset):
             shape ``(b, t)``, and ``patch_index_zooms`` maps zoom to index tensors of shape
             ``(1,)``.
         """
-        selected_vars = {}
+        selected_vars_source = {}
+        selected_vars_target = {}
   
         var_indices = {}
-        group_keys = list(self.data_dict['variables'].keys())
+        group_keys = list(self.variables_source_groups.keys())
         # Sample variables per group to build a compact input for this item.
         for group in group_keys:
-            variables = self.data_dict['variables'][group]
-            sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
-            var_indices[group] = np.arange(len(variables))
+            variables_source = list(self.variables_source_groups[group])
+            variables_target = list(self.variables_target_groups[group])
 
-            if sample_size != len(variables):
+            sample_size = (
+                len(variables_source)
+                if self.n_sample_variables == -1
+                else min(self.n_sample_variables, len(variables_source))
+            )
+            var_indices[group] = np.arange(len(variables_source))
+
+            if sample_size != len(variables_source):
                 var_indices[group] = np.random.choice(var_indices[group], sample_size, replace=False)
 
-            selected_vars[group] = np.array(variables)[var_indices[group]]
+            selected_vars_source[group] = np.array(variables_source)[var_indices[group]]
+            selected_vars_target[group] = np.array(variables_target)[var_indices[group]]
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
@@ -739,11 +825,11 @@ class BaseDataset(Dataset):
         # Only build a global dropout mask when a single source ensures shared indexing.
         if self.single_source and hr_dopout:
             nt = 1 + self.max_time_step_future + self.max_time_step_past
-            total_vars = sum(len(selected_vars[group]) for group in selected_vars.keys())
+            total_vars = sum(len(selected_vars_source[group]) for group in selected_vars_source.keys())
             drop_mask_input = self.get_mask(
                 total_vars,
                 nt,
-                self.indices[max(self.zooms)].size,
+                self.indices[max(self.zooms_source)].size,
                 self.p_dropout,
                 self.p_drop_groups,
                 self.n_drop_groups,
@@ -763,32 +849,95 @@ class BaseDataset(Dataset):
         loaded = False
         ds_source = None
         ds_target = None
+        source_file_loaded = None
+        target_file_loaded = None
         for zoom in self.zooms:
             row = self.index_map[zoom][index]
             file_index = int(row[0])
             patch_index = int(row[1])
             time_indices = row[2:].tolist()
-            if self.single_source:
-                source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
-                target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                
+
+            source_entry = self.data_dict['source'].get(zoom) or self.data_dict['source'].get(str(zoom))
+            target_entry = self.data_dict['target'].get(zoom) or self.data_dict['target'].get(str(zoom))
+
+            if source_entry is not None:
+                source_file = source_entry['files'][file_index]
+            elif self.single_source:
+                source_ref = self.data_dict['source'].get(self.max_zoom_source) or self.data_dict['source'].get(
+                    str(self.max_zoom_source)
+                )
+                source_file = source_ref['files'][file_index]
             else:
-                source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
-                target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
+                source_file = None
 
-            with xr.open_dataset(source_file) as ds:
-                if "cell" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
-                elif "ncells" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
-                else:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+            if target_entry is not None:
+                target_file = target_entry['files'][file_index]
+            elif self.single_target:
+                target_ref = self.data_dict['target'].get(self.max_zoom_target) or self.data_dict['target'].get(
+                    str(self.max_zoom_target)
+                )
+                target_file = target_ref['files'][file_index]
+            else:
+                target_file = None
 
-                if mapping_zoom is None:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+            if source_file is None and zoom in self.sampling_zooms_source:
+                raise KeyError(
+                    f"Missing source files for zoom {zoom}. "
+                    "Define source data for that zoom or provide a single shared source file."
+                )
+            if target_file is None and zoom in self.sampling_zooms_target:
+                raise KeyError(
+                    f"Missing target files for zoom {zoom}. "
+                    "Define target data for that zoom or provide a single shared target file."
+                )
 
-            if not loaded:
-                ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
+            mapping_zoom_source = None
+            if source_file is not None:
+                with xr.open_dataset(source_file) as ds:
+                    if "cell" in ds.sizes:
+                        mapping_zoom_source = get_zoom_from_npix(ds.sizes["cell"])
+                    elif "ncells" in ds.sizes:
+                        mapping_zoom_source = get_zoom_from_npix(ds.sizes["ncells"])
+                    else:
+                        mapping_zoom_source = zoom if zoom in self.mapping else max(self.mapping.keys())
+
+                    if mapping_zoom_source is None or mapping_zoom_source not in self.mapping:
+                        mapping_zoom_source = zoom if zoom in self.mapping else max(self.mapping.keys())
+
+            mapping_zoom_target = None
+            if target_file is not None:
+                with xr.open_dataset(target_file) as ds:
+                    if "cell" in ds.sizes:
+                        mapping_zoom_target = get_zoom_from_npix(ds.sizes["cell"])
+                    elif "ncells" in ds.sizes:
+                        mapping_zoom_target = get_zoom_from_npix(ds.sizes["ncells"])
+                    else:
+                        mapping_zoom_target = zoom if zoom in self.mapping else max(self.mapping.keys())
+
+                    if mapping_zoom_target is None or mapping_zoom_target not in self.mapping:
+                        mapping_zoom_target = zoom if zoom in self.mapping else max(self.mapping.keys())
+
+            if not loaded or source_file != source_file_loaded or target_file != target_file_loaded:
+                if ds_source is not None:
+                    ds_source.close()
+                    ds_source = None
+                if ds_target is not None:
+                    ds_target.close()
+                    ds_target = None
+
+                if source_file is not None:
+                    ds_source, ds_target = self.get_files(
+                        source_file,
+                        file_path_target=target_file,
+                        drop_source=self.p_dropout > 0,
+                    )
+                elif target_file is not None:
+                    if self.lazy_load:
+                        ds_target = xr.open_dataset(target_file, decode_times=False)
+                    else:
+                        ds_target = xr.load_dataset(target_file, decode_times=False)
+                source_file_loaded = source_file
+                target_file_loaded = target_file
                 loaded = True if self.load_once else False
 
             # Align the global dropout mask to this zoom's time window.
@@ -814,59 +963,82 @@ class BaseDataset(Dataset):
                 axis=0
             ).reshape(-1)
 
-            ds_source_zoom = self.select_ranges(ds_source,
+            if ds_source is not None and mapping_zoom_source is not None:
+                ds_source_zoom = self.select_ranges(
+                    ds_source,
                     time_indices,
                     patch_index,
-                    self.mapping[mapping_zoom],
-                    mapping_zoom,
-                    zoom)
-            
-            data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1).to(torch.float32)
-            
-            if ds_target is not None or self.shift_n_ts_target.get(zoom,0)>0:
-                ds_target = ds_source if ds_target is None else ds_target
-                ds_target_zoom = self.select_ranges(
-                    ds_target,
-                    time_indices + self.shift_n_ts_target.get(zoom,0),
-                    patch_index,
-                    self.mapping[mapping_zoom],
-                    mapping_zoom,
+                    self.mapping[mapping_zoom_source],
+                    mapping_zoom_source,
                     zoom,
                 )
+                data_time_zooms[zoom] = (
+                    torch.from_numpy(ds_source_zoom.time.values)
+                    .view(self.load_n_samples_time, -1)
+                    .to(torch.float32)
+                )
+            else:
+                ds_source_zoom = None
+
+            if (ds_target is not None or (ds_source is not None and self.shift_n_ts_target.get(zoom, 0) > 0)):
+                ds_target_base = ds_source if ds_target is None else ds_target
+                mapping_zoom_target_ = mapping_zoom_source if mapping_zoom_target is None else mapping_zoom_target
+                ds_target_zoom = self.select_ranges(
+                    ds_target_base,
+                    time_indices + self.shift_n_ts_target.get(zoom,0),
+                    patch_index,
+                    self.mapping[mapping_zoom_target_],
+                    mapping_zoom_target_,
+                    zoom,
+                )
+                if zoom not in data_time_zooms:
+                    data_time_zooms[zoom] = (
+                        torch.from_numpy(ds_target_zoom.time.values)
+                        .view(self.load_n_samples_time, -1)
+                        .to(torch.float32)
+                    )
             else:
                 ds_target_zoom = None
 
             for group_idx, group in enumerate(group_keys):
-                data_source, drop_mask_zoom_group = self.get_data(
-                    ds_source_zoom,
-                    patch_index,
-                    selected_vars[group],
-                    self.mapping[mapping_zoom],
-                    mapping_zoom,
-                    zoom,
-                    drop_mask=drop_mask_zoom_groups[group_idx],
-                )
+                if ds_source_zoom is not None and mapping_zoom_source is not None:
+                    data_source, drop_mask_zoom_group = self.get_data(
+                        ds_source_zoom,
+                        patch_index,
+                        selected_vars_source[group],
+                        self.mapping[mapping_zoom_source],
+                        mapping_zoom_source,
+                        zoom,
+                        drop_mask=drop_mask_zoom_groups[group_idx],
+                    )
+                else:
+                    data_source = None
+                    drop_mask_zoom_group = None
 
-                if ds_target is not None:
+                if ds_target_zoom is not None:
+                    mapping_zoom_target_ = mapping_zoom_source if mapping_zoom_target is None else mapping_zoom_target
                     data_target,  _ = self.get_data(
                         ds_target_zoom,
                         patch_index,
-                        selected_vars[group],
-                        self.mapping[mapping_zoom],
-                        mapping_zoom,
+                        selected_vars_target[group],
+                        self.mapping[mapping_zoom_target_],
+                        mapping_zoom_target_,
                         zoom,
                     )
                 else:
                     data_target = None
 
-                source_zooms_groups[group_idx][zoom] = data_source
-                target_zooms_groups[group_idx][zoom] = data_target
-                mask_mapping_zooms_groups[group_idx][zoom] = drop_mask_zoom_group
+                if data_source is not None:
+                    source_zooms_groups[group_idx][zoom] = data_source
+                    mask_mapping_zooms_groups[group_idx][zoom] = drop_mask_zoom_group
+                if data_target is not None:
+                    target_zooms_groups[group_idx][zoom] = data_target
 
             patch_index_zooms[zoom] = torch.tensor(patch_index)
             
         
-        ds_source.close()
+        if ds_source is not None:
+            ds_source.close()
         if ds_target is not None:
             ds_target.close()
 
