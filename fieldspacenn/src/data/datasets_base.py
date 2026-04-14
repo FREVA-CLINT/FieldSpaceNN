@@ -509,6 +509,19 @@ class BaseDataset(Dataset):
 
         else:
             mask = None
+
+        # Treat NaNs as masked values and zero them out before zoom transforms.
+        nan_mask = torch.isnan(data_g)
+        if nan_mask.any():
+            data_g = data_g.clone()
+            data_g[nan_mask] = 0
+
+            if mask is None:
+                mask = torch.logical_not(nan_mask)
+            elif mask.dtype == torch.bool:
+                mask = torch.logical_and(mask, torch.logical_not(nan_mask))
+            else:
+                mask = mask * torch.logical_not(nan_mask).to(mask.dtype)
         
         if mask is not None and not (mask == False).any():
             mask = mask.expand_as(data_g)
