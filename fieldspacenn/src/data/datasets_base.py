@@ -207,7 +207,7 @@ class BaseDataset(Dataset):
             str(self.max_zoom_source)
         )
         for k, file in enumerate(source_ref['files']):
-            with xr.open_dataset(file) as ds:
+            with xr.open_zarr(file, consolidated=False) as ds:
                 self.time_steps_files.append(len(ds.time))
 
         # Build index map of (file, time window, region) per zoom.
@@ -325,7 +325,7 @@ class BaseDataset(Dataset):
         self.mapping: Dict[int, Dict[Any, Any]] = {}
         if self.single_source:
             # Single-source: build a shared mapping at the highest zoom and reuse across zooms.
-            with xr.open_dataset(source_ref['files'][0]) as ds:
+            with xr.open_zarr(source_ref['files'][0], consolidated=False) as ds:
                 coords = [
                     get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
                 ]
@@ -346,7 +346,7 @@ class BaseDataset(Dataset):
                     )
                     if source_entry is None:
                         continue
-                    with xr.open_dataset(source_entry['files'][0]) as ds:
+                    with xr.open_zarr(source_entry['files'][0], consolidated=False) as ds:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
                         mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
@@ -406,9 +406,9 @@ class BaseDataset(Dataset):
         :return: Tuple of (source dataset, target dataset or None).
         """
         if self.lazy_load:
-            ds_source = xr.open_dataset(file_path_source, decode_times=False)
+            ds_source = xr.open_zarr(file_path_source, decode_times=False, consolidated=False)
         else:
-            ds_source = xr.load_dataset(file_path_source, decode_times=False)
+            ds_source = xr.load_zarr(file_path_source, decode_times=False, consolidated=False)
 
         if file_path_target is None:
             ds_target = None
@@ -418,9 +418,9 @@ class BaseDataset(Dataset):
             
         else:
             if self.lazy_load:
-                ds_target = xr.open_dataset(file_path_target, decode_times=False)
+                ds_target = xr.open_zarr(file_path_target, decode_times=False, consolidated=False)
             else:
-                ds_target = xr.load_dataset(file_path_target, decode_times=False)
+                ds_target = xr.load_zarr(file_path_target, decode_times=False, consolidated=False)
 
         return ds_source, ds_target
 
@@ -893,7 +893,7 @@ class BaseDataset(Dataset):
 
             mapping_zoom_source = None
             if source_file is not None:
-                with xr.open_dataset(source_file) as ds:
+                with xr.open_zarr(source_file, consolidated=False) as ds:
                     if "cell" in ds.sizes:
                         mapping_zoom_source = get_zoom_from_npix(ds.sizes["cell"])
                     elif "ncells" in ds.sizes:
@@ -906,7 +906,7 @@ class BaseDataset(Dataset):
 
             mapping_zoom_target = None
             if target_file is not None:
-                with xr.open_dataset(target_file) as ds:
+                with xr.open_zarr(target_file, consolidated=False) as ds:
                     if "cell" in ds.sizes:
                         mapping_zoom_target = get_zoom_from_npix(ds.sizes["cell"])
                     elif "ncells" in ds.sizes:
@@ -933,9 +933,9 @@ class BaseDataset(Dataset):
                     )
                 elif target_file is not None:
                     if self.lazy_load:
-                        ds_target = xr.open_dataset(target_file, decode_times=False)
+                        ds_target = xr.open_zarr(target_file, decode_times=False, consolidated=False)
                     else:
-                        ds_target = xr.load_dataset(target_file, decode_times=False)
+                        ds_target = xr.load_zarr(target_file, decode_times=False, consolidated=False)
                 source_file_loaded = source_file
                 target_file_loaded = target_file
                 loaded = True if self.load_once else False
