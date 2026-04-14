@@ -7,6 +7,7 @@ import torch
 import xarray as xr
 
 from scipy.interpolate import griddata
+from scipy.spatial import cKDTree
 
 radius_earth = 6371
 
@@ -422,6 +423,95 @@ def estimate_healpix_cell_radius_rad(n_cells: int):
     :return: Cell radius in radians.
     """
     return math.sqrt(4*math.pi / n_cells)
+
+
+def regular_to_healpix_nearest_mapping(
+    longitudes: Union[np.ndarray, torch.Tensor, Sequence[float]],
+    latitudes: Union[np.ndarray, torch.Tensor, Sequence[float]],
+    healpix_level: int,
+):
+    """
+    Compute nearest-neighbor mappings between regular lon/lat points and Healpix cells.
+
+    :param longitudes: Regular-grid longitudes in degrees or radians. Can be a lon axis
+        ``(n_lon,)`` or flattened values ``(n_points,)``.
+    :param latitudes: Regular-grid latitudes in degrees or radians. Can be a lat axis
+        ``(n_lat,)`` or flattened values ``(n_points,)``.
+    :param healpix_level: Healpix level where ``nside = 2**healpix_level``.
+    :return: Mapping dictionary with keys:
+        ``regular_to_healpix_indices`` (``(n_points,)``),
+        ``indices`` (``(n_healpix, 1)`` nearest regular index per Healpix cell),
+        ``distances`` (``(n_healpix, 1)`` in radians), and
+        ``resolution`` (scalar radius proxy in radians).
+    """
+    lon = np.asarray(longitudes, dtype=np.float64).squeeze()
+    lat = np.asarray(latitudes, dtype=np.float64).squeeze()
+
+    if lon.ndim == 1 and lat.ndim == 1 and lon.size != lat.size:
+        lon_grid, lat_grid = np.meshgrid(lon, lat, indexing='xy')
+        lon = lon_grid.reshape(-1)
+        lat = lat_grid.reshape(-1)
+    else:
+        if lon.shape != lat.shape:
+            raise ValueError(
+                f"Expected matching lon/lat shapes, got {lon.shape} and {lat.shape}."
+            )
+        lon = lon.reshape(-1)
+        lat = lat.reshape(-1)
+
+    if lon.size == 0:
+        raise ValueError("Regular grid coordinates are empty.")
+
+    # Convert degrees to radians when inputs are outside radian ranges.
+    max_abs_lon = float(np.nanmax(np.abs(lon)))
+    max_abs_lat = float(np.nanmax(np.abs(lat)))
+    is_degree_input = max_abs_lon > (2 * np.pi + 1e-6) or max_abs_lat > (0.5 * np.pi + 1e-6)
+    if is_degree_input:
+        lon = np.deg2rad(lon)
+        lat = np.deg2rad(lat)
+
+    lon = ((lon + np.pi) % (2 * np.pi)) - np.pi
+    lat = np.clip(lat, -0.5 * np.pi, 0.5 * np.pi)
+
+    reg_xyz = np.stack(
+        (np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)),
+        axis=-1,
+    )
+
+    hp_lonlat = healpix_pixel_lonlat_torch(healpix_level, return_numpy=True).astype(np.float64)
+    hp_lon = hp_lonlat[:, 0]
+    hp_lat = hp_lonlat[:, 1]
+    hp_xyz = np.stack(
+        (
+            np.cos(hp_lat) * np.cos(hp_lon),
+            np.cos(hp_lat) * np.sin(hp_lon),
+            np.sin(hp_lat),
+        ),
+        axis=-1,
+    )
+
+    # Regular -> Healpix nearest-neighbor assignment.
+    hp_tree = cKDTree(hp_xyz)
+    _, regular_to_healpix = hp_tree.query(reg_xyz, k=1)
+
+    # Healpix -> Regular nearest-neighbor assignment used by the dataloader mapping.
+    reg_tree = cKDTree(reg_xyz)
+    _, healpix_to_regular = reg_tree.query(hp_xyz, k=1)
+
+    matched_reg_xyz = reg_xyz[healpix_to_regular]
+    cos_angle = np.einsum("ij,ij->i", hp_xyz, matched_reg_xyz)
+    cos_angle = np.clip(cos_angle, -1.0, 1.0)
+    distances = np.arccos(cos_angle)
+    distances = np.clip(distances, 1e-8, None)
+
+    resolution = estimate_healpix_cell_radius_rad(hp_xyz.shape[0]) / 2.0
+
+    return {
+        "regular_to_healpix_indices": torch.from_numpy(regular_to_healpix.astype(np.int64)),
+        "indices": torch.from_numpy(healpix_to_regular.astype(np.int64)).view(-1, 1),
+        "distances": torch.from_numpy(distances.astype(np.float32)).view(-1, 1),
+        "resolution": torch.tensor(resolution, dtype=torch.float32),
+    }
 
 def hierarchical_zoom_distance_map(input_coords: torch.Tensor, max_zoom: int):
     """

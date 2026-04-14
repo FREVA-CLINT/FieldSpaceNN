@@ -378,7 +378,7 @@ class BaseDataset(Dataset):
             patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
 
             # Resolve indices either on the target grid (post-map) or the source grid (pre-map).
-            post_map = mapping_zoom > zoom
+            post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
                 indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
                 if patch_dim:
@@ -453,7 +453,7 @@ class BaseDataset(Dataset):
             mask = get_mapping_weights(mapping)[..., 0].view(1, 1, -1, 1, 1)
 
             # Map indices differently depending on whether we are projecting from a higher zoom.
-            post_map = mapping_zoom > zoom
+            post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
                 indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
 
@@ -468,19 +468,34 @@ class BaseDataset(Dataset):
             arr = ds_variables.to_array().to_numpy()
             if arr.dtype == np.float64:
                 arr = arr.astype(np.float32, copy=False)
-            data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
-
+            # Normalize in raw array layout first.
+            data_g = torch.from_numpy(arr)
             if self.normalize_data:
                 for k, variable in enumerate(variables):
                     data_g[k] = self.var_normalizers[zoom][variable].normalize(data_g[k])
 
-            if 'level' not in ds_variables.dims:
-                data_g = data_g.unsqueeze(dim=2)
-
-            data_g = data_g.transpose(2,3)
+            # Shape all inputs to the shared convention: (v, t, n, d, f).
+            if patch_dim is None:
+                # Regular lon/lat input: flatten spatial dimensions to n while keeping optional level as d.
+                if 'level' in ds_variables.dims:
+                    # Expected raw shape: (v, t, level, lat, lon)
+                    data_g = data_g.permute(0, 1, 3, 4, 2).reshape(
+                        data_g.shape[0], data_g.shape[1], -1, data_g.shape[2]
+                    )
+                    data_g = data_g.unsqueeze(dim=-1)  # (v, t, n, d=level, f=1)
+                else:
+                    # Expected raw shape: (v, t, lat, lon)
+                    data_g = data_g.reshape(data_g.shape[0], data_g.shape[1], -1)
+                    data_g = data_g.unsqueeze(dim=-1).unsqueeze(dim=-1)  # (v, t, n, d=1, f=1)
+            else:
+                # HealPix / ICON-like 1D cell input.
+                data_g = data_g.unsqueeze(dim=-1)
+                if 'level' not in ds_variables.dims:
+                    data_g = data_g.unsqueeze(dim=2)
+                data_g = data_g.transpose(2, 3)
 
             if not patch_dim and post_map:
-                data_g = data_g.reshape(data_g.shape[0], data_g.shape[1], -1)[:, :, indices.view(-1)]
+                data_g = data_g[:, :, indices.view(-1), :, :]
 
         if drop_mask_ is not None and mask.dtype != torch.bool:
             drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1)
@@ -497,7 +512,6 @@ class BaseDataset(Dataset):
         
         if mask is not None and not (mask == False).any():
             mask = mask.expand_as(data_g)
-
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask, binarize_mask=self.output_binary_mask)
 
         if post_map:
@@ -750,7 +764,15 @@ class BaseDataset(Dataset):
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
 
             with xr.open_dataset(source_file) as ds:
-                mapping_zoom = get_zoom_from_npix(ds.cell.size)
+                if "cell" in ds.sizes:
+                    mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
+                elif "ncells" in ds.sizes:
+                    mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
+                else:
+                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+
+                if mapping_zoom is None:
+                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
