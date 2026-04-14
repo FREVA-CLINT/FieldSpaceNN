@@ -477,7 +477,7 @@ class BaseDataset(Dataset):
             # Shape all inputs to the shared convention: (v, t, n, d, f).
             if patch_dim is None:
                 # Regular lon/lat input: flatten spatial dimensions to n while keeping optional level as d.
-                if 'level' in ds_variables.dims:
+                if 'level' in ds_variables.dims or 'lev' in ds_variables.dims:
                     # Expected raw shape: (v, t, level, lat, lon)
                     data_g = data_g.permute(0, 1, 3, 4, 2).reshape(
                         data_g.shape[0], data_g.shape[1], -1, data_g.shape[2]
@@ -490,7 +490,7 @@ class BaseDataset(Dataset):
             else:
                 # HealPix / ICON-like 1D cell input.
                 data_g = data_g.unsqueeze(dim=-1)
-                if 'level' not in ds_variables.dims:
+                if 'level' not in ds_variables.dims and 'lev' not in ds_variables.dims:
                     data_g = data_g.unsqueeze(dim=2)
                 data_g = data_g.transpose(2, 3)
 
