@@ -16,6 +16,9 @@ from .data.datasets_base import BaseDataset
 from .data.pl_data_module import DataModule
 from .utils.helpers import load_from_state_dict
 
+import logging
+logging.getLogger("fsspec.reference").setLevel(logging.WARNING)
+
 
 def _get_zoom_tensor(zoom_dict: Mapping[Any, torch.Tensor], zoom: int) -> torch.Tensor:
     if zoom in zoom_dict:

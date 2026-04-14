@@ -8,6 +8,9 @@ import torch
 from ..src.utils.helpers import load_from_state_dict,freeze_zoom_levels,freeze_params
 from ..src.data.pl_data_module import DataModule
 
+import logging
+logging.getLogger("fsspec.reference").setLevel(logging.WARNING)
+
 torch.manual_seed(42)
 
 
