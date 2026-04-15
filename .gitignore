@@ -104,7 +104,8 @@ celerybeat.pid
 
 # Environments
 .env
-.venv
+.venv*
+run/
 env/
 venv/
 ENV/
@@ -133,3 +134,4 @@ dmypy.json
 
 notebooks/
 wandb/
+fieldspacenn/src/utils/losses.py
