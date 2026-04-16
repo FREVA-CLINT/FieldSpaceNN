@@ -150,6 +150,19 @@ class MGChannelAttentionConfig:
             else:
                 setattr(self, input, value)
 
+class MGChannelAttention2Config:
+    def __init__(self, 
+                 layer_settings: List,
+                 **kwargs):
+
+        inputs = copy.deepcopy(locals())
+        for input, value in inputs.items():
+            if input == 'kwargs':
+                for input_kw, value_kw in value.items():
+                    setattr(self, input_kw, value_kw)
+            else:
+                setattr(self, input, value)
+
 class FieldLayerConfig:
     def __init__(self, 
                  N: int,

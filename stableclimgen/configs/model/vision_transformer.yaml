@@ -1,0 +1,61 @@
+_target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
+lambda_loss_dict:
+  zooms:
+    MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 2e-4
+    warmup: 2000
+model:
+  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  in_zooms: [6]
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 32
+  masked_residual: true
+  use_mask: false
+  layer_confs:
+    n_groups: 1
+  layer_confs_emb:
+    n_groups: 1
+    aggregation: 'shift_scale'
+  block_configs:
+    "patch-to-token":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      target_features: [512]
+      in_zooms: [6]
+      target_zooms: [3]
+      field_zoom: 3
+      out_zooms: [3]
+    "embed":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [512]
+      zooms: [3]
+      identity_if_equal: true
+      layer_settings:
+        type: 'linear'
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGProcessingConfig
+      out_features: [512]
+      zooms: [3]
+      layer_settings:
+        type: "TransformerBlock"
+        blocks: ["s","mlp","s","mlp"]
+        seq_lengths: [10]
+        mlp_mult: 2
+    "token-to-patch":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGFieldLayerConfig
+      target_features: [1]
+      in_zooms: [3]
+      target_zooms: [6]
+      field_zoom: 3
+      out_zooms: [6]
+    "conservative": 
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig

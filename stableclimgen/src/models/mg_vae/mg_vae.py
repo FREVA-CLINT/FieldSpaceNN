@@ -8,10 +8,10 @@ from ..mg_transformer.confs import defaults
 from ..mg_transformer.mg_base_model import MG_base_model
 from .confs import MGQuantConfig
 from ..mg_transformer.mg_transformer import DiffDecoder
-from ...modules.embedding.embedder import get_embedder
+from ...modules.embedding.embedding_layers import get_mg_embeddings
 from ...modules.multi_grid.confs import MGProcessingConfig, MGSelfProcessingConfig, MGConservativeConfig, \
     MGCoordinateEmbeddingConfig, MGFieldAttentionConfig, Conv_EncoderDecoderConfig,MGChannelAttentionConfig,MGFieldLayerConfig
-from ...modules.multi_grid.mg_base import ConservativeLayer, MGEmbedding, get_mg_embeddings, MFieldLayer, Conv_EncoderDecoder,MGFieldLayer
+from ...modules.multi_grid.mg_base import ConservativeLayer, Conv_EncoderDecoder,MGFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock, MG_MultiBlock
 from ...modules.vae.quantization import Quantization
 from ...utils.helpers import check_get
@@ -26,7 +26,7 @@ class MG_VAE(MG_base_model):
                  quant_config: MGQuantConfig,
                  in_features: int=1,
                  out_features: int=1,
-                 mg_emb_confs: dict={},
+                 shared_mg_emb_confs: dict={},
                  distribution: str = "gaussian",
                  decoder_settings = {},
                  sample_gamma = False,
@@ -49,8 +49,8 @@ class MG_VAE(MG_base_model):
         self.predict_var = predict_var
         self.distribution = distribution
 
-        if len(mg_emb_confs)>0:
-            self.mg_emeddings = get_mg_embeddings(mg_emb_confs, self.grid_layers)
+        if len(shared_mg_emb_confs)>0:
+            self.mg_emeddings = get_mg_embeddings(shared_mg_emb_confs, self.grid_layers)
         else:
             self.mg_emeddings = None
 
@@ -92,22 +92,9 @@ class MG_VAE(MG_base_model):
             in_zooms = block.out_zooms
 
         block.out_features = [in_features[0]]
+        
+        self.decoder = DiffDecoder()
 
-        if len(decoder_settings) == 0:
-            self.decoder = DiffDecoder()
-
-        else:
-            self.decoder = MFieldLayer(
-                in_features,
-                decoder_settings['out_features'],
-                in_zooms,
-                self.grid_layers,
-                with_nh=decoder_settings.get('with_nh', True),
-                embed_confs=decoder_settings.get('embed_confs', {}),
-                N=decoder_settings.get('N', 2),
-                kmin=decoder_settings.get('kmin', 0),
-                kmax=decoder_settings.get('kmin', 0.5),
-                layer_confs=decoder_settings.get('layer_confs', {}))
 
     def create_encoder_decoder_block(self, block_conf, in_zooms, in_features, out_features=None, **kwargs):
         layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
@@ -132,15 +119,6 @@ class MG_VAE(MG_base_model):
                                       first_feature_only=self.predict_var)
             block.out_features = in_features
 
-        elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
-            block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
-                                block_conf.features,
-                                n_groups=check_get([block_conf, kwargs, {'n_groups': 1}], "n_groups"),
-                                zooms=in_zooms,
-                                init_mode=check_get([block_conf, kwargs, {'init_mode': "fourier_sphere"}], "init_mode"),
-                                layer_confs=layer_confs
-                                )
-            block.out_zooms = in_zooms
 
         elif isinstance(block_conf, MGSelfProcessingConfig):
             layer_settings = block_conf.layer_settings
@@ -208,16 +186,18 @@ class MG_VAE(MG_base_model):
             layer_confs = check_get([block_conf,kwargs,defaults], "layer_confs")
 
             block = MGFieldLayer(
-                    self.grid_layers[str(block_conf.field_zoom)],
-                    block_conf.in_zooms,
-                    block_conf.target_zooms,
-                    block_conf.field_zoom,
-                    out_zooms=block_conf.out_zooms,
-                    mult = block_conf.mult,
-                    with_nh = block_conf.with_nh,
-                    with_residual=block_conf.with_residual,
-                    type= block_conf.type,
-                    layer_confs=layer_confs)
+                        self.grid_layers[str(block_conf.field_zoom)],
+                        in_zooms,
+                        block_conf.in_zooms,
+                        block_conf.target_zooms,
+                        block_conf.field_zoom,
+                        out_zooms=block_conf.out_zooms,
+                        in_features=in_features,
+                        target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
+                        mult = block_conf.mult,
+                        with_nh = block_conf.with_nh,
+                        type= block_conf.type,
+                        layer_confs=layer_confs)
             
             block.out_features = in_features
         
@@ -241,7 +221,8 @@ class MG_VAE(MG_base_model):
 
 
     def vae_encode(self, x_zooms, sample_configs={}, mask_zooms=None, emb=None):
-        emb['MGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
 
         for k, block in enumerate(self.encoder_blocks.values()):
             x_zooms = block(x_zooms, sample_configs=sample_configs, mask_zooms=mask_zooms, emb=emb)

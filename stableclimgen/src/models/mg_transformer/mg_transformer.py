@@ -8,9 +8,10 @@ from typing import List,Dict
 from ...utils.helpers import check_get
 from ...modules.base import LinEmbLayer,MLP_fac
 
-from ...modules.multi_grid.mg_base import ConservativeLayer,MGEmbedding,get_mg_embeddings,DecodeLayer,MFieldLayer,Conv_EncoderDecoder,MGFieldLayer
+from ...modules.embedding.embedding_layers import get_mg_embeddings
+from ...modules.multi_grid.mg_base import ConservativeLayer,DecodeLayer,Conv_EncoderDecoder,MGFieldLayer
 from ...modules.multi_grid.processing import MG_SingleBlock,MG_MultiBlock
-from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig,MGChannelAttentionConfig,MGFieldLayerConfig
+from ...modules.multi_grid.confs import MGProcessingConfig,MGSelfProcessingConfig,MGFieldAttentionConfig,MGConservativeConfig,MGCoordinateEmbeddingConfig,MGDecodeConfig,FieldLayerConfig,Conv_EncoderDecoderConfig,MGChannelAttentionConfig,MGChannelAttention2Config,MGFieldLayerConfig
 
 from ...modules.embedding.embedder import get_embedder
 from ...modules.grids.grid_utils import decode_zooms
@@ -26,7 +27,7 @@ class MG_Transformer(MG_base_model):
                  in_zooms: List,
                  in_features: int=1,
                  out_features: int=1,
-                 mg_emb_confs: dict={},
+                 shared_mg_emb_confs: dict={},
                  with_global_gamma=True,
                  decoder_settings= {},
                  **kwargs
@@ -46,8 +47,8 @@ class MG_Transformer(MG_base_model):
         self.out_features = out_features
         self.predict_var = predict_var
 
-        if len(mg_emb_confs)>0:
-            self.mg_emeddings = get_mg_embeddings(mg_emb_confs, self.grid_layers)
+        if len(shared_mg_emb_confs)>0:
+            self.mg_emeddings = get_mg_embeddings(shared_mg_emb_confs, self.grid_layers)
         else:
             self.mg_emeddings = None
 
@@ -85,14 +86,6 @@ class MG_Transformer(MG_base_model):
                 
                 block.out_features = in_features
             
-            elif isinstance(block_conf, MGCoordinateEmbeddingConfig):
-                block = MGEmbedding(self.grid_layers[str(block_conf.emb_zoom)],
-                                    block_conf.features,
-                                    n_groups=check_get([block_conf,kwargs,{'n_groups': 1}], "n_groups"),
-                                    zooms = in_zooms,
-                                    init_mode=check_get([block_conf,kwargs,{'init_mode': "fourier_sphere"}], "init_mode"),
-                                    layer_confs=layer_confs)
-                block.out_zooms = in_zooms
 
             elif isinstance(block_conf, MGSelfProcessingConfig):
                 layer_settings = block_conf.layer_settings
@@ -105,6 +98,7 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      block_conf.out_features,
+                     dropout=check_get([block_conf,kwargs,defaults], "dropout"),
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs,
@@ -125,6 +119,7 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features,
                      block_conf.out_features,
+                     dropout=check_get([block_conf,kwargs,defaults], "dropout"),
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs,
@@ -146,6 +141,7 @@ class MG_Transformer(MG_base_model):
                      layer_settings,
                      in_features=1,
                      out_features=in_features,
+                     dropout=check_get([block_conf,kwargs,defaults], "dropout"),
                      q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
                      kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
                      layer_confs=layer_confs,
@@ -153,7 +149,29 @@ class MG_Transformer(MG_base_model):
                      use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
                      type='channel_att',
                      n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
+                
 
+                block.out_features = in_features
+
+            elif isinstance(block_conf, MGChannelAttention2Config):
+                layer_settings = block_conf.layer_settings
+                layer_settings['layer_confs'] = check_get([block_conf,kwargs,defaults], "layer_confs")
+
+                block = MG_MultiBlock(
+                     self.grid_layers,
+                     in_zooms,
+                     check_get([block_conf,{'out_zooms':in_zooms}], "out_zooms"),
+                     layer_settings,
+                     in_features=1,
+                     out_features=in_features,
+                     q_zooms  = check_get([block_conf,kwargs,{"q_zooms": -1}], "q_zooms"),
+                     kv_zooms = check_get([block_conf,kwargs,{"kv_zooms": -1}], "kv_zooms"),
+                     layer_confs=layer_confs,
+                     layer_confs_emb=check_get([block_conf,kwargs,{"layer_confs_emb": {}}], "layer_confs_emb"),
+                     use_mask=check_get([block_conf, kwargs,{"use_mask": False}], "use_mask"),
+                     type='channel_att2',
+                     n_head_channels=check_get([block_conf,kwargs,defaults], "n_head_channels"))
+                
                 block.out_features = in_features
 
             elif isinstance(block_conf, MGFieldLayerConfig):
@@ -162,17 +180,17 @@ class MG_Transformer(MG_base_model):
 
                 block = MGFieldLayer(
                         self.grid_layers[str(block_conf.field_zoom)],
+                        in_zooms,
                         block_conf.in_zooms,
                         block_conf.target_zooms,
                         block_conf.field_zoom,
                         out_zooms=block_conf.out_zooms,
+                        in_features=in_features,
+                        target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                         mult = block_conf.mult,
                         with_nh = block_conf.with_nh,
-                        with_residual = block_conf.with_residual,
                         type= block_conf.type,
                         layer_confs=layer_confs)
-                
-                block.out_features = in_features
 
             elif isinstance(block_conf, Conv_EncoderDecoderConfig):
                 layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
@@ -198,21 +216,8 @@ class MG_Transformer(MG_base_model):
         self.masked_residual = check_get([kwargs, defaults], "masked_residual")
         self.learn_residual = check_get([kwargs, defaults], "learn_residual") if not self.masked_residual else True
 
-        if len(decoder_settings)==0:
-            self.decoder = DiffDecoder()
-        
-        else:
-            self.decoder = MFieldLayer(
-                in_features,
-                decoder_settings['out_features'],
-                in_zooms,
-                self.grid_layers,
-                with_nh = decoder_settings.get('with_nh', True),
-                embed_confs = decoder_settings.get('embed_confs', {}),
-                N = decoder_settings.get('N', 2),
-                kmin = decoder_settings.get('kmin', 0),
-                kmax = decoder_settings.get('kmin', 0.5),
-                layer_confs = decoder_settings.get('layer_confs', {}))
+        self.decoder = DiffDecoder()
+
         
     def decode(self, x_zooms:Dict[str, torch.Tensor], sample_configs: Dict, out_zoom: int=None, emb={}):
         return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom)
@@ -237,6 +242,7 @@ class MG_Transformer(MG_base_model):
         assert nc == (self.out_features // (1+ self.predict_var)), f" the input has {nc} features, which doesnt match the numnber of specified out_features {self.out_features}"
 
         emb['SharedMGEmbedder'] = (self.mg_emeddings, emb['GroupEmbedder'])
+        emb['MGEmbedder'] = emb['GroupEmbedder']
 
        # x_zooms = {int(sample_configs['zoom'][0]): x} if 'zoom' in sample_configs.keys() else {self.max_zoom: x}
        # mask_zooms = {int(sample_configs['zoom'][0]): mask} if 'zoom' in sample_configs.keys() else {self.max_zoom: mask}
