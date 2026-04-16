@@ -1,0 +1,154 @@
+_target_: stableclimgen.src.models.mg_transformer.pl_mg_model.LightningMGModel
+lambda_loss_dict:
+  zooms:
+    MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 2e-4
+    warmup: 2000
+model:
+  _target_: stableclimgen.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  in_zooms: [3,5,8]
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 32
+  use_mask: false
+  layer_confs:
+    n_groups: 1
+  layer_confs_emb:
+    n_groups: 1
+    aggregation: 'shift_scale'
+  block_configs:
+    "0_0":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_1":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_2":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_3":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_4":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_5":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "0_6":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum" 
+    "0_7":
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGChannelAttentionConfig
+      q_zooms: [3,5,8]
+      kv_zooms: [3,5,8]
+      layer_settings:
+        mlp_mult: 0.5
+        att_dim: 128
+        field_zoom: 3
+        att_zoom: 0
+        with_nh_field: true
+        with_nh_att: true
+        head_gate: false
+        embed_confs:
+          embed_names: ['MGEmbedder']
+          embed_confs: ${embedding}
+          embed_mode: "sum"
+    "conservative": 
+      _target_: stableclimgen.src.modules.multi_grid.confs.MGConservativeConfig

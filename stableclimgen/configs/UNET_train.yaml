@@ -1,0 +1,17 @@
+defaults:
+  - trainer: CNN
+  - logger: wandb
+  - model: UNET_23M
+  - mgrids: healpix
+  - data_split: default
+  - dataloader: netcdf_regular
+  - embedding: default
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+run_name: CNN
+config_name: default
+project_name: test
+run_dir: /run

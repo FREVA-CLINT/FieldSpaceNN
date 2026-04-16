@@ -1,9 +1,21 @@
+1:
+  files:
+    - era5_.zarr
 3:
   files:
-    - /Users/maxwitte/work/crai_sr/ICON_atmo/data/next_gems/ngc4008_p1D_6.zarr
+    - era5.zarr
 4:
   files:
-    - /Users/maxwitte/work/crai_sr/ICON_atmo/data/next_gems/ngc4008_p1D_6.zarr
+    - era5.zarr
+5:
+  files:
+    - era5.zarr
 6:
   files:
-    - /Users/maxwitte/work/crai_sr/ICON_atmo/data/next_gems/ngc4008_p1D_6.zarr
+    - era5.zarr
+7:
+  files:
+    - era5.zarr
+8:
+  files:
+    - era5.zarr

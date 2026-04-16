@@ -1,0 +1,43 @@
+dataset:
+  _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
+  norm_dict: ${config_path}/dataloader/norm_dict_tas.json
+  p_dropout: 0
+  random_p: false
+  p_dropout_all: 1
+  n_sample_groups: -1
+  output_binary_mask: true
+  apply_diff: true
+  sampling_zooms_collate:
+    3:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    5:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    8:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+  sampling_zooms:
+    3:
+      n_past_ts: 15
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    5:
+      n_past_ts: 15
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 1.0
+    8:
+      n_past_ts: 15
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 1.0
+
+datamodule:
+  _target_: stableclimgen.src.utils.pl_data_module.DataModule
+  batch_size: 1
+  num_workers: 0
+  use_costum_ddp_sampler: false

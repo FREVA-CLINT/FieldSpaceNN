@@ -1,0 +1,8 @@
+{"tas": {
+   "normalizer": {"class": "QuantileNormalizer", "quantile": 0.01},
+   "stats": {"quantiles": {"0.01": 234.5231475830078,
+    "0.99": 305.5964050292969}},
+  "mean": 287.28613,
+  "std": 14.6354475,
+  "median": 292.08142}
+}

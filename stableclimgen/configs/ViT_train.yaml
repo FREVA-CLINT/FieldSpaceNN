@@ -1,19 +1,19 @@
 defaults:
-  - trainer: mg_transformer
+  - trainer: trainer
   - logger: wandb
-  - model: mg_transformer
+  - model: ViT_14M
   - mgrids: healpix
   - data_zooms: default
   - data_variables: default
   - data_split: default
-  - dataloader: zarr_healpix
+  - dataloader: healpix_SR_8
   - embedding: default
   - hydra: default
   - _self_
 
 ckpt_path: null
 
-run_name: mg_transformer
+run_name: ViT_14M
 config_name: default
-project_name: test
-run_dir: /Users/maxwitte/work/climgen_out
+project_name: SR_ERA5
+run_dir: /run
