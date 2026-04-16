@@ -1,6 +1,6 @@
 dataset:
   _target_: stableclimgen.src.utils.datasets_regular.MaskClimateDataset
-  norm_dict: ${config_path}/dataloader/norm_dict_tas.json
+  norm_dict: ../dataloader/norm_dict_tas.json
   n_sample_timesteps: 1
   p_dropout: 0
   p_drop_vars: 0

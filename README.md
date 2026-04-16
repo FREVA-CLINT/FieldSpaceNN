@@ -15,10 +15,13 @@ This repository contains the code base for `witte2025field`:
 
 ## Installation
 
-The repository includes a `setup.sh` script that creates a virtual environment and installs the project:
-
 ```bash
-bash setup.sh
+git clone https://github.com/FREVA-CLINT/FieldSpaceNN.git
+cd FieldSpaceNN
+git checkout FST_initial_paper
+python -m venv .venv
+source .venv/bin/activate
+pip install .
 ```
 
 ## Configuration

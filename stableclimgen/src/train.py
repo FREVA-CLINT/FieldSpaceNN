@@ -17,7 +17,7 @@ import mlflow
 torch.manual_seed(42)
 
 
-@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/stableclimgen/configs/", config_name="mg_transformer_train")
+@hydra.main(version_base=None, config_path="../configs/", config_name="FST_MSViT_train")
 def train(cfg: DictConfig) -> None:
     """
     Main training function that initializes datasets, dataloaders, model, and trainer,

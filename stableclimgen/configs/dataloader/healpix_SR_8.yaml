@@ -1,6 +1,6 @@
 dataset:
   _target_: stableclimgen.src.utils.datasets_healpix.HealPixLoader
-  norm_dict: ${config_path}/dataloader/norm_dict_tas.json
+  norm_dict: ../dataloader/norm_dict_tas.json
   p_dropout: 0
   random_p: false
   p_dropout_all: 1

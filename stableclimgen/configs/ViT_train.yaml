@@ -16,4 +16,4 @@ ckpt_path: null
 run_name: ViT_14M
 config_name: default
 project_name: SR_ERA5
-run_dir: /run
+run_dir: run/
