@@ -12,6 +12,7 @@ defaults = {
     'output_embed_confs': {},
     'rotate_coord_system': True,
     'p_dropout': 0,
+    'dropout': 0,
     'layer_type': 'Dense',
     'interpolate_input': True,
     'learn_residual': False,
