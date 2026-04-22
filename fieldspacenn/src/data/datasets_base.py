@@ -97,6 +97,18 @@ class BaseDataset(Dataset):
         """
         super(BaseDataset, self).__init__()
 
+        if not hasattr(self, "sampling_zooms_target") or self.sampling_zooms_target is None:
+            self.sampling_zooms_target = copy.deepcopy(self.sampling_zooms)
+
+        self.sampling_zooms = {int(k): v for k, v in self.sampling_zooms.items()}
+        self.sampling_zooms_target = {int(k): v for k, v in self.sampling_zooms_target.items()}
+        self.zooms: List[int] = sorted(self.sampling_zooms.keys())
+        self.zoom_patch_sample: List[int] = [self.sampling_zooms[zoom]['zoom_patch_sample'] for zoom in self.zooms]
+        self.zoom_time_steps_past: List[int] = [self.sampling_zooms[zoom]['n_past_ts'] for zoom in self.zooms]
+        self.zoom_time_steps_future: List[int] = [self.sampling_zooms[zoom]['n_future_ts'] for zoom in self.zooms]
+        self.zoom_time_steps_past_target: List[int] = [self.sampling_zooms_target[zoom]['n_past_ts'] for zoom in self.zooms]
+        self.zoom_time_steps_future_target: List[int] = [self.sampling_zooms_target[zoom]['n_future_ts'] for zoom in self.zooms]
+
         self.norm_dict: Optional[str] = norm_dict
         self.lazy_load: bool = lazy_load
         self.random_p: bool = random_p
@@ -115,20 +127,12 @@ class BaseDataset(Dataset):
 
         self.load_n_samples_time: int = load_n_samples_time
 
-        # shift target timesteps per zoom; default to no shift
-        self.shift_n_ts_target: Dict[int, int] = dict(
-            zip(
-                self.sampling_zooms.keys(),
-                [int(v.get("shift_n_ts_target", 0)) for v in self.sampling_zooms.values()],
-            )
-        )
-
         self.mask_ts_mode: str = mask_ts_mode
         self.p_dropout_all_zooms: Dict[int, float] = dict(
-            zip(self.sampling_zooms.keys(), [v.get("p_drop", 0) for v in self.sampling_zooms.values()])
+            zip(self.zooms, [self.sampling_zooms[zoom].get("p_drop", 0) for zoom in self.zooms])
         )
         self.mask_n_last_ts_zooms: Dict[int, int] = dict(
-            zip(self.sampling_zooms.keys(), [v.get("mask_n_last_ts", 0) for v in self.sampling_zooms.values()])
+            zip(self.zooms, [self.sampling_zooms[zoom].get("mask_n_last_ts", 0) for zoom in self.zooms])
         )
 
         self.p_dropout_all: float = p_dropout_all
@@ -144,19 +148,11 @@ class BaseDataset(Dataset):
             else:
                 all_files.append(data['files'])
         
-        self.zoom_patch_sample: List[int] = [v['zoom_patch_sample'] for v in self.sampling_zooms.values()]
-        self.zoom_time_steps_past: List[int] = [v['n_past_ts'] for v in self.sampling_zooms.values()]
-        self.zoom_time_steps_future: List[int] = [v['n_future_ts'] for v in self.sampling_zooms.values()]
-        self.zooms: List[int] = [z for z in self.sampling_zooms.keys()]
+        
         
         self.max_time_step_past: int = max(self.zoom_time_steps_past)
         self.max_time_step_future: int = max(self.zoom_time_steps_future)
 
-        #TODO fix the variable ids if multi var training/inference
-      #  self.variables_source_train = variables_source_train if variables_source_train is not None else self.variables_source
-       # self.variables_target_train = variables_target_train if variables_target_train is not None else self.variables_target
-
-    #    self.var_indices = dict(zip(self.variables_source_train, np.arange(len(self.variables_source_train))))
         unique_time_steps_past = len(torch.tensor(self.zoom_time_steps_past).unique()) == 1
         unique_time_steps_future = len(torch.tensor(self.zoom_time_steps_future).unique()) == 1
         unique_zoom_patch_sample = len(torch.tensor(self.zoom_patch_sample).unique()) == 1
@@ -185,16 +181,20 @@ class BaseDataset(Dataset):
             zip(self.zooms, [[] for _ in self.zooms])
         )
         for file_idx, total_timesteps in enumerate(self.time_steps_files):
-            # ensure both source window and shifted target window are inside the dataset
+            # Ensure both source and target windows are inside the dataset.
             start_bounds = []
             end_bounds = []
             for zoom in self.zooms:
-                shift_target = self.shift_n_ts_target.get(zoom, 0)
-                n_past_ts = self.sampling_zooms[zoom]['n_past_ts']
-                n_future_ts = self.sampling_zooms[zoom]['n_future_ts']
+                n_past_ts_source = self.sampling_zooms[zoom]['n_past_ts']
+                n_future_ts_source = self.sampling_zooms[zoom]['n_future_ts']
+                n_past_ts_target = self.sampling_zooms_target[zoom]['n_past_ts']
+                n_future_ts_target = self.sampling_zooms_target[zoom]['n_future_ts']
 
-                start_bounds.append(n_past_ts)
-                end_bounds.append(total_timesteps - 1 - n_future_ts - shift_target)
+                start_bounds.append(max(n_past_ts_source, n_past_ts_target))
+                end_bounds.append(min(
+                    total_timesteps - 1 - n_future_ts_source,
+                    total_timesteps - 1 - n_future_ts_target,
+                ))
 
             start_idx = max(start_bounds)
             end_idx = min(end_bounds)
@@ -303,7 +303,8 @@ class BaseDataset(Dataset):
                         norm_dict[var]['normalizer'])
         self.normalize_data: bool = normalize_data
         self.len_dataset: int = len(list(self.index_map.values())[0])
-    
+
+
     def get_indices_from_patch_idx(self, patch_idx: int) -> np.ndarray:
         """
         Resolve a patch index to the underlying pixel indices.
@@ -554,7 +555,7 @@ class BaseDataset(Dataset):
         mask_mapping_zooms: Mapping[int, torch.Tensor],
         patch_index_zooms: Mapping[int, torch.Tensor],
         hr_dopout: bool,
-    ) -> Tuple[Any, Any, Dict[int, Dict[str, Any]], Dict[int, torch.Tensor]]:
+    ) -> Tuple[Any, Any, Dict[int, Dict[str, Any]], Dict[int, Dict[str, Any]], Dict[int, torch.Tensor]]:
         """
         Finalize group data by applying masks, reshaping, and zoom transforms.
 
@@ -568,12 +569,15 @@ class BaseDataset(Dataset):
             when ``variables_as_features`` is enabled), aligning with the base
             ``(b, v, t, n, d, f)`` convention.
         """
-        sample_configs = self.sampling_zooms.copy()
+        sample_configs_source = copy.deepcopy(self.sampling_zooms)
+        sample_configs_target = copy.deepcopy(self.sampling_zooms_target)
         if not data_source:
             for key, value in patch_index_zooms.items():
-                if key in sample_configs:
-                    sample_configs[key]['patch_index'] = value
-            return {}, {}, {}, sample_configs
+                if key in sample_configs_source:
+                    sample_configs_source[key]['patch_index'] = value
+                if key in sample_configs_target:
+                    sample_configs_target[key]['patch_index'] = value
+            return {}, {}, sample_configs_source, sample_configs_target, {}
         if data_target is None:
             # Defer target construction until here to avoid masking it with source dropouts.
             data_target = {zoom: data_source[zoom].clone() for zoom in data_source.keys()}
@@ -582,8 +586,8 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        data_source = encode_zooms(data_source, sample_configs, patch_index_zooms)
-        data_target = encode_zooms(data_target, sample_configs, patch_index_zooms)
+        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
 
         if not hr_dopout and self.p_dropout_all > 0:
             drop = False
@@ -625,8 +629,10 @@ class BaseDataset(Dataset):
                     mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
         for key, value in patch_index_zooms.items():
-            if key in sample_configs:
-                sample_configs[key]['patch_index'] = value
+            if key in sample_configs_source:
+                sample_configs_source[key]['patch_index'] = value
+            if key in sample_configs_target:
+                sample_configs_target[key]['patch_index'] = value
         
         
         # Optionally mask the last timesteps and repeat or zero them out.
@@ -652,11 +658,11 @@ class BaseDataset(Dataset):
 
         if self.output_max_zoom_only:
             max_zoom = max(data_source.keys())
-            data_source = decode_zooms(data_source, sample_configs, max_zoom)
-            data_target = decode_zooms(data_target, sample_configs, max_zoom)
+            data_source = decode_zooms(data_source, sample_configs_source, max_zoom)
+            data_target = decode_zooms(data_target, sample_configs_target, max_zoom)
             mask_mapping_zooms = {max_zoom: mask_mapping_zooms[max_zoom]}
 
-        return data_source, data_target, sample_configs, mask_mapping_zooms
+        return data_source, data_target, sample_configs_source, sample_configs_target, mask_mapping_zooms
 
 
     def __getitem__(
@@ -755,16 +761,16 @@ class BaseDataset(Dataset):
                 for indices in var_indices.values():
                     drop_mask_zoom_groups.append(drop_mask_zoom[indices].unsqueeze(0))
     
-            start_times = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
-            end_times = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
+            start_times_source = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
+            end_times_source = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
 
-            time_indices = np.stack(
-                [np.arange(s, e + 1) for s, e in zip(start_times, end_times)],
+            time_indices_source = np.stack(
+                [np.arange(s, e + 1) for s, e in zip(start_times_source, end_times_source)],
                 axis=0
             ).reshape(-1)
 
             ds_source_zoom = self.select_ranges(ds_source,
-                    time_indices,
+                    time_indices_source,
                     patch_index,
                     self.mapping[mapping_zoom],
                     mapping_zoom,
@@ -772,11 +778,21 @@ class BaseDataset(Dataset):
             
             data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1).to(torch.float32)
             
-            if ds_target is not None or self.shift_n_ts_target.get(zoom,0)>0:
+            target_window_differs = (
+                self.sampling_zooms_target[zoom]['n_past_ts'] != self.sampling_zooms[zoom]['n_past_ts']
+                or self.sampling_zooms_target[zoom]['n_future_ts'] != self.sampling_zooms[zoom]['n_future_ts']
+            )
+            if ds_target is not None or target_window_differs:
                 ds_target = ds_source if ds_target is None else ds_target
+                start_times_target = np.array(time_indices) - self.sampling_zooms_target[zoom]['n_past_ts']
+                end_times_target = np.array(time_indices) + self.sampling_zooms_target[zoom]['n_future_ts']
+                time_indices_target = np.stack(
+                    [np.arange(s, e + 1) for s, e in zip(start_times_target, end_times_target)],
+                    axis=0
+                ).reshape(-1)
                 ds_target_zoom = self.select_ranges(
                     ds_target,
-                    time_indices + self.shift_n_ts_target.get(zoom,0),
+                    time_indices_target,
                     patch_index,
                     self.mapping[mapping_zoom],
                     mapping_zoom,
@@ -836,7 +852,7 @@ class BaseDataset(Dataset):
 
         for group_idx, group in enumerate(group_keys):
             if group != 'embedding': 
-                source_zooms, target_zooms, _, mask_group = self._finalize_group(
+                source_zooms, target_zooms, sample_configs_source, sample_configs_target, mask_group = self._finalize_group(
                     source_zooms_groups[group_idx],
                     target_zooms_groups[group_idx],
                     mask_mapping_zooms_groups[group_idx],
@@ -879,6 +895,9 @@ class BaseDataset(Dataset):
         
         for zoom, indices in patch_index_zooms.items():
             patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
+
+        self.sample_configs_source = sample_configs_source if 'sample_configs_source' in locals() else copy.deepcopy(self.sampling_zooms)
+        self.sample_configs_target = sample_configs_target if 'sample_configs_target' in locals() else copy.deepcopy(self.sampling_zooms_target)
 
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 

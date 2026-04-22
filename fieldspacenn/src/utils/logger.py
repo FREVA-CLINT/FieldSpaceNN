@@ -8,7 +8,7 @@ from lightning.pytorch.loggers import WandbLogger, MLFlowLogger, Logger
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import OmegaConf
 
-from .visualization import healpix_plot_zooms_var, regular_plot
+from .visualization import regular_plot, healpix_plot_zooms_var, healpix_plot_zooms_time
 from ..modules.grids.grid_utils import decode_zooms
 
 
@@ -27,6 +27,7 @@ class CustomImageLogger(Logger):
         logger_type: str = 'wandb',
         save_snapshot_images: bool = True,
         log_snapshot_images: bool = True,
+        plot_types: Optional[List[str]] = None,
         **kwargs: Any
     ):
         """
@@ -43,6 +44,7 @@ class CustomImageLogger(Logger):
         self.save_snapshot_images: bool = save_snapshot_images
         self.log_snapshot_images: bool = log_snapshot_images
         self.cfg: Optional[Dict[str, Any]] = cfg
+        self.plot_types: List[str] = plot_types or []
         self.logger_conf: Dict[str, Any] = kwargs
         self._internal_logger: Logger
 
@@ -129,6 +131,105 @@ class CustomImageLogger(Logger):
         """
         self._internal_logger.log_metrics(metrics, step)
 
+    def _get_validation_image_dir(self) -> str:
+        if isinstance(self._internal_logger, WandbLogger):
+            save_dir = os.path.join(self._internal_logger.save_dir, "validation_images")
+        elif isinstance(self._internal_logger, MLFlowLogger):
+            if mlflow.active_run():
+                save_dir = os.path.join(mlflow.get_artifact_uri().replace("file://", ""), "validation_images")
+            else:
+                save_dir = "validation_images"
+        else:
+            save_dir = "validation_images"
+
+        os.makedirs(save_dir, exist_ok=True)
+        return save_dir
+
+    def _log_saved_paths(self, save_paths: List[str]):
+        if not self.log_snapshot_images:
+            return
+
+        for save_path in save_paths:
+            if isinstance(self._internal_logger, WandbLogger):
+                self._internal_logger.log_image(
+                    f"plots/{os.path.basename(save_path).replace('.png', '')}",
+                    [save_path],
+                )
+            elif isinstance(self._internal_logger, MLFlowLogger) and mlflow.active_run():
+                mlflow.log_artifact(save_path, artifact_path="plots")
+
+    def log_tensor_plot(
+        self,
+        plot_types: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> List[str]:
+        """
+        Dispatch tensor plotting to one or more configured plot functions.
+
+        Supported plot types:
+        - ``regular_plot``
+        - ``healpix_plot_zooms_var``
+        """
+        if not self.save_snapshot_images:
+            return []
+
+        requested_plot_types = plot_types if plot_types is not None else self.plot_types
+        if not requested_plot_types:
+            return []
+
+        save_dir = kwargs.get("save_dir", self._get_validation_image_dir())
+        save_paths: List[str] = []
+
+        for plot_type in requested_plot_types:
+            if "regular" in plot_type:
+                save_paths.extend(
+                    regular_plot(
+                        kwargs["gt"],
+                        kwargs["input"],
+                        kwargs["output"],
+                        kwargs["plot_name"],
+                        save_dir,
+                        kwargs.get("target_coords"),
+                        kwargs.get("in_coords"),
+                    )
+                )
+
+            if "zooms" in plot_type:
+                save_paths.extend(
+                    healpix_plot_zooms_var(
+                        kwargs["input"],
+                        kwargs["output"],
+                        kwargs["gt"],
+                        save_dir,
+                        mask_zooms=kwargs.get("mask"),
+                        sample_configs=kwargs.get("sample_configs", {}),
+                        emb=kwargs.get("emb"),
+                        plot_name=kwargs.get("plot_name", "healpix_plot"),
+                        sample=kwargs.get("sample", 0),
+                        plot_n_vars=kwargs.get("plot_n_vars", -1),
+                        plot_n_ts=kwargs.get("plot_n_ts", 1),
+                    )
+                )
+            
+            if "time" in plot_type:
+                save_paths.extend(
+                    healpix_plot_zooms_time(
+                        kwargs["output"],
+                        kwargs["gt"],
+                        save_dir,
+                        mask_zooms=kwargs.get("mask"),
+                        sample_configs=kwargs.get("sample_configs", {}),
+                        emb=kwargs.get("emb"),
+                        plot_name=kwargs.get("plot_name", "healpix_plot"),
+                        sample=kwargs.get("sample", 0),
+                        plot_n_vars=kwargs.get("plot_n_vars", -1),
+                        plot_n_ts=kwargs.get("plot_n_ts", 1),
+                    )
+                )
+
+        self._log_saved_paths(save_paths)
+        return save_paths
+
     def log_healpix_tensor_plot(
         self,
         input_data: Dict[int, torch.Tensor],
@@ -160,24 +261,16 @@ class CustomImageLogger(Logger):
         if not self.save_snapshot_images:
             return
 
-        if isinstance(self._internal_logger, WandbLogger):
-            save_dir = os.path.join(self._internal_logger.save_dir, "validation_images")
-        elif isinstance(self._internal_logger, MLFlowLogger):
-            if mlflow.active_run():
-                save_dir = os.path.join(mlflow.get_artifact_uri().replace("file://", ""), "validation_images")
-            else:
-                save_dir = "validation_images"
-        else:
-            save_dir = "validation_images"
-
-        os.makedirs(save_dir, exist_ok=True)
-
-        save_paths = []
-
         if output is not None:
-            save_paths += healpix_plot_zooms_var(
-                input_data, output, gt, save_dir, mask_zooms=mask, sample_configs=sample_configs,
-                plot_name=f"epoch_{current_epoch}{plot_name}", emb=emb,
+            self.log_tensor_plot(
+                plot_types=["healpix_plot_zooms_var"],
+                input=input_data,
+                output=output,
+                gt=gt,
+                mask=mask,
+                sample_configs=sample_configs,
+                emb=emb,
+                plot_name=f"epoch_{current_epoch}{plot_name}",
             )
 
         # Build combined plots at the maximum zoom for easier visual comparison.
@@ -187,17 +280,16 @@ class CustomImageLogger(Logger):
         output_p = output_comp
 
         mask_p = {max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None
-        save_paths += healpix_plot_zooms_var(
-            source_p, output_p, target_p, save_dir, mask_zooms=mask_p, sample_configs=sample_configs,
-            plot_name=f"epoch_{current_epoch}_combined{plot_name}", emb=emb,
+        self.log_tensor_plot(
+            plot_types=["healpix_plot_zooms_var"],
+            input=source_p,
+            output=output_p,
+            gt=target_p,
+            mask=mask_p,
+            sample_configs=sample_configs,
+            emb=emb,
+            plot_name=f"epoch_{current_epoch}_combined{plot_name}",
         )
-
-        if self.log_snapshot_images:
-            for save_path in save_paths:
-                if isinstance(self._internal_logger, WandbLogger):
-                    self._internal_logger.log_image(f"plots/{os.path.basename(save_path).replace('.png', '')}", [save_path])
-                elif isinstance(self._internal_logger, MLFlowLogger) and mlflow.active_run():
-                    mlflow.log_artifact(save_path, artifact_path="plots")
 
     def log_regular_tensor_plot(
         self,
@@ -222,24 +314,13 @@ class CustomImageLogger(Logger):
         """
         if not self.save_snapshot_images:
             return
-        
-        if isinstance(self._internal_logger, WandbLogger):
-            save_dir = os.path.join(self._internal_logger.save_dir, "validation_images")
-        elif isinstance(self._internal_logger, MLFlowLogger):
-            if mlflow.active_run():
-                save_dir = os.path.join(mlflow.get_artifact_uri().replace("file://", ""), "validation_images")
-            else:
-                save_dir = "validation_images"
-        else:
-            save_dir = "validation_images"
 
-        os.makedirs(save_dir, exist_ok=True)
-
-        save_paths = regular_plot(gt_tensor, in_tensor, rec_tensor, plot_name, save_dir, target_coords, in_coords)
-
-        if self.log_snapshot_images:
-            for save_path in save_paths:
-                if isinstance(self._internal_logger, WandbLogger):
-                    self._internal_logger.log_image(f"plots/{os.path.basename(save_path).replace('.png', '')}", [save_path])
-                elif isinstance(self._internal_logger, MLFlowLogger) and mlflow.active_run():
-                    mlflow.log_artifact(save_path, artifact_path="plots")
+        self.log_tensor_plot(
+            plot_types=["regular_plot"],
+            gt=gt_tensor,
+            input=in_tensor,
+            output=rec_tensor,
+            target_coords=target_coords,
+            in_coords=in_coords,
+            plot_name=plot_name,
+        )

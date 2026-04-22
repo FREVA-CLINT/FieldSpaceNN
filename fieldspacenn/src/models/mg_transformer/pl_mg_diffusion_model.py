@@ -98,6 +98,59 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             self.model, x_zooms_groups, diffusion_steps, mask_zooms_groups, emb_groups, create_pred_xstart=pred_xstart, **model_kwargs
         )
 
+    def get_losses(
+        self,
+        source_groups: Sequence[Dict[int, torch.Tensor]] | Dict[int, torch.Tensor],
+        target_groups: Sequence[Dict[int, torch.Tensor]],
+        sample_configs: Mapping[int, Dict[str, Any]] = {},
+        sample_configs_target: Optional[Mapping[int, Dict[str, Any]]] = None,
+        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
+        prefix: str = '',
+        pred_xstart: bool = False,
+        mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb: Optional[Sequence[Dict[str, Any]]] = None,
+    ):
+        if mask_groups is None:
+            mask_groups = mask_zooms
+        if emb_groups is None:
+            emb_groups = emb
+        if sample_configs_target is None:
+            sample_configs_target = sample_configs
+
+        source_groups_list = [source_groups] if isinstance(source_groups, dict) else list(source_groups)
+
+        diffusion_outputs = self(
+            x_zooms_groups=[group.copy() for group in source_groups_list],
+            mask_zooms_groups=mask_groups,
+            emb_groups=emb_groups,
+            sample_configs=sample_configs,
+            pred_xstart=pred_xstart,
+        )
+
+        output_groups = []
+        target_groups_from_diffusion = []
+        pred_xstart_list = []
+        for group_output in diffusion_outputs:
+            if group_output is not None and len(group_output) >= 2:
+                target_groups_from_diffusion.append(group_output[0])
+                output_groups.append(group_output[1])
+                pred_xstart_list.append(group_output[2] if len(group_output) > 2 else None)
+
+        total_loss, loss_dict, output_groups = self._compute_losses_from_output_groups(
+            source_groups=source_groups_list,
+            output_groups=output_groups,
+            target_groups=target_groups_from_diffusion,
+            sample_configs=sample_configs,
+            sample_configs_target=sample_configs_target,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix=prefix,
+        )
+
+        pred_xstart_output = pred_xstart_list[0] if pred_xstart_list else None
+        return total_loss, loss_dict, output_groups, pred_xstart_output
+
     def training_step(
         self,
         batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
@@ -124,7 +177,6 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             mask_groups=mask_groups,
             emb_groups=emb_groups,
             prefix='train',
-            mode="diffusion",
         )
 
         self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
@@ -161,7 +213,6 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             mask_groups=mask_groups,
             emb_groups=emb_groups,
             prefix='val',
-            mode="diffusion",
             pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0),
         )
 
@@ -205,7 +256,27 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 else:
                     pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
-                self.logger.log_healpix_tensor_plot(source_p, pred_xstart, target_p, mask_p, sample_configs_p, emb_p, max_zoom, self.current_epoch, output_comp=pred_xstart_comp, plot_name=f"_{t.item()}")
+                self.logger.log_tensor_plot(
+                    plot_types=["healpix_plot_zooms_var"],
+                    input=source_p,
+                    output=pred_xstart,
+                    gt=target_p,
+                    mask=mask_p,
+                    sample_configs=sample_configs_p,
+                    emb=emb_p,
+                    plot_name=f"epoch_{self.current_epoch}_{t.item()}",
+                )
+
+                self.logger.log_tensor_plot(
+                    plot_types=["healpix_plot_zooms_var"],
+                    input=source_p,
+                    output=pred_xstart_comp,
+                    gt=target_p,
+                    mask={max_zoom: mask_p[max_zoom]} if mask_p is not None and max_zoom in mask_p else None,
+                    sample_configs=sample_configs_p,
+                    emb=emb_p,
+                    plot_name=f"epoch_{self.current_epoch}_combined_{t.item()}",
+                )
 
         return loss
 

@@ -98,16 +98,15 @@ class LightningMGModel(pl.LightningModule):
         source_groups: Sequence[Dict[int, torch.Tensor]] | Dict[int, torch.Tensor],
         target_groups: Sequence[Dict[int, torch.Tensor]],
         sample_configs: Mapping[int, Dict[str, Any]] = {},
+        sample_configs_target: Optional[Mapping[int, Dict[str, Any]]] = None,
         mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
         prefix: str = '',
-        mode: str = "default",
-        pred_xstart: bool = False,
         mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb: Optional[Sequence[Dict[str, Any]]] = None,
     ):
         """
-        Compute losses for a batch, optionally using diffusion mode.
+        Compute losses for a batch.
 
         :param source_groups: Source zoom-group inputs with tensors of shape ``(b, v, t, n, d, f)``.
         :param target_groups: Target zoom-group inputs with tensors of shape ``(b, v, t, n, d, f)``.
@@ -115,124 +114,141 @@ class LightningMGModel(pl.LightningModule):
         :param mask_groups: Optional mask groups aligned with inputs.
         :param emb_groups: Optional embedding groups aligned with inputs.
         :param prefix: Prefix for loss names.
-        :param mode: Loss mode ("default" or "diffusion").
-        :param pred_xstart: Whether to request ``x_0`` predictions in diffusion mode.
         :param mask_zooms: Optional mask groups used when ``mask_groups`` is None.
         :param emb: Optional embeddings used when ``emb_groups`` is None.
-        :return: Tuple of ``(total_loss, loss_dict, output_groups[, pred_xstart])``.
+        :return: Tuple of ``(total_loss, loss_dict, output_groups)``.
         """
-
-        loss_dict_total = {}
-        total_loss = 0
-        posterior = None
 
         if mask_groups is None:
             mask_groups = mask_zooms
         if emb_groups is None:
             emb_groups = emb
+        if sample_configs_target is None:
+            sample_configs_target = sample_configs
 
-        source_is_dict = isinstance(source_groups, dict)
-        if source_is_dict:
+        if isinstance(source_groups, dict):
             source_groups_list = [source_groups]
         else:
             source_groups_list = list(source_groups)
 
-        if source_is_dict:
-            model_input = source_groups.copy()
-            mask_input = mask_groups[0] if mask_groups else None
-            emb_input = emb_groups[0] if emb_groups else None
-        else:
-            model_input = [group.copy() for group in source_groups_list]
-            mask_input = mask_groups
-            emb_input = emb_groups
+        output_groups = self(
+            x_zooms_groups=[group.copy() for group in source_groups_list],
+            mask_zooms_groups=mask_groups,
+            emb_groups=emb_groups,
+            sample_configs=sample_configs,
+        )
 
-        if mode == "diffusion":
-            if source_is_dict:
-                outputs = self(
-                    model_input,
-                    mask_zooms=mask_input,
-                    emb=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
-            else:
-                outputs = self(
-                    x_zooms_groups=model_input,
-                    mask_zooms_groups=mask_input,
-                    emb_groups=emb_input,
-                    sample_configs=sample_configs,
-                    pred_xstart=pred_xstart,
-                )
+        return self._compute_losses_from_output_groups(
+            source_groups=source_groups_list,
+            output_groups=output_groups,
+            target_groups=target_groups,
+            sample_configs=sample_configs,
+            sample_configs_target=sample_configs_target,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix=prefix,
+        )
 
-            # outputs is now a list of tuples, one for each group
-            output_groups = []
-            target_groups_from_diffusion = []
-            pred_xstart_list = []
-            for group_output in outputs:
-                if group_output is not None and len(group_output) >= 2:
-                    target_groups_from_diffusion.append(group_output[0])
-                    output_groups.append(group_output[1])
-                    pred_xstart_list.append(group_output[2] if len(group_output) > 2 else None)
-            target_groups = target_groups_from_diffusion
-            pred_xstart = pred_xstart_list[0] if pred_xstart_list else None # Keep single pred_xstart for now
-            
-        else:
-            if source_is_dict:
-                output_groups = self(
-                    model_input,
-                    mask_zooms=mask_input,
-                    emb=emb_input,
-                    sample_configs=sample_configs,
-                )
-            else:
-                output_groups = self(
-                    x_zooms_groups=model_input,
-                    mask_zooms_groups=mask_input,
-                    emb_groups=emb_input,
-                    sample_configs=sample_configs,
-                )
+    def _compute_losses_from_output_groups(
+        self,
+        source_groups: Sequence[Dict[int, torch.Tensor]],
+        output_groups: Sequence[Dict[int, torch.Tensor]],
+        target_groups: Sequence[Dict[int, torch.Tensor]],
+        sample_configs: Mapping[int, Dict[str, Any]],
+        sample_configs_target: Mapping[int, Dict[str, Any]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Dict[str, Any]],
+        prefix: str,
+    ):
+        loss_dict_total = {}
+        total_loss = 0
+        group_loss_inputs = []
 
         lambda_groups = self.lambda_loss_groups if len(self.lambda_loss_groups)>0 else [1.0]*len(source_groups)
         weight_groups = torch.tensor([list(t.values())[0].shape[1] for t in source_groups], device=emb_groups[0]['VariableEmbedder'].device)
         weight_groups = weight_groups/weight_groups.sum()
 
         for source, output, target, mask, emb, lambda_group, weight_group in zip(
-            source_groups_list, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
+            source_groups, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
         ):
+            group_loss_inputs.append(
+                {
+                    "source": source,
+                    "target": target,
+                    "output": output,
+                    "mask": mask,
+                    "emb": emb,
+                    "lambda_group": float(lambda_group),
+                    "weight_group": weight_group,
+                }
+            )
         
             loss, loss_dict = self.loss_zooms(
-                output, target, mask=mask, sample_configs=sample_configs, prefix=f'{prefix}/', emb=emb
+                output, target, mask=mask, sample_configs=sample_configs_target, prefix=f'{prefix}/', emb=emb
             )
             total_loss += loss * (float(lambda_group) * weight_group)
             loss_dict_total.update(loss_dict)
 
-        if self.loss_composed.has_elements:
-            max_zooms = [max(target.keys()) for target in target_groups if target]
-            if max_zooms:
-                max_zoom = max(max_zooms)
-                for source, output, target, mask, emb, lambda_group, weight_group in zip(
-                    source_groups_list, output_groups, target_groups, mask_groups, emb_groups, lambda_groups, weight_groups
-                ):
-                    if len(source) > 0:
-                        output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-                        target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-
-                        loss, loss_dict = self.loss_composed(
-                            output_comp,
-                            target_comp,
-                            mask=mask,
-                            sample_configs=sample_configs,
-                            prefix=f'{prefix}/composed_',
-                            emb=emb,
-                        )
-                        total_loss += loss * (float(lambda_group) * weight_group)
-                        loss_dict_total.update(loss_dict)
-
-
-        if mode=="diffusion":
-            return total_loss, loss_dict_total, output_groups, pred_xstart
-        else:
+        if not self.loss_composed.has_elements:
             return total_loss, loss_dict_total, output_groups
+
+        total_loss, loss_dict_total = self._add_composed_losses(
+            group_loss_inputs=group_loss_inputs,
+            sample_configs_target=sample_configs_target,
+            prefix=prefix,
+            total_loss=total_loss,
+            loss_dict_total=loss_dict_total,
+        )
+        return total_loss, loss_dict_total, output_groups
+
+    def _add_composed_losses(
+        self,
+        group_loss_inputs: Sequence[Dict[str, Any]],
+        sample_configs_target: Mapping[int, Dict[str, Any]],
+        prefix: str,
+        total_loss: torch.Tensor | float,
+        loss_dict_total: Dict[str, float],
+    ) -> tuple[torch.Tensor | float, Dict[str, float]]:
+        max_zoom = max((max(group["target"].keys()) for group in group_loss_inputs if group["target"]), default=None)
+        if max_zoom is None:
+            return total_loss, loss_dict_total
+
+        for group_input in group_loss_inputs:
+            if len(group_input["source"]) == 0:
+                continue
+
+            output_comp = decode_zooms(
+                group_input["output"].copy(),
+                sample_configs=sample_configs_target,
+                out_zoom=max_zoom,
+            )
+            target_comp = decode_zooms(
+                group_input["target"].copy(),
+                sample_configs=sample_configs_target,
+                out_zoom=max_zoom,
+            )
+            mask_comp = (
+                decode_zooms(
+                    group_input["mask"],
+                    sample_configs=sample_configs_target,
+                    out_zoom=max_zoom,
+                )
+                if group_input["mask"] is not None
+                else None
+            )
+
+            loss, loss_dict = self.loss_composed(
+                output_comp,
+                target_comp,
+                mask=mask_comp,
+                sample_configs=sample_configs_target,
+                prefix=f'{prefix}/composed_',
+                emb=group_input["emb"],
+            )
+            total_loss += loss * (group_input["lambda_group"] * group_input["weight_group"])
+            loss_dict_total.update(loss_dict)
+
+        return total_loss, loss_dict_total
 
     def training_step(
         self,
@@ -247,16 +263,20 @@ class LightningMGModel(pl.LightningModule):
         :param batch_idx: Index of the current batch.
         :return: Training loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.datamodule.dataset_train
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+        sample_configs_target = getattr(dataset, "sampling_zooms_target", sample_configs)
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         # Inject patch indices into the sampling configuration.
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs_target = merge_sampling_dicts(sample_configs_target, patch_index_zooms)
 
         loss, loss_dict, _ = self.get_losses(
             source_groups,
             target_groups,
             sample_configs,
+            sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
             prefix='train',
@@ -280,7 +300,9 @@ class LightningMGModel(pl.LightningModule):
         :param batch_idx: Index of the current batch.
         :return: Validation loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.datamodule.dataset_val
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+        sample_configs_target = getattr(dataset, "sampling_zooms_target", sample_configs)
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
@@ -288,12 +310,14 @@ class LightningMGModel(pl.LightningModule):
 
         # Inject patch indices into the sampling configuration.
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs_target = merge_sampling_dicts(sample_configs_target, patch_index_zooms)
 
    
         loss, loss_dict, output_groups = self.get_losses(
             [group.copy() for group in source_groups],
             target_groups,
             sample_configs=sample_configs, 
+            sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
             prefix='val')
@@ -313,9 +337,31 @@ class LightningMGModel(pl.LightningModule):
             mask = mask_groups[group_idx]
             emb = emb_groups[group_idx]
 
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom)
 
-            self.logger.log_healpix_tensor_plot(source, output, target, mask, sample_configs, emb, max_zoom, self.current_epoch, output_comp=output_comp)
+            self.logger.log_tensor_plot(
+                plot_types=["healpix_plot_zooms_var"],
+                input=source,
+                output=output,
+                gt=target,
+                mask=mask,
+                sample_configs=sample_configs,
+                emb=emb,
+                plot_name=f"epoch_{self.current_epoch}",
+            )
+
+            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
+            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
+            self.logger.log_tensor_plot(
+                plot_types=["healpix_plot_zooms_var"],
+                input=source_comp,
+                output=output_comp,
+                gt=target_comp,
+                mask={max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None,
+                sample_configs=sample_configs,
+                emb=emb,
+                plot_name=f"epoch_{self.current_epoch}_combined",
+            )
             
         return loss
 

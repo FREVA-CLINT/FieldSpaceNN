@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import healpy as hp
 import cartopy
@@ -72,6 +72,118 @@ def healpix_plot_local(
     cbar.ax.tick_params(labelsize=8)
     cbar.ax.set_xticklabels([f"{x:.2f}" for x in tick_locs])
 
+
+def _plot_healpix_panel(
+    fig: plt.Figure,
+    values: np.ndarray,
+    zoom: int,
+    row_idx: int,
+    col_idx: int,
+    n_rows: int,
+    n_cols: int,
+    title: str,
+    sample_config: Dict[str, Any],
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> None:
+    """
+    Plot a single HEALPix panel either as a full-sphere Mollweide view or a local patch.
+
+    :param fig: Matplotlib figure.
+    :param values: HEALPix values to plot.
+    :param zoom: Zoom level.
+    :param row_idx: Row index in the subplot grid.
+    :param col_idx: Column index in the subplot grid.
+    :param n_rows: Total number of rows in the grid.
+    :param n_cols: Total number of columns in the grid.
+    :param title: Plot title.
+    :param sample_config: Sampling configuration for the zoom level.
+    :param vmin: Optional minimum for color scaling.
+    :param vmax: Optional maximum for color scaling.
+    :return: None.
+    """
+    plot_idx = row_idx * n_cols + col_idx + 1
+    if sample_config.get("zoom_patch_sample", -1) == -1:
+        hp.mollview(
+            values,
+            title=title,
+            sub=(n_rows, n_cols, plot_idx),
+            nest=True,
+            min=vmin,
+            max=vmax,
+            fig=fig,
+        )
+        return
+
+    ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+    healpix_plot_local(
+        values,
+        zoom,
+        ax=ax,
+        vmin=vmin,
+        vmax=vmax,
+        title=title,
+        **sample_config,
+    )
+
+
+def _plot_healpix_grid(
+    rows: Sequence[Dict[str, Any]],
+    save_path: str,
+    sample_configs: Dict[int, Dict[str, Any]],
+) -> None:
+    """
+    Render a grid of HEALPix plots and save the figure.
+
+    Each row entry must define:
+    - ``zoom``: zoom level
+    - ``maps``: list of HEALPix maps for the row
+    - ``titles``: list of per-column titles
+    - ``row_label``: optional suffix appended to each column title
+
+    :param rows: Row definitions for the plot grid.
+    :param save_path: Output path.
+    :param sample_configs: Sampling configuration per zoom.
+    :return: None.
+    """
+    if not rows:
+        return
+
+    n_rows = len(rows)
+    n_cols = len(rows[0]["maps"])
+    fig = plt.figure(figsize=(4 * n_cols, 3 * n_rows))
+
+    for row_idx, row in enumerate(rows):
+        zoom = row["zoom"]
+        sample_config = sample_configs[zoom]
+        row_label = row.get("row_label", "")
+        titles = row["titles"]
+        maps = row["maps"]
+        min_max = row["min_max"]
+
+        for col_idx, values in enumerate(maps):
+            title = titles[col_idx]
+            if row_label:
+                title = f"{title} {row_label}"
+
+            _plot_healpix_panel(
+                fig=fig,
+                values=values,
+                zoom=zoom,
+                row_idx=row_idx,
+                col_idx=col_idx,
+                n_rows=n_rows,
+                n_cols=n_cols,
+                title=title,
+                sample_config=sample_config,
+                vmin=min_max[col_idx][0],
+                vmax=min_max[col_idx][1],
+            )
+
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_zooms(
     input_maps: Dict[int, np.ndarray],
     output_maps: Dict[int, np.ndarray],
@@ -92,50 +204,33 @@ def plot_zooms(
     :return: None.
     """
     zoom_levels = sorted(input_maps.keys())
-    n_rows = len(zoom_levels)
-    n_cols = 4  # input, output, gt, error
-    n_plots = n_rows * n_cols
-
-    fig = plt.figure(figsize=(4 * n_cols, 3 * n_rows))
     titles = ['Input', 'Output', 'Ground Truth', 'Error']
+    rows = []
 
-    for row_idx, zoom in enumerate(zoom_levels):
-        sample_configs_zoom = sample_configs[zoom]
+    for zoom in zoom_levels:
         inp_map = input_maps[zoom]
         out_map = output_maps[zoom]
         gt_map = gt_maps[zoom]
         mask_map = mask_maps[zoom] if mask_maps is not None else None
 
-        error_map = (out_map - gt_map) #* mask_map
+        error_map = (out_map - gt_map)  # * mask_map
 
         maps = [inp_map, out_map, gt_map, error_map]
-        gt_min, gt_max = np.quantile(gt_map, [0.001,0.999])
-        error_map_min, error_map_max = np.quantile(error_map, [0.001,0.999])
+        gt_min, gt_max = np.quantile(gt_map, [0.001, 0.999])
+        error_map_min, error_map_max = np.quantile(error_map, [0.001, 0.999])
         min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
 
-        for col_idx in range(n_cols):
-            plot_idx = row_idx * n_cols + col_idx + 1  # 1-based index for subplots
+        rows.append(
+            {
+                "zoom": zoom,
+                "maps": maps,
+                "titles": titles,
+                "min_max": min_max,
+                "row_label": f"(zoom {zoom})",
+            }
+        )
 
-            if sample_configs_zoom['zoom_patch_sample']==-1:
-                hp.mollview(maps[col_idx],
-                            title=f"{titles[col_idx]} (zoom {zoom})",
-                            sub=(n_rows, n_cols, plot_idx),
-                            nest=True,
-                            min=min_max[col_idx][0],
-                            max=min_max[col_idx][1],
-                            fig=fig)
-            else:
-                ax = fig.add_subplot(n_rows, n_cols, plot_idx)
-                healpix_plot_local(maps[col_idx], 
-                                  zoom, 
-                                  ax=ax, 
-                                  vmin=min_max[col_idx][0], 
-                                  vmax=min_max[col_idx][1], 
-                                  title=f"{titles[col_idx]} (zoom {zoom})", 
-                                  **sample_configs_zoom)
-
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
+    _plot_healpix_grid(rows, save_path, sample_configs)
 
 
 def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor], 
@@ -201,6 +296,81 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
             plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs=sample_configs)
             save_paths.append(save_path)
     
+    return save_paths
+
+
+def healpix_plot_zooms_time(
+    output_zooms: Dict[int, torch.Tensor],
+    gt_zooms: Dict[int, torch.Tensor],
+    save_dir: str,
+    mask_zooms: Optional[Dict[int, torch.Tensor]] = None,
+    sample_configs: Dict[int, Dict[str, Any]] = {},
+    emb: Optional[Dict[str, Any]] = None,
+    plot_name: str = "healpix_plot_time",
+    sample: int = 0,
+    plot_n_vars: int = -1,
+    plot_n_ts: int = -1,
+):
+    """
+    Create one HEALPix time-series figure per variable and zoom level.
+
+    Each figure uses timesteps as rows and ``Output``, ``Ground Truth``, and ``Error`` as columns.
+
+    :param input_zooms: Input tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param output_zooms: Output tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param gt_zooms: Ground truth tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param save_dir: Directory to save plots.
+    :param mask_zooms: Optional mask tensor dict by zoom with shape ``(b, v, t, n, d, m)``.
+    :param sample_configs: Sampling configuration per zoom.
+    :param emb: Optional embedding dictionary for variable names.
+    :param plot_name: Base name for plot files.
+    :param sample: Sample index to plot.
+    :param plot_n_vars: Number of variables to plot (-1 for all).
+    :param plot_n_ts: Number of timesteps to plot (-1 for all).
+    :return: List of saved file paths.
+    """
+    del mask_zooms  # Unused for now; kept for interface parity with other plotting helpers.
+
+    zoom_levels = sorted(output_zooms.keys())
+    save_paths = []
+
+    V = output_zooms[zoom_levels[0]].shape[1]
+    if plot_n_vars == -1:
+        plot_n_vars = V
+
+    titles = ['Output', 'Ground Truth', 'Error']
+
+    for var in range(plot_n_vars):
+        if emb is not None and 'VariableEmbedder' in emb:
+            var_idx = emb['VariableEmbedder'][sample, var].item()
+        else:
+            var_idx = var
+
+        for zoom in zoom_levels:
+            rows = []
+            output_series = output_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            gt_series = gt_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            error_series = output_series - gt_series
+
+            gt_min, gt_max = np.quantile(gt_series, [0.001, 0.999])
+            error_min, error_max = np.quantile(error_series, [0.001, 0.999])
+            min_max = [(gt_min, gt_max), (gt_min, gt_max), (error_min, error_max)]
+
+            for row_idx in range(gt_series.shape[0]):
+                rows.append(
+                    {
+                        "zoom": zoom,
+                        "maps": [output_series[row_idx], gt_series[row_idx], error_series[row_idx]],
+                        "titles": titles,
+                        "min_max": min_max,
+                        "row_label": f"(t={row_idx}, zoom {zoom})",
+                    }
+                )
+
+            save_path = os.path.join(save_dir, f"{plot_name}_zoom_{zoom}_var_{var_idx}.png")
+            _plot_healpix_grid(rows, save_path, sample_configs)
+            save_paths.append(save_path)
+
     return save_paths
 
 

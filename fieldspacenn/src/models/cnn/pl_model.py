@@ -111,7 +111,15 @@ class LightningCNN(pl.LightningModule):
     
         # Plot reconstruction samples on the first batch
         if batch_idx == 0 and rank_zero_only.rank == 0:
-            self.logger.log_regular_tensor_plot(target_data, source_data, output, target_coords, source_coords, f"tensor_plot_{self.current_epoch}")
+            self.logger.log_tensor_plot(
+                plot_types=["regular_plot"],
+                gt=target_data,
+                input=source_data,
+                output=output,
+                target_coords=target_coords,
+                in_coords=source_coords,
+                plot_name=f"tensor_plot_{self.current_epoch}",
+            )
 
         # Log validation losses
         self.log("val_loss", loss.mean(), sync_dist=True)

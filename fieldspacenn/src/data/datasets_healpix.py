@@ -14,6 +14,7 @@ class HealPixLoader(BaseDataset):
         data_dict: Mapping[str, Any],
         sampling_zooms: Mapping[int, Mapping[str, Any]],
         sampling_zooms_collate: Optional[Mapping[int, Mapping[str, Any]]] = None,
+        sampling_zooms_target: Mapping[int, Mapping[str, Any]] = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -34,6 +35,11 @@ class HealPixLoader(BaseDataset):
         self.sampling_zooms_collate: Optional[Mapping[int, Mapping[str, Any]]] = copy.deepcopy(
             sampling_zooms_collate
         )
+
+        if sampling_zooms_target is None:
+            self.sampling_zooms_target: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms)
+        else:
+            self.sampling_zooms_target: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms_target)
 
         # Build patch indices per zoom from the HealPix pixelization scheme.
         self.indices: Dict[int, np.ndarray] = {}
