@@ -339,6 +339,7 @@ class FieldSpaceAttentionModule(nn.Module):
         self.coarse_zooms: Dict[int, int] = invert_dict(refine_zooms)
 
         self.block: FieldSpaceAttentionBlock = block
+        self.concat_dim = -2 if with_var_att else 0
 
 
     def refine_groups(self, x_zooms_groups: List[Dict[int, torch.Tensor]]) -> List[Dict[int, torch.Tensor]]:
@@ -433,19 +434,19 @@ class FieldSpaceAttentionModule(nn.Module):
             Vs.append(V)
             masks.append(mask)
             shapes.append(shape)
-            seq_lens.append(q.shape[-2])
+            seq_lens.append(q.shape[self.concat_dim])
         
         # Concatenate across groups for a single attention call.
-        q = torch.concat(qs, dim=-2)
-        K = torch.concat(Ks, dim=-2)
-        V = torch.concat(Vs, dim=-2)
-        mask = torch.concat(masks, dim=-2) if self.use_mask else None
+        q = torch.concat(qs, dim=self.concat_dim)
+        K = torch.concat(Ks, dim=self.concat_dim)
+        V = torch.concat(Vs, dim=self.concat_dim)
+        mask = torch.concat(masks, dim=self.concat_dim) if self.use_mask else None
 
         # Shared attention across all groups.
         att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
 
         # Split attention outputs back to per-group chunks.
-        att_outs = att_out.split(seq_lens, dim=-2)
+        att_outs = att_out.split(seq_lens, dim=self.concat_dim)
 
         for k, att_out in enumerate(att_outs):
             # Apply per-group MLP updates and merge into zoom tensors.
