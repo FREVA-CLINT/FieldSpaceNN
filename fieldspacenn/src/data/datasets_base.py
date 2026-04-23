@@ -69,6 +69,7 @@ class BaseDataset(Dataset):
         mask_ts_mode: str = 'repeat',
         variables_as_features: bool = False,
         load_n_samples_time: int = 1,
+        target_time_shift: int = 0,
     ) -> None:
         """
         Initialize the dataset with sampling, masking, and normalization settings.
@@ -93,6 +94,7 @@ class BaseDataset(Dataset):
         :param mask_ts_mode: Strategy for masking the last timestep.
         :param variables_as_features: Whether to treat variables as features.
         :param load_n_samples_time: Number of time samples stacked as batch.
+        :param target_time_shift: Shift applied to target sample centers relative to source centers.
         :return: None.
         """
         super(BaseDataset, self).__init__()
@@ -126,6 +128,7 @@ class BaseDataset(Dataset):
         self.variables_as_features: bool = variables_as_features
 
         self.load_n_samples_time: int = load_n_samples_time
+        self.target_time_shift: int = target_time_shift
 
         self.mask_ts_mode: str = mask_ts_mode
         self.p_dropout_all_zooms: Dict[int, float] = dict(
@@ -190,10 +193,13 @@ class BaseDataset(Dataset):
                 n_past_ts_target = self.sampling_zooms_target[zoom]['n_past_ts']
                 n_future_ts_target = self.sampling_zooms_target[zoom]['n_future_ts']
 
-                start_bounds.append(max(n_past_ts_source, n_past_ts_target))
+                start_bounds.append(max(
+                    n_past_ts_source,
+                    n_past_ts_target - self.target_time_shift,
+                ))
                 end_bounds.append(min(
                     total_timesteps - 1 - n_future_ts_source,
-                    total_timesteps - 1 - n_future_ts_target,
+                    total_timesteps - 1 - n_future_ts_target - self.target_time_shift,
                 ))
 
             start_idx = max(start_bounds)
@@ -779,13 +785,16 @@ class BaseDataset(Dataset):
             data_time_zooms[zoom] = torch.from_numpy(ds_source_zoom.time.values).view(self.load_n_samples_time,-1).to(torch.float32)
             
             target_window_differs = (
+                self.target_time_shift != 0
+                or
                 self.sampling_zooms_target[zoom]['n_past_ts'] != self.sampling_zooms[zoom]['n_past_ts']
                 or self.sampling_zooms_target[zoom]['n_future_ts'] != self.sampling_zooms[zoom]['n_future_ts']
             )
             if ds_target is not None or target_window_differs:
                 ds_target = ds_source if ds_target is None else ds_target
-                start_times_target = np.array(time_indices) - self.sampling_zooms_target[zoom]['n_past_ts']
-                end_times_target = np.array(time_indices) + self.sampling_zooms_target[zoom]['n_future_ts']
+                target_time_indices = np.array(time_indices) + self.target_time_shift
+                start_times_target = target_time_indices - self.sampling_zooms_target[zoom]['n_past_ts']
+                end_times_target = target_time_indices + self.sampling_zooms_target[zoom]['n_future_ts']
                 time_indices_target = np.stack(
                     [np.arange(s, e + 1) for s, e in zip(start_times_target, end_times_target)],
                     axis=0
