@@ -58,29 +58,17 @@ class LightningMGAutoregressiveModel(LightningMGModel):
 
         return forecast_groups
 
-    @staticmethod
-    def _append_last_timestep_groups(
-        history_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
-        output_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
-    ) -> Sequence[Optional[Dict[int, torch.Tensor]]]:
-        composed_groups = []
-        for group_idx, history_group in enumerate(history_groups):
-            if history_group is None:
-                composed_groups.append(None)
-                continue
+    def _get_active_dataset(self) -> Optional[Any]:
+        datamodule = getattr(getattr(self, "trainer", None), "datamodule", None)
+        if datamodule is None:
+            return None
 
-            output_group = output_groups[group_idx] if group_idx < len(output_groups) and output_groups[group_idx] is not None else {}
-            composed_group = {}
-            for zoom, history in history_group.items():
-                output = output_group.get(zoom)
-                if output is None:
-                    composed_group[zoom] = history
-                    continue
+        for dataset_name in ("dataset_train", "dataset_val", "dataset_predict", "dataset_test"):
+            dataset = getattr(datamodule, dataset_name, None)
+            if dataset is not None:
+                return dataset
 
-                composed_group[zoom] = torch.concat((history, output[:, :, [-1]]), dim=2)
-            composed_groups.append(composed_group)
-
-        return composed_groups
+        return None
 
     def forward_autoregressive(
         self,
@@ -116,16 +104,12 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                 return []
             return list(x_zooms_groups)
 
-        source_groups = []
         current_groups = []
         for group in x_zooms_groups:
             if group is None:
-                source_groups.append(None)
                 current_groups.append(None)
             else:
-                cloned_group = {int(zoom): tensor.clone() for zoom, tensor in group.items()}
-                source_groups.append({zoom: tensor.clone() for zoom, tensor in cloned_group.items()})
-                current_groups.append(cloned_group)
+                current_groups.append({int(zoom): tensor.clone() for zoom, tensor in group.items()})
 
         current_masks = None
         if mask_zooms_groups is not None:
@@ -156,13 +140,13 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                         emb_group[key] = value.clone() if torch.is_tensor(value) else value
                 current_emb_groups.append(emb_group)
 
-        dataset_train = getattr(getattr(getattr(self, "trainer", None), "datamodule", None), "dataset_train", None)
-        mask_ts_mode = getattr(dataset_train, "mask_ts_mode", "repeat")
+        dataset = self._get_active_dataset()
+        mask_ts_mode = getattr(dataset, "mask_ts_mode", "repeat")
+        target_time_shift = getattr(dataset, "target_time_shift", 0)
 
         output_steps = []
-        composed_groups = source_groups
         for _ in range(n_steps):
-            output_groups = self(
+            model_output_groups = self(
                 x_zooms_groups=current_groups,
                 mask_zooms_groups=current_masks,
                 emb_groups=current_emb_groups,
@@ -170,8 +154,6 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                 out_zoom=out_zoom,
                 **kwargs,
             )
-            composed_groups = self._append_last_timestep_groups(composed_groups, output_groups)
-            output_steps.append(composed_groups)
 
             next_groups = []
             for group_idx, current_group in enumerate(current_groups):
@@ -179,7 +161,11 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                     next_groups.append(None)
                     continue
 
-                output_zooms = output_groups[group_idx] if group_idx < len(output_groups) and output_groups[group_idx] is not None else {}
+                output_zooms = (
+                    model_output_groups[group_idx]
+                    if group_idx < len(model_output_groups) and model_output_groups[group_idx] is not None
+                    else {}
+                )
                 next_group = {}
                 for zoom, current in current_group.items():
                     if zoom not in output_zooms:
@@ -187,14 +173,23 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                         continue
 
                     output = output_zooms[zoom]
-                    rolled = output.clone() if output.shape[2] <= 1 else torch.concat((output[:, :, 1:], output[:, :, [-1]]), dim=2)
+                    if target_time_shift > 0 and current.shape[2] > 1:
+                        rolled = torch.concat((current[:, :, 1:], output[:, :, [-1]]), dim=2)
 
-                    if mask_ts_mode == 'zero':
-                        rolled[:, :, -1] = 0
+                        if mask_ts_mode == 'zero':
+                            rolled[:, :, -1] = 0
+
+                    else:
+                        rolled = (
+                            output.clone()
+                            if output.shape[2] <= 1
+                            else torch.concat((output[:, :, 1:], output[:, :, [-1]]), dim=2)
+                        )
 
                     next_group[zoom] = rolled
 
                 next_groups.append(next_group)
+            output_steps.append(next_groups)
             current_groups = next_groups
 
             if current_emb_groups is not None:
