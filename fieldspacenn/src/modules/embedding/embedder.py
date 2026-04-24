@@ -272,7 +272,7 @@ class MGEmbedder(BaseEmbedder):
 
         self.grid_layer: GridLayer = grid_layers[str(zoom)]
         # keep batch, spatial, variable and channel dimensions
-        self.keep_dims: List[str] = ["b", "v", "t", "s", "c"]
+        self.keep_dims: List[str] = ["b", "v", "s", "c"]
 
         self.get_emb_fcn: Callable[[torch.Tensor], torch.Tensor]
         if n_variables == 1:
@@ -332,7 +332,6 @@ class MGEmbedder(BaseEmbedder):
 
         embs = get_emb_fcn(var_indices)
         embs = self.get_patch(embs, sample_configs=sample_configs)
-        embs = embs.unsqueeze(dim=2)
 
         return embs
 
