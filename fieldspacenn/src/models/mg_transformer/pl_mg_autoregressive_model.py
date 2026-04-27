@@ -263,12 +263,6 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             sample_configs=sample_configs,
             n_steps=self.n_autoregressive_steps,
         )
-        forecast_mask_groups = None
-        if mask_groups is not None:
-            forecast_mask_groups = self._extract_forecast_groups(
-                mask_groups,
-                n_steps=self.n_autoregressive_steps,
-            )
 
         return self._compute_losses_from_output_groups(
             source_groups=source_groups_list,
@@ -276,7 +270,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             target_groups=target_groups,
             sample_configs=sample_configs,
             sample_configs_target=sample_configs_target,
-            mask_groups=forecast_mask_groups,
+            mask_groups=mask_groups,
             emb_groups=emb_groups,
             prefix=prefix,
         )
