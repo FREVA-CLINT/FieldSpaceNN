@@ -80,7 +80,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb: Optional[Sequence[Optional[Dict[str, Any]]]] = None,
         n_steps: int = 0,
-        return_mode: str = "forecast",
+        return_all_steps: bool = False,
         **kwargs: Any,
     ) -> Sequence[Optional[Dict[int, torch.Tensor]]] | List[Sequence[Optional[Dict[int, torch.Tensor]]]]:
         if x_zooms_groups is None:
@@ -93,14 +93,8 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         if emb_groups is None:
             emb_groups = emb
 
-        if return_mode not in {"all", "last", "forecast"}:
-            raise ValueError(
-                f"Unsupported autoregressive return_mode '{return_mode}'. "
-                "Expected one of {'all', 'last', 'forecast'}."
-            )
-
         if n_steps <= 0:
-            if return_mode == "all":
+            if return_all_steps:
                 return []
             return list(x_zooms_groups)
 
@@ -144,7 +138,16 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         mask_ts_mode = getattr(dataset, "mask_ts_mode", "repeat")
         target_time_shift = getattr(dataset, "target_time_shift", 0)
 
-        output_steps = []
+        output_steps = [] if return_all_steps else None
+        forecast_groups = None
+        if target_time_shift == 0 and not return_all_steps:
+            forecast_groups = []
+            for group in current_groups:
+                if group is None:
+                    forecast_groups.append(None)
+                else:
+                    forecast_groups.append({zoom: [] for zoom in group})
+
         for _ in range(n_steps):
             model_output_groups = self(
                 x_zooms_groups=current_groups,
@@ -167,29 +170,36 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                     else {}
                 )
                 next_group = {}
+                forecast_group = (
+                    forecast_groups[group_idx]
+                    if forecast_groups is not None
+                    else None
+                )
                 for zoom, current in current_group.items():
                     if zoom not in output_zooms:
                         next_group[zoom] = current
                         continue
 
                     output = output_zooms[zoom]
-                    if target_time_shift > 0 and current.shape[2] > 1:
-                        rolled = torch.concat((current[:, :, 1:], output[:, :, [-1]]), dim=2)
+                    last_output = output[:, :, [-1]]
+
+                    if forecast_group is not None:
+                        forecast_group[zoom].append(last_output)
+
+                    if target_time_shift == 0:
+                        rolled = torch.concat((output[:, :, 1:], last_output), dim=2)
 
                         if mask_ts_mode == 'zero':
                             rolled[:, :, -1] = 0
 
                     else:
-                        rolled = (
-                            output.clone()
-                            if output.shape[2] <= 1
-                            else torch.concat((output[:, :, 1:], output[:, :, [-1]]), dim=2)
-                        )
+                        rolled = torch.concat((current[:, :, 1:], last_output), dim=2)
 
                     next_group[zoom] = rolled
 
                 next_groups.append(next_group)
-            output_steps.append(next_groups)
+            if output_steps is not None:
+                output_steps.append(next_groups)
             current_groups = next_groups
 
             if current_emb_groups is not None:
@@ -204,14 +214,23 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                         emb_group['TimeEmbedder'] = shift_timeembedding(group['TimeEmbedder'])
                     shifted_emb_groups.append(emb_group)
                 current_emb_groups = shifted_emb_groups
-        if return_mode == "all":
+        if output_steps is not None:
             return output_steps
 
-        last_output_groups = output_steps[-1] if output_steps else list(x_zooms_groups)
-        if return_mode == "last":
-            return last_output_groups
+        if target_time_shift > 0:
+            return self._extract_forecast_groups(current_groups, n_steps=n_steps)
 
-        return self._extract_forecast_groups(last_output_groups, n_steps=n_steps)
+        concatenated_forecast_groups = []
+        for group in forecast_groups:
+            if group is None:
+                concatenated_forecast_groups.append(None)
+                continue
+            concatenated_forecast_groups.append({
+                zoom: torch.concat(outputs, dim=2)
+                for zoom, outputs in group.items()
+            })
+
+        return concatenated_forecast_groups
 
     def get_losses(
         self,
@@ -243,7 +262,6 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             emb_groups=emb_groups,
             sample_configs=sample_configs,
             n_steps=self.n_autoregressive_steps,
-            return_mode="forecast",
         )
         forecast_mask_groups = None
         if mask_groups is not None:
@@ -361,7 +379,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             emb_groups=emb_groups,
             sample_configs=sample_configs,
             n_steps=self.n_autoregressive_steps,
-            return_mode="all" if self.return_all_steps else "forecast",
+            return_all_steps=self.return_all_steps,
         )
 
         return {
