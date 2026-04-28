@@ -5,6 +5,18 @@ import torch
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
+def _to_list(value: Any) -> List[Any]:
+    """
+    Normalize scalars and OmegaConf list types to a plain Python list.
+
+    :param value: Scalar or list-like value.
+    :return: Plain Python list.
+    """
+    if isinstance(value, (list, tuple, omegaconf.listconfig.ListConfig)):
+        return list(value)
+    return [value]
+
+
 def load_from_state_dict(model, ckpt_path, device=None, print_keys: bool = True):
     """
     Load a model from a checkpoint state dict with optional key diagnostics.
@@ -15,10 +27,7 @@ def load_from_state_dict(model, ckpt_path, device=None, print_keys: bool = True)
     :param print_keys: Whether to print missing/unexpected key summaries.
     :return: Tuple of (model, matching_keys).
     """
-    if isinstance(ckpt_path, (list, tuple, omegaconf.listconfig.ListConfig)):
-        ckpt_paths = list(ckpt_path)
-    else:
-        ckpt_paths = [ckpt_path]
+    ckpt_paths = _to_list(ckpt_path)
 
     if len(ckpt_paths) == 0:
         raise ValueError("ckpt_path must contain at least one checkpoint path")
@@ -50,6 +59,54 @@ def load_from_state_dict(model, ckpt_path, device=None, print_keys: bool = True)
                 matching_keys_set.add(key)
 
     return model, matching_keys
+
+
+def load_pretrained_checkpoints(
+    model,
+    ckpt_path,
+    freeze_pretrained: Any = False,
+    device=None,
+    print_keys: bool = True,
+):
+    """
+    Load one or more pretrained checkpoints and optionally freeze loaded parameters.
+
+    :param model: Model instance with a compatible state dict.
+    :param ckpt_path: Path to a checkpoint file or a list of paths.
+    :param freeze_pretrained: Bool or list of bools aligned with ``ckpt_path``.
+    :param device: Optional device for torch.load map_location.
+    :param print_keys: Whether to print missing/unexpected key summaries.
+    :return: Tuple of (model, frozen_keys).
+    """
+    ckpt_paths = _to_list(ckpt_path)
+    if len(ckpt_paths) == 0:
+        raise ValueError("ckpt_path must contain at least one checkpoint path")
+
+    freeze_flags = _to_list(freeze_pretrained)
+    if len(freeze_flags) == 1:
+        freeze_flags = freeze_flags * len(ckpt_paths)
+    elif len(freeze_flags) != len(ckpt_paths):
+        raise ValueError(
+            "freeze_pretrained must have the same length as ckpt_path when provided as a list"
+        )
+
+    freeze_keys = set()
+    for path, should_freeze in zip(ckpt_paths, freeze_flags):
+        model, matching_keys = load_from_state_dict(
+            model,
+            path,
+            device=device,
+            print_keys=print_keys,
+        )
+        if should_freeze:
+            freeze_keys.update(matching_keys)
+        else:
+            freeze_keys.difference_update(matching_keys)
+
+    if freeze_keys:
+        freeze_params(model, list(freeze_keys))
+
+    return model, list(freeze_keys)
 
 def extract_block_and_zoom_from_key(key: str) -> Optional[Tuple[int, int]]:
     """

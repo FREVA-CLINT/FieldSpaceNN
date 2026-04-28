@@ -5,7 +5,7 @@ from lightning.pytorch import Trainer
 from pytorch_lightning.utilities import rank_zero_only
 from omegaconf import DictConfig
 import torch
-from ..src.utils.helpers import load_from_state_dict,freeze_zoom_levels,freeze_params
+from ..src.utils.helpers import load_pretrained_checkpoints, freeze_zoom_levels
 from ..src.data.pl_data_module import DataModule
 
 torch.manual_seed(42)
@@ -38,9 +38,12 @@ def train(cfg: DictConfig) -> None:
     data_module: DataModule = instantiate(cfg.dataloader.datamodule, train_dataset, val_dataset)
     
     if hasattr(cfg, "ckpt_path_pretrained") and cfg.ckpt_path_pretrained is not None:
-        model, matching_keys = load_from_state_dict(model, cfg.ckpt_path_pretrained, print_keys=True)
-        if hasattr(cfg, "freeze_pretrained") and cfg.freeze_pretrained:
-            freeze_params(model, matching_keys)
+        model, _ = load_pretrained_checkpoints(
+            model,
+            cfg.ckpt_path_pretrained,
+            freeze_pretrained=getattr(cfg, "freeze_pretrained", False),
+            print_keys=True,
+        )
 
     if 'freeze_zooms' in cfg.keys():
         freeze_zoom_levels(model, cfg.freeze_zooms)
