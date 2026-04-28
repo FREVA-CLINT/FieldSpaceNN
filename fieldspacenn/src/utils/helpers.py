@@ -10,27 +10,45 @@ def load_from_state_dict(model, ckpt_path, device=None, print_keys: bool = True)
     Load a model from a checkpoint state dict with optional key diagnostics.
 
     :param model: Model instance with a compatible state dict.
-    :param ckpt_path: Path to the checkpoint file.
+    :param ckpt_path: Path to the checkpoint file or a list of paths.
     :param device: Optional device for torch.load map_location.
     :param print_keys: Whether to print missing/unexpected key summaries.
     :return: Tuple of (model, matching_keys).
     """
-    weights = torch.load(ckpt_path, map_location=device)
-    res = model.load_state_dict(weights['state_dict'], strict=False)
+    if isinstance(ckpt_path, (list, tuple, omegaconf.listconfig.ListConfig)):
+        ckpt_paths = list(ckpt_path)
+    else:
+        ckpt_paths = [ckpt_path]
 
-    if print_keys:
-        zoom_counts_missing, block_counts_missing = analyze_keys(res.missing_keys)
-        zoom_counts, block_counts = analyze_keys(res.unexpected_keys)
+    if len(ckpt_paths) == 0:
+        raise ValueError("ckpt_path must contain at least one checkpoint path")
 
-        print("Missing keys in checkpoint:")
-        for zoom, count in sorted(zoom_counts_missing.items()):
-            print(f"  Zoom level {zoom}: {count} keys")
+    matching_keys = []
+    matching_keys_set = set()
+    model_keys = set(model.state_dict().keys())
 
-        print("Unexpected keys in checkpoint:")
-        for zoom, count in sorted(zoom_counts.items()):
-            print(f"  Zoom level {zoom}: {count} keys")
-    
-    matching_keys = [key for key in weights['state_dict'].keys() if (key in model.state_dict().keys())]
+    for path in ckpt_paths:
+        weights = torch.load(path, map_location=device)
+        res = model.load_state_dict(weights['state_dict'], strict=False)
+
+        if print_keys:
+            zoom_counts_missing, _ = analyze_keys(res.missing_keys)
+            zoom_counts, _ = analyze_keys(res.unexpected_keys)
+
+            print(f"Loaded checkpoint: {path}")
+            print("Missing keys in checkpoint:")
+            for zoom, count in sorted(zoom_counts_missing.items()):
+                print(f"  Zoom level {zoom}: {count} keys")
+
+            print("Unexpected keys in checkpoint:")
+            for zoom, count in sorted(zoom_counts.items()):
+                print(f"  Zoom level {zoom}: {count} keys")
+
+        for key in weights['state_dict'].keys():
+            if key in model_keys and key not in matching_keys_set:
+                matching_keys.append(key)
+                matching_keys_set.add(key)
+
     return model, matching_keys
 
 def extract_block_and_zoom_from_key(key: str) -> Optional[Tuple[int, int]]:
