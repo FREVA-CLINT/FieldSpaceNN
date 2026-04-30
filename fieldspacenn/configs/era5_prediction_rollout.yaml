@@ -1,0 +1,36 @@
+defaults:
+  - trainer: trainer
+  - logger: wandb
+  - model: mg_transformer_autoregressive
+  - mgrids: healpix
+  - data_zooms: default
+  - data_variables: default
+  - data_split: default
+  - dataloader: zarr_healpix_autoregressive
+  - embedding: default
+  - hydra: default
+  - _self_
+
+ckpt_path: /Users/maxwitte/work/stableclimgen/run/snapshots/test/era5_prediction/epoch_299-v3.ckpt
+
+run_name: era5_prediction_rollout
+config_name: default
+project_name: test
+run_dir: /Users/maxwitte/work/stableclimgen/run
+
+model:
+  n_auteregressive_steps: 10
+  return_all_steps: false
+
+dataloader:
+  datamodule:
+    batch_size: 1
+    num_workers: 0
+    use_costum_ddp_sampler: false
+
+rollout:
+  output_path: ${run_dir}/rollouts/${project_name}/${run_name}/forecast.zarr
+  overwrite: false
+  zoom: null
+  origin_chunk: 1
+  lead_time_chunk: null

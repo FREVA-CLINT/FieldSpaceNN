@@ -16,7 +16,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         lambda_loss_dict: Mapping[str, Any],
         weight_decay: float = 0.0,
         lambda_loss_groups: list = [],
-        lambda_loss_autoregressive: Optional[Sequence[float]] = None,
+        n_auteregressive_steps: int = 1,
         return_all_steps: bool = False,
     ) -> None:
         super().__init__(
@@ -26,14 +26,14 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             weight_decay=weight_decay,
             lambda_loss_groups=lambda_loss_groups,
         )
-        if lambda_loss_autoregressive is None:
-            lambda_loss_autoregressive = [1.0]
-        self.lambda_loss_autoregressive = [float(x) for x in lambda_loss_autoregressive]
+        if n_auteregressive_steps < 1:
+            raise ValueError("n_auteregressive_steps must be at least 1.")
+        self.n_auteregressive_steps = int(n_auteregressive_steps)
         self.return_all_steps = return_all_steps
 
     @property
     def n_autoregressive_steps(self) -> int:
-        return len(self.lambda_loss_autoregressive)
+        return self.n_auteregressive_steps
 
     @staticmethod
     def _extract_forecast_groups(
@@ -363,10 +363,13 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
         batch_idx: int,
     ) -> Dict[str, Any]:
-        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.predict_dataloaders.dataset
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+        sample_configs_target = getattr(dataset, "sampling_zooms_target", sample_configs)
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs_target = merge_sampling_dicts(sample_configs_target, patch_index_zooms)
         output = self.forward_autoregressive(
             x_zooms_groups=[group.copy() if group is not None else None for group in source_groups],
             mask_zooms_groups=mask_groups,
@@ -376,10 +379,20 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             return_all_steps=self.return_all_steps,
         )
 
+        combined_zoom = max(sample_configs_target.keys())
+        output_combined = []
+        for group in output:
+            if group is None:
+                output_combined.append(None)
+                continue
+            output_combined.append(
+                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom)
+            )
+
         return {
             "output": output,
-            "mask": mask_groups,
-            "target": target_groups,
+            "output_combined": output_combined,
+            "patch_index_zooms": patch_index_zooms,
         }
 
 
