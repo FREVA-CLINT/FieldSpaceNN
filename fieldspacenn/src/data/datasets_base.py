@@ -47,6 +47,280 @@ def invert_dict(d: Mapping[Any, Any]) -> Dict[Any, List[Any]]:
 #def create_mask(random_p, drop_mask, ):
 
 class BaseDataset(Dataset):
+    @staticmethod
+    def _normalize_groups(groups: Mapping[str, Sequence[str]], context: str) -> Dict[str, List[str]]:
+        """
+        Normalize a group mapping to ``Dict[str, List[str]]``.
+
+        :param groups: Mapping from group name to variable sequence.
+        :param context: Error-context string used in validation messages.
+        :return: Normalized group mapping.
+        """
+        normalized: Dict[str, List[str]] = {}
+        for group_name, variables in groups.items():
+            if isinstance(variables, str):
+                variables_list = [variables]
+            elif isinstance(variables, (list, tuple, ListConfig)):
+                variables_list = list(variables)
+            else:
+                raise TypeError(
+                    f"{context}: group '{group_name}' must map to a list of variables, "
+                    f"got {type(variables)}."
+                )
+
+            if len(variables_list) == 0:
+                raise ValueError(f"{context}: group '{group_name}' must contain at least one variable.")
+
+            normalized[str(group_name)] = [str(v) for v in variables_list]
+
+        if len(normalized) == 0:
+            raise ValueError(f"{context}: expected at least one variable group.")
+        return normalized
+
+    @classmethod
+    def _resolve_groups_from_sampling(
+        cls,
+        sampling_zooms: Mapping[int, Mapping[str, Any]],
+        default_groups: Optional[Mapping[str, Sequence[str]]],
+        side: str,
+    ) -> Dict[int, Dict[str, List[str]]]:
+        """
+        Resolve per-zoom variable groups from sampling configuration.
+
+        :param sampling_zooms: Sampling dictionary keyed by zoom.
+        :param default_groups: Optional fallback variable groups.
+        :param side: Side label used in errors (``source`` or ``target``).
+        :return: Mapping of zoom to normalized group mapping.
+        """
+        resolved: Dict[int, Dict[str, List[str]]] = {}
+        default_groups_norm = None
+        if default_groups:
+            default_groups_norm = cls._normalize_groups(
+                default_groups, context=f"default `{side}` groups"
+            )
+
+        for zoom, sampling in sampling_zooms.items():
+            zoom_groups_raw = sampling.get("groups")
+            if zoom_groups_raw is None:
+                if default_groups_norm is None:
+                    raise ValueError(
+                        f"Missing `groups` in sampling config for {side} zoom {zoom}. "
+                        f"Provide `{side}` variables either in `sampling_zooms*.{zoom}.groups` "
+                        "or via dataset-level `variables`."
+                    )
+                zoom_groups = copy.deepcopy(default_groups_norm)
+            else:
+                zoom_groups = cls._normalize_groups(
+                    zoom_groups_raw, context=f"{side} zoom {zoom} groups"
+                )
+            resolved[int(zoom)] = zoom_groups
+
+        return resolved
+
+    @staticmethod
+    def _validate_consistent_groups_across_zooms(
+        groups_by_zoom: Mapping[int, Mapping[str, Sequence[str]]],
+        side: str,
+    ) -> Dict[str, List[str]]:
+        """
+        Validate that variable groups are consistent across zooms for one side.
+
+        :param groups_by_zoom: Per-zoom group definitions.
+        :param side: Side label used in errors.
+        :return: Canonical group definition for the side.
+        """
+        canonical: Optional[Dict[str, List[str]]] = None
+        ref_zoom: Optional[int] = None
+        for zoom in sorted(groups_by_zoom.keys()):
+            groups_zoom = {
+                str(group): [str(v) for v in variables]
+                for group, variables in groups_by_zoom[zoom].items()
+            }
+            if canonical is None:
+                canonical = groups_zoom
+                ref_zoom = zoom
+                continue
+            if groups_zoom != canonical:
+                raise ValueError(
+                    f"Inconsistent `{side}` groups across zooms. "
+                    f"zoom {ref_zoom}: {canonical}, zoom {zoom}: {groups_zoom}."
+                )
+        if canonical is None:
+            raise ValueError(f"No `{side}` groups resolved from sampling configuration.")
+        return canonical
+
+    @staticmethod
+    def _normalize_aliases(
+        aliases: Optional[Mapping[str, Union[str, Sequence[str]]]],
+        context: str,
+    ) -> Dict[str, List[str]]:
+        """
+        Normalize variable aliases to ``Dict[canonical_name, List[alias_name]]``.
+
+        :param aliases: Optional mapping from canonical variable name to one or more aliases.
+        :param context: Error-context string used in validation messages.
+        :return: Normalized alias mapping.
+        """
+        if aliases is None:
+            return {}
+
+        normalized: Dict[str, List[str]] = {}
+        for canonical_var, alias_values in aliases.items():
+            canonical_name = str(canonical_var)
+            if isinstance(alias_values, str):
+                alias_list = [alias_values]
+            elif isinstance(alias_values, (list, tuple, ListConfig)):
+                alias_list = list(alias_values)
+            else:
+                raise TypeError(
+                    f"{context}: aliases for '{canonical_name}' must be a string or list of strings, "
+                    f"got {type(alias_values)}."
+                )
+
+            # Keep canonical first so it has priority when present in a file.
+            candidate_names = [canonical_name] + [str(name) for name in alias_list]
+            deduped_names = list(dict.fromkeys(candidate_names))
+            normalized[canonical_name] = deduped_names
+
+        return normalized
+
+    def _get_alias_candidates(self, variable: str, side: str) -> List[str]:
+        """
+        Build candidate dataset variable names for a canonical variable.
+
+        :param variable: Canonical variable name used in dataset groups.
+        :param side: Dataset side (``source`` or ``target``).
+        :return: Ordered candidate names with duplicates removed.
+        """
+        variable = str(variable)
+        if side not in {"source", "target"}:
+            raise ValueError(f"Unsupported side '{side}'. Expected 'source' or 'target'.")
+
+        candidates: List[str] = [variable]
+        side_aliases = self.variable_aliases_source if side == "source" else self.variable_aliases_target
+        for alias_map in (side_aliases, self.variable_aliases):
+            if variable in alias_map:
+                candidates.extend(alias_map[variable])
+        return list(dict.fromkeys(str(name) for name in candidates))
+
+    def _resolve_variable_name_in_dataset(
+        self,
+        ds: xr.Dataset,
+        variable: str,
+        side: str,
+        file_path: str,
+    ) -> str:
+        """
+        Resolve a canonical variable name to the concrete name present in one dataset.
+
+        :param ds: Input xarray dataset.
+        :param variable: Canonical variable name.
+        :param side: Dataset side (``source`` or ``target``).
+        :param file_path: Dataset file path used for diagnostics and cache keying.
+        :return: Dataset variable name available in ``ds.data_vars``.
+        """
+        candidates = self._get_alias_candidates(variable, side)
+        available_vars = set(ds.data_vars.keys())
+        matches = [name for name in candidates if name in available_vars]
+
+        if len(matches) == 0:
+            preview = list(ds.data_vars.keys())
+            raise KeyError(
+                f"Could not resolve variable '{variable}' for {side} file '{file_path}'. "
+                f"Tried aliases {candidates}. "
+                f"Available vars: {preview[:10]}{'...' if len(preview) > 10 else ''}."
+            )
+
+        if variable in matches:
+            return variable
+
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous aliases for variable '{variable}' in {side} file '{file_path}'. "
+                f"Matched candidates: {matches}. Keep only one alias present in a file."
+            )
+
+        return matches[0]
+
+    def _get_resolved_variable_map(
+        self,
+        ds: xr.Dataset,
+        variables: Sequence[str],
+        side: str,
+        file_path: str,
+    ) -> Dict[str, str]:
+        """
+        Resolve canonical variable names to concrete dataset names with per-file caching.
+
+        :param ds: Input xarray dataset.
+        :param variables: Canonical variable names to resolve.
+        :param side: Dataset side (``source`` or ``target``).
+        :param file_path: Dataset file path used for diagnostics and cache keying.
+        :return: Mapping ``canonical_name -> dataset_name``.
+        """
+        file_key = str(file_path)
+        cache_key = (side, file_key)
+        cache = self._resolved_variable_names_cache.setdefault(cache_key, {})
+
+        variables_unique = list(dict.fromkeys(str(var) for var in variables))
+        for variable in variables_unique:
+            if variable not in cache:
+                cache[variable] = self._resolve_variable_name_in_dataset(
+                    ds=ds,
+                    variable=variable,
+                    side=side,
+                    file_path=file_key,
+                )
+
+        resolved = {variable: cache[variable] for variable in variables_unique}
+        reverse_map: Dict[str, List[str]] = {}
+        for canonical_name, dataset_name in resolved.items():
+            reverse_map.setdefault(dataset_name, []).append(canonical_name)
+        collisions = {
+            dataset_name: canonical_names
+            for dataset_name, canonical_names in reverse_map.items()
+            if len(canonical_names) > 1
+        }
+        if collisions:
+            raise ValueError(
+                f"Alias collision in {side} file '{file_key}': {collisions}. "
+                "Each canonical variable in a batch must resolve to a unique dataset variable."
+            )
+
+        return resolved
+
+    def _resolve_norm_key(self, variable: str, norm_dict: Mapping[str, Any]) -> str:
+        """
+        Resolve which entry in ``norm_dict`` should be used for a canonical variable.
+
+        :param variable: Canonical variable name.
+        :param norm_dict: Parsed normalization dictionary.
+        :return: Key in ``norm_dict`` to use for the variable.
+        """
+        if variable in norm_dict:
+            return variable
+
+        candidates = self._get_alias_candidates(variable, "source") + self._get_alias_candidates(
+            variable, "target"
+        )
+        candidates = list(dict.fromkeys(candidates))
+        matches = [name for name in candidates if name in norm_dict]
+
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple normalization entries match variable '{variable}': {matches}. "
+                "Keep exactly one matching key in norm_dict."
+            )
+
+        available = list(norm_dict.keys())
+        raise KeyError(
+            f"Missing normalization stats for variable '{variable}'. "
+            f"Tried keys {candidates}. "
+            f"Available keys: {available[:10]}{'...' if len(available) > 10 else ''}."
+        )
+
     def __init__(
         self,
         mapping_fcn: Optional[Callable[..., Any]] = None,
@@ -69,6 +343,10 @@ class BaseDataset(Dataset):
         mask_ts_mode: str = 'repeat',
         variables_as_features: bool = False,
         load_n_samples_time: int = 1,
+        variables: Optional[Mapping[str, Sequence[str]]] = None,
+        variable_aliases: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
+        variable_aliases_source: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
+        variable_aliases_target: Optional[Mapping[str, Union[str, Sequence[str]]]] = None,
     ) -> None:
         """
         Initialize the dataset with sampling, masking, and normalization settings.
@@ -93,6 +371,14 @@ class BaseDataset(Dataset):
         :param mask_ts_mode: Strategy for masking the last timestep.
         :param variables_as_features: Whether to treat variables as features.
         :param load_n_samples_time: Number of time samples stacked as batch.
+        :param variables: Optional default variable groups used when a zoom config
+            does not define ``groups``.
+        :param variable_aliases: Optional aliases shared by source and target sides.
+            Format: ``{canonical_name: [alias_name_1, alias_name_2, ...]}``.
+        :param variable_aliases_source: Optional source-side aliases that override or
+            extend ``variable_aliases``.
+        :param variable_aliases_target: Optional target-side aliases that override or
+            extend ``variable_aliases``.
         :return: None.
         """
         super(BaseDataset, self).__init__()
@@ -112,6 +398,19 @@ class BaseDataset(Dataset):
         self.apply_diff: bool = apply_diff
         self.output_max_zoom_only: bool = output_max_zoom_only
         self.variables_as_features: bool = variables_as_features
+        self.variable_aliases: Dict[str, List[str]] = self._normalize_aliases(
+            variable_aliases,
+            context="`variable_aliases`",
+        )
+        self.variable_aliases_source: Dict[str, List[str]] = self._normalize_aliases(
+            variable_aliases_source,
+            context="`variable_aliases_source`",
+        )
+        self.variable_aliases_target: Dict[str, List[str]] = self._normalize_aliases(
+            variable_aliases_target,
+            context="`variable_aliases_target`",
+        )
+        self._resolved_variable_names_cache: Dict[Tuple[str, str], Dict[str, str]] = {}
 
         self.load_n_samples_time: int = load_n_samples_time
 
@@ -263,25 +562,32 @@ class BaseDataset(Dataset):
             z: np.asarray(idx_map, dtype=np.int32) for z, idx_map in self.index_map.items()
         }
 
-        # Build variable group indices for embedding and masking.
-        self.variables_source_groups: Mapping[str, Sequence[str]] = self.data_dict.get(
-            'source_variables',
-            self.data_dict.get('variables', {}),
+        # Build variable groups from sampling configuration.
+        fallback_variables = variables if variables is not None else self.data_dict.get("variables", {})
+        self.groups_source_by_zoom: Dict[int, Dict[str, List[str]]] = self._resolve_groups_from_sampling(
+            self.sampling_zooms_source,
+            fallback_variables,
+            side="source",
         )
-        self.variables_target_groups: Mapping[str, Sequence[str]] = self.data_dict.get(
-            'target_variables',
-            self.data_dict.get('variables', {}),
+        self.groups_target_by_zoom: Dict[int, Dict[str, List[str]]] = self._resolve_groups_from_sampling(
+            self.sampling_zooms_target,
+            fallback_variables,
+            side="target",
         )
-
-        if not self.variables_source_groups or not self.variables_target_groups:
-            raise ValueError(
-                "Expected variable groups in data_dict via 'variables' or "
-                "'source_variables'/'target_variables'."
-            )
+        self.variables_source_groups: Dict[str, List[str]] = self._validate_consistent_groups_across_zooms(
+            self.groups_source_by_zoom,
+            side="source",
+        )
+        self.variables_target_groups: Dict[str, List[str]] = self._validate_consistent_groups_across_zooms(
+            self.groups_target_by_zoom,
+            side="target",
+        )
 
         if set(self.variables_source_groups.keys()) != set(self.variables_target_groups.keys()):
             raise ValueError(
-                "source_variables and target_variables must use the same group keys."
+                "Source and target groups must use the same group keys. "
+                f"source={list(self.variables_source_groups.keys())}, "
+                f"target={list(self.variables_target_groups.keys())}."
             )
 
         all_variables_source: List[str] = []
@@ -293,11 +599,6 @@ class BaseDataset(Dataset):
         for group_id, group in enumerate(self.variables_source_groups.keys()):
             vars_source = list(self.variables_source_groups[group])
             vars_target = list(self.variables_target_groups[group])
-            if len(vars_source) != len(vars_target):
-                raise ValueError(
-                    f"Group '{group}' must have equal source/target variable counts "
-                    "for aligned sampling."
-                )
 
             all_variables_source += vars_source
             all_variables_target += vars_target
@@ -309,45 +610,130 @@ class BaseDataset(Dataset):
         self.all_variable_ids: Dict[str, int] = dict(zip(all_variables_source, all_ids))
 
         all_variables = list(dict.fromkeys(all_variables_source + all_variables_target))
-        grid_types = [get_grid_type_from_var(ds, var) for var in all_variables]
-        self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
-        self.grid_types: np.ndarray = np.unique(grid_types)
 
+        target_ref = self.data_dict['target'].get(self.max_zoom_target) or self.data_dict['target'].get(
+            str(self.max_zoom_target)
+        )
+        if target_ref is None:
+            target_ref = source_ref
+
+        source_probe_file = source_ref['files'][0]
+        target_probe_file = target_ref['files'][0]
+
+        def _infer_grid_type(
+            variable: str,
+            primary_ds: xr.Dataset,
+            primary_side: str,
+            primary_file: str,
+            fallback_ds: Optional[xr.Dataset] = None,
+            fallback_side: Optional[str] = None,
+            fallback_file: Optional[str] = None,
+        ) -> Optional[str]:
+            try:
+                resolved_primary = self._get_resolved_variable_map(
+                    ds=primary_ds,
+                    variables=[variable],
+                    side=primary_side,
+                    file_path=primary_file,
+                )[variable]
+                return get_grid_type_from_var(primary_ds, resolved_primary)
+            except (KeyError, ValueError):
+                pass
+
+            if fallback_ds is not None and fallback_side is not None and fallback_file is not None:
+                resolved_fallback = self._get_resolved_variable_map(
+                    ds=fallback_ds,
+                    variables=[variable],
+                    side=fallback_side,
+                    file_path=fallback_file,
+                )[variable]
+                return get_grid_type_from_var(fallback_ds, resolved_fallback)
+
+            available_primary = list(primary_ds.data_vars.keys())
+            available_fallback = list(fallback_ds.data_vars.keys()) if fallback_ds is not None else []
+            raise KeyError(
+                f"Could not infer grid type for variable '{variable}'. "
+                f"Tried source aliases {self._get_alias_candidates(variable, 'source')} and "
+                f"target aliases {self._get_alias_candidates(variable, 'target')}. "
+                f"Source probe vars: {available_primary[:10]}{'...' if len(available_primary) > 10 else ''}. "
+                f"Target probe vars: {available_fallback[:10]}{'...' if len(available_fallback) > 10 else ''}."
+            )
+
+        with xr.open_zarr(source_probe_file, consolidated=False) as ds_source_probe:
+            if target_probe_file == source_probe_file:
+                ds_target_probe = ds_source_probe
+                close_target_probe = False
+            else:
+                ds_target_probe = xr.open_zarr(target_probe_file, consolidated=False)
+                close_target_probe = True
+
+            try:
+                self.vars_grid_types: Dict[str, Any] = {}
+                for var in all_variables_source:
+                    if var not in self.vars_grid_types:
+                        self.vars_grid_types[var] = _infer_grid_type(
+                            var,
+                            ds_source_probe,
+                            primary_side="source",
+                            primary_file=source_probe_file,
+                            fallback_ds=ds_target_probe,
+                            fallback_side="target",
+                            fallback_file=target_probe_file,
+                        )
+
+                for var in all_variables_target:
+                    if var not in self.vars_grid_types:
+                        self.vars_grid_types[var] = _infer_grid_type(
+                            var,
+                            ds_target_probe,
+                            primary_side="target",
+                            primary_file=target_probe_file,
+                            fallback_ds=ds_source_probe,
+                            fallback_side="source",
+                            fallback_file=source_probe_file,
+                        )
+            finally:
+                if close_target_probe:
+                    ds_target_probe.close()
+
+        self.grid_types: np.ndarray = np.unique(list(self.vars_grid_types.values()))
         self.grid_types_vars: Dict[Any, List[str]] = invert_dict(self.vars_grid_types)
-        for var, gtype in zip(all_variables, grid_types):
-            self.grid_types_vars[gtype].append(var)
 
         unique_source_files = np.unique(np.array(all_source_files))
         unique_target_files = np.unique(np.array(all_target_files))
 
         self.single_source: bool = len(unique_source_files) == 1
         self.single_target: bool = len(unique_target_files) == 1
+        same_source_target_files = np.array_equal(unique_source_files, unique_target_files)
         self.mapping: Dict[int, Dict[Any, Any]] = {}
-        if self.single_source:
-            # Single-source: build a shared mapping at the highest zoom and reuse across zooms.
+        if self.single_source and same_source_target_files:
+            # Only reuse a single shared mapping when source and target reference
+            # the same underlying file set.
             with xr.open_zarr(source_ref['files'][0], consolidated=False) as ds:
-                coords = [
-                    get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
-                ]
-            mapping_hr = dict(
-                zip(self.grid_types, [mapping_fcn(coords_, max(self.zooms))[max(self.zooms)] for coords_ in coords])
-            )
+                mapping_hr = {}
+                for grid_type in self.grid_types:
+                    coords = get_coords_as_tensor(ds, grid_type=grid_type)
+                    if coords is None:
+                        continue
+                    mapping_hr[grid_type] = mapping_fcn(coords, max(self.zooms))[max(self.zooms)]
             self.mapping[max(self.zooms)] = mapping_hr
         else:
             for zoom in self.zooms:
-                # Multi-source: build a per-zoom mapping using that zoom's grid.
+                # Build per-zoom mappings so source/target zooms can use different files/grids.
                 mapping_grid_type = {}
-                for grid_type in self.grid_types:
-                    source_entry = (
-                        self.data_dict['source'].get(zoom)
-                        or self.data_dict['source'].get(str(zoom))
-                        or self.data_dict['target'].get(zoom)
-                        or self.data_dict['target'].get(str(zoom))
-                    )
-                    if source_entry is None:
-                        continue
-                    with xr.open_zarr(source_entry['files'][0], consolidated=False) as ds:
+                source_entry = (
+                    self.data_dict['source'].get(zoom)
+                    or self.data_dict['source'].get(str(zoom))
+                    or self.data_dict['target'].get(zoom)
+                    or self.data_dict['target'].get(str(zoom))
+                )
+                if source_entry is None:
+                    continue
+                with xr.open_zarr(source_entry['files'][0], consolidated=False) as ds:
+                    for grid_type in self.grid_types:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
+                        if coords is None:
+                            continue
                         mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
@@ -366,19 +752,20 @@ class BaseDataset(Dataset):
         for zoom in self.zooms:
             self.var_normalizers[zoom] = {}
             for var in all_variables:
-                if str(zoom) in norm_dict[var].keys():
+                norm_key = self._resolve_norm_key(var, norm_dict)
+                if str(zoom) in norm_dict[norm_key].keys():
                     # Zoom-specific stats override global stats when available.
-                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    norm_class = norm_dict[norm_key][str(zoom)]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var][str(zoom)]['stats'],
-                        norm_dict[var][str(zoom)]['normalizer'])
+                        norm_dict[norm_key][str(zoom)]['stats'],
+                        norm_dict[norm_key][str(zoom)]['normalizer'])
                 else:
-                    norm_class = norm_dict[var]['normalizer']['class']
+                    norm_class = norm_dict[norm_key]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var]['stats'],
-                        norm_dict[var]['normalizer'])
+                        norm_dict[norm_key]['stats'],
+                        norm_dict[norm_key]['normalizer'])
         self.normalize_data: bool = normalize_data
         self.len_dataset: int = len(list(self.index_map.values())[0])
     
@@ -450,20 +837,23 @@ class BaseDataset(Dataset):
         isel_dict = {"time": time_indices}
         patch_dim = [d for d in ds.dims if "cell" in d or "ncells" in d]
         patch_dim = patch_dim[0] if patch_dim else None
+        patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
 
         for grid_type, variables_grid_type in self.grid_types_vars.items():
-            mapping = mapping[grid_type]
-            patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
+            mapping_grid = mapping.get(grid_type)
+            if mapping_grid is None:
+                # Current dataset/zoom may not define all global grid types.
+                continue
 
             # Resolve indices either on the target grid (post-map) or the source grid (pre-map).
             post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
-                indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
+                indices = mapping_grid['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
                 if patch_dim:
                     isel_dict[patch_dim] = indices.view(-1)
 
             else:
-                indices = mapping['indices'][..., [0]]
+                indices = mapping_grid['indices'][..., [0]]
 
                 if patch_dim:
                     isel_dict[patch_dim] = indices[patch_indices].view(-1)
@@ -481,6 +871,7 @@ class BaseDataset(Dataset):
         mapping_zoom: int,
         zoom: int,
         drop_mask: Optional[torch.Tensor] = None,
+        resolved_variable_names: Optional[Mapping[str, str]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Extract data, time values, and masks for a given patch.
@@ -492,6 +883,8 @@ class BaseDataset(Dataset):
         :param mapping_zoom: Zoom level of the mapping source.
         :param zoom: Zoom level of the requested data.
         :param drop_mask: Optional dropout mask tensor of shape ``(v, t, n)`` or ``(1, v, t, n)``.
+        :param resolved_variable_names: Optional mapping from canonical variable names
+            in ``variables_sample`` to actual dataset variable names in ``ds``.
         :return: Tuple ``(data_g, data_time, drop_mask)`` where ``data_g`` is a tensor of
             shape ``(v, t, n, d, f)`` (matching the ``(b, v, t, n, d, f)`` base shape with
             ``b`` handled by the caller), ``data_time`` is a tensor of shape ``(t,)``,
@@ -519,30 +912,40 @@ class BaseDataset(Dataset):
         patch_dim = patch_dim_candidates[0] if patch_dim_candidates else None
 
         data_g = []
+        mask = None
         for grid_type, variables_grid_type in self.grid_types_vars.items():
-            variables = [var for var in variables_sample if var in variables_grid_type]
+            variables = [str(var) for var in variables_sample if str(var) in variables_grid_type]
             if not variables:
                 continue
+            dataset_variables = [
+                str(resolved_variable_names.get(var, var)) if resolved_variable_names is not None else var
+                for var in variables
+            ]
 
-            mapping = mapping[grid_type]
+            mapping_grid = mapping.get(grid_type)
+            if mapping_grid is None:
+                raise KeyError(
+                    f"Missing mapping for grid type '{grid_type}' at zoom {zoom} "
+                    f"required by variables {variables}. Available mappings: {list(mapping.keys())}"
+                )
 
             patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
 
-            mask = get_mapping_weights(mapping)[..., 0].view(1, 1, -1, 1, 1)
+            mask = get_mapping_weights(mapping_grid)[..., 0].view(1, 1, -1, 1, 1)
 
             # Map indices differently depending on whether we are projecting from a higher zoom.
             post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
-                indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
+                indices = mapping_grid['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
 
             else:
-                indices = mapping['indices'][..., [0]]
+                indices = mapping_grid['indices'][..., [0]]
                 mask = mask[:, :, patch_indices]
 
                 if drop_mask_ is not None:
                     drop_mask_ = drop_mask_[..., patch_indices]
 
-            ds_variables = ds[variables]
+            ds_variables = ds[dataset_variables]
             arr = ds_variables.to_array().to_numpy()
             if arr.dtype == np.float64:
                 arr = arr.astype(np.float32, copy=False)
@@ -555,7 +958,7 @@ class BaseDataset(Dataset):
             # Shape all inputs to the shared convention: (v, t, n, d, f).
             if patch_dim is None:
                 # Regular lon/lat input: flatten spatial dimensions to n while keeping optional level as d.
-                if 'level' in ds_variables.dims or 'lev' in ds_variables.dims:
+                if 'level' in ds_variables.dims or 'lev' in ds_variables.dims or 'depth' in ds_variables.dims:
                     # Expected raw shape: (v, t, level, lat, lon)
                     data_g = data_g.permute(0, 1, 3, 4, 2).reshape(
                         data_g.shape[0], data_g.shape[1], -1, data_g.shape[2]
@@ -568,12 +971,13 @@ class BaseDataset(Dataset):
             else:
                 # HealPix / ICON-like 1D cell input.
                 data_g = data_g.unsqueeze(dim=-1)
-                if 'level' not in ds_variables.dims and 'lev' not in ds_variables.dims:
+                if 'level' not in ds_variables.dims and 'lev' not in ds_variables.dims and 'depth' not in ds_variables.dims:
                     data_g = data_g.unsqueeze(dim=2)
                 data_g = data_g.transpose(2, 3)
 
             if not patch_dim and post_map:
                 data_g = data_g[:, :, indices.view(-1), :, :]
+
 
         if drop_mask_ is not None and mask.dtype != torch.bool:
             drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1)
@@ -696,12 +1100,11 @@ class BaseDataset(Dataset):
                     sample_configs[key]['patch_index'] = value
             return {}, {}, sample_configs, {}
         if data_target is None:
-            # Defer target construction until here to avoid masking it with source dropouts.
-            data_target = {zoom: data_source[zoom].clone() for zoom in data_source.keys()}
+            data_target = {}
         else:
-            for zoom in list(data_source.keys()):
-                if zoom not in data_target or data_target[zoom] is None:
-                    data_target[zoom] = data_source[zoom].clone()
+            data_target = {
+                int(zoom): value for zoom, value in data_target.items() if value is not None
+            }
 
         data_source = encode_zooms(data_source, sample_configs, patch_index_zooms)
         data_target = encode_zooms(data_target, sample_configs, patch_index_zooms)
@@ -730,7 +1133,6 @@ class BaseDataset(Dataset):
 
             if self.variables_as_features:
                 data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
 
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
@@ -738,12 +1140,21 @@ class BaseDataset(Dataset):
                     mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
             else:
                 data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
                 else:
                     mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
+
+        for zoom in data_target.keys():
+            if self.variables_as_features:
+                data_target[zoom] = rearrange(
+                    data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time
+                )
+            else:
+                data_target[zoom] = rearrange(
+                    data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time
+                )
 
         for key, value in patch_index_zooms.items():
             if key in sample_configs:
@@ -772,10 +1183,16 @@ class BaseDataset(Dataset):
                         data_source[zoom][:, :, -n_mask:] = 0.
 
         if self.output_max_zoom_only:
-            max_zoom = max(data_source.keys())
-            data_source = decode_zooms(data_source, sample_configs, max_zoom)
-            data_target = decode_zooms(data_target, sample_configs, max_zoom)
-            mask_mapping_zooms = {max_zoom: mask_mapping_zooms[max_zoom]}
+            if data_source:
+                max_zoom_source = max(data_source.keys())
+                data_source = decode_zooms(data_source, sample_configs, max_zoom_source)
+                mask_mapping_zooms = {max_zoom_source: mask_mapping_zooms[max_zoom_source]}
+            else:
+                mask_mapping_zooms = {}
+
+            if data_target:
+                max_zoom_target = max(data_target.keys())
+                data_target = decode_zooms(data_target, sample_configs, max_zoom_target)
 
         return data_source, data_target, sample_configs, mask_mapping_zooms
 
@@ -799,25 +1216,35 @@ class BaseDataset(Dataset):
         selected_vars_source = {}
         selected_vars_target = {}
   
-        var_indices = {}
+        var_indices_source = {}
+        var_indices_target = {}
         group_keys = list(self.variables_source_groups.keys())
         # Sample variables per group to build a compact input for this item.
         for group in group_keys:
             variables_source = list(self.variables_source_groups[group])
             variables_target = list(self.variables_target_groups[group])
 
-            sample_size = (
-                len(variables_source)
-                if self.n_sample_variables == -1
-                else min(self.n_sample_variables, len(variables_source))
-            )
-            var_indices[group] = np.arange(len(variables_source))
+            indices_source = np.arange(len(variables_source))
+            indices_target = np.arange(len(variables_target))
 
-            if sample_size != len(variables_source):
-                var_indices[group] = np.random.choice(var_indices[group], sample_size, replace=False)
+            if self.n_sample_variables != -1:
+                if len(variables_source) == len(variables_target):
+                    sample_size = min(self.n_sample_variables, len(variables_source))
+                    if sample_size != len(variables_source):
+                        indices_source = np.random.choice(indices_source, sample_size, replace=False)
+                    indices_target = indices_source.copy()
+                else:
+                    sample_size_source = min(self.n_sample_variables, len(variables_source))
+                    sample_size_target = min(self.n_sample_variables, len(variables_target))
+                    if sample_size_source != len(variables_source):
+                        indices_source = np.random.choice(indices_source, sample_size_source, replace=False)
+                    if sample_size_target != len(variables_target):
+                        indices_target = np.random.choice(indices_target, sample_size_target, replace=False)
 
-            selected_vars_source[group] = np.array(variables_source)[var_indices[group]]
-            selected_vars_target[group] = np.array(variables_target)[var_indices[group]]
+            var_indices_source[group] = indices_source
+            var_indices_target[group] = indices_target
+            selected_vars_source[group] = np.array(variables_source)[indices_source]
+            selected_vars_target[group] = np.array(variables_target)[indices_target]
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
@@ -857,12 +1284,15 @@ class BaseDataset(Dataset):
             patch_index = int(row[1])
             time_indices = row[2:].tolist()
 
+            zoom_in_source = zoom in self.sampling_zooms_source
+            zoom_in_target = zoom in self.sampling_zooms_target
+
             source_entry = self.data_dict['source'].get(zoom) or self.data_dict['source'].get(str(zoom))
             target_entry = self.data_dict['target'].get(zoom) or self.data_dict['target'].get(str(zoom))
 
-            if source_entry is not None:
+            if zoom_in_source and source_entry is not None:
                 source_file = source_entry['files'][file_index]
-            elif self.single_source:
+            elif zoom_in_source and self.single_source:
                 source_ref = self.data_dict['source'].get(self.max_zoom_source) or self.data_dict['source'].get(
                     str(self.max_zoom_source)
                 )
@@ -870,9 +1300,9 @@ class BaseDataset(Dataset):
             else:
                 source_file = None
 
-            if target_entry is not None:
+            if zoom_in_target and target_entry is not None:
                 target_file = target_entry['files'][file_index]
-            elif self.single_target:
+            elif zoom_in_target and self.single_target:
                 target_ref = self.data_dict['target'].get(self.max_zoom_target) or self.data_dict['target'].get(
                     str(self.max_zoom_target)
                 )
@@ -880,12 +1310,12 @@ class BaseDataset(Dataset):
             else:
                 target_file = None
 
-            if source_file is None and zoom in self.sampling_zooms_source:
+            if source_file is None and zoom_in_source:
                 raise KeyError(
                     f"Missing source files for zoom {zoom}. "
                     "Define source data for that zoom or provide a single shared source file."
                 )
-            if target_file is None and zoom in self.sampling_zooms_target:
+            if target_file is None and zoom_in_target:
                 raise KeyError(
                     f"Missing target files for zoom {zoom}. "
                     "Define target data for that zoom or provide a single shared target file."
@@ -952,7 +1382,7 @@ class BaseDataset(Dataset):
             if drop_mask_zoom is None:
                 drop_mask_zoom_groups = [None for _ in group_keys]
             else:
-                for indices in var_indices.values():
+                for indices in var_indices_source.values():
                     drop_mask_zoom_groups.append(drop_mask_zoom[indices].unsqueeze(0))
     
             start_times = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
@@ -980,7 +1410,9 @@ class BaseDataset(Dataset):
             else:
                 ds_source_zoom = None
 
-            if (ds_target is not None or (ds_source is not None and self.shift_n_ts_target.get(zoom, 0) > 0)):
+            if zoom_in_target and (
+                ds_target is not None or (ds_source is not None and self.shift_n_ts_target.get(zoom, 0) > 0)
+            ):
                 ds_target_base = ds_source if ds_target is None else ds_target
                 mapping_zoom_target_ = mapping_zoom_source if mapping_zoom_target is None else mapping_zoom_target
                 ds_target_zoom = self.select_ranges(
@@ -1000,8 +1432,48 @@ class BaseDataset(Dataset):
             else:
                 ds_target_zoom = None
 
+            source_var_name_map: Optional[Dict[str, str]] = None
+            if zoom_in_source and ds_source is not None and source_file is not None:
+                selected_source_vars_flat = [
+                    str(var_name)
+                    for group_vars in selected_vars_source.values()
+                    for var_name in group_vars
+                ]
+                source_var_name_map = self._get_resolved_variable_map(
+                    ds=ds_source,
+                    variables=selected_source_vars_flat,
+                    side="source",
+                    file_path=source_file,
+                )
+
+            target_var_name_map: Optional[Dict[str, str]] = None
+            if zoom_in_target and ds_target_zoom is not None:
+                ds_target_base = ds_source if ds_target is None else ds_target
+                if ds_target_base is None:
+                    raise RuntimeError(
+                        f"Internal error while resolving target aliases at zoom {zoom}: "
+                        "target dataset is expected but missing."
+                    )
+                target_file_for_alias = target_file if target_file is not None else source_file
+                if target_file_for_alias is None:
+                    raise RuntimeError(
+                        f"Internal error while resolving target aliases at zoom {zoom}: "
+                        "no source or target file path available."
+                    )
+                selected_target_vars_flat = [
+                    str(var_name)
+                    for group_vars in selected_vars_target.values()
+                    for var_name in group_vars
+                ]
+                target_var_name_map = self._get_resolved_variable_map(
+                    ds=ds_target_base,
+                    variables=selected_target_vars_flat,
+                    side="target",
+                    file_path=target_file_for_alias,
+                )
+
             for group_idx, group in enumerate(group_keys):
-                if ds_source_zoom is not None and mapping_zoom_source is not None:
+                if zoom_in_source and ds_source_zoom is not None and mapping_zoom_source is not None:
                     data_source, drop_mask_zoom_group = self.get_data(
                         ds_source_zoom,
                         patch_index,
@@ -1010,12 +1482,13 @@ class BaseDataset(Dataset):
                         mapping_zoom_source,
                         zoom,
                         drop_mask=drop_mask_zoom_groups[group_idx],
+                        resolved_variable_names=source_var_name_map,
                     )
                 else:
                     data_source = None
                     drop_mask_zoom_group = None
 
-                if ds_target_zoom is not None:
+                if zoom_in_target and ds_target_zoom is not None:
                     mapping_zoom_target_ = mapping_zoom_source if mapping_zoom_target is None else mapping_zoom_target
                     data_target,  _ = self.get_data(
                         ds_target_zoom,
@@ -1024,6 +1497,7 @@ class BaseDataset(Dataset):
                         self.mapping[mapping_zoom_target_],
                         mapping_zoom_target_,
                         zoom,
+                        resolved_variable_names=target_var_name_map,
                     )
                 else:
                     data_target = None
@@ -1071,7 +1545,11 @@ class BaseDataset(Dataset):
                 mask_zooms_groups.append(mask_group)
 
                 emb_group = emb.copy()
-                emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['VariableEmbedder'] = (
+                    torch.tensor(list(var_indices_source[group]))
+                    .view(1, -1)
+                    .repeat_interleave(self.load_n_samples_time, dim=0)
+                )
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
 
                 if StaticVariableEmbedder is not None:
@@ -1086,23 +1564,38 @@ class BaseDataset(Dataset):
             mask_zooms_groups_ = {}
 
         if self.variables_as_features:
-            for zoom in source_zooms_groups_out[0].keys():
-                source_zooms_groups_out_[zoom] = torch.concat([group[zoom] for group in source_zooms_groups_out],dim=-1)
-                target_zooms_groups_out_[zoom] =  torch.concat([group[zoom] for group in target_zooms_groups_out],dim=-1)
-                mask_zooms_groups_[zoom] = torch.concat([group[zoom] for group in mask_zooms_groups], dim=-1)
+            source_zoom_keys = list(source_zooms_groups_out[0].keys()) if source_zooms_groups_out else []
+            target_zoom_keys = list(target_zooms_groups_out[0].keys()) if target_zooms_groups_out else []
 
-            emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
+            for zoom in source_zoom_keys:
+                source_zooms_groups_out_[zoom] = torch.concat(
+                    [group[zoom] for group in source_zooms_groups_out], dim=-1
+                )
+                mask_zooms_groups_[zoom] = torch.concat(
+                    [group[zoom] for group in mask_zooms_groups], dim=-1
+                )
+
+            for zoom in target_zoom_keys:
+                target_zooms_groups_out_[zoom] = torch.concat(
+                    [group[zoom] for group in target_zooms_groups_out], dim=-1
+                )
+
+            feature_width = 0
+            if source_zoom_keys:
+                feature_width = int(source_zooms_groups_out_[source_zoom_keys[0]].shape[-1])
+
+            emb = {#'StaticVariableEmbedder': None,#emb_groups[0]['StaticVariableEmbedder'],
                     'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
-                    'VarialeEmbedder': torch.zeros(source_zooms_groups_out_[zoom].shape[-1], dtype=torch.long)}
+                    'VarialeEmbedder': torch.zeros(feature_width, dtype=torch.long)}
 
             emb_groups = [emb]
             source_zooms_groups_out = [source_zooms_groups_out_]
             target_zooms_groups_out = [target_zooms_groups_out_]
             mask_zooms_groups = [mask_zooms_groups_]
+
         
         for zoom, indices in patch_index_zooms.items():
             patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
-
         return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
 
 
