@@ -325,9 +325,14 @@ class BaseDataset(Dataset):
         self.all_variable_ids = _resolve_global_variable_ids(self.variables_by_group, explicit_variable_ids)
         all_variables: List[str] = []
         self.group_ids: Dict[str, int] = {}
+        self.embed_group_ids: Dict[str, int] = {}
+        embed_group_id = 0
         for group_id, (group, vars) in enumerate(self.variables_by_group.items()):
             all_variables += list(vars)
             self.group_ids[group] = (group_id)
+            if group != 'embedding':
+                self.embed_group_ids[group] = embed_group_id
+                embed_group_id += 1
 
         grid_types = [get_grid_type_from_var(ds, var) for var in all_variables]
         self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
@@ -760,9 +765,9 @@ class BaseDataset(Dataset):
             ``sources`` and ``targets`` are lists of per-group zoom mappings to tensors of
             shape ``(b, v, t, n, d, f)`` (or ``(b, 1, t, n, 1, f)`` when variables are folded
             into features), ``masks`` follow the same shape, ``embeddings`` holds per-group
-            tensors such as ``VariableEmbedder`` of shape ``(v,)`` and ``TimeEmbedder`` of
-            shape ``(b, t)``, and ``patch_index_zooms`` maps zoom to index tensors of shape
-            ``(1,)``.
+            tensors such as ``VariableEmbedder`` of shape ``(v,)``, ``GroupDepthEmbedder`` as
+            ``(group_id, depth_ids)``, and ``TimeEmbedder`` of shape ``(b, t)``, and
+            ``patch_index_zooms`` maps zoom to index tensors of shape ``(1,)``.
         """
         selected_vars = {}
         selected_var_ids = {}
@@ -958,8 +963,12 @@ class BaseDataset(Dataset):
                 mask_zooms_groups.append(mask_group)
 
                 emb_group = emb.copy()
+                group_id = torch.tensor(self.embed_group_ids[group], dtype=torch.long)
+                max_zoom = max(source_zooms.keys())
+                depth_ids = torch.arange(source_zooms[max_zoom].shape[-2], dtype=torch.long)
                 emb_group['variables_sampled'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
                 emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group]).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['GroupDepthEmbedder'] = (group_id, depth_ids)
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
 
                 if StaticVariableEmbedder is not None:

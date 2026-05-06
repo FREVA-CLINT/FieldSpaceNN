@@ -14,9 +14,8 @@ defaults = {
     "predict_var":False,
     'n_head_channels': 32,
     'att_dim': 256,
-    'layer_confs': {},
-    'layer_confs_emb': {},
-    'input_layer_confs': {},
+    "fac_mode": "Tucker",
+    "emb_aggregation": "shift_scale",
     'embed_confs': {},
     'dropout': 0,
     'learn_residual': False,
@@ -168,8 +167,8 @@ def create_encoder_decoder_block(
     :return: Instantiated block module with ``out_features`` set.
     """
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
-    layer_confs = check_get([block_conf, kwargs, defaults], "layer_confs")
-    layer_confs_emb = check_get([block_conf, kwargs, defaults], "layer_confs_emb")
+    fac_mode = check_get([block_conf, kwargs, defaults], "fac_mode")
+    emb_aggregation = check_get([block_conf, kwargs, defaults], "emb_aggregation")
     dropout = check_get([block_conf, kwargs, defaults], "dropout")
     out_zooms = check_get([block_conf, {'out_zooms':in_zooms}], "out_zooms")
     use_mask = check_get([block_conf, kwargs, defaults], "use_mask")
@@ -221,8 +220,8 @@ def create_encoder_decoder_block(
                 n_head_channels = n_head_channels,
                 embed_confs = embed_confs,
                 separate_mlp_norm = block_conf.separate_mlp_norm,
-                layer_confs=layer_confs,
-                layer_confs_emb = layer_confs_emb)
+                fac_mode=fac_mode,
+                emb_aggregation=emb_aggregation)
         block.out_features = in_features
 
     elif isinstance(block_conf, MultiZoomHealpixConvConfig):
@@ -238,7 +237,7 @@ def create_encoder_decoder_block(
             rank_space=check_get([block_conf, {"rank_space": None}], "rank_space"),
             rank_time=check_get([block_conf, {"rank_time": None}], "rank_time"),
             rank_depth=check_get([block_conf, {"rank_depth": None}], "rank_depth"),
-            layer_confs=layer_confs,
+            fac_mode=fac_mode,
             grid_layers=grid_layers,
             use_neighborhood=check_get([block_conf, {"use_neighborhood": True}], "use_neighborhood"),
             norm=check_get([block_conf, {"norm": "group"}], "norm"),
@@ -269,7 +268,7 @@ def create_encoder_decoder_block(
                 token_overlap_depth = block_conf.token_overlap_depth,
                 residual = check_get([block_conf, {"residual": False}], "residual"),
                 type= block_conf.type,
-                layer_confs=layer_confs)
+                fac_mode=fac_mode)
     return block
 
 class MG_base_model(nn.Module):

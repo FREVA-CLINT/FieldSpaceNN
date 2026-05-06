@@ -96,7 +96,6 @@ class SelfAttention(nn.Module):
             num_heads: int,
             dropout: float = 0.,
             is_causal: bool = False,
-            layer_confs: Dict[str, Any] = {},
             qkv_proj: bool = False,
             cross: bool = False
     ):
@@ -221,7 +220,6 @@ class NHAttention(nn.Module):
             num_heads: int,
             dropout: float = 0.,
             is_causal: bool = False,
-            layer_confs: Dict[str, Any] = {},
             with_variable_attention: bool = False
     ):
         super().__init__()
@@ -230,7 +228,6 @@ class NHAttention(nn.Module):
             in_features, 
             out_features, 
             num_heads,
-            layer_confs=layer_confs,
             dropout=dropout,
             is_causal=is_causal,
             qkv_proj=True,
@@ -304,13 +301,15 @@ class MLPLayer(nn.Module):
             out_features_list: int,
             mult: int = 1,
             dropout: float = 0.,
-            layer_confs: Dict[str, Any] = {}
+            ranks: Optional[List[Optional[int]]] = None,
+            n_variables: int = 1,
+            fac_mode: str = "Tucker",
     ):
         super().__init__()
 
         # Define MLP with a hidden layer, GELU activation, and optional dropout
-        self.branch_layer1: nn.Module = get_layer(in_features, in_features * mult, layer_confs=layer_confs, bias=True)
-        self.branch_layer2: nn.Module = get_layer(in_features * mult, out_features_list, layer_confs=layer_confs, bias=True)
+        self.branch_layer1 = get_layer(in_features, in_features * mult, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, bias=True)
+        self.branch_layer2 = get_layer(in_features * mult, out_features_list, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, bias=True)
 
         self.activation: nn.Module = torch.nn.GELU()
         self.dropout: nn.Module = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
@@ -367,8 +366,11 @@ class TransformerBlock(EmbedBlock):
             dropout: Union[float, List[float]] = 0.,
             spatial_dim_count: int = 1,
             embedders: Optional[List[EmbedderSequential]] = None,
-            layer_confs: Dict[str, Any] = {},
-            layer_confs_emb: Dict[str, Any] = {},
+            ranks: Optional[List[Optional[int]]] = None,
+            emb_ranks: Optional[List[Optional[int]]] = None,
+            n_variables: int = 1,
+            fac_mode: str = "Tucker",
+            emb_aggregation: str = "shift_scale",
             **kwargs: Any
     ):
         super().__init__()
@@ -395,11 +397,11 @@ class TransformerBlock(EmbedBlock):
             seq_length = seq_lengths[i]
 
             if block == "mlp":
-                trans_block = MLP_fac(att_dim, out_features_list[i], mlp_mult[i], dropout[i], layer_confs=layer_confs, gamma=True)
+                trans_block = MLP_fac(att_dim, out_features_list[i], mlp_mult[i], dropout[i], ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, gamma=True)
 
             else:
-                q_layer = get_layer(att_dim, [att_dim], layer_confs=layer_confs) 
-                kv_layer = get_layer([1, att_dim], [2, att_dim], layer_confs=layer_confs, bias=True)
+                q_layer = get_layer(att_dim, [att_dim], ranks=ranks, n_variables=n_variables, fac_mode=fac_mode) 
+                kv_layer = get_layer([1, att_dim], [2, att_dim], ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, bias=True)
                 cross = False
                 # Select rearrangement function based on block type.
                 if block == "t":
@@ -420,14 +422,14 @@ class TransformerBlock(EmbedBlock):
                     seq_length = None
                     rearrange_fn = RearrangeVarCentric
 
-                trans_block = rearrange_fn(SelfAttention(att_dim, out_features_list[i], n_heads, layer_confs=layer_confs, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
+                trans_block = rearrange_fn(SelfAttention(att_dim, out_features_list[i], n_heads, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
      
-            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, layer_confs=layer_confs, identity_if_equal=True, embedder=embedders[i], layer_norm=True, layer_confs_emb=layer_confs_emb, spatial_dim_count=spatial_dim_count))
+            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, ranks=ranks, emb_ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode, emb_aggregation=emb_aggregation, identity_if_equal=True, embedder=embedders[i], layer_norm=True, spatial_dim_count=spatial_dim_count))
 
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection
             if in_features != out_features_list[i]:
-                residual = get_layer(in_features, out_features_list[i], layer_confs=layer_confs, bias=False)
+                residual = get_layer(in_features, out_features_list[i], ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, bias=False)
             else:
                 residual = IdentityLayer()
 

@@ -177,8 +177,8 @@ class FieldSpaceAttentionModule(nn.Module):
         update: str = 'shift',
         separate_mlp_norm: bool = True,
         embed_confs: Dict[str, Any] = {},
-        layer_confs: Union[List[Dict[str, Any]], Dict[str, Any]] = {},
-        layer_confs_emb: Union[List[Dict[str, Any]], Dict[str, Any]] = {}
+        fac_mode: str = "Tucker",
+        emb_aggregation: str = "shift_scale",
     ) -> None:
         """
         Initialize the field-space attention module.
@@ -238,10 +238,6 @@ class FieldSpaceAttentionModule(nn.Module):
         token_overlap_mlp_time = check_value(token_overlap_mlp_time, n_groups)
         token_overlap_mlp_depth = check_value(token_overlap_mlp_depth, n_groups)
 
-        layer_confs = check_value(layer_confs, n_groups)
-
-        layer_confs_emb = check_value(layer_confs_emb, n_groups)
-
         rank_space = check_value(rank_space, n_groups)
         rank_time = check_value(rank_time, n_groups)
         rank_depth = check_value(rank_depth, n_groups)
@@ -293,8 +289,6 @@ class FieldSpaceAttentionModule(nn.Module):
         for k in range(n_groups):
             
             # Each group gets its own attention block with group-specific config.
-            layer_confs[k]['n_variables'] = n_groups_variables[k]
-            layer_confs_emb[k]['n_variables'] = n_groups_variables[k]
             block = FieldSpaceAttentionBlock(
                         grid_layers,
                         token_zoom,
@@ -326,8 +320,9 @@ class FieldSpaceAttentionModule(nn.Module):
                         dropout=dropout,
                         embed_confs=embed_confs,
                         embedder=shared_embedder,
-                        layer_confs=layer_confs[k],
-                        layer_confs_emb=layer_confs_emb[k],
+                        n_variables=n_groups_variables[k],
+                        fac_mode=fac_mode,
+                        emb_aggregation=emb_aggregation,
                         update=update,
                         separate_mlp_norm=separate_mlp_norm
                         )
@@ -507,8 +502,9 @@ class FieldSpaceAttentionBlock(nn.Module):
         seq_overlap_time: bool = False,
         seq_overlap_depth: bool = False,
         with_var_att: bool = False,
-        layer_confs: Dict[str, Any] = {},
-        layer_confs_emb: Dict[str, Any] = {},
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
+        emb_aggregation: str = "shift_scale",
         update: str = 'shift',
         layer_norm: bool = True,
         separate_mlp_norm: bool = False
@@ -575,13 +571,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         self.att_dim: int = att_dim
 
         # Build rank configuration used by linear embedding layers.
-        layer_confs_ = layer_confs.copy()
-        layer_confs_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
-        layer_confs_['rank_variables'] = rank_variables
-
-        layer_confs_emb_ = layer_confs_emb.copy()
-        layer_confs_emb_['ranks'] = [rank_time,rank_space,rank_depth,rank_features,rank_features]
-        layer_confs_emb_['rank_variables'] = rank_variables
+        ranks = [rank_time, rank_space, rank_depth, rank_features, rank_features]
 
         self.scale_shift: bool = update == 'shift_scale'
         
@@ -678,8 +668,7 @@ class FieldSpaceAttentionBlock(nn.Module):
             grid_layers=grid_layers
         ) 
 
-        layer_confs_emb_field = layer_confs_emb_.copy()
-        layer_confs_emb_field['ranks'] = embed_confs.get("ranks", [*layer_confs_['ranks'], None]) 
+        emb_ranks = embed_confs.get("ranks", [*ranks, None])
 
         emb_tokenizer_out_features = copy.deepcopy(self.token_size_space)
         emb_tokenizer_out_features[1] = self.token_size_space[1] if embedder and embedder.has_space() else 1
@@ -688,13 +677,16 @@ class FieldSpaceAttentionBlock(nn.Module):
         self.emb_layer_q_field: LinEmbLayer = LinEmbLayer(
             emb_tokenizer_out_features,
             emb_tokenizer_out_features,
-            layer_confs=layer_confs_,
+            ranks=ranks,
+            n_variables=n_variables,
+            fac_mode=fac_mode,
             identity_if_equal=True,
             embedder=embedder,
             field_tokenizer= emb_tokenizer,
             output_zoom=max(self.q_zooms),
             layer_norm=True,
-            layer_confs_emb=layer_confs_emb_field
+            emb_aggregation=emb_aggregation,
+            emb_ranks=emb_ranks,
         )
         
         # Optional separate normalization for MLP path.
@@ -702,13 +694,16 @@ class FieldSpaceAttentionBlock(nn.Module):
             self.emb_layer_mlp: Optional[LinEmbLayer] = LinEmbLayer(
                 self.token_size_space,
                 self.token_size_space,
-                layer_confs=layer_confs_,
+                ranks=ranks,
+                n_variables=n_variables,
+                fac_mode=fac_mode,
                 identity_if_equal=True,
                 embedder=embedder,
                 field_tokenizer= emb_tokenizer,
                 output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
-                layer_confs_emb=layer_confs_emb_,
+                emb_aggregation=emb_aggregation,
+                emb_ranks=ranks,
             )
         else:
             self.emb_layer_mlp = None
@@ -718,13 +713,16 @@ class FieldSpaceAttentionBlock(nn.Module):
             self.emb_layer_kv: Optional[LinEmbLayer] = LinEmbLayer(
                 self.token_size_space_kv,
                 self.token_size_space_kv,
-                layer_confs=layer_confs_,
+                ranks=ranks,
+                n_variables=n_variables,
+                fac_mode=fac_mode,
                 identity_if_equal=True,
                 embedder=embedder,
                 field_tokenizer= emb_tokenizer,
                 output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
-                layer_confs_emb=layer_confs_emb_,
+                emb_aggregation=emb_aggregation,
+                emb_ranks=ranks,
             )
         else:
             self.emb_layer_kv = None
@@ -736,15 +734,24 @@ class FieldSpaceAttentionBlock(nn.Module):
         update_dims_mlp = [*self.token_size_update[:-1], update_dim]
 
         # Linear projections into attention space.
-        self.q_projection_layer: nn.Module = get_layer(token_size_in_overlap, out_dim_q, layer_confs=layer_confs_, bias=False)
-        self.kv_projection_layer: nn.Module = get_layer(token_size_in_kv_overlap, out_dim_kv, layer_confs=layer_confs_, bias=True)
-        self.out_layer_att: nn.Module = get_layer(out_dim_q, update_dims, layer_confs=layer_confs_)
+        self.q_projection_layer = get_layer(token_size_in_overlap, out_dim_q, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, rank_variables=rank_variables, bias=False)
+        self.kv_projection_layer = get_layer(token_size_in_kv_overlap, out_dim_kv, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, rank_variables=rank_variables, bias=True)
+        self.out_layer_att = get_layer(out_dim_q, update_dims, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, rank_variables=rank_variables)
 
         # Learned residual scaling for attention and MLP updates.
         self.gamma_res = nn.Parameter(torch.ones(self.token_size_space) * 1e-7, requires_grad=True)
         self.gamma = nn.Parameter(torch.ones(self.token_size_space) * 1e-7, requires_grad=True)
 
-        self.mlp = MLP_fac(token_size_in_mlp_overlap, update_dims_mlp, hidden_dim=out_dim_q, dropout=dropout, layer_confs=layer_confs_, gamma=False)
+        self.mlp = MLP_fac(
+            token_size_in_mlp_overlap,
+            update_dims_mlp,
+            hidden_dim=out_dim_q,
+            dropout=dropout,
+            ranks=ranks,
+            n_variables=n_variables,
+            fac_mode=fac_mode,
+            gamma=False,
+        )
         self.gamma_res_mlp = nn.Parameter(torch.ones(len(target_zooms)) * 1e-7, requires_grad=True)
         self.gamma_mlp = nn.Parameter(torch.ones(len(target_zooms)) * 1e-7, requires_grad=True)
 

@@ -121,21 +121,16 @@ class FieldSpaceLayerModule(nn.Module):
         self.blocks: nn.ModuleList = nn.ModuleList()
         n_groups = len(n_groups_variables)
 
-        # Ensure layer_confs is a list for each group
-        layer_confs = kwargs.get('layer_confs', {})
-        if not isinstance(layer_confs, list):
-            layer_confs = [copy.deepcopy(layer_confs) for _ in range(n_groups)]
-        
         # Handle other kwargs that might be group-specific
         in_features = kwargs.get('in_features', 1)
         target_features = kwargs.get('target_features', 1)
         residual = check_value(kwargs.get('residual', False), n_groups)
+        fac_mode = kwargs.get("fac_mode", "Tucker")
 
         for i in range(n_groups):
             block_kwargs = kwargs.copy()
-            layer_conf_i = copy.deepcopy(layer_confs[i])
-            layer_conf_i["n_variables"] = n_groups_variables[i]
-            block_kwargs['layer_confs'] = layer_conf_i
+            block_kwargs["n_variables"] = n_groups_variables[i]
+            block_kwargs["fac_mode"] = fac_mode
             block_kwargs['in_features'] = in_features
             block_kwargs['target_features'] = target_features
             block_kwargs['residual'] = residual[i]
@@ -209,7 +204,8 @@ class FieldSpaceLayerBlock(nn.Module):
         mult: int = 2,
         hidden_dim: int = None,
         residual: bool = False,
-        layer_confs: Dict[str, Any] = {}
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
     ) -> None:
         """
         Initialize a field-space layer block.
@@ -298,13 +294,26 @@ class FieldSpaceLayerBlock(nn.Module):
         ]
         out_features_full = [out_token_len_time, out_features_space, out_token_len_depth, 1]
 
-        layer_confs_ = layer_confs.copy()
-        layer_confs_['ranks'] = [rank_time, rank_space, rank_depth, None, None]
+        ranks = [rank_time, rank_space, rank_depth, None, None]
 
         if type == 'linear':
-            self.layer: nn.Module = get_layer(in_features_full, out_features_full, layer_confs=layer_confs_)
+            self.layer = get_layer(
+                in_features_full,
+                out_features_full,
+                ranks=ranks,
+                n_variables=n_variables,
+                fac_mode=fac_mode,
+            )
         else:
-            self.layer = MLP_fac(in_features_full, out_features_full, mult=mult, hidden_dim=hidden_dim, layer_confs=layer_confs_)
+            self.layer = MLP_fac(
+                in_features_full,
+                out_features_full,
+                mult=mult,
+                hidden_dim=hidden_dim,
+                ranks=ranks,
+                n_variables=n_variables,
+                fac_mode=fac_mode,
+            )
 
         # Residual is taken from input `x_zooms` at matching output zoom keys.
         self.skip_projection_by_zoom: nn.ModuleDict = nn.ModuleDict()

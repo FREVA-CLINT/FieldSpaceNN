@@ -175,7 +175,9 @@ class CoordinateEmbedder(ZoomBaseEmbedder):
         wave_length_2: Optional[float] = None,
         zoom: Optional[int] = None,
         zoom_max: Optional[int] = None,
-        layer_confs: Dict[str, Any] = {},
+        ranks: Optional[List[Optional[int]]] = None,
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
         **kwargs: Any
     ) -> None:
         """
@@ -207,7 +209,7 @@ class CoordinateEmbedder(ZoomBaseEmbedder):
             wave_length=wave_length,
             wave_length_2=wave_length_2,
         )
-        self.mlp: nn.Module = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs, gamma=False)
+        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, gamma=False)
 
     def forward(self, coordinates_emb: Tuple[torch.Tensor, torch.Tensor], **kwargs: Any) -> torch.Tensor:
         """
@@ -352,7 +354,9 @@ class DensityEmbedder(BaseEmbedder):
         wave_length: float = 1.0,
         wave_length_2: Optional[float] = None,
         zoom: Optional[int] = None,
-        layer_confs: Dict[str, Any] = {},
+        ranks: Optional[List[Optional[int]]] = None,
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
         **kwargs: Any
     ) -> None:
         """
@@ -382,7 +386,7 @@ class DensityEmbedder(BaseEmbedder):
             wave_length=wave_length,
             wave_length_2=wave_length_2,
         )
-        self.mlp: nn.Module = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, layer_confs=layer_confs, gamma=False)
+        self.mlp = MLP_fac(self.embed_dim, self.embed_dim, mult=1, dropout=0, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, gamma=False)
     
     def forward(self, density_emb: Tuple[Dict[int, torch.Tensor], torch.Tensor], **kwargs: Any) -> torch.Tensor:
         """
@@ -450,6 +454,79 @@ class VariableEmbedder(BaseEmbedder):
         if init_value is not None:
             self.embedding_fn.weight.data.fill_(init_value)
 
+
+
+class GroupDepthEmbedder(BaseEmbedder):
+
+    def __init__(
+        self,
+        name: str,
+        in_channels: Optional[int],
+        embed_dim: int,
+        in_features: Sequence[Optional[int]],
+        init_value: Optional[float] = None,
+        **kwargs: Any
+    ) -> None:
+        """
+        Initialize per-group depth embeddings.
+
+        :param name: Embedder name.
+        :param in_channels: Unused legacy argument kept for config compatibility.
+        :param embed_dim: Dimensionality of the embedding output.
+        :param in_features: Number of depth entries available for each group.
+        :param init_value: Optional constant initialization value.
+        :param kwargs: Additional keyword arguments (unused).
+        :return: None.
+        """
+        super().__init__(name, 0 if in_channels is None else in_channels, embed_dim)
+
+        self.keep_dims: List[str] = ["b", "d", "c"]
+        self.in_features: List[Optional[int]] = [None if feat is None else int(feat) for feat in in_features]
+        self.embedding_fn: nn.ModuleList = nn.ModuleList(
+            [
+                nn.Embedding(group_in_features, self.embed_dim)
+                if group_in_features is not None and group_in_features > 0
+                else nn.Identity()
+                for group_in_features in self.in_features
+            ]
+        )
+
+        if init_value is not None:
+            for embedder in self.embedding_fn:
+                if isinstance(embedder, nn.Embedding):
+                    embedder.weight.data.fill_(init_value)
+
+    def forward(
+        self,
+        emb: Tuple[Union[int, torch.Tensor], torch.Tensor],
+        output_zoom: Optional[int] = None,
+        **kwargs: Any
+    ) -> torch.Tensor:
+        """
+        Embed depth indices for a specific variable group.
+
+        :param emb: Tuple of ``(group_id, depth_ids)`` where ``group_id`` selects the
+            group-specific embedding table and ``depth_ids`` indexes the depth entries.
+        :param output_zoom: Unused.
+        :param kwargs: Additional keyword arguments (unused).
+        :return: Depth embedding tensor of shape ``(d, embed_dim)`` or compatible.
+        """
+        group_id, depth_ids = emb
+        if isinstance(group_id, torch.Tensor):
+            if group_id.numel()>1:
+                group_id = group_id[0]
+            group_id = int(group_id.item())
+        else:
+            group_id = int(group_id)
+
+        if group_id >= len(self.embedding_fn):
+            raise IndexError(f"group_id {group_id} out of range for {len(self.embedding_fn)} group depth embedders")
+
+        group_in_features = self.in_features[group_id]
+        if group_in_features is None or group_in_features <= 0:
+            return torch.zeros(*depth_ids.shape, 1, self.embed_dim, device=depth_ids.device)
+
+        return self.embedding_fn[group_id](depth_ids)
 
 
 class StaticVariableFieldReshaper(nn.Module):

@@ -149,7 +149,10 @@ class MLP_fac(nn.Module):
                  mult: int = 1,
                  hidden_dim: Optional[Union[int, List[int]]] = None,
                  dropout: float = 0,
-                 layer_confs: Dict[str, Any] = {},
+                 layer_confs: Optional[Dict[str, Any]] = None,
+                 ranks: Optional[List[Optional[int]]] = None,
+                 n_variables: int = 1,
+                 fac_mode: str = "Tucker",
                  gamma: bool = False
                 ) -> None: 
       
@@ -167,8 +170,27 @@ class MLP_fac(nn.Module):
                 out_features_1 = [int(in_feat) for in_feat in in_features]
                 out_features_1[1] = hidden_dim       
 
-        self.layer1: nn.Module = get_layer(in_features, out_features_1, layer_confs=layer_confs, bias=True)
-        self.layer2: nn.Module = get_layer(out_features_1, out_features, layer_confs=layer_confs, bias=True)
+        layer_confs = {} if layer_confs is None else copy.deepcopy(layer_confs)
+        if ranks is None:
+            ranks = layer_confs.get("ranks", [None])
+        n_variables = layer_confs.get("n_variables", n_variables)
+        fac_mode = layer_confs.get("fac_mode", fac_mode)
+        self.layer1 = get_layer(
+            in_features,
+            out_features_1,
+            ranks=ranks,
+            n_variables=n_variables,
+            fac_mode=fac_mode,
+            bias=True,
+        )
+        self.layer2 = get_layer(
+            out_features_1,
+            out_features,
+            ranks=ranks,
+            n_variables=n_variables,
+            fac_mode=fac_mode,
+            bias=True,
+        )
         self.dropout: nn.Module = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
         self.activation: nn.Module = nn.SiLU()
 
@@ -217,7 +239,11 @@ class MLP_fac(nn.Module):
 def get_layer(
         in_features: Union[int, List[int]],
         out_features: Union[int, List[int]],
-        layer_confs: Dict[str, Any] = {},
+        layer_confs: Optional[Dict[str, Any]] = None,
+        ranks: Optional[List[Optional[int]]] = None,
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
+        rank_variables: Optional[int] = None,
         **kwargs: Any
         ):  
     """
@@ -230,12 +256,18 @@ def get_layer(
     :return: Instantiated layer module.
     """
 
-    layer_confs = copy.deepcopy(layer_confs)
-        
-    ranks = check_get([layer_confs, kwargs, {'ranks': [None]}], 'ranks')
-    n_variables = check_get([layer_confs, kwargs, {'n_variables': 1}], 'n_variables')
-    bias = check_get([layer_confs, kwargs, {'bias': False}], 'bias')
-    fac_mode = check_get([layer_confs, kwargs, {'fac_mode': 'Tucker'}], 'fac_mode')
+    layer_confs = {} if layer_confs is None else copy.deepcopy(layer_confs)
+    if ranks is None:
+        ranks = layer_confs.get("ranks", [None])
+    else:
+        ranks = copy.deepcopy(ranks)
+    n_variables = layer_confs.get("n_variables", n_variables)
+    fac_mode = layer_confs.get("fac_mode", fac_mode)
+    if rank_variables is None:
+        rank_variables = layer_confs.get("rank_variables", None)
+    layer_kwargs = copy.deepcopy(kwargs)
+    bias = check_get([layer_kwargs, {'bias': False}], 'bias')
+    layer_kwargs.pop("bias", None)
 
     ranks_not_none = [rank is not None for rank in ranks]
 
@@ -253,7 +285,11 @@ def get_layer(
             in_features,
             out_features,
             bias = bias,
-            **layer_confs)
+            ranks=ranks,
+            n_variables=n_variables,
+            rank_variables=rank_variables,
+            **layer_kwargs,
+        )
         
     else:
         raise NotImplementedError

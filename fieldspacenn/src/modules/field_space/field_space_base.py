@@ -266,7 +266,10 @@ class EmbLayer(nn.Module):
         out_features: Union[List[int], int],
         embedder: Any,
         in_features: Optional[Union[List[int], int]] = None,
-        layer_confs_emb: Dict[str, Any] = {},
+        emb_aggregation: str = "shift_scale",
+        emb_ranks: Optional[List[Optional[int]]] = None,
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
         spatial_dim_count: int = 1,
         field_tokenizer: Optional[Tokenizer] = None,
         output_zoom: Optional[int] = None
@@ -286,7 +289,7 @@ class EmbLayer(nn.Module):
          
         super().__init__()
 
-        aggregation = layer_confs_emb.get("aggregation","shift_scale")
+        aggregation = emb_aggregation
         self.embedder = embedder
         self.field_tokenizer: Optional[Tokenizer] = field_tokenizer
         self.spatial_dim_count: int = spatial_dim_count
@@ -308,21 +311,26 @@ class EmbLayer(nn.Module):
             self.get_emb_fcn = self.get_emb_and_tokenize
 
         if aggregation == 'shift_scale':
-            layer_confs_emb['ranks'] = layer_confs_emb.get('ranks', [None]*(len(in_features) + 1)) + [None]
-
-            self.embedding_layer: nn.Module = get_layer([*in_features, self.embedder.get_out_channels, 1], [*out_features_, 2], layer_confs=layer_confs_emb)
+            ranks = emb_ranks if emb_ranks is not None else ([None] * (len(in_features) + 2))
+            self.embedding_layer = get_layer(
+                [*in_features, self.embedder.get_out_channels, 1],
+                [*out_features_, 2],
+                ranks=ranks,
+                n_variables=n_variables,
+                fac_mode=fac_mode,
+            )
             self.forward_fcn = self.forward_w_shift_scale
 
         elif aggregation == 'shift':
-            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode)
             self.forward_fcn = self.forward_w_shift
         
         elif aggregation == 'scale':
-            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode)
             self.forward_fcn = self.forward_w_scale
 
         elif aggregation == 'concat':
-            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], layer_confs=layer_confs_emb)
+            self.embedding_layer = get_layer([*in_features, self.embedder.get_out_channels], [*out_features_], ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode)
             self.forward_fcn = self.forward_w_concat
 
         self.aggregation: str = aggregation
@@ -450,8 +458,11 @@ class LinEmbLayer(nn.Module):
         out_features: Union[List[int], int],
         layer_norm: bool = False,
         identity_if_equal: bool = False,
-        layer_confs: Dict[str, Any] = {},
-        layer_confs_emb: Dict[str, Any] = {},
+        ranks: Optional[List[Optional[int]]] = None,
+        emb_ranks: Optional[List[Optional[int]]] = None,
+        n_variables: int = 1,
+        fac_mode: str = "Tucker",
+        emb_aggregation: str = "shift_scale",
         embedder: Optional[Any] = None,
         field_tokenizer: Optional[Tokenizer] = None,
         output_zoom: Optional[int] = None,
@@ -496,12 +507,15 @@ class LinEmbLayer(nn.Module):
             
             self.embedding_layer: nn.Module = EmbLayer(out_features, 
                                             embedder=embedder,
-                                            layer_confs_emb=layer_confs_emb,
+                                            emb_aggregation=emb_aggregation,
+                                            emb_ranks=emb_ranks,
+                                            n_variables=n_variables,
+                                            fac_mode=fac_mode,
                                             spatial_dim_count=spatial_dim_count,
                                             field_tokenizer = field_tokenizer,
                                             output_zoom=output_zoom)
            
-            concat = layer_confs_emb.get('aggregation','sum') == 'concat'
+            concat = emb_aggregation == 'concat'
 
             self.out_features = self.embedding_layer.out_features + out_features if concat else out_features
 
@@ -509,14 +523,14 @@ class LinEmbLayer(nn.Module):
             self.embedding_layer = IdentityLayer()
 
         if layer_norm:
-            self.layer_norm: nn.Module = LayerNorm(out_features_, elementwise_affine=True, n_variables=layer_confs.get("n_variables",1))
+            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_variables=n_variables)
         else:
             self.layer_norm = IdentityLayer()
 
         if identity_if_equal and (torch.tensor(in_features_)-torch.tensor(out_features_)==0).all():
             self.layer: nn.Module = IdentityLayer()
         else:
-            self.layer = get_layer(in_features_, out_features_, layer_confs=layer_confs)
+            self.layer = get_layer(in_features_, out_features_, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode)
 
 
     def forward(
