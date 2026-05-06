@@ -72,7 +72,7 @@ def _resolve_variable_index(
 
     var_idx_raw = None
     if emb is not None:
-        var_idx_raw = emb.get("VariableEmbedder")
+        var_idx_raw = emb.get("variables_sampled", emb.get("VariableEmbedder"))
 
     if var_idx_raw is None:
         if n_tensor_variables > n_variables:
@@ -658,6 +658,7 @@ class HealpixConvBlock(nn.Module):
             return emb
 
         emb_out: Dict[str, Any] = {} if emb is None else dict(emb)
+        emb_out["variables_sampled"] = var_idx
         emb_out["VariableEmbedder"] = var_idx
         return emb_out
 

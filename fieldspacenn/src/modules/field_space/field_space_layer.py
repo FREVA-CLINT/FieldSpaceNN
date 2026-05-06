@@ -133,7 +133,9 @@ class FieldSpaceLayerModule(nn.Module):
 
         for i in range(n_groups):
             block_kwargs = kwargs.copy()
-            block_kwargs['layer_confs'] = layer_confs[i]
+            layer_conf_i = copy.deepcopy(layer_confs[i])
+            layer_conf_i["n_variables"] = n_groups_variables[i]
+            block_kwargs['layer_confs'] = layer_conf_i
             block_kwargs['in_features'] = in_features
             block_kwargs['target_features'] = target_features
             block_kwargs['residual'] = residual[i]

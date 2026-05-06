@@ -10,6 +10,16 @@ import torch.nn as nn
 from .factorization import TuckerFacLayer
 
 
+def _get_layer_variable_indices(emb: Optional[Dict[str, Any]]) -> Any:
+    if emb is None:
+        raise KeyError("Embedding dictionary is required for variable-wise parameter selection.")
+    if "variables_sampled" in emb:
+        return emb["variables_sampled"]
+    if "VariableEmbedder" in emb:
+        return emb["VariableEmbedder"]
+    raise KeyError("Expected `variables_sampled` (or fallback `VariableEmbedder`) in embedding dictionary.")
+
+
 class LayerNorm(nn.Module):
     def __init__(
         self,
@@ -59,9 +69,10 @@ class LayerNorm(nn.Module):
         if self.n_variables==1:
             return self.weight * x_hat + self.bias
         else:
-            # Select variable-specific affine parameters using VariableEmbedder indices.
-            weight = self.weight[emb['VariableEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
-            bias = self.bias[emb['VariableEmbedder']].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
+            # Select variable-specific affine parameters using sampled per-group variable indices.
+            var_idx = _get_layer_variable_indices(emb)
+            weight = self.weight[var_idx].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
+            bias = self.bias[var_idx].unsqueeze(dim=2).unsqueeze(dim=2).unsqueeze(dim=2)
             
             return weight * x_hat + bias
 
@@ -117,7 +128,7 @@ class IdentityLayer(nn.Module):
         if self.n_variables==1:
             return tensor
         else:
-            return tensor[emb['VariableEmbedder']]
+            return tensor[_get_layer_variable_indices(emb)]
 
     
 class MLP_fac(nn.Module):

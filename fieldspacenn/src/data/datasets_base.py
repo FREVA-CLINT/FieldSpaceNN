@@ -44,6 +44,88 @@ def invert_dict(d: Mapping[Any, Any]) -> Dict[Any, List[Any]]:
         inverted_d.setdefault(value, []).append(key)
     return inverted_d
 
+
+def _normalize_variables_config(
+    variables_cfg: Mapping[str, Any],
+) -> Tuple[Dict[str, List[str]], Dict[str, Optional[int]]]:
+    """
+    Normalize variable config to ordered names per group and optional explicit ids.
+
+    Supported group formats:
+    - list: ``group: [var_a, var_b]``
+    - dict with shorthand ids: ``group: {var_a: 0, var_b: 4}``
+    - dict with explicit field: ``group: {var_a: {variable_id: 0}}``
+    """
+    variables_by_group: Dict[str, List[str]] = {}
+    explicit_ids: Dict[str, Optional[int]] = {}
+
+    for group, group_vars in variables_cfg.items():
+        if isinstance(group_vars, (list, ListConfig)):
+            var_names = [str(var_name) for var_name in group_vars]
+            variables_by_group[group] = var_names
+            for var_name in var_names:
+                explicit_ids[var_name] = None
+            continue
+
+        if isinstance(group_vars, Mapping):
+            var_names = []
+            for var_name, var_conf in group_vars.items():
+                var_name = str(var_name)
+                var_names.append(var_name)
+
+                var_id: Optional[int] = None
+                if isinstance(var_conf, Mapping):
+                    if "variable_id" in var_conf and var_conf["variable_id"] is not None:
+                        var_id = int(var_conf["variable_id"])
+                elif var_conf is not None:
+                    var_id = int(var_conf)
+
+                explicit_ids[var_name] = var_id
+
+            variables_by_group[group] = var_names
+            continue
+
+        raise ValueError(
+            f"Unsupported variables config for group `{group}`: {type(group_vars)}. "
+            "Use a list or dict."
+        )
+
+    return variables_by_group, explicit_ids
+
+
+def _resolve_global_variable_ids(
+    variables_by_group: Mapping[str, Sequence[str]],
+    explicit_ids: Mapping[str, Optional[int]],
+) -> Dict[str, int]:
+    """
+    Resolve one global id per variable.
+
+    Explicit ids are respected; missing ids are assigned to the next free integer.
+    """
+    resolved_ids: Dict[str, int] = {}
+    used_ids = set()
+
+    for group in variables_by_group.keys():
+        for var_name in variables_by_group[group]:
+            var_id = explicit_ids.get(var_name, None)
+            if var_id is None:
+                continue
+            resolved_ids[var_name] = int(var_id)
+            used_ids.add(int(var_id))
+
+    next_id = 0
+    for group in variables_by_group.keys():
+        for var_name in variables_by_group[group]:
+            if var_name in resolved_ids:
+                continue
+            while next_id in used_ids:
+                next_id += 1
+            resolved_ids[var_name] = next_id
+            used_ids.add(next_id)
+            next_id += 1
+
+    return resolved_ids
+
 #def create_mask(random_p, drop_mask, ):
 
 class BaseDataset(Dataset):
@@ -238,19 +320,14 @@ class BaseDataset(Dataset):
         }
 
         # Build variable group indices for embedding and masking.
-        all_variables = []
-        variable_ids = {}
-        all_ids = []
+        self.variables_by_group, explicit_variable_ids = _normalize_variables_config(self.data_dict['variables'])
+        self.data_dict['variables'] = self.variables_by_group
+        self.all_variable_ids = _resolve_global_variable_ids(self.variables_by_group, explicit_variable_ids)
+        all_variables: List[str] = []
         self.group_ids: Dict[str, int] = {}
-        offset = 0
-        for group_id, (group, vars) in enumerate(self.data_dict['variables'].items()):
-            all_variables += vars
-            variable_ids[group] = np.arange(len(vars)) + offset
-            all_ids = all_ids+list(variable_ids[group])
-            offset = len(variable_ids[group])
+        for group_id, (group, vars) in enumerate(self.variables_by_group.items()):
+            all_variables += list(vars)
             self.group_ids[group] = (group_id)
-        
-        self.all_variable_ids: Dict[str, int] = dict(zip(all_variables, all_ids))
 
         grid_types = [get_grid_type_from_var(ds, var) for var in all_variables]
         self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
@@ -688,12 +765,15 @@ class BaseDataset(Dataset):
             ``(1,)``.
         """
         selected_vars = {}
-  
+        selected_var_ids = {}
+        selected_mask_indices = {}
+
         var_indices = {}
-        group_keys = list(self.data_dict['variables'].keys())
+        group_keys = list(self.variables_by_group.keys())
         # Sample variables per group to build a compact input for this item.
+        running_var_offset = 0
         for group in group_keys:
-            variables = self.data_dict['variables'][group]
+            variables = self.variables_by_group[group]
             sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
             var_indices[group] = np.arange(len(variables))
 
@@ -701,6 +781,11 @@ class BaseDataset(Dataset):
                 var_indices[group] = np.random.choice(var_indices[group], sample_size, replace=False)
 
             selected_vars[group] = np.array(variables)[var_indices[group]]
+            selected_var_ids[group] = np.array(
+                [self.all_variable_ids[var_name] for var_name in selected_vars[group]], dtype=np.int64
+            )
+            selected_mask_indices[group] = np.arange(running_var_offset, running_var_offset + len(selected_vars[group]))
+            running_var_offset += len(selected_vars[group])
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
@@ -764,8 +849,8 @@ class BaseDataset(Dataset):
             if drop_mask_zoom is None:
                 drop_mask_zoom_groups = [None for _ in group_keys]
             else:
-                for indices in var_indices.values():
-                    drop_mask_zoom_groups.append(drop_mask_zoom[indices].unsqueeze(0))
+                for group in group_keys:
+                    drop_mask_zoom_groups.append(drop_mask_zoom[selected_mask_indices[group]].unsqueeze(0))
     
             start_times_source = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
             end_times_source = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
@@ -873,7 +958,8 @@ class BaseDataset(Dataset):
                 mask_zooms_groups.append(mask_group)
 
                 emb_group = emb.copy()
-                emb_group['VariableEmbedder'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['variables_sampled'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group]).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
 
                 if StaticVariableEmbedder is not None:

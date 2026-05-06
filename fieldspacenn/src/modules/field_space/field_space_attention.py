@@ -287,10 +287,14 @@ class FieldSpaceAttentionModule(nn.Module):
 
         self.blocks: nn.ModuleList = nn.ModuleList()
 
+        input_zoom_field = embed_confs.get("input_zoom", min(q_zooms))
+        shared_embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
+
         for k in range(n_groups):
             
             # Each group gets its own attention block with group-specific config.
             layer_confs[k]['n_variables'] = n_groups_variables[k]
+            layer_confs_emb[k]['n_variables'] = n_groups_variables[k]
             block = FieldSpaceAttentionBlock(
                         grid_layers,
                         token_zoom,
@@ -321,6 +325,7 @@ class FieldSpaceAttentionModule(nn.Module):
                         n_head_channels = n_head_channels,
                         dropout=dropout,
                         embed_confs=embed_confs,
+                        embedder=shared_embedder,
                         layer_confs=layer_confs[k],
                         layer_confs_emb=layer_confs_emb[k],
                         update=update,
@@ -495,6 +500,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         dropout: float = 0.0,
         n_head_channels: int = 32,
         embed_confs: Dict[str, Any] = {},
+        embedder: Optional[nn.Module] = None,
         seq_len_time: int = -1,
         seq_len_depth: int = -1,
         seq_overlap_space: bool = False,
@@ -660,7 +666,8 @@ class FieldSpaceAttentionBlock(nn.Module):
 
         # Optional embedding path for conditioning.
         input_zoom_field = embed_confs.get("input_zoom", min(q_zooms))
-        embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
+        if embedder is None:
+            embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
 
         emb_tokenizer = Tokenizer(
             input_zooms=[input_zoom_field] if embedder and embedder.has_space() else [],

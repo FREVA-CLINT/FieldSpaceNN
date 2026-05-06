@@ -4,6 +4,17 @@ import math
 import torch
 import torch.nn as nn
 
+
+def _get_layer_variable_indices(emb: Optional[Dict[str, Any]]) -> Any:
+    if emb is None:
+        raise KeyError("Embedding dictionary is required for variable-wise parameter selection.")
+    if "variables_sampled" in emb:
+        return emb["variables_sampled"]
+    if "VariableEmbedder" in emb:
+        return emb["VariableEmbedder"]
+    raise KeyError("Expected `variables_sampled` (or fallback `VariableEmbedder`) in embedding dictionary.")
+
+
 def get_ranks(shape: Sequence[int], rank: Union[int, float], rank_decay: float = 0):
     """
     Compute per-dimension ranks with optional decay.
@@ -192,7 +203,7 @@ class TuckerFacLayer(nn.Module):
         if self.n_variables <= 1:
             return self.core.unsqueeze(0)
 
-        return self.core[emb['VariableEmbedder']]
+        return self.core[_get_layer_variable_indices(emb)]
 
     def get_core(self, **kwargs: Any):
         """
@@ -216,7 +227,7 @@ class TuckerFacLayer(nn.Module):
         if self.n_variables <= 1:
             return [self.factor_vars.unsqueeze(0)]
 
-        return [self.factor_vars[emb['VariableEmbedder']]]
+        return [self.factor_vars[_get_layer_variable_indices(emb)]]
         
     def get_bias(self, **kwargs: Any):
         """
@@ -231,7 +242,7 @@ class TuckerFacLayer(nn.Module):
         if self.n_variables <= 1:
             return self.bias[0]
 
-        return self.bias[emb['VariableEmbedder']]
+        return self.bias[_get_layer_variable_indices(emb)]
 
     def get_none(self, **kwargs: Any):
         """
