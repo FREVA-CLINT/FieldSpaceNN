@@ -106,8 +106,9 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         n_autoregressive_steps: int,
         ckpt_path: Optional[str] = None,
         overwrite: bool = False,
-        origin_chunk: int = 1,
-        lead_time_chunk: Optional[int] = None,
+        time_chunk: int = 1,
+        prediction_timedelta_chunk: Optional[int] = None,
+        convention: str = "weatherbench2",
     ) -> None:
         super().__init__(write_interval="batch")
         self.output_path = output_path
@@ -116,8 +117,9 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self.n_autoregressive_steps = int(n_autoregressive_steps)
         self.ckpt_path = ckpt_path
         self.overwrite = overwrite
-        self.origin_chunk = int(origin_chunk)
-        self.lead_time_chunk = int(lead_time_chunk or n_autoregressive_steps)
+        self.time_chunk = int(time_chunk)
+        self.prediction_timedelta_chunk = int(prediction_timedelta_chunk or n_autoregressive_steps)
+        self.convention = str(convention)
 
         self.grouped_variables = _grouped_variables(dataset.data_dict)
         self.variables = [var for group in self.grouped_variables for var in group]
@@ -129,29 +131,29 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self._arrays: Dict[str, Any] = {}
         self._combined_root = None
         self._combined_arrays: Dict[str, Any] = {}
-        self._origin_lookup, self._origin_time, self._origin_file = self._build_origin_index()
+        self._time_lookup, self._time_coord, self._time_file = self._build_time_index()
         self._source_attrs, self._level_values = self._read_source_metadata()
         self._time_step = self._infer_time_step()
 
-    def _build_origin_index(self) -> Tuple[Dict[Tuple[int, int], int], np.ndarray, np.ndarray]:
-        origin_lookup: "OrderedDict[Tuple[int, int], int]" = OrderedDict()
+    def _build_time_index(self) -> Tuple[Dict[Tuple[int, int], int], np.ndarray, np.ndarray]:
+        time_lookup: "OrderedDict[Tuple[int, int], int]" = OrderedDict()
         rows = self.dataset.index_map[self.zoom]
         for row in rows:
             file_idx = int(row[0])
             for center_time_idx in row[2:]:
                 key = (file_idx, int(center_time_idx))
-                if key not in origin_lookup:
-                    origin_lookup[key] = len(origin_lookup)
+                if key not in time_lookup:
+                    time_lookup[key] = len(time_lookup)
 
         time_values_by_file = self._read_time_values()
-        origin_time = np.zeros(len(origin_lookup), dtype=np.int64)
-        origin_file = np.zeros(len(origin_lookup), dtype=np.int32)
-        for key, origin_idx in origin_lookup.items():
-            file_idx, time_idx = key
-            origin_file[origin_idx] = file_idx
-            origin_time[origin_idx] = time_values_by_file[file_idx][time_idx]
+        time_coord = np.zeros(len(time_lookup), dtype=np.int64)
+        time_file = np.zeros(len(time_lookup), dtype=np.int32)
+        for key, time_array_idx in time_lookup.items():
+            file_idx, source_time_idx = key
+            time_file[time_array_idx] = file_idx
+            time_coord[time_array_idx] = time_values_by_file[file_idx][source_time_idx]
 
-        return dict(origin_lookup), origin_time, origin_file
+        return dict(time_lookup), time_coord, time_file
 
     def _source_files_for_zoom(self) -> Sequence[str]:
         source_dict = self.dataset.data_dict["source"]
@@ -219,13 +221,24 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
     ) -> None:
         npix = int(hp.nside2npix(2 ** zoom))
 
-        lead_time = (np.arange(1, self.n_autoregressive_steps + 1, dtype=np.int64) * self._time_step)
-        valid_time = self._origin_time[:, None] + lead_time[None, :]
-        self._write_coordinate_to_group(group_root, "origin", np.arange(len(self._origin_time), dtype=np.int64), ("origin",))
-        self._write_coordinate_to_group(group_root, "origin_time", self._origin_time, ("origin",))
-        self._write_coordinate_to_group(group_root, "origin_file", self._origin_file, ("origin",))
-        self._write_coordinate_to_group(group_root, "lead_time", lead_time, ("lead_time",))
-        self._write_coordinate_to_group(group_root, "valid_time", valid_time, ("origin", "lead_time"))
+        prediction_timedelta = (
+            np.arange(1, self.n_autoregressive_steps + 1, dtype=np.int64) * self._time_step
+        )
+        valid_time = self._time_coord[:, None] + prediction_timedelta[None, :]
+        self._write_coordinate_to_group(group_root, "time", self._time_coord, ("time",))
+        self._write_coordinate_to_group(group_root, "time_file", self._time_file, ("time",))
+        self._write_coordinate_to_group(
+            group_root,
+            "prediction_timedelta",
+            prediction_timedelta,
+            ("prediction_timedelta",),
+        )
+        self._write_coordinate_to_group(
+            group_root,
+            "valid_time",
+            valid_time,
+            ("time", "prediction_timedelta"),
+        )
         self._write_coordinate_to_group(group_root, "cell", np.arange(npix, dtype=np.int64), ("cell",))
         if zoom in self._level_values:
             self._write_coordinate_to_group(group_root, "level", self._level_values[zoom], ("level",))
@@ -271,6 +284,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 "source": "fieldspacenn autoregressive rollout",
                 "combined_group": "combined",
                 "combined_zoom": self.combined_zoom,
+                "convention": self.convention,
             }
         )
         self._init_group_store(
@@ -288,6 +302,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 "n_autoregressive_steps": self.n_autoregressive_steps,
                 "ckpt_path": self.ckpt_path,
                 "source": "fieldspacenn autoregressive rollout combined",
+                "convention": self.convention,
             }
         )
         self._init_group_store(
@@ -317,21 +332,21 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         npix: int,
     ) -> Any:
         _, n_lead, _, n_level, n_feature = sample_tensor.shape
-        origin_chunk = min(self.origin_chunk, max(1, len(self._origin_time)))
-        lead_chunk = min(self.lead_time_chunk, max(1, int(n_lead)))
+        time_chunk = min(self.time_chunk, max(1, len(self._time_coord)))
+        prediction_timedelta_chunk = min(self.prediction_timedelta_chunk, max(1, int(n_lead)))
 
         if int(n_feature) != 1:
-            shape = (len(self._origin_time), int(n_lead), int(n_level), npix, int(n_feature))
-            chunks = (origin_chunk, lead_chunk, int(n_level), npix, int(n_feature))
-            dims = ("origin", "lead_time", "level", "cell", "feature")
+            shape = (len(self._time_coord), int(n_lead), int(n_level), npix, int(n_feature))
+            chunks = (time_chunk, prediction_timedelta_chunk, int(n_level), npix, int(n_feature))
+            dims = ("time", "prediction_timedelta", "level", "cell", "feature")
         elif int(n_level) == 1:
-            shape = (len(self._origin_time), int(n_lead), npix)
-            chunks = (origin_chunk, lead_chunk, npix)
-            dims = ("origin", "lead_time", "cell")
+            shape = (len(self._time_coord), int(n_lead), npix)
+            chunks = (time_chunk, prediction_timedelta_chunk, npix)
+            dims = ("time", "prediction_timedelta", "cell")
         else:
-            shape = (len(self._origin_time), int(n_lead), int(n_level), npix)
-            chunks = (origin_chunk, lead_chunk, int(n_level), npix)
-            dims = ("origin", "lead_time", "level", "cell")
+            shape = (len(self._time_coord), int(n_lead), int(n_level), npix)
+            chunks = (time_chunk, prediction_timedelta_chunk, int(n_level), npix)
+            dims = ("time", "prediction_timedelta", "level", "cell")
 
         array = _create_array(
             group_root,
@@ -343,22 +358,22 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             dimension_names=dims,
         )
         array.attrs.update(self._source_attrs.get(variable, {}))
-        array.attrs["coordinates"] = "origin_time lead_time valid_time cell"
+        array.attrs["coordinates"] = "time prediction_timedelta valid_time cell"
         return array
 
-    def _batch_origin_indices(self, batch_indices: Any) -> np.ndarray:
+    def _batch_time_indices(self, batch_indices: Any) -> np.ndarray:
         dataset_indices = _flatten_batch_indices(batch_indices)
         if not dataset_indices:
             raise ValueError("Lightning did not provide batch_indices; cannot place rollout output.")
 
-        origin_indices: List[int] = []
+        time_indices: List[int] = []
         rows = self.dataset.index_map[self.zoom]
         for dataset_idx in dataset_indices:
             row = rows[int(dataset_idx)]
             file_idx = int(row[0])
             for center_time_idx in row[2:]:
-                origin_indices.append(self._origin_lookup[(file_idx, int(center_time_idx))])
-        return np.asarray(origin_indices, dtype=np.int64)
+                time_indices.append(self._time_lookup[(file_idx, int(center_time_idx))])
+        return np.asarray(time_indices, dtype=np.int64)
 
     def _batch_patch_cells(self, batch: Any, batch_size: int) -> List[np.ndarray]:
         patch_index_zooms = batch[-1]
@@ -399,7 +414,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         arrays: Dict[str, Any],
         variable: str,
         tensor: torch.Tensor,
-        origin_indices: np.ndarray,
+        time_indices: np.ndarray,
         cells: List[np.ndarray],
     ) -> None:
         data = self.dataset.var_normalizers[self.normalizer_zoom][variable].denormalize(
@@ -407,18 +422,18 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         )
         data_np = data.numpy().astype(np.float32, copy=False)
 
-        for batch_pos, origin_idx in enumerate(origin_indices):
+        for batch_pos, time_idx in enumerate(time_indices):
             cell_idx = cells[batch_pos]
             sample = data_np[batch_pos]
             if sample.shape[-1] == 1:
                 sample = sample[..., 0]
 
             if sample.ndim == 3 and sample.shape[-1] == 1:
-                arrays[variable].oindex[origin_idx, :, cell_idx] = sample[:, :, 0]
+                arrays[variable].oindex[time_idx, :, cell_idx] = sample[:, :, 0]
             elif sample.ndim == 3:
-                arrays[variable].oindex[origin_idx, :, :, cell_idx] = np.moveaxis(sample, 1, 2)
+                arrays[variable].oindex[time_idx, :, :, cell_idx] = np.moveaxis(sample, 1, 2)
             elif sample.ndim == 4:
-                arrays[variable].oindex[origin_idx, :, :, cell_idx, :] = np.moveaxis(sample, 1, 2)
+                arrays[variable].oindex[time_idx, :, :, cell_idx, :] = np.moveaxis(sample, 1, 2)
             else:
                 raise ValueError(f"Unsupported sample shape for {variable}: {sample.shape}")
 
@@ -441,10 +456,10 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         first_group = next(group for group in prediction["output"] if group)
         first_tensor = _get_zoom_tensor(first_group, self.zoom)
         batch_size = int(first_tensor.shape[0])
-        origin_indices = self._batch_origin_indices(batch_indices)
-        if origin_indices.size != batch_size:
+        time_indices = self._batch_time_indices(batch_indices)
+        if time_indices.size != batch_size:
             raise ValueError(
-                f"Origin index count {origin_indices.size} does not match output batch size {batch_size}."
+                f"Time index count {time_indices.size} does not match output batch size {batch_size}."
             )
         cells = self._batch_patch_cells(batch, batch_size)
 
@@ -453,7 +468,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 continue
             group_tensor = _get_zoom_tensor(group_pred, self.zoom)
             for local_var_idx, variable in enumerate(variables):
-                self._write_variable(self._arrays, variable, group_tensor[:, local_var_idx], origin_indices, cells)
+                self._write_variable(self._arrays, variable, group_tensor[:, local_var_idx], time_indices, cells)
 
         combined_first_group = next(group for group in prediction["output_combined"] if group)
         combined_batch_size = int(_get_zoom_tensor(combined_first_group, self.combined_zoom).shape[0])
@@ -475,12 +490,12 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                     self._combined_arrays,
                     variable,
                     group_tensor[:, local_var_idx],
-                    origin_indices,
+                    time_indices,
                     combined_cells,
                 )
 
 
-@hydra.main(version_base=None, config_path="../configs/", config_name="era5_prediction_rollout")
+@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/fieldspacenn/configs", config_name="era5_prediction_rollout")
 def rollout(cfg: DictConfig) -> None:
     test_dataset: BaseDataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split["test"])
 
@@ -498,8 +513,9 @@ def rollout(cfg: DictConfig) -> None:
         n_autoregressive_steps=model.n_autoregressive_steps,
         ckpt_path=cfg.ckpt_path,
         overwrite=cfg.rollout.overwrite,
-        origin_chunk=cfg.rollout.origin_chunk,
-        lead_time_chunk=cfg.rollout.lead_time_chunk,
+        time_chunk=cfg.rollout.time_chunk,
+        prediction_timedelta_chunk=cfg.rollout.prediction_timedelta_chunk,
+        convention=cfg.rollout.convention,
     )
 
     trainer: Trainer = instantiate(cfg.trainer)

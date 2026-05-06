@@ -264,7 +264,7 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     zoom_levels = sorted(output_zooms.keys())
     save_paths = []
 
-    B, V, T, _, _, _ = input_zooms[zoom_levels[-1]].shape
+    B, V, T, _, _, _ = gt_zooms[zoom_levels[-1]].shape
     plot_ts = (T-1) - np.arange(plot_n_ts)
 
     for ts in plot_ts:
