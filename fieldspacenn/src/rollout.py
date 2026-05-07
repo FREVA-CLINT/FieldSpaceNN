@@ -495,7 +495,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 )
 
 
-@hydra.main(version_base=None, config_path="/Users/maxwitte/work/stableclimgen/fieldspacenn/configs", config_name="era5_prediction_rollout")
+@hydra.main(version_base=None, config_path="../configs/", config_name="era5_prediction_rollout")
 def rollout(cfg: DictConfig) -> None:
     test_dataset: BaseDataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split["test"])
 
