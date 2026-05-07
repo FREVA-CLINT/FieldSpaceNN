@@ -220,6 +220,15 @@ def create_encoder_decoder_block(
                 n_head_channels = n_head_channels,
                 embed_confs = embed_confs,
                 separate_mlp_norm = block_conf.separate_mlp_norm,
+                use_variable_emb_layer = block_conf.use_variable_emb_layer,
+                use_variable_layer_norm = block_conf.use_variable_layer_norm,
+                use_variable_qkv = block_conf.use_variable_qkv,
+                use_variable_mlp = block_conf.use_variable_mlp,
+                use_ranks_emb_layer = block_conf.use_ranks_emb_layer,
+                use_ranks_qkv = block_conf.use_ranks_qkv,
+                use_ranks_mlp = block_conf.use_ranks_mlp,
+                use_variable_att_gammas = block_conf.use_variable_att_gammas,
+                use_variable_mlp_gammas = block_conf.use_variable_mlp_gammas,
                 fac_mode=fac_mode,
                 emb_aggregation=emb_aggregation)
         block.out_features = in_features

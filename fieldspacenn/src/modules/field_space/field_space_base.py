@@ -461,6 +461,7 @@ class LinEmbLayer(nn.Module):
         ranks: Optional[List[Optional[int]]] = None,
         emb_ranks: Optional[List[Optional[int]]] = None,
         n_variables: int = 1,
+        n_variable_norm: int = 1,
         fac_mode: str = "Tucker",
         emb_aggregation: str = "shift_scale",
         embedder: Optional[Any] = None,
@@ -523,7 +524,7 @@ class LinEmbLayer(nn.Module):
             self.embedding_layer = IdentityLayer()
 
         if layer_norm:
-            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_variables=n_variables)
+            self.layer_norm = LayerNorm(out_features_, elementwise_affine=True, n_variables=n_variable_norm)
         else:
             self.layer_norm = IdentityLayer()
 
