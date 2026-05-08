@@ -30,6 +30,7 @@ class FieldSpaceAttentionConfig:
     def __init__(
         self,
         token_zoom: int,
+        groups: Union[List[bool], int] = -1,
         q_zooms: Union[List[int], int] = -1,
         kv_zooms: Union[List[int], int] = -1,
         att_dim: int = 64,
@@ -73,6 +74,8 @@ class FieldSpaceAttentionConfig:
         Store configuration for field-space attention.
 
         :param token_zoom: Token zoom level.
+        :param groups: ``-1`` to instantiate attention for all groups, or a bool list
+            indicating which groups get a FieldSpaceAttention block.
         :param q_zooms: Query zoom levels or -1 to default to input zooms.
         :param kv_zooms: Key/value zoom levels or -1 to default to input zooms.
         :param att_dim: Attention feature dimension.
@@ -114,6 +117,7 @@ class FieldSpaceAttentionConfig:
         :return: None.
         """
         self.token_zoom: int
+        self.groups: Union[List[bool], int]
         self.q_zooms: Union[List[int], int]
         self.kv_zooms: Union[List[int], int]
         self.att_dim: int
@@ -172,6 +176,7 @@ class FieldSpaceAttentionModule(nn.Module):
         q_zooms: Union[List[int], int],
         kv_zooms: Union[List[int], int],
         token_zoom: int,
+        groups: Union[List[bool], int] = -1,
         target_zooms: Optional[List[int]] = None,
         in_features: int = 1,
         n_groups_variables: List[int] = [1],
@@ -225,6 +230,8 @@ class FieldSpaceAttentionModule(nn.Module):
         :param q_zooms: Query zoom levels or -1 to default to input zooms.
         :param kv_zooms: Key/value zoom levels or -1 to default to input zooms.
         :param token_zoom: Token zoom level.
+        :param groups: ``-1`` to instantiate attention for all groups, or a bool list
+            indicating which groups get a FieldSpaceAttention block.
         :param target_zooms: Optional target zooms for updates.
         :param in_features: Number of input features.
         :param n_groups_variables: Number of variable groups.
@@ -274,6 +281,18 @@ class FieldSpaceAttentionModule(nn.Module):
         
         # Normalize per-group configs so indexing is consistent across variable groups.
         n_groups = len(n_groups_variables)
+        if isinstance(groups, (list, tuple, ListConfig)):
+            groups = list(groups)
+            if len(groups) != n_groups:
+                raise ValueError(
+                    f"groups must have length {n_groups}, got {len(groups)}"
+                )
+            active_groups = [bool(group) for group in groups]
+        elif groups == -1:
+            active_groups = [True] * n_groups
+        else:
+            raise ValueError("groups must be -1 or a list of bools")
+
         token_len_depth = check_value(token_len_depth, n_groups)
         token_len_time = check_value(token_len_time, n_groups)
 
@@ -327,11 +346,14 @@ class FieldSpaceAttentionModule(nn.Module):
             raise ValueError(f"Zoom level {min(q_zooms + kv_zooms)} need to be refined. please indicate refine_zooms={refine_zooms}")
 
         self.blocks: nn.ModuleList = nn.ModuleList()
+        self.active_groups: List[bool] = active_groups
 
         input_zoom_field = embed_confs.get("input_zoom", min(q_zooms))
         shared_embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
-
-        for k in range(n_groups):
+        block = None
+        for k, is_active in enumerate(self.active_groups):
+            if not is_active:
+                continue
             
             # Each group gets its own attention block with group-specific config.
             block = FieldSpaceAttentionBlock(
@@ -392,7 +414,7 @@ class FieldSpaceAttentionModule(nn.Module):
         self.refine_zooms: Dict[int, int] = refine_zooms
         self.coarse_zooms: Dict[int, int] = invert_dict(refine_zooms)
 
-        self.block: FieldSpaceAttentionBlock = block
+        self.block: Optional[FieldSpaceAttentionBlock] = block
         self.concat_dim = -2 if with_var_att else 0
 
 
@@ -479,7 +501,8 @@ class FieldSpaceAttentionModule(nn.Module):
             x_zooms_groups = self.shift_groups(x_zooms_groups, sample_configs=sample_configs)
         
         x_ress, qs, Ks, Vs, masks, shapes, seq_lens = [], [], [], [], [], [], []
-        for k, block in enumerate(self.blocks):
+        active_group_indices = [k for k, is_active in enumerate(self.active_groups) if is_active]
+        for block, k in zip(self.blocks, active_group_indices):
             # Build per-group Q/K/V tensors and tracking metadata.
             x_res, q, K, V, mask, shape = block.create_QKV(x_zooms_groups[k], emb=emb_groups[k], mask_zooms=mask_groups[k] if self.use_mask else {}, sample_configs=sample_configs)
             x_ress.append(x_res)
@@ -490,21 +513,29 @@ class FieldSpaceAttentionModule(nn.Module):
             shapes.append(shape)
             seq_lens.append(q.shape[self.concat_dim])
         
-        # Concatenate across groups for a single attention call.
-        q = torch.concat(qs, dim=self.concat_dim)
-        K = torch.concat(Ks, dim=self.concat_dim)
-        V = torch.concat(Vs, dim=self.concat_dim)
-        mask = torch.concat(masks, dim=self.concat_dim) if self.use_mask else None
+        if qs:
+            # Concatenate across groups for a single attention call.
+            q = torch.concat(qs, dim=self.concat_dim)
+            K = torch.concat(Ks, dim=self.concat_dim)
+            V = torch.concat(Vs, dim=self.concat_dim)
+            mask = torch.concat(masks, dim=self.concat_dim) if self.use_mask else None
 
-        # Shared attention across all groups.
-        att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
+            # Shared attention across all groups.
+            att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
 
-        # Split attention outputs back to per-group chunks.
-        att_outs = att_out.split(seq_lens, dim=self.concat_dim)
+            # Split attention outputs back to per-group chunks.
+            att_outs = att_out.split(seq_lens, dim=self.concat_dim)
 
-        for k, att_out in enumerate(att_outs):
-            # Apply per-group MLP updates and merge into zoom tensors.
-            x_zooms_groups[k] = self.blocks[k].forward_mlp(x_zooms_groups[k], x_ress[k], att_outs[k], shapes[k], emb=emb_groups[k], sample_configs=sample_configs)
+            for block, k, x_res, att_out_k, shape in zip(self.blocks, active_group_indices, x_ress, att_outs, shapes):
+                # Apply per-group MLP updates and merge into zoom tensors.
+                x_zooms_groups[k] = block.forward_mlp(
+                    x_zooms_groups[k],
+                    x_res,
+                    att_out_k,
+                    shape,
+                    emb=emb_groups[k],
+                    sample_configs=sample_configs,
+                )
 
         if self.shift:
             # Undo the pre-attention shift.

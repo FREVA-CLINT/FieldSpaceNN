@@ -187,6 +187,7 @@ def create_encoder_decoder_block(
                 out_zooms,
                 in_features = in_features[0],
                 token_zoom = block_conf.token_zoom,
+                groups = block_conf.groups,
                 q_zooms  = block_conf.q_zooms,
                 kv_zooms = block_conf.kv_zooms,
                 target_zooms = block_conf.target_zooms,
