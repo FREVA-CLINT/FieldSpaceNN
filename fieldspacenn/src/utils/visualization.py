@@ -35,7 +35,12 @@ def healpix_plot_local(
     :return: None.
     """
     # Select pixel indices for the requested patch.
-    ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_index[0]]
+    if isinstance(patch_index, (list, tuple, np.ndarray, torch.Tensor)):
+        patch_idx = int(patch_index[0])
+    else:
+        patch_idx = int(patch_index)
+
+    ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_idx]
     lon, lat = hp.pix2ang(2**zoom, ipix, nest=True, lonlat=True)
 
     n_p = max(100, int(np.sqrt(len(lon))))
@@ -91,7 +96,12 @@ def plot_zooms(
     :param sample_configs: Sampling configuration per zoom.
     :return: None.
     """
-    zoom_levels = sorted(input_maps.keys())
+    input_zoom_levels = sorted(input_maps.keys())
+    output_zoom_levels = sorted(set(output_maps.keys()) & set(gt_maps.keys()))
+    zoom_levels = sorted(set(input_zoom_levels) | set(output_zoom_levels))
+    if len(zoom_levels) == 0:
+        return
+
     n_rows = len(zoom_levels)
     n_cols = 4  # input, output, gt, error
     n_plots = n_rows * n_cols
@@ -100,24 +110,47 @@ def plot_zooms(
     titles = ['Input', 'Output', 'Ground Truth', 'Error']
 
     for row_idx, zoom in enumerate(zoom_levels):
-        sample_configs_zoom = sample_configs[zoom]
-        inp_map = input_maps[zoom]
-        out_map = output_maps[zoom]
-        gt_map = gt_maps[zoom]
-        mask_map = mask_maps[zoom] if mask_maps is not None else None
+        sample_configs_zoom = dict(sample_configs.get(zoom, {"zoom_patch_sample": -1, "patch_index": np.array([0])}))
+        sample_configs_zoom.setdefault("zoom_patch_sample", -1)
+        sample_configs_zoom.setdefault("patch_index", np.array([0]))
 
-        error_map = (out_map - gt_map) #* mask_map
+        out_map = output_maps.get(zoom)
+        gt_map = gt_maps.get(zoom)
+
+        inp_map = input_maps.get(zoom)
+
+        mask_map = mask_maps.get(zoom) if mask_maps is not None else None
+
+        error_map = (out_map - gt_map) if out_map is not None and gt_map is not None else None
 
         maps = [inp_map, out_map, gt_map, error_map]
-        gt_min, gt_max = np.quantile(gt_map, [0.001,0.999])
-        error_map_min, error_map_max = np.quantile(error_map, [0.001,0.999])
-        min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
+        in_minmax = (
+            np.quantile(inp_map, [0.001, 0.999]) if inp_map is not None else (None, None)
+        )
+        if gt_map is not None:
+            gt_minmax = np.quantile(gt_map, [0.001, 0.999])
+        elif out_map is not None:
+            gt_minmax = np.quantile(out_map, [0.001, 0.999])
+        else:
+            gt_minmax = (None, None)
+        err_minmax = (
+            np.quantile(error_map, [0.001, 0.999]) if error_map is not None else (None, None)
+        )
+        min_max = [in_minmax, gt_minmax, gt_minmax, err_minmax]
 
         for col_idx in range(n_cols):
             plot_idx = row_idx * n_cols + col_idx + 1  # 1-based index for subplots
+            map_i = maps[col_idx]
+
+            if map_i is None:
+                ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+                ax.set_title(f"{titles[col_idx]} (zoom {zoom})")
+                ax.set_axis_off()
+                ax.text(0.5, 0.5, "N/A", ha="center", va="center", transform=ax.transAxes)
+                continue
 
             if sample_configs_zoom['zoom_patch_sample']==-1:
-                hp.mollview(maps[col_idx],
+                hp.mollview(map_i,
                             title=f"{titles[col_idx]} (zoom {zoom})",
                             sub=(n_rows, n_cols, plot_idx),
                             nest=True,
@@ -126,7 +159,7 @@ def plot_zooms(
                             fig=fig)
             else:
                 ax = fig.add_subplot(n_rows, n_cols, plot_idx)
-                healpix_plot_local(maps[col_idx], 
+                healpix_plot_local(map_i, 
                                   zoom, 
                                   ax=ax, 
                                   vmin=min_max[col_idx][0], 
@@ -165,35 +198,95 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     :param plot_n_ts: Number of timesteps to plot.
     :return: List of saved file paths.
     """
+    def _is_plot_tensor(x: Any) -> bool:
+        return torch.is_tensor(x) and x.ndim >= 6
 
-    zoom_levels = sorted(output_zooms.keys())
+    if output_zooms is None or gt_zooms is None:
+        return []
+
+    zoom_levels_input = sorted(
+        [zoom for zoom, tensor in input_zooms.items() if _is_plot_tensor(tensor)]
+    )
+    zoom_levels_output_gt = sorted(
+        [
+            zoom
+            for zoom in (set(output_zooms.keys()) & set(gt_zooms.keys()))
+            if _is_plot_tensor(output_zooms.get(zoom)) and _is_plot_tensor(gt_zooms.get(zoom))
+        ]
+    )
+    if len(zoom_levels_output_gt) == 0:
+        return []
+
     save_paths = []
 
-    B, V, T, _, _, _ = input_zooms[zoom_levels[-1]].shape
-    plot_ts = (T-1) - np.arange(plot_n_ts)
+    ref_zoom = zoom_levels_output_gt[-1]
+    _, v_out, t_out, _, _, _ = output_zooms[ref_zoom].shape
+    _, v_gt, t_gt, _, _, _ = gt_zooms[ref_zoom].shape
+    max_vars = min(v_out, v_gt)
+    max_ts = min(t_out, t_gt)
+
+    if max_vars <= 0 or max_ts <= 0:
+        return []
+
+    if plot_n_vars == -1:
+        n_plot_vars = max_vars
+    else:
+        n_plot_vars = min(plot_n_vars, max_vars)
+
+    n_plot_ts = min(plot_n_ts, max_ts)
+    plot_ts = (max_ts - 1) - np.arange(n_plot_ts)
 
     for ts in plot_ts:
-        # Assume all zoom levels have same number of variables
-        B, V, T, _, _, _ = input_zooms[zoom_levels[0]].shape
-
-        if plot_n_vars==-1:
-            plot_n_vars=V
-
-        for var in range(plot_n_vars):
+        for var in range(n_plot_vars):
             input_maps = {}
             output_maps = {}
             gt_maps = {}
             mask_maps = {}
 
-            for zoom in zoom_levels:
-                input_maps[zoom] = input_zooms[zoom][sample, var, ts, :, 0, 0].float().cpu().numpy()
-                output_maps[zoom] = output_zooms[zoom][sample, var, ts, :, 0, 0].float().cpu().numpy()
-                gt_maps[zoom] = gt_zooms[zoom][sample, var, ts, :, 0, 0].float().cpu().numpy()
-                mask_maps[zoom] = mask_zooms[zoom][sample, var, ts, :, 0, 0].float().cpu().numpy() if mask_zooms is not None else None
+            for zoom in zoom_levels_input:
+                input_zoom = input_zooms[zoom]
+                if var < input_zoom.shape[1]:
+                    sample_in = min(sample, input_zoom.shape[0] - 1)
+                    var_in = var
+                    ts_in = min(int(ts), input_zoom.shape[2] - 1)
+                    input_maps[zoom] = input_zoom[sample_in, var_in, ts_in, :, 0, 0].float().cpu().numpy()
+
+            for zoom in zoom_levels_output_gt:
+                output_zoom = output_zooms[zoom]
+                gt_zoom = gt_zooms[zoom]
+                if var >= output_zoom.shape[1] or var >= gt_zoom.shape[1]:
+                    continue
+
+                sample_out = min(sample, output_zoom.shape[0] - 1)
+                sample_gt = min(sample, gt_zoom.shape[0] - 1)
+                var_out = var
+                var_gt = var
+                ts_out = min(int(ts), output_zoom.shape[2] - 1)
+                ts_gt = min(int(ts), gt_zoom.shape[2] - 1)
+
+                output_maps[zoom] = output_zoom[sample_out, var_out, ts_out, :, 0, 0].float().cpu().numpy()
+                gt_maps[zoom] = gt_zoom[sample_gt, var_gt, ts_gt, :, 0, 0].float().cpu().numpy()
+
+                if mask_zooms is not None and zoom in mask_zooms and _is_plot_tensor(mask_zooms.get(zoom)):
+                    mask_zoom = mask_zooms[zoom]
+                    sample_mask = min(sample, mask_zoom.shape[0] - 1)
+                    if var < mask_zoom.shape[1]:
+                        var_mask = var
+                        ts_mask = min(int(ts), mask_zoom.shape[2] - 1)
+                        mask_maps[zoom] = mask_zoom[sample_mask, var_mask, ts_mask, :, 0, 0].float().cpu().numpy()
 
             # Use embedding index for variable name if available
             if emb is not None and 'VariableEmbedder' in emb:
-                var_idx = emb['VariableEmbedder'][sample, var].item()
+                var_embedder = emb['VariableEmbedder']
+                if (
+                    torch.is_tensor(var_embedder)
+                    and var_embedder.ndim >= 2
+                    and sample < var_embedder.shape[0]
+                    and var < var_embedder.shape[1]
+                ):
+                    var_idx = var_embedder[sample, var].item()
+                else:
+                    var_idx = var
             else:
                 var_idx = var
 

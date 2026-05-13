@@ -180,17 +180,26 @@ class CustomImageLogger(Logger):
                 plot_name=f"epoch_{current_epoch}{plot_name}", emb=emb,
             )
 
-        # Build combined plots at the maximum zoom for easier visual comparison.
-        source_p = decode_zooms(input_data, sample_configs=sample_configs, out_zoom=max_zoom)
-        target_p = decode_zooms(gt, sample_configs=sample_configs, out_zoom=max_zoom)
+        # Build one combined plot by decoding each tensor dict to a shared zoom.
+        combined_zoom_candidates = []
+        for zoom_dict in (input_data, output, gt):
+            if zoom_dict:
+                combined_zoom_candidates.extend([int(z) for z in zoom_dict.keys()])
+        combined_zoom = max(combined_zoom_candidates) if combined_zoom_candidates else max_zoom
 
-        output_p = output_comp
+        source_p = decode_zooms(input_data.copy(), sample_configs=sample_configs, out_zoom=combined_zoom) if input_data else {}
+        target_p = decode_zooms(gt.copy(), sample_configs=sample_configs, out_zoom=combined_zoom) if gt else {}
+        if output is not None:
+            output_p = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=combined_zoom)
+        else:
+            output_p = output_comp
 
-        mask_p = {max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None
-        save_paths += healpix_plot_zooms_var(
-            source_p, output_p, target_p, save_dir, mask_zooms=mask_p, sample_configs=sample_configs,
-            plot_name=f"epoch_{current_epoch}_combined{plot_name}", emb=emb,
-        )
+        mask_p = {combined_zoom: mask[combined_zoom]} if mask is not None and combined_zoom in mask else None
+        if source_p and output_p and target_p:
+            save_paths += healpix_plot_zooms_var(
+                source_p, output_p, target_p, save_dir, mask_zooms=mask_p, sample_configs=sample_configs,
+                plot_name=f"epoch_{current_epoch}_combined{plot_name}", emb=emb,
+            )
 
         if self.log_snapshot_images:
             for save_path in save_paths:

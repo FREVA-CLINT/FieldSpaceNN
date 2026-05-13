@@ -1,3 +1,4 @@
+from collections.abc import Mapping as MappingABC
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 import torch
@@ -6,6 +7,46 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.data.dataloader import default_collate
 
 from ..data.datasets_regular import RegularDataset
+
+
+def _safe_tensor_stack_collate(batch: Sequence[Any]) -> Any:
+    """
+    Recursively collate nested samples while stacking tensors directly.
+
+    This avoids DataLoader shared-storage resize paths that can fail for
+    tensors backed by non-resizable storages.
+    """
+    elem = batch[0]
+
+    if torch.is_tensor(elem):
+        return torch.stack(list(batch), dim=0)
+
+    if isinstance(elem, MappingABC):
+        return {key: _safe_tensor_stack_collate([sample[key] for sample in batch]) for key in elem}
+
+    if isinstance(elem, tuple) and hasattr(elem, "_fields"):  # namedtuple
+        return type(elem)(*[_safe_tensor_stack_collate(list(samples)) for samples in zip(*batch)])
+
+    if isinstance(elem, tuple):
+        return tuple(_safe_tensor_stack_collate(list(samples)) for samples in zip(*batch))
+
+    if isinstance(elem, list):
+        return [_safe_tensor_stack_collate(list(samples)) for samples in zip(*batch)]
+
+    return default_collate(list(batch))
+
+
+def _default_collate_with_fallback(batch: Sequence[Any]) -> Any:
+    """
+    Use default_collate and fall back to a direct-stack implementation for
+    non-resizable storage errors seen with some dataset backends.
+    """
+    try:
+        return default_collate(batch)
+    except RuntimeError as exc:
+        if "Trying to resize storage that is not resizable" not in str(exc):
+            raise
+        return _safe_tensor_stack_collate(batch)
 
 
 class IdentityAllocator:
@@ -19,7 +60,7 @@ class IdentityAllocator:
         :param batch: Sequence of dataset samples.
         :return: Collated batch.
         """
-        return default_collate(batch)
+        return _default_collate_with_fallback(batch)
 
 
 class BatchReshapeAllocator:
@@ -98,7 +139,7 @@ class BatchReshapeAllocator:
         # Use the default collate function to create the initial batch.
         # This will stack the tensors from __getitem__ along a new dimension.
         # The shape will be (batch_size, n, C, H, W).
-        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = default_collate(batch)
+        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = _default_collate_with_fallback(batch)
 
         source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = self._merge_time_batch_groups(
             source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms

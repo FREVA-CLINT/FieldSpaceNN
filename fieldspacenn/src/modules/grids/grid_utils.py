@@ -70,19 +70,71 @@ def get_coords_as_tensor(
     :return: Coordinates of shape ``(n, 2)`` or ``(n_lon * n_lat, 2)``.
     """
     lon, lat = get_lon_lat_names(grid_type)
-    
-    if (lon not in ds.keys()) or (lat not in ds.keys()) and grid_type=='cell':
-        # Fallback to Healpix coordinates when cell coordinates are absent.
-        zoom = get_zoom_from_npix(len(ds.cell))
-        if zoom is not None:
-            return healpix_pixel_lonlat_torch(zoom, return_numpy=target=='numpy')
 
-    elif (lon not in ds.keys()) or (lat not in ds.keys()):
-        return None
+    lons_values = None
+    lats_values = None
+    if lon in ds.variables and lat in ds.variables:
+        lons_values = ds[lon].values
+        lats_values = ds[lat].values
+    else:
+        # Fallback to Healpix coordinates when explicit cell coordinates are absent.
+        if grid_type == 'cell':
+            npix = None
+            if 'cell' in ds.sizes:
+                npix = int(ds.sizes['cell'])
+            elif 'ncells' in ds.sizes:
+                npix = int(ds.sizes['ncells'])
+
+            if npix is not None:
+                zoom = get_zoom_from_npix(npix)
+                if zoom is not None:
+                    return healpix_pixel_lonlat_torch(zoom, return_numpy=target == 'numpy')
+            return None
+
+        # For regular lon/lat-style grids, synthesize coordinates from dimensions
+        # when explicit coordinate variables are missing.
+        if grid_type in ('lonlat', 'longitudelatitude'):
+            lon_dim = lon if lon in ds.sizes else None
+            lat_dim = lat if lat in ds.sizes else None
+
+            if lon_dim is None or lat_dim is None:
+                lon_candidates = [d for d in ds.sizes if 'lon' in d.lower()]
+                lat_candidates = [d for d in ds.sizes if 'lat' in d.lower()]
+                if lon_dim is None and lon_candidates:
+                    lon_dim = lon_candidates[0]
+                if lat_dim is None and lat_candidates:
+                    lat_dim = lat_candidates[0]
+
+            if lon_dim is None or lat_dim is None:
+                return None
+
+            n_lon = int(ds.sizes[lon_dim])
+            n_lat = int(ds.sizes[lat_dim])
+            if n_lon <= 0 or n_lat <= 0:
+                return None
+
+            if n_lon == 1:
+                lons_values = np.array([0.0], dtype=np.float32)
+            else:
+                lons_values = np.linspace(0.0, 360.0, n_lon, endpoint=False, dtype=np.float32)
+
+            if n_lat == 1:
+                lats_values = np.array([0.0], dtype=np.float32)
+            else:
+                # Use regular latitude-cell centers.
+                lat_step = 180.0 / float(n_lat)
+                lats_values = np.linspace(
+                    -90.0 + 0.5 * lat_step,
+                    90.0 - 0.5 * lat_step,
+                    n_lat,
+                    dtype=np.float32,
+                )
+        else:
+            return None
 
     if target == 'torch':
-        lons = torch.tensor(ds[lon].values)
-        lats = torch.tensor(ds[lat].values)
+        lons = torch.tensor(lons_values)
+        lats = torch.tensor(lats_values)
 
         if grid_type == 'lonlat' or grid_type == 'longitudelatitude':
             # Expand lon/lat grids into flattened coordinate pairs.
@@ -93,10 +145,10 @@ def get_coords_as_tensor(
 
         coords = torch.stack((lons, lats), dim=-1).float()
     else:
-        lons = np.array(ds[lon].values)
-        lats = np.array(ds[lat].values)
+        lons = np.array(lons_values)
+        lats = np.array(lats_values)
 
-        if grid_type == 'lonlat':
+        if grid_type == 'lonlat' or grid_type == 'longitudelatitude':
             # Expand lon/lat grids into flattened coordinate pairs.
             lons, lats = np.meshgrid(np.deg2rad(lons),np.deg2rad(lats),indexing='xy')
             lons = lons.reshape(-1)

@@ -191,9 +191,9 @@ class LightningMGModel(pl.LightningModule):
                     emb_groups=emb_input,
                     sample_configs=sample_configs,
                 )
-
+                
         lambda_groups = self.lambda_loss_groups if len(self.lambda_loss_groups)>0 else [1.0]*len(source_groups)
-        weight_groups = torch.tensor([list(t.values())[0].shape[1] for t in source_groups], device=emb_groups[0]['VariableEmbedder'].device)
+        weight_groups = torch.tensor([list(t.values())[0].shape[1] for t in source_groups], device=target_groups[0][max(target_groups[0].keys())].device)
         weight_groups = weight_groups/weight_groups.sum()
 
         for source, output, target, mask, emb, lambda_group, weight_group in zip(
