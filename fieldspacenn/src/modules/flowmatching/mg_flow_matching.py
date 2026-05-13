@@ -49,53 +49,6 @@ class MGFlowMatching:
             return ~mask
         return mask <= 0
 
-    @staticmethod
-    def _has_generated_values(mask: torch.Tensor) -> bool:
-        """
-        Return whether a mask contains any values to generate/supervise.
-
-        Boolean masks use True for generated values in the dataset/dropout path.
-        Numeric masks use positive values for active/generated regions.
-
-        :param mask: Boolean or numeric mask tensor.
-        :return: True when at least one value should be treated as generated.
-        """
-        if mask.dtype == torch.bool:
-            return bool(mask.any().item())
-        return bool((mask > 0).any().item())
-
-    def _normalize_training_mask_groups(
-        self,
-        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
-        n_groups: int,
-    ) -> List[Optional[Dict[int, torch.Tensor]]]:
-        """
-        Treat empty/all-known masks as absent during unconditional training.
-
-        The dataset often returns all-False masks when no dropout is active. If
-        those are used as conditioning masks, every model output is replaced by a
-        constant target and the loss has no gradient.
-
-        :param mask_groups: Optional mask groups from the dataloader.
-        :param n_groups: Number of data groups.
-        :return: Normalized mask groups.
-        """
-        if mask_groups is None:
-            return [None] * n_groups
-
-        normalized: List[Optional[Dict[int, torch.Tensor]]] = []
-        for mask_zooms in mask_groups:
-            if not mask_zooms:
-                normalized.append(None)
-                continue
-
-            has_generated_values = any(
-                self._has_generated_values(mask)
-                for mask in mask_zooms.values()
-            )
-            normalized.append(mask_zooms if has_generated_values else None)
-        return normalized
-
     def sample_times(
         self,
         batch_size: int,
@@ -297,7 +250,8 @@ class MGFlowMatching:
         if noise_groups is None:
             noise_groups = [self.generate_noise(group) if group else None for group in gt_groups]
 
-        mask_groups = self._normalize_training_mask_groups(mask_groups, len(gt_groups))
+        if mask_groups is None:
+            mask_groups = [None] * len(gt_groups)
         if emb_groups is None:
             emb_groups = [{} for _ in gt_groups]
 
