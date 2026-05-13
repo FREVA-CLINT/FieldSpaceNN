@@ -24,6 +24,20 @@ class ConstantVelocityModel(nn.Module):
         ]
 
 
+class LearnableVelocityModel(nn.Module):
+    def __init__(self, value: float = 0.0) -> None:
+        super().__init__()
+        self.value = nn.Parameter(torch.tensor(float(value)))
+
+    def forward(self, x_zooms_groups, emb_groups=None, **kwargs):
+        return [
+            {int(zoom): torch.ones_like(tensor) * self.value for zoom, tensor in group.items()}
+            if group
+            else None
+            for group in x_zooms_groups
+        ]
+
+
 def _group(value: float, batch_size: int = 2):
     return {3: torch.full((batch_size, 1, 1, 1, 1, 1), value)}
 
@@ -73,7 +87,7 @@ def test_training_losses_inject_time_and_return_endpoint_estimate():
     assert model.last_emb_groups[0]["DiffusionStepEmbedder"] is times
 
 
-def test_training_losses_preserve_known_mask_regions():
+def test_training_losses_treat_all_false_mask_as_unconditional():
     flow_matching = MGFlowMatching()
     model = ConstantVelocityModel(value=5.0)
     data_groups = [_group(1.0)]
@@ -91,9 +105,59 @@ def test_training_losses_preserve_known_mask_regions():
     )
 
     target, model_output, pred_x1 = outputs[0]
-    assert torch.allclose(target[3], torch.zeros_like(target[3]))
-    assert torch.allclose(model_output[3], torch.zeros_like(model_output[3]))
-    assert torch.allclose(pred_x1[3], torch.ones_like(pred_x1[3]))
+    assert torch.allclose(target[3], torch.ones_like(target[3]))
+    assert torch.allclose(model_output[3], torch.full_like(model_output[3], 5.0))
+    assert pred_x1[3].requires_grad == model_output[3].requires_grad
+
+
+def test_training_loss_with_all_false_mask_keeps_gradient():
+    flow_matching = MGFlowMatching()
+    model = LearnableVelocityModel(value=0.0)
+    data_groups = [_group(1.0)]
+    noise_groups = [_group(0.0)]
+    mask_groups = [{3: torch.zeros_like(data_groups[0][3], dtype=torch.bool)}]
+    times = torch.tensor([0.25, 0.75])
+
+    outputs = flow_matching.training_losses(
+        model,
+        data_groups,
+        times,
+        mask_groups=mask_groups,
+        noise_groups=noise_groups,
+    )
+    target, model_output, _ = outputs[0]
+    loss = torch.nn.functional.mse_loss(model_output[3], target[3])
+    loss.backward()
+
+    assert model.value.grad is not None
+    assert model.value.grad.abs() > 0
+
+
+def test_training_losses_preserve_known_regions_for_mixed_mask():
+    flow_matching = MGFlowMatching()
+    model = ConstantVelocityModel(value=5.0)
+    data_groups = [_group(1.0)]
+    noise_groups = [_group(0.0)]
+    mask = torch.zeros_like(data_groups[0][3], dtype=torch.bool)
+    mask[0] = True
+    mask_groups = [{3: mask}]
+    times = torch.tensor([0.25, 0.75])
+
+    outputs = flow_matching.training_losses(
+        model,
+        data_groups,
+        times,
+        mask_groups=mask_groups,
+        noise_groups=noise_groups,
+        create_pred_x1=True,
+    )
+
+    target, model_output, pred_x1 = outputs[0]
+    assert torch.allclose(target[3][0], torch.ones_like(target[3][0]))
+    assert torch.allclose(model_output[3][0], torch.full_like(model_output[3][0], 5.0))
+    assert torch.allclose(target[3][1], torch.zeros_like(target[3][1]))
+    assert torch.allclose(model_output[3][1], torch.zeros_like(model_output[3][1]))
+    assert torch.allclose(pred_x1[3][1], torch.ones_like(pred_x1[3][1]))
 
 
 def test_euler_sampler_integrates_constant_velocity():
