@@ -130,8 +130,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self.combined_zoom = max(int(zoom) for zoom in dataset.sampling_zooms_target.keys())
 
         self._root = None
-        self._combined_root = None
-        self._combined_arrays: Dict[str, Any] = {}
+        self._arrays: Dict[str, Any] = {}
         self._time_lookup, self._time_coord, self._time_file = self._build_time_index()
         self._source_attrs, self._level_values = self._read_source_metadata()
         self._time_step = self._infer_time_step()
@@ -287,20 +286,6 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self._root.attrs.update(
             {
                 "healpix_nested": True,
-                "n_autoregressive_steps": self.n_autoregressive_steps,
-                "ckpt_path": self.ckpt_path,
-                "source": "fieldspacenn autoregressive rollout",
-                "combined_group": "combined",
-                "combined_zoom": self.combined_zoom,
-                "convention": self.convention,
-                "include_initial_input_state": self.include_initial_input_state,
-            }
-        )
-
-        self._combined_root = self._root.create_group("combined")
-        self._combined_root.attrs.update(
-            {
-                "healpix_nested": True,
                 "healpix_zoom": self.combined_zoom,
                 "n_autoregressive_steps": self.n_autoregressive_steps,
                 "ckpt_path": self.ckpt_path,
@@ -310,8 +295,8 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             }
         )
         self._init_group_store(
-            group_root=self._combined_root,
-            arrays=self._combined_arrays,
+            group_root=self._root,
+            arrays=self._arrays,
             prediction_groups=prediction["output_combined"],
             zoom=self.combined_zoom,
         )
@@ -484,7 +469,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 group_tensor = _get_zoom_tensor(group_pred, self.combined_zoom)
                 for local_var_idx, variable in enumerate(variables):
                     self._write_variable(
-                        self._combined_arrays,
+                        self._arrays,
                         variable,
                         group_tensor[:, local_var_idx],
                         time_indices,
@@ -497,7 +482,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             group_tensor = _get_zoom_tensor(group_pred, self.combined_zoom)
             for local_var_idx, variable in enumerate(variables):
                 self._write_variable(
-                    self._combined_arrays,
+                    self._arrays,
                     variable,
                     group_tensor[:, local_var_idx],
                     time_indices,
