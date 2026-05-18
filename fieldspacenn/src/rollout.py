@@ -220,7 +220,6 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self,
         group_root: Any,
         arrays: Dict[str, Any],
-        prediction_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         zoom: int,
     ) -> None:
         npix = int(hp.nside2npix(2 ** zoom))
@@ -250,6 +249,15 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         if zoom in self._level_values:
             self._write_coordinate_to_group(group_root, "level", self._level_values[zoom], ("level",))
 
+    def _ensure_group_arrays(
+        self,
+        group_root: Any,
+        arrays: Dict[str, Any],
+        prediction_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        zoom: int,
+    ) -> None:
+        npix = int(hp.nside2npix(2 ** zoom))
+
         for group_pred, variables in zip(prediction_groups, self.grouped_variables):
             if not group_pred:
                 continue
@@ -260,6 +268,8 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                     f"shape={tuple(group_tensor.shape)}, variables={variables}"
                 )
             for local_var_idx, variable in enumerate(variables):
+                if variable in arrays:
+                    continue
                 arrays[variable] = self._create_variable_array_for_group(
                     group_root=group_root,
                     variable=variable,
@@ -295,6 +305,11 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             }
         )
         self._init_group_store(
+            group_root=self._root,
+            arrays=self._arrays,
+            zoom=self.combined_zoom,
+        )
+        self._ensure_group_arrays(
             group_root=self._root,
             arrays=self._arrays,
             prediction_groups=prediction["output_combined"],
@@ -453,6 +468,19 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             raise ValueError(
                 f"Time index count {time_indices.size} does not match combined output batch size {combined_batch_size}."
             )
+        if self.include_initial_input_state and "initial_input_combined" in prediction:
+            self._ensure_group_arrays(
+                group_root=self._root,
+                arrays=self._arrays,
+                prediction_groups=prediction["initial_input_combined"],
+                zoom=self.combined_zoom,
+            )
+        self._ensure_group_arrays(
+            group_root=self._root,
+            arrays=self._arrays,
+            prediction_groups=prediction["output_combined"],
+            zoom=self.combined_zoom,
+        )
         combined_cells = self._batch_patch_cells_for_zoom(
             patch_index_zooms=prediction["patch_index_zooms"],
             batch_size=combined_batch_size,
