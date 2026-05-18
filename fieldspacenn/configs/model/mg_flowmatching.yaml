@@ -14,7 +14,6 @@ lr_groups:
     warmup: 2000
 sampler: euler
 sampling_steps_per_block: 50
-block_loss_mode: final_only
 block_loss_weights: null
 model:
   _target_: fieldspacenn.src.models.mg_flowmatching.mg_flowmatching_model.MGFlowMatchingModel

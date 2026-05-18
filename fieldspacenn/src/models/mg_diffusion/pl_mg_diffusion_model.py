@@ -29,7 +29,6 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         n_samples: int = 1,
         max_batchsize: int = -1,
         decode_zooms: bool = True,
-        block_loss_mode: str = "final_only",
         block_loss_weights: Optional[Sequence[float]] = None,
     ) -> None:
         """
@@ -44,8 +43,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         :param n_samples: Number of posterior samples for probabilistic inference.
         :param max_batchsize: Optional cap on expanded prediction batch size.
         :param decode_zooms: Whether to decode prediction outputs to a single zoom.
-        :param block_loss_mode: "final_only" or "all_blocks".
-        :param block_loss_weights: Optional per-block weights used with "all_blocks".
+        :param block_loss_weights: Optional per-block weights for all-block loss aggregation.
         :return: None.
         """
         super().__init__(
@@ -65,18 +63,8 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         self.max_batchsize: int = int(max_batchsize)
         self.decode_zooms: bool = bool(decode_zooms)
 
-        if block_loss_mode not in {"final_only", "all_blocks"}:
-            raise ValueError(
-                f"`block_loss_mode` must be one of ['final_only', 'all_blocks'], got `{block_loss_mode}`."
-            )
-        self.block_loss_mode: str = block_loss_mode
-
         if block_loss_weights is None:
-            self.block_loss_weights: Optional[List[float]] = (
-                [1.0 / float(self.model.n_blocks)] * self.model.n_blocks
-                if self.block_loss_mode == "all_blocks"
-                else None
-            )
+            self.block_loss_weights: List[float] = [1.0 / float(self.model.n_blocks)] * self.model.n_blocks
         else:
             if len(block_loss_weights) != self.model.n_blocks:
                 raise ValueError(
@@ -335,7 +323,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         prefix: str,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], List[Optional[Dict[int, torch.Tensor]]]]:
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Run one block's diffusion objective and compute its supervised loss.
 
@@ -345,11 +333,11 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         :param mask_groups: Mask groups aligned with input groups.
         :param emb_groups: Embedding groups aligned with input groups.
         :param prefix: Prefix used for block-specific loss logging.
-        :return: Tuple of (block_loss, block_loss_dict, pred_xstart_groups).
+        :return: Tuple of (block_loss, block_loss_dict).
         """
         batch_size, device = self._get_batch_size_and_device(input_groups)
         if batch_size == 0:
-            return torch.tensor(0.0, device=self.device), {}, [None] * len(input_groups)
+            return torch.tensor(0.0, device=self.device), {}
 
         diffusion_steps = self._sample_block_diffusion_steps(block_idx, batch_size, device)
         diffusion_outputs = self.gaussian_diffusion.training_losses(
@@ -358,11 +346,11 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
             diffusion_steps,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
-            create_pred_xstart=True,
+            create_pred_xstart=False,
             sample_configs=sample_configs,
         )
 
-        target_groups, output_groups, pred_xstart_groups = self._extract_training_losses(diffusion_outputs)
+        target_groups, output_groups, _ = self._extract_training_losses(diffusion_outputs)
         block_loss, block_loss_dict = self._compute_losses_from_diffusion_outputs(
             source_groups=input_groups,
             output_groups=output_groups,
@@ -372,11 +360,11 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
             emb_groups=emb_groups,
             prefix=f"{prefix}/block_{block_idx}",
         )
-        return block_loss, block_loss_dict, pred_xstart_groups
+        return block_loss, block_loss_dict
 
     def _aggregate_block_losses(self, block_losses: Sequence[torch.Tensor]) -> torch.Tensor:
         """
-        Aggregate per-block losses according to the configured block loss mode.
+        Aggregate per-block losses across all blocks.
 
         :param block_losses: Ordered list of block losses.
         :return: Aggregated total loss.
@@ -384,10 +372,6 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         if len(block_losses) == 0:
             return torch.tensor(0.0, device=self.device)
 
-        if self.block_loss_mode == "final_only":
-            return block_losses[-1]
-
-        assert self.block_loss_weights is not None
         weights = torch.tensor(
             self.block_loss_weights,
             dtype=block_losses[0].dtype,
@@ -401,7 +385,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         batch_idx: int,
     ) -> torch.Tensor:
         """
-        Run one training step with sequential block chaining.
+        Run one training step over all timestep-specialized blocks.
 
         :param batch: Tuple ``(source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms)``.
         :param batch_idx: Index of the current batch.
@@ -414,14 +398,13 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
 
-        current_groups = self._copy_groups(target_groups)
         block_losses: List[torch.Tensor] = []
         total_loss_dict: Dict[str, torch.Tensor] = {}
 
         for block_idx in range(self.model.n_blocks):
-            block_loss, block_loss_dict, pred_xstart_groups = self._run_single_block_training_loss(
+            block_loss, block_loss_dict = self._run_single_block_training_loss(
                 block_idx=block_idx,
-                input_groups=current_groups,
+                input_groups=target_groups,
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
@@ -429,7 +412,6 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
             )
             block_losses.append(block_loss)
             total_loss_dict.update(block_loss_dict)
-            current_groups = self._copy_groups(pred_xstart_groups)
 
         total_loss = self._aggregate_block_losses(block_losses)
 
@@ -443,7 +425,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         batch_idx: int,
     ) -> torch.Tensor:
         """
-        Run one validation step with sequential block chaining.
+        Run one validation step over all timestep-specialized blocks.
 
         :param batch: Tuple ``(source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms)``.
         :param batch_idx: Index of the current batch.
@@ -456,14 +438,13 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
 
-        current_groups = self._copy_groups(target_groups)
         block_losses: List[torch.Tensor] = []
         total_loss_dict: Dict[str, torch.Tensor] = {}
 
         for block_idx in range(self.model.n_blocks):
-            block_loss, block_loss_dict, pred_xstart_groups = self._run_single_block_training_loss(
+            block_loss, block_loss_dict = self._run_single_block_training_loss(
                 block_idx=block_idx,
-                input_groups=current_groups,
+                input_groups=target_groups,
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
@@ -471,7 +452,6 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
             )
             block_losses.append(block_loss)
             total_loss_dict.update(block_loss_dict)
-            current_groups = self._copy_groups(pred_xstart_groups)
 
         total_loss = self._aggregate_block_losses(block_losses)
         self.log_dict({"val/total_loss": total_loss.item()}, prog_bar=True)

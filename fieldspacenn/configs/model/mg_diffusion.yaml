@@ -12,7 +12,6 @@ lr_groups:
   default:
     lr: 0.001
     warmup: 2000
-block_loss_mode: final_only
 block_loss_weights: null
 model:
   _target_: fieldspacenn.src.models.mg_diffusion.mg_diffusion_model.MGDiffusionModel
