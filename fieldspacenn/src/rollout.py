@@ -109,6 +109,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         time_chunk: int = 1,
         prediction_timedelta_chunk: Optional[int] = None,
         convention: str = "weatherbench2",
+        include_initial_input_state: bool = False,
     ) -> None:
         super().__init__(write_interval="batch")
         self.output_path = output_path
@@ -120,6 +121,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self.time_chunk = int(time_chunk)
         self.prediction_timedelta_chunk = int(prediction_timedelta_chunk or n_autoregressive_steps)
         self.convention = str(convention)
+        self.include_initial_input_state = bool(include_initial_input_state)
 
         self.grouped_variables = _grouped_variables(dataset.data_dict)
         self.variables = [var for group in self.grouped_variables for var in group]
@@ -134,6 +136,10 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self._time_lookup, self._time_coord, self._time_file = self._build_time_index()
         self._source_attrs, self._level_values = self._read_source_metadata()
         self._time_step = self._infer_time_step()
+
+    @property
+    def n_lead_times(self) -> int:
+        return self.n_autoregressive_steps + (1 if self.include_initial_input_state else 0)
 
     def _build_time_index(self) -> Tuple[Dict[Tuple[int, int], int], np.ndarray, np.ndarray]:
         time_lookup: "OrderedDict[Tuple[int, int], int]" = OrderedDict()
@@ -221,9 +227,12 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
     ) -> None:
         npix = int(hp.nside2npix(2 ** zoom))
 
-        prediction_timedelta = (
-            np.arange(1, self.n_autoregressive_steps + 1, dtype=np.int64) * self._time_step
-        )
+        start_step = 0 if self.include_initial_input_state else 1
+        prediction_timedelta = np.arange(
+            start_step,
+            self.n_autoregressive_steps + 1,
+            dtype=np.int64,
+        ) * self._time_step
         valid_time = self._time_coord[:, None] + prediction_timedelta[None, :]
         self._write_coordinate_to_group(group_root, "time", self._time_coord, ("time",))
         self._write_coordinate_to_group(group_root, "time_file", self._time_file, ("time",))
@@ -258,6 +267,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                     variable=variable,
                     sample_tensor=group_tensor[:, local_var_idx],
                     npix=npix,
+                    n_lead=self.n_lead_times,
                 )
 
     def _init_store(self, prediction: Mapping[str, Any]) -> None:
@@ -285,6 +295,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 "combined_group": "combined",
                 "combined_zoom": self.combined_zoom,
                 "convention": self.convention,
+                "include_initial_input_state": self.include_initial_input_state,
             }
         )
         self._init_group_store(
@@ -303,6 +314,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 "ckpt_path": self.ckpt_path,
                 "source": "fieldspacenn autoregressive rollout combined",
                 "convention": self.convention,
+                "include_initial_input_state": self.include_initial_input_state,
             }
         )
         self._init_group_store(
@@ -330,8 +342,10 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         variable: str,
         sample_tensor: torch.Tensor,
         npix: int,
+        n_lead: Optional[int] = None,
     ) -> Any:
-        _, n_lead, _, n_level, n_feature = sample_tensor.shape
+        _, tensor_n_lead, _, n_level, n_feature = sample_tensor.shape
+        n_lead = int(n_lead if n_lead is not None else tensor_n_lead)
         time_chunk = min(self.time_chunk, max(1, len(self._time_coord)))
         prediction_timedelta_chunk = min(self.prediction_timedelta_chunk, max(1, int(n_lead)))
 
@@ -416,6 +430,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         tensor: torch.Tensor,
         time_indices: np.ndarray,
         cells: List[np.ndarray],
+        lead_offset: int = 0,
     ) -> None:
         data = self.dataset.var_normalizers[self.normalizer_zoom][variable].denormalize(
             tensor.detach().cpu().float()
@@ -425,15 +440,16 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         for batch_pos, time_idx in enumerate(time_indices):
             cell_idx = cells[batch_pos]
             sample = data_np[batch_pos]
+            lead_slice = slice(lead_offset, lead_offset + int(sample.shape[0]))
             if sample.shape[-1] == 1:
                 sample = sample[..., 0]
 
             if sample.ndim == 3 and sample.shape[-1] == 1:
-                arrays[variable].oindex[time_idx, :, cell_idx] = sample[:, :, 0]
+                arrays[variable].oindex[time_idx, lead_slice, cell_idx] = sample[:, :, 0]
             elif sample.ndim == 3:
-                arrays[variable].oindex[time_idx, :, :, cell_idx] = np.moveaxis(sample, 1, 2)
+                arrays[variable].oindex[time_idx, lead_slice, :, cell_idx] = np.moveaxis(sample, 1, 2)
             elif sample.ndim == 4:
-                arrays[variable].oindex[time_idx, :, :, cell_idx, :] = np.moveaxis(sample, 1, 2)
+                arrays[variable].oindex[time_idx, lead_slice, :, cell_idx, :] = np.moveaxis(sample, 1, 2)
             else:
                 raise ValueError(f"Unsupported sample shape for {variable}: {sample.shape}")
 
@@ -463,12 +479,36 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             )
         cells = self._batch_patch_cells(batch, batch_size)
 
+        if self.include_initial_input_state:
+            if "initial_input" not in prediction:
+                raise ValueError("Prediction output is missing `initial_input` required for lead_time=0.")
+            for group_pred, variables in zip(prediction["initial_input"], self.grouped_variables):
+                if not group_pred:
+                    continue
+                group_tensor = _get_zoom_tensor(group_pred, self.zoom)
+                for local_var_idx, variable in enumerate(variables):
+                    self._write_variable(
+                        self._arrays,
+                        variable,
+                        group_tensor[:, local_var_idx],
+                        time_indices,
+                        cells,
+                        lead_offset=0,
+                    )
+
         for group_pred, variables in zip(prediction["output"], self.grouped_variables):
             if not group_pred:
                 continue
             group_tensor = _get_zoom_tensor(group_pred, self.zoom)
             for local_var_idx, variable in enumerate(variables):
-                self._write_variable(self._arrays, variable, group_tensor[:, local_var_idx], time_indices, cells)
+                self._write_variable(
+                    self._arrays,
+                    variable,
+                    group_tensor[:, local_var_idx],
+                    time_indices,
+                    cells,
+                    lead_offset=1 if self.include_initial_input_state else 0,
+                )
 
         combined_first_group = next(group for group in prediction["output_combined"] if group)
         combined_batch_size = int(_get_zoom_tensor(combined_first_group, self.combined_zoom).shape[0])
@@ -481,6 +521,24 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
             batch_size=combined_batch_size,
             zoom=self.combined_zoom,
         )
+        if self.include_initial_input_state:
+            if "initial_input_combined" not in prediction:
+                raise ValueError(
+                    "Prediction output is missing `initial_input_combined` required for lead_time=0."
+                )
+            for group_pred, variables in zip(prediction["initial_input_combined"], self.grouped_variables):
+                if not group_pred:
+                    continue
+                group_tensor = _get_zoom_tensor(group_pred, self.combined_zoom)
+                for local_var_idx, variable in enumerate(variables):
+                    self._write_variable(
+                        self._combined_arrays,
+                        variable,
+                        group_tensor[:, local_var_idx],
+                        time_indices,
+                        combined_cells,
+                        lead_offset=0,
+                    )
         for group_pred, variables in zip(prediction["output_combined"], self.grouped_variables):
             if not group_pred:
                 continue
@@ -492,6 +550,7 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                     group_tensor[:, local_var_idx],
                     time_indices,
                     combined_cells,
+                    lead_offset=1 if self.include_initial_input_state else 0,
                 )
 
 
@@ -516,6 +575,7 @@ def rollout(cfg: DictConfig) -> None:
         time_chunk=cfg.rollout.time_chunk,
         prediction_timedelta_chunk=cfg.rollout.prediction_timedelta_chunk,
         convention=cfg.rollout.convention,
+        include_initial_input_state=cfg.rollout.include_initial_input_state,
     )
 
     trainer: Trainer = instantiate(cfg.trainer)
@@ -527,6 +587,7 @@ def rollout(cfg: DictConfig) -> None:
         dataloaders=data_module.test_dataloader(),
         return_predictions=False,
     )
+    zarr.consolidate_metadata(cfg.rollout.output_path)
     end_time = time.time()
     print(f"Wrote rollout to {cfg.rollout.output_path}")
     print(f"Rollout time: {end_time - start_time:.2f} seconds")

@@ -380,6 +380,13 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         )
 
         combined_zoom = max(sample_configs_target.keys())
+        initial_input = []
+        for group in source_groups:
+            if group is None:
+                initial_input.append(None)
+                continue
+            initial_input.append({zoom: tensor[:, :, [-1]].clone() for zoom, tensor in group.items()})
+
         output_combined = []
         for group in output:
             if group is None:
@@ -389,7 +396,18 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                 decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom)
             )
 
+        initial_input_combined = []
+        for group in initial_input:
+            if group is None:
+                initial_input_combined.append(None)
+                continue
+            initial_input_combined.append(
+                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom)
+            )
+
         return {
+            "initial_input": initial_input,
+            "initial_input_combined": initial_input_combined,
             "output": output,
             "output_combined": output_combined,
             "patch_index_zooms": patch_index_zooms,
