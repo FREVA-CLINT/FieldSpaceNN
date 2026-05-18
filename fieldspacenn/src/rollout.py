@@ -130,7 +130,6 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self.combined_zoom = max(int(zoom) for zoom in dataset.sampling_zooms_target.keys())
 
         self._root = None
-        self._arrays: Dict[str, Any] = {}
         self._combined_root = None
         self._combined_arrays: Dict[str, Any] = {}
         self._time_lookup, self._time_coord, self._time_file = self._build_time_index()
@@ -288,7 +287,6 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
         self._root.attrs.update(
             {
                 "healpix_nested": True,
-                "healpix_zoom": self.zoom,
                 "n_autoregressive_steps": self.n_autoregressive_steps,
                 "ckpt_path": self.ckpt_path,
                 "source": "fieldspacenn autoregressive rollout",
@@ -297,12 +295,6 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
                 "convention": self.convention,
                 "include_initial_input_state": self.include_initial_input_state,
             }
-        )
-        self._init_group_store(
-            group_root=self._root,
-            arrays=self._arrays,
-            prediction_groups=prediction["output"],
-            zoom=self.zoom,
         )
 
         self._combined_root = self._root.create_group("combined")
@@ -465,56 +457,16 @@ class HealPixZarrPredictionWriter(BasePredictionWriter):
     ) -> None:
         if not trainer.is_global_zero:
             return
-        if prediction is None or "output" not in prediction:
+        if prediction is None or "output_combined" not in prediction:
             return
 
         self._init_store(prediction)
-        first_group = next(group for group in prediction["output"] if group)
-        first_tensor = _get_zoom_tensor(first_group, self.zoom)
-        batch_size = int(first_tensor.shape[0])
         time_indices = self._batch_time_indices(batch_indices)
-        if time_indices.size != batch_size:
-            raise ValueError(
-                f"Time index count {time_indices.size} does not match output batch size {batch_size}."
-            )
-        cells = self._batch_patch_cells(batch, batch_size)
-
-        if self.include_initial_input_state:
-            if "initial_input" not in prediction:
-                raise ValueError("Prediction output is missing `initial_input` required for lead_time=0.")
-            for group_pred, variables in zip(prediction["initial_input"], self.grouped_variables):
-                if not group_pred:
-                    continue
-                group_tensor = _get_zoom_tensor(group_pred, self.zoom)
-                for local_var_idx, variable in enumerate(variables):
-                    self._write_variable(
-                        self._arrays,
-                        variable,
-                        group_tensor[:, local_var_idx],
-                        time_indices,
-                        cells,
-                        lead_offset=0,
-                    )
-
-        for group_pred, variables in zip(prediction["output"], self.grouped_variables):
-            if not group_pred:
-                continue
-            group_tensor = _get_zoom_tensor(group_pred, self.zoom)
-            for local_var_idx, variable in enumerate(variables):
-                self._write_variable(
-                    self._arrays,
-                    variable,
-                    group_tensor[:, local_var_idx],
-                    time_indices,
-                    cells,
-                    lead_offset=1 if self.include_initial_input_state else 0,
-                )
-
         combined_first_group = next(group for group in prediction["output_combined"] if group)
         combined_batch_size = int(_get_zoom_tensor(combined_first_group, self.combined_zoom).shape[0])
-        if combined_batch_size != batch_size:
+        if time_indices.size != combined_batch_size:
             raise ValueError(
-                f"Combined output batch size {combined_batch_size} does not match raw output batch size {batch_size}."
+                f"Time index count {time_indices.size} does not match combined output batch size {combined_batch_size}."
             )
         combined_cells = self._batch_patch_cells_for_zoom(
             patch_index_zooms=prediction["patch_index_zooms"],
