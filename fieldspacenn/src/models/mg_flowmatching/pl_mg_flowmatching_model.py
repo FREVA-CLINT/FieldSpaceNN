@@ -378,6 +378,29 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             return {k: LightningMGFlowMatchingModel._slice_batch_item(v, index=index) for k, v in value.items()}
         return value
 
+    def _select_block_for_time(self, time_value: float, inference: bool = False) -> int:
+        """
+        Select the block responsible for a continuous time value.
+
+        If ranges do not fully cover ``time_value``, fall back to the nearest range center.
+        """
+        eps = 1e-8
+        best_idx = 0
+        best_distance = float("inf")
+
+        for block_idx in range(self.model.n_blocks):
+            start, end = self.model.get_time_range(block_idx, inference=inference)
+            if start - eps <= time_value <= end + eps:
+                return block_idx
+
+            center = 0.5 * (start + end)
+            distance = abs(time_value - center)
+            if distance < best_distance:
+                best_distance = distance
+                best_idx = block_idx
+
+        return best_idx
+
     def log_healpix_tensor_plot(
         self,
         source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -410,41 +433,45 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         device = source_group[max(source_group.keys())].device
         ts = torch.tensor([0.25, 0.5, 0.75, 1.0], device=device)
 
+        source_p = {zoom: source_group[zoom][0:1] for zoom in source_group.keys()}
+        target_p = {zoom: target_group[zoom][0:1] for zoom in target_group.keys()}
+        mask_p = (
+            {zoom: mask_group[zoom][0:1] for zoom in mask_group.keys()}
+            if mask_group
+            else None
+        )
+        emb_p = self._slice_batch_item(emb_group, index=0) if emb_group else None
+
+        patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
+        sample_configs_p = merge_sampling_dicts(
+            copy.deepcopy(self._get_sample_configs(stage="val")),
+            patch_index_zooms_p,
+        )
+
+        target_groups_p: List[Optional[Dict[int, torch.Tensor]]] = [target_p.copy()]
+        mask_groups_p = [mask_p.copy()] if mask_p else [None]
+        emb_groups_p = [emb_p] if emb_p else [None]
+        noise_groups_p = [self.flow_matching.generate_noise(target_p)]
+        time_dtype = next(iter(target_p.values())).dtype
+
         for t in ts:
-            source_p = {zoom: source_group[zoom][0:1] for zoom in source_group.keys()}
-            target_p = {zoom: target_group[zoom][0:1] for zoom in target_group.keys()}
-            mask_p = (
-                {zoom: mask_group[zoom][0:1] for zoom in mask_group.keys()}
-                if mask_group
-                else None
+            time_value = float(t.item())
+            block_idx = self._select_block_for_time(time_value, inference=False)
+            time_tensor = torch.tensor([time_value], device=device, dtype=time_dtype)
+
+            pred_x1_outputs = self.flow_matching.training_losses(
+                self.model.get_block(block_idx),
+                target_groups_p,
+                time_tensor,
+                mask_groups=mask_groups_p,
+                emb_groups=emb_groups_p,
+                noise_groups=noise_groups_p,
+                create_pred_x1=True,
+                sample_configs=sample_configs_p,
             )
-            emb_p = self._slice_batch_item(emb_group, index=0) if emb_group else None
 
-            patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
-            sample_configs_p = merge_sampling_dicts(
-                copy.deepcopy(self._get_sample_configs(stage="val")),
-                patch_index_zooms_p,
-            )
-
-            current_groups: List[Optional[Dict[int, torch.Tensor]]] = [target_p.copy()]
-            mask_groups_p = [mask_p.copy()] if mask_p else [None]
-            emb_groups_p = [emb_p] if emb_p else [None]
-
-            for block_idx in range(self.model.n_blocks):
-                pred_x1_outputs = self.flow_matching.training_losses(
-                    self.model.get_block(block_idx),
-                    current_groups,
-                    torch.stack([t]),
-                    mask_groups=mask_groups_p,
-                    emb_groups=emb_groups_p,
-                    create_pred_x1=True,
-                    sample_configs=sample_configs_p,
-                )
-
-                _, _, pred_x1_groups = self._extract_training_losses(pred_x1_outputs)
-                current_groups = self._copy_groups(pred_x1_groups)
-
-            pred_x1_group = current_groups[0] if current_groups else None
+            _, _, pred_x1_groups = self._extract_training_losses(pred_x1_outputs)
+            pred_x1_group = pred_x1_groups[0] if pred_x1_groups else None
             if not pred_x1_group:
                 continue
 
