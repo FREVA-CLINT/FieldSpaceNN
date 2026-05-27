@@ -366,6 +366,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
                 "y_specs": y_specs,
                 "z_specs": z_specs,
                 "sample_configs": sample_configs,
+                "embedding_side_info": self._extract_codec_embedding_side_info(emb_groups),
             },
             "estimated_num_bits": None,
         }
@@ -385,6 +386,8 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         if "y" not in strings or "z" not in strings:
             raise ValueError("decompress requires strings with 'y' and 'z' entries.")
         sample_configs = sample_configs or metadata.get("sample_configs", {})
+        if emb_groups is None:
+            emb_groups = self._rebuild_codec_embedding_groups(metadata.get("embedding_side_info"), self._device())
         z_hat = self.entropy_bottleneck_adapter.decompress(
             strings["z"],
             metadata["z"],
@@ -420,3 +423,54 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             return next(self.parameters()).device
         except StopIteration:
             return torch.device("cpu")
+
+    @staticmethod
+    def _extract_codec_embedding_side_info(
+        emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]],
+    ) -> Optional[List[Optional[Dict[str, torch.Tensor]]]]:
+        """Store deterministic embedding inputs needed for standalone decoding."""
+
+        if emb_groups is None:
+            return None
+        side_info: List[Optional[Dict[str, torch.Tensor]]] = []
+        has_any = False
+        for emb_group in emb_groups:
+            if not emb_group:
+                side_info.append(None)
+                continue
+            group_info: Dict[str, torch.Tensor] = {}
+            for key in ("VariableEmbedder", "MGEmbedder"):
+                value = emb_group.get(key)
+                if torch.is_tensor(value):
+                    group_info[key] = value.detach().cpu()
+            if "MGEmbedder" not in group_info and "VariableEmbedder" in group_info:
+                group_info["MGEmbedder"] = group_info["VariableEmbedder"]
+            if group_info:
+                has_any = True
+                side_info.append(group_info)
+            else:
+                side_info.append(None)
+        return side_info if has_any else None
+
+    @staticmethod
+    def _rebuild_codec_embedding_groups(
+        side_info: Optional[Sequence[Optional[Mapping[str, torch.Tensor]]]],
+        device: torch.device,
+    ) -> Optional[List[Optional[Dict[str, torch.Tensor]]]]:
+        """Rebuild ``emb_groups`` from codec metadata."""
+
+        if side_info is None:
+            return None
+        emb_groups: List[Optional[Dict[str, torch.Tensor]]] = []
+        for group_info in side_info:
+            if not group_info:
+                emb_groups.append(None)
+                continue
+            emb_group = {
+                key: value.to(device=device) if torch.is_tensor(value) else value
+                for key, value in group_info.items()
+            }
+            if "MGEmbedder" not in emb_group and "VariableEmbedder" in emb_group:
+                emb_group["MGEmbedder"] = emb_group["VariableEmbedder"]
+            emb_groups.append(emb_group)
+        return emb_groups
