@@ -72,11 +72,13 @@ class HEALPixCRA5RateDistortionLoss(nn.Module):
 
         bits_y = self._likelihood_bits(output.get("likelihoods", {}).get("y"), rec_loss.device)
         bits_z = self._likelihood_bits(output.get("likelihoods", {}).get("z"), rec_loss.device)
-        estimated_bits = bits_y + bits_z
+        side_bits = self._passthrough_bits(output.get("passthrough"), rec_loss.device)
+        estimated_bits = bits_y + bits_z + side_bits
         denominator = self._rate_denominator(target_groups, rec_loss.device)
         bpp_y = bits_y / denominator.clamp_min(self.eps)
         bpp_z = bits_z / denominator.clamp_min(self.eps)
-        bpp_loss = self.bpp_weight * (bpp_y + bpp_z)
+        bpp_side = side_bits / denominator.clamp_min(self.eps)
+        bpp_loss = self.bpp_weight * (bpp_y + bpp_z + bpp_side)
 
         aux_loss = rec_loss.new_tensor(0.0)
         if model is not None and self.aux_weight > 0.0 and hasattr(model, "aux_loss"):
@@ -93,6 +95,8 @@ class HEALPixCRA5RateDistortionLoss(nn.Module):
             f"{prefix}/bpp_loss": bpp_loss.detach(),
             f"{prefix}/bpp_y": bpp_y.detach(),
             f"{prefix}/bpp_z": bpp_z.detach(),
+            f"{prefix}/bpp_side": bpp_side.detach(),
+            f"{prefix}/side_bits": side_bits.detach(),
             f"{prefix}/estimated_bits": estimated_bits.detach(),
             f"{prefix}/estimated_compression_ratio": compression_ratio.detach(),
             f"{prefix}/aux_loss": aux_loss.detach(),
@@ -182,6 +186,20 @@ class HEALPixCRA5RateDistortionLoss(nn.Module):
         for likelihood in flatten_likelihoods_for_bpp(likelihoods):
             bits = bits - torch.log2(likelihood.to(device=device).clamp(self.eps, 1.0)).sum()
         return bits
+
+    def _passthrough_bits(
+        self,
+        passthrough_groups: Optional[Sequence[Optional[Mapping[int, torch.Tensor]]]],
+        device: torch.device,
+    ) -> torch.Tensor:
+        if passthrough_groups is None:
+            return torch.tensor(0.0, device=device)
+        numel = 0
+        for group in passthrough_groups:
+            if not group:
+                continue
+            numel += sum(int(tensor.numel()) for tensor in group.values())
+        return torch.tensor(float(numel * self.original_bits_per_value), device=device)
 
     def _rate_denominator(
         self,

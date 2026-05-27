@@ -41,6 +41,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         entropy_model: str = "compressai",
         scale_min: float = 1e-9,
         use_ste_quantization: bool = False,
+        passthrough_zooms: Sequence[int] = (),
         **kwargs: Any,
     ) -> None:
         super().__init__(mgrids)
@@ -57,6 +58,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         self.sample_posterior = bool(sample_posterior)
         self.detach_hyper_analysis_input = bool(detach_hyper_analysis_input)
         self.use_ste_quantization = bool(use_ste_quantization)
+        self.passthrough_zooms = {int(zoom) for zoom in passthrough_zooms}
 
         self.analysis_blocks, self.bottleneck_zooms, analysis_features = self._build_block_stack(
             analysis_block_configs,
@@ -65,16 +67,30 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             self.n_groups_variables,
             **kwargs,
         )
+        missing_passthrough = sorted(self.passthrough_zooms - set(self.bottleneck_zooms))
+        if missing_passthrough:
+            raise ValueError(
+                "passthrough_zooms must be present in bottleneck_zooms. "
+                f"Missing {missing_passthrough}; available bottleneck zooms are {self.bottleneck_zooms}."
+            )
+        self.latent_zooms = [zoom for zoom in self.bottleneck_zooms if zoom not in self.passthrough_zooms]
+        if not self.latent_zooms:
+            raise ValueError("At least one bottleneck zoom must remain after excluding passthrough_zooms.")
+        self.analysis_features_by_zoom = {
+            int(zoom): int(features) for zoom, features in zip(self.bottleneck_zooms, analysis_features)
+        }
+        latent_analysis_features = [self.analysis_features_by_zoom[zoom] for zoom in self.latent_zooms]
+
         self.moment_projection = MultiZoomPointwiseProjection(
-            self.bottleneck_zooms,
-            analysis_features,
+            self.latent_zooms,
+            latent_analysis_features,
             2 * self.latent_features,
         )
 
         self.hyper_analysis_blocks, self.hyper_bottleneck_zooms, hyper_analysis_features = self._build_block_stack(
             hyper_analysis_block_configs,
-            self.bottleneck_zooms,
-            [self.latent_features] * len(self.bottleneck_zooms),
+            self.latent_zooms,
+            [self.latent_features] * len(self.latent_zooms),
             self.n_groups_variables,
             **kwargs,
         )
@@ -100,7 +116,10 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         self.synthesis_blocks, synthesis_zooms, synthesis_features = self._build_block_stack(
             synthesis_block_configs,
             self.bottleneck_zooms,
-            [self.latent_features] * len(self.bottleneck_zooms),
+            [
+                self.analysis_features_by_zoom[zoom] if zoom in self.passthrough_zooms else self.latent_features
+                for zoom in self.bottleneck_zooms
+            ],
             self.n_groups_variables,
             **kwargs,
         )
@@ -165,14 +184,14 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             output = block(output, sample_configs=sample_configs, mask_groups=mask_groups, emb_groups=emb_groups)
         return output
 
-    def encode_posterior(
+    def _encode_analysis(
         self,
         x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         sample_configs: Mapping[int, Any] = {},
         mask_zooms_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
-    ) -> MGDiagonalGaussianDistribution:
-        """Run analysis blocks and return the primary latent posterior."""
+    ) -> Tuple[MGDiagonalGaussianDistribution, Optional[List[Optional[Dict[int, torch.Tensor]]]]]:
+        """Run analysis blocks and split compressed latents from passthrough tensors."""
 
         if mask_zooms_groups is None:
             mask_zooms_groups = [
@@ -191,8 +210,22 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             sample_configs=sample_configs,
         )
         encoded = self._run_blocks(self.analysis_blocks, x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
-        moments = self.moment_projection(encoded)
-        return MGDiagonalGaussianDistribution(moments)
+        latent_encoded = self._filter_nested_zooms(encoded, self.latent_zooms)
+        passthrough = self._filter_nested_zooms(encoded, self.passthrough_zooms) if self.passthrough_zooms else None
+        moments = self.moment_projection(latent_encoded)
+        return MGDiagonalGaussianDistribution(moments), passthrough
+
+    def encode_posterior(
+        self,
+        x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        sample_configs: Mapping[int, Any] = {},
+        mask_zooms_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> MGDiagonalGaussianDistribution:
+        """Run analysis blocks and return the primary latent posterior."""
+
+        posterior, _ = self._encode_analysis(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
+        return posterior
 
     def sample_latent(self, posterior: MGDiagonalGaussianDistribution) -> List[Optional[Dict[int, torch.Tensor]]]:
         """Sample or take the mode of the primary posterior."""
@@ -255,13 +288,20 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
     ) -> Any:
         """Encode inputs and return posterior, ``y``, or ``y_hat``."""
 
-        posterior = self.encode_posterior(x_zooms_groups, sample_configs, mask_groups, emb_groups)
+        posterior, passthrough = self._encode_analysis(x_zooms_groups, sample_configs, mask_groups, emb_groups)
         if mode == "posterior":
             return posterior
         y = self.sample_latent(posterior)
-        if mode == "y":
+        if mode == "compressed_y":
             return y
+        if mode == "y":
+            return self._merge_passthrough(y, passthrough)
         if mode == "y_hat":
+            quant_mode = "ste" if self.use_ste_quantization else "noise"
+            if not self.training:
+                quant_mode = "ste"
+            return self._merge_passthrough(map_nested(lambda tensor: quantize_training(tensor, quant_mode), y), passthrough)
+        if mode == "compressed_y_hat":
             quant_mode = "ste" if self.use_ste_quantization else "noise"
             if not self.training:
                 quant_mode = "ste"
@@ -302,37 +342,46 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         if stage not in self.VALID_STAGES:
             raise ValueError(f"Unknown hyperprior training stage '{stage}'.")
 
-        posterior = self.encode_posterior(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
+        posterior, passthrough = self._encode_analysis(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
         y = self.sample_latent(posterior)
+        y_decode = self._merge_passthrough(y, passthrough)
 
         if stage == "pretrain":
             y_hat = y
-            x_hat = self.ae_decode(y_hat, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
+            y_hat_decode = y_decode
+            x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
             return {
                 "x_hat": x_hat,
                 "likelihoods": {"y": None, "z": None},
                 "posterior": posterior,
-                "y": y,
-                "y_hat": y_hat,
+                "y": y_decode,
+                "y_hat": y_hat_decode,
+                "compressed_y": y,
+                "compressed_y_hat": y_hat,
                 "z": None,
                 "z_hat": None,
                 "gaussian_params": {"scales": None, "means": None},
+                "passthrough": passthrough,
             }
 
         z = self.hyper_encode(y, sample_configs, mask_zooms_groups, emb_groups, stage=stage)
         z_hat, z_likelihoods = self.entropy_bottleneck_adapter(z)
         scales, means = self.hyper_decode(z_hat, sample_configs, mask_zooms_groups, emb_groups)
         y_hat, y_likelihoods = self.gaussian_conditional_adapter(y, scales, means)
-        x_hat = self.ae_decode(y_hat, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
+        y_hat_decode = self._merge_passthrough(y_hat, passthrough)
+        x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
         return {
             "x_hat": x_hat,
             "likelihoods": {"y": y_likelihoods, "z": z_likelihoods},
             "posterior": posterior,
-            "y": y,
-            "y_hat": y_hat,
+            "y": y_decode,
+            "y_hat": y_hat_decode,
+            "compressed_y": y,
+            "compressed_y_hat": y_hat,
             "z": z,
             "z_hat": z_hat,
             "gaussian_params": {"scales": scales, "means": means},
+            "passthrough": passthrough,
         }
 
     @torch.no_grad()
@@ -348,7 +397,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
 
         was_training = self.training
         self.eval()
-        posterior = self.encode_posterior(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
+        posterior, passthrough = self._encode_analysis(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
         y = posterior.sample() if sample_posterior_for_compress else posterior.mode()
         z = self.hyper_encode(y, sample_configs, mask_zooms_groups, emb_groups, stage="joint")
         self.update(force=False)
@@ -367,6 +416,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
                 "z_specs": z_specs,
                 "sample_configs": sample_configs,
                 "embedding_side_info": self._extract_codec_embedding_side_info(emb_groups),
+                "passthrough": self._extract_passthrough_side_info(passthrough),
             },
             "estimated_num_bits": None,
         }
@@ -402,8 +452,10 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             metadata["y_specs"],
             device=self._device(),
         )
-        x_hat = self.ae_decode(y_hat, sample_configs, mask_zooms_groups, emb_groups, out_zoom=out_zoom)
-        return {"x_hat": x_hat, "y_hat": y_hat}
+        passthrough = self._rebuild_passthrough_groups(metadata.get("passthrough"), self._device())
+        y_hat_decode = self._merge_passthrough(y_hat, passthrough)
+        x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom=out_zoom)
+        return {"x_hat": x_hat, "y_hat": y_hat_decode, "compressed_y_hat": y_hat, "passthrough": passthrough}
 
     def aux_loss(self) -> torch.Tensor:
         """Return entropy bottleneck auxiliary loss."""
@@ -423,6 +475,71 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             return next(self.parameters()).device
         except StopIteration:
             return torch.device("cpu")
+
+    @staticmethod
+    def _filter_nested_zooms(
+        groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        zooms: Sequence[int] | set[int],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        zoom_set = {int(zoom) for zoom in zooms}
+        output: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group in groups:
+            if group is None:
+                output.append(None)
+                continue
+            output.append({int(zoom): tensor for zoom, tensor in group.items() if int(zoom) in zoom_set})
+        return output
+
+    @staticmethod
+    def _merge_passthrough(
+        latent_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        passthrough_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        if passthrough_groups is None:
+            return [dict(group) if group is not None else None for group in latent_groups]
+        output: List[Optional[Dict[int, torch.Tensor]]] = []
+        for latent_group, passthrough_group in zip(latent_groups, passthrough_groups):
+            if latent_group is None and passthrough_group is None:
+                output.append(None)
+                continue
+            merged: Dict[int, torch.Tensor] = {}
+            if passthrough_group:
+                merged.update({int(zoom): tensor for zoom, tensor in passthrough_group.items()})
+            if latent_group:
+                merged.update({int(zoom): tensor for zoom, tensor in latent_group.items()})
+            output.append(merged)
+        return output
+
+    @staticmethod
+    def _extract_passthrough_side_info(
+        passthrough_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
+    ) -> Optional[List[Optional[Dict[int, torch.Tensor]]]]:
+        if passthrough_groups is None:
+            return None
+        side_info: List[Optional[Dict[int, torch.Tensor]]] = []
+        has_any = False
+        for group in passthrough_groups:
+            if not group:
+                side_info.append(None)
+                continue
+            has_any = True
+            side_info.append({int(zoom): tensor.detach().cpu() for zoom, tensor in group.items()})
+        return side_info if has_any else None
+
+    @staticmethod
+    def _rebuild_passthrough_groups(
+        passthrough_side_info: Optional[Sequence[Optional[Mapping[int, torch.Tensor]]]],
+        device: torch.device,
+    ) -> Optional[List[Optional[Dict[int, torch.Tensor]]]]:
+        if passthrough_side_info is None:
+            return None
+        output: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group in passthrough_side_info:
+            if not group:
+                output.append(None)
+                continue
+            output.append({int(zoom): tensor.to(device=device) for zoom, tensor in group.items()})
+        return output
 
     @staticmethod
     def _extract_codec_embedding_side_info(
