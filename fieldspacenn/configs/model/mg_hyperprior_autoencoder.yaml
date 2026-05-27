@@ -1,0 +1,219 @@
+_target_: fieldspacenn.src.models.mg_hyperprior_autoencoder.pl_mg_hyperprior_model.LightningMGHyperpriorAutoEncoderModel
+stage: pretrain
+freeze_analysis_encoder: false
+freeze_synthesis_decoder: false
+mode: encode_decode
+max_batchsize: -1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.0005
+    warmup: 0
+  attention:
+    matches:
+      - FieldSpaceAttentionModule
+      - TransformerBlock
+      - GridSelfAttention
+    lr: 0.0005
+    warmup: 500
+  entropy:
+    matches:
+      - EntropyBottleneck
+      - GaussianConditional
+      - FieldSpaceEntropyBottleneckAdapter
+      - FieldSpaceGaussianConditionalAdapter
+    lr: 0.0001
+    warmup: 500
+loss_config:
+  lmbda: 1.0
+  bpp_weight: 1.0
+  kl_weight: 1.0e-6
+  aux_weight: 1.0e-3
+  rate_normalization: spatiotemporal_cells
+  original_bits_per_value: 32
+  reconstruction_loss_config:
+    zooms:
+      3:
+        MSE_loss: 1
+      4:
+        MSE_loss: 1
+      6:
+        MSE_loss: 1
+model:
+  _target_: fieldspacenn.src.models.mg_hyperprior_autoencoder.mg_hyperprior_autoencoder.MGHyperpriorFieldSpaceAutoEncoder
+  mgrids: ${mgrids}
+  in_zooms: [3, 5, 6]
+  in_features: 1
+  out_features: 1
+  latent_features: 64
+  hyperlatent_features: 64
+  sample_posterior: true
+  detach_hyper_analysis_input: true
+  entropy_model: compressai
+  scale_min: 1.0e-9
+  use_ste_quantization: false
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [2]
+  layer_confs_emb:
+    aggregation: shift_scale
+  analysis_block_configs:
+    "att_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5, 6]
+      kv_zooms: [3, 5, 6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+      embed_confs:
+        embed_names: ["TimeEmbedder"]
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: sum
+    "down_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      in_zooms: [5, 6]
+      target_zooms: [5]
+      field_zoom: 4
+      out_zooms: [3, 5]
+      with_nh: true
+      type: mlp
+    "att_1":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5]
+      kv_zooms: [3, 5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+      embed_confs:
+        embed_names: ["TimeEmbedder"]
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: sum
+  synthesis_block_configs:
+    "att_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5]
+      kv_zooms: [3, 5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+      embed_confs:
+        embed_names: ["TimeEmbedder"]
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: sum
+    "up_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      in_zooms: [5]
+      target_zooms: [6]
+      field_zoom: 3
+      out_zooms: [3, 5, 6]
+      with_nh: true
+      type: mlp
+    "att_1":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5, 6]
+      kv_zooms: [3, 5, 6]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+      embed_confs:
+        embed_names: ["TimeEmbedder"]
+        input_zoom: 3
+        embed_confs: ${embedding}
+        embed_mode: sum
+  hyper_analysis_block_configs:
+    "hyper_att_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5]
+      kv_zooms: [3, 5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
+  hyper_synthesis_block_configs:
+    "hyper_att_0":
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: [3, 5]
+      kv_zooms: [3, 5]
+      token_zoom: 3
+      att_dim: 32
+      token_len_depth: [1, 5]
+      token_len_time: 1
+      token_overlap_space: true
+      token_overlap_time: false
+      token_overlap_depth: false
+      token_overlap_mlp_time: false
+      token_overlap_mlp_depth: false
+      rank_depth: [null, 4]
+      seq_len_zoom: -1
+      seq_len_time: -1
+      seq_len_depth: -1
+      with_var_att: true
+      update: shift
