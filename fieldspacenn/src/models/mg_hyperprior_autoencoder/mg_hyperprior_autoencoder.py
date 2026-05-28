@@ -41,6 +41,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         entropy_model: str = "compressai",
         scale_min: float = 1e-9,
         use_ste_quantization: bool = False,
+        pretrain_latent_quantization: str = "none",
         passthrough_zooms: Sequence[int] = (),
         **kwargs: Any,
     ) -> None:
@@ -58,6 +59,12 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         self.sample_posterior = bool(sample_posterior)
         self.detach_hyper_analysis_input = bool(detach_hyper_analysis_input)
         self.use_ste_quantization = bool(use_ste_quantization)
+        self.pretrain_latent_quantization = str(pretrain_latent_quantization)
+        if self.pretrain_latent_quantization not in {"none", "noise", "ste"}:
+            raise ValueError(
+                "pretrain_latent_quantization must be one of 'none', 'noise', or 'ste'. "
+                f"Got '{self.pretrain_latent_quantization}'."
+            )
         self.passthrough_zooms = {int(zoom) for zoom in passthrough_zooms}
 
         self.analysis_blocks, self.bottleneck_zooms, analysis_features = self._build_block_stack(
@@ -286,6 +293,17 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             return posterior.sample()
         return posterior.mode()
 
+    def quantize_pretrain_latent(
+        self,
+        y_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """Apply the configured pretrain latent quantization proxy."""
+
+        quant_mode = self.pretrain_latent_quantization
+        if quant_mode == "noise" and not self.training:
+            quant_mode = "ste"
+        return map_nested(lambda tensor: quantize_training(tensor, quant_mode), y_groups)
+
     def hyper_encode(
         self,
         y_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -404,8 +422,8 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         y_decode = self._merge_passthrough(y, passthrough)
 
         if stage == "pretrain":
-            y_hat = y
-            y_hat_decode = y_decode
+            y_hat = self.quantize_pretrain_latent(y)
+            y_hat_decode = self._merge_passthrough(y_hat, passthrough)
             x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
             return {
                 "x_hat": x_hat,
