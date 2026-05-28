@@ -87,28 +87,66 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             2 * self.latent_features,
         )
 
-        self.hyper_analysis_blocks, self.hyper_bottleneck_zooms, hyper_analysis_features = self._build_block_stack(
+        self.hyper_analysis_input_zooms = list(self.bottleneck_zooms)
+        hyper_analysis_input_features = [
+            self.analysis_features_by_zoom[zoom] if zoom in self.passthrough_zooms else self.latent_features
+            for zoom in self.hyper_analysis_input_zooms
+        ]
+        (
+            self.hyper_analysis_blocks,
+            hyper_analysis_output_zooms,
+            hyper_analysis_output_features,
+        ) = self._build_block_stack(
             hyper_analysis_block_configs,
-            self.latent_zooms,
-            [self.latent_features] * len(self.latent_zooms),
+            self.hyper_analysis_input_zooms,
+            hyper_analysis_input_features,
             self.n_groups_variables,
             **kwargs,
         )
+        self.hyper_bottleneck_zooms = [
+            zoom for zoom in hyper_analysis_output_zooms if zoom not in self.passthrough_zooms
+        ]
+        hyper_analysis_features_by_zoom = {
+            int(zoom): int(features) for zoom, features in zip(hyper_analysis_output_zooms, hyper_analysis_output_features)
+        }
+        if not self.hyper_bottleneck_zooms:
+            raise ValueError("Hyper-analysis blocks must output at least one non-passthrough zoom.")
+        hyper_analysis_features = [hyper_analysis_features_by_zoom[zoom] for zoom in self.hyper_bottleneck_zooms]
         self.hyperlatent_projection = MultiZoomPointwiseProjection(
             self.hyper_bottleneck_zooms,
             hyper_analysis_features,
             self.hyperlatent_features,
         )
 
-        self.hyper_synthesis_blocks, hyper_synthesis_zooms, hyper_synthesis_features = self._build_block_stack(
+        self.hyper_synthesis_input_zooms = self._ordered_unique(
+            [zoom for zoom in self.bottleneck_zooms if zoom in self.passthrough_zooms]
+            + list(self.hyper_bottleneck_zooms)
+        )
+        hyper_synthesis_input_features = [
+            self.analysis_features_by_zoom[zoom] if zoom in self.passthrough_zooms else self.hyperlatent_features
+            for zoom in self.hyper_synthesis_input_zooms
+        ]
+        (
+            self.hyper_synthesis_blocks,
+            hyper_synthesis_output_zooms,
+            hyper_synthesis_output_features,
+        ) = self._build_block_stack(
             hyper_synthesis_block_configs,
-            self.hyper_bottleneck_zooms,
-            [self.hyperlatent_features] * len(self.hyper_bottleneck_zooms),
+            self.hyper_synthesis_input_zooms,
+            hyper_synthesis_input_features,
             self.n_groups_variables,
             **kwargs,
         )
+        hyper_synthesis_features_by_zoom = {
+            int(zoom): int(features)
+            for zoom, features in zip(hyper_synthesis_output_zooms, hyper_synthesis_output_features)
+        }
+        gaussian_param_zooms = [zoom for zoom in hyper_synthesis_output_zooms if zoom in self.latent_zooms]
+        if not gaussian_param_zooms:
+            raise ValueError("Hyper-synthesis blocks must output Gaussian parameters for at least one latent zoom.")
+        hyper_synthesis_features = [hyper_synthesis_features_by_zoom[zoom] for zoom in gaussian_param_zooms]
         self.gaussian_params_projection = MultiZoomPointwiseProjection(
-            hyper_synthesis_zooms,
+            gaussian_param_zooms,
             hyper_synthesis_features,
             2 * self.latent_features,
         )
@@ -184,6 +222,20 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             output = block(output, sample_configs=sample_configs, mask_groups=mask_groups, emb_groups=emb_groups)
         return output
 
+    @staticmethod
+    def _ordered_unique(values: Sequence[int]) -> List[int]:
+        """Return integer values once, preserving their first-seen order."""
+
+        output: List[int] = []
+        seen: set[int] = set()
+        for value in values:
+            int_value = int(value)
+            if int_value in seen:
+                continue
+            seen.add(int_value)
+            output.append(int_value)
+        return output
+
     def _encode_analysis(
         self,
         x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -237,6 +289,7 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
     def hyper_encode(
         self,
         y_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        passthrough_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         sample_configs: Mapping[int, Any] = {},
         mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
@@ -244,22 +297,26 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         """Run hyper-analysis blocks and project to hyperlatents."""
 
-        hyper_input = y_groups
+        hyper_input = self._merge_passthrough(y_groups, passthrough_groups)
         if self.training and self.detach_hyper_analysis_input and stage in {"entropy_finetune", "joint"}:
-            hyper_input = map_nested(lambda tensor: tensor.detach(), y_groups)
+            hyper_input = map_nested(lambda tensor: tensor.detach(), hyper_input)
         z_features = self._run_blocks(self.hyper_analysis_blocks, hyper_input, sample_configs, mask_groups, emb_groups)
+        z_features = self._filter_nested_zooms(z_features, self.hyper_bottleneck_zooms)
         return self.hyperlatent_projection(z_features)
 
     def hyper_decode(
         self,
         z_hat_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        passthrough_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         sample_configs: Mapping[int, Any] = {},
         mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> Tuple[List[Optional[Dict[int, torch.Tensor]]], List[Optional[Dict[int, torch.Tensor]]]]:
         """Run hyper-synthesis and split Gaussian scales and means."""
 
-        params_features = self._run_blocks(self.hyper_synthesis_blocks, z_hat_groups, sample_configs, mask_groups, emb_groups)
+        hyper_input = self._merge_passthrough(z_hat_groups, passthrough_groups)
+        params_features = self._run_blocks(self.hyper_synthesis_blocks, hyper_input, sample_configs, mask_groups, emb_groups)
+        params_features = self._filter_nested_zooms(params_features, self.latent_zooms)
         params = self.gaussian_params_projection(params_features)
         scales_groups: List[Optional[Dict[int, torch.Tensor]]] = []
         means_groups: List[Optional[Dict[int, torch.Tensor]]] = []
@@ -364,9 +421,22 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
                 "passthrough": passthrough,
             }
 
-        z = self.hyper_encode(y, sample_configs, mask_zooms_groups, emb_groups, stage=stage)
+        z = self.hyper_encode(
+            y,
+            passthrough_groups=passthrough,
+            sample_configs=sample_configs,
+            mask_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
+            stage=stage,
+        )
         z_hat, z_likelihoods = self.entropy_bottleneck_adapter(z)
-        scales, means = self.hyper_decode(z_hat, sample_configs, mask_zooms_groups, emb_groups)
+        scales, means = self.hyper_decode(
+            z_hat,
+            passthrough_groups=passthrough,
+            sample_configs=sample_configs,
+            mask_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
+        )
         y_hat, y_likelihoods = self.gaussian_conditional_adapter(y, scales, means)
         y_hat_decode = self._merge_passthrough(y_hat, passthrough)
         x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom)
@@ -399,11 +469,24 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
         self.eval()
         posterior, passthrough = self._encode_analysis(x_zooms_groups, sample_configs, mask_zooms_groups, emb_groups)
         y = posterior.sample() if sample_posterior_for_compress else posterior.mode()
-        z = self.hyper_encode(y, sample_configs, mask_zooms_groups, emb_groups, stage="joint")
+        z = self.hyper_encode(
+            y,
+            passthrough_groups=passthrough,
+            sample_configs=sample_configs,
+            mask_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
+            stage="joint",
+        )
         self.update(force=False)
         z_strings, z_metadata, z_specs = self.entropy_bottleneck_adapter.compress(z)
         z_hat = self.entropy_bottleneck_adapter.decompress(z_strings, z_metadata, z_specs, device=self._device())
-        scales, means = self.hyper_decode(z_hat, sample_configs, mask_zooms_groups, emb_groups)
+        scales, means = self.hyper_decode(
+            z_hat,
+            passthrough_groups=passthrough,
+            sample_configs=sample_configs,
+            mask_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
+        )
         y_strings, y_metadata, y_specs = self.gaussian_conditional_adapter.compress(y, scales, means)
         if was_training:
             self.train()
@@ -444,7 +527,14 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             metadata["z_specs"],
             device=self._device(),
         )
-        scales, means = self.hyper_decode(z_hat, sample_configs, mask_zooms_groups, emb_groups)
+        passthrough = self._rebuild_passthrough_groups(metadata.get("passthrough"), self._device())
+        scales, means = self.hyper_decode(
+            z_hat,
+            passthrough_groups=passthrough,
+            sample_configs=sample_configs,
+            mask_groups=mask_zooms_groups,
+            emb_groups=emb_groups,
+        )
         y_hat = self.gaussian_conditional_adapter.decompress(
             strings["y"],
             scales,
@@ -452,7 +542,6 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             metadata["y_specs"],
             device=self._device(),
         )
-        passthrough = self._rebuild_passthrough_groups(metadata.get("passthrough"), self._device())
         y_hat_decode = self._merge_passthrough(y_hat, passthrough)
         x_hat = self.ae_decode(y_hat_decode, sample_configs, mask_zooms_groups, emb_groups, out_zoom=out_zoom)
         return {"x_hat": x_hat, "y_hat": y_hat_decode, "compressed_y_hat": y_hat, "passthrough": passthrough}
