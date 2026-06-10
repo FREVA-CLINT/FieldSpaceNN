@@ -261,6 +261,14 @@ class LightningMGHyperpriorAutoEncoderModel(pl.LightningModule):
             pass
         if patch_index_zooms:
             sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        # Ensure required sampling keys exist per zoom to avoid KeyError downstream.
+        for z in list(self.model.in_zooms):
+            cfg = dict(sample_configs.get(z, {}) or {})
+            cfg.setdefault("n_past_ts", 0)
+            cfg.setdefault("n_future_ts", 0)
+            cfg.setdefault("zoom_patch_sample", -1)
+            cfg.setdefault("patch_index", 0)
+            sample_configs[z] = cfg
         return sample_configs
 
     @staticmethod
