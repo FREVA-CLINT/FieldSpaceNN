@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 
 from ...modules.field_space.field_space_base import DiffDecoder, GLOBAL_EMBEDDER_CACHE_KEY
+from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule
 from ...modules.embedding.embedder import get_embedder
 from .block_wrap_operations import (
     BlockWrapContext,
@@ -218,6 +219,21 @@ class MG_Transformer(MG_base_model):
                 list(self.Blocks.values())[-1].out_features = [current_in_features[0]]
 
         self.decoder: DiffDecoder = DiffDecoder()
+
+    def set_attention_capture(self, enabled: bool = True, clear: bool = True) -> None:
+        for module in self.modules():
+            if isinstance(module, FieldSpaceAttentionModule):
+                module.set_attention_capture(enabled=enabled, clear=clear)
+
+    def get_attention_captures(self, clear: bool = False) -> Dict[str, Dict[str, Any]]:
+        captures: Dict[str, Dict[str, Any]] = {}
+        for name, module in self.named_modules():
+            if not isinstance(module, FieldSpaceAttentionModule):
+                continue
+            attention = module.get_last_attention(clear=clear)
+            if attention is not None:
+                captures[name] = attention
+        return captures
 
     def _iter_attention_block_configs(
         self,

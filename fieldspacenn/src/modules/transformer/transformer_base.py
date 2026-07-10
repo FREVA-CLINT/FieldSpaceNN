@@ -1,3 +1,4 @@
+import math
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import torch
@@ -17,13 +18,60 @@ from ..base import get_layer, IdentityLayer, MLP_fac
 from ..field_space.field_space_base import LinEmbLayer
 
 
+def _normalize_scaled_dot_product_attention_mask(
+    mask: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
+    if mask is None:
+        return None
+    return mask == False if mask.dtype == torch.bool else mask
+
+
+def reference_scaled_dot_product_attention(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    is_causal: bool = False,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Reference scaled dot-product attention that also returns attention weights.
+
+    :param q: Query tensor of shape ``(b, h, l_q, d)``.
+    :param k: Key tensor of shape ``(b, h, l_k, d)``.
+    :param v: Value tensor of shape ``(b, h, l_k, d)``.
+    :param attn_mask: Optional normalized attention mask matching PyTorch semantics.
+    :param is_causal: Whether to apply causal masking.
+    :return: Tuple of attention output and attention weights.
+    """
+    attn_scores = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(q.shape[-1]))
+
+    if is_causal:
+        causal_mask = torch.ones(
+            (q.shape[-2], k.shape[-2]),
+            dtype=torch.bool,
+            device=q.device,
+        ).tril()
+        attn_scores = attn_scores.masked_fill(~causal_mask, float("-inf"))
+
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_scores = attn_scores.masked_fill(~attn_mask, float("-inf"))
+        else:
+            attn_scores = attn_scores + attn_mask.to(device=attn_scores.device, dtype=attn_scores.dtype)
+
+    attn_weights = torch.softmax(attn_scores, dim=-1)
+    attn_out = torch.matmul(attn_weights, v)
+    return attn_out, attn_weights
+
+
 def safe_scaled_dot_product_attention(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
     is_causal: bool = False,
-    chunk_size: int = 2**16
+    chunk_size: int = 2**16,
+    return_attention: bool = False,
 ):
     """
     Apply scaled dot-product attention with batch chunking to avoid CUDA issues.
@@ -34,22 +82,33 @@ def safe_scaled_dot_product_attention(
     :param mask: Optional attention mask of shape ``(b, h, l_q, l_k)``.
     :param is_causal: Whether to apply causal masking.
     :param chunk_size: Chunk size for batch splitting.
-    :return: Attention output of shape ``(b, h, l_q, d)``.
+    :param return_attention: Whether to also return attention weights.
+    :return: Attention output of shape ``(b, h, l_q, d)``, and optionally attention
+        weights of shape ``(b, h, l_q, l_k)``.
     """
     B, H, _, _ = q.shape
 
     # Reduce chunk size per head to stay within kernel limits.
     safe_chunk_size = chunk_size // H
 
-    if mask is not None:
-        mask = mask==False if mask.dtype==torch.bool else mask
+    mask = _normalize_scaled_dot_product_attention_mask(mask)
 
-    if B <= safe_chunk_size:
+    if B <= safe_chunk_size and not return_attention:
         return scaled_dot_product_attention(
             q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=is_causal
         )
 
+    if B <= safe_chunk_size:
+        return reference_scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=mask,
+            is_causal=is_causal,
+        )
+
     results = []
+    attention_results = [] if return_attention else None
     for i in range(0, B, safe_chunk_size):
         q_chunk = q[i:i + safe_chunk_size]
         k_chunk = k[i:i + safe_chunk_size]
@@ -61,18 +120,33 @@ def safe_scaled_dot_product_attention(
                 mask_chunk = mask[i:i + safe_chunk_size]
             else:
                 mask_chunk = mask
-        
-        chunk_result = scaled_dot_product_attention(
-            q_chunk,
-            k_chunk,
-            v_chunk,
-            attn_mask=mask_chunk,
-            dropout_p=0.0,
-            is_causal=is_causal,
-        )
+
+        if return_attention:
+            chunk_result, chunk_attention = reference_scaled_dot_product_attention(
+                q_chunk,
+                k_chunk,
+                v_chunk,
+                attn_mask=mask_chunk,
+                is_causal=is_causal,
+            )
+            attention_results.append(chunk_attention)
+        else:
+            chunk_result = scaled_dot_product_attention(
+                q_chunk,
+                k_chunk,
+                v_chunk,
+                attn_mask=mask_chunk,
+                dropout_p=0.0,
+                is_causal=is_causal,
+            )
         results.append(chunk_result)
 
-    return torch.cat(results, dim=0)
+    attn_out = torch.cat(results, dim=0)
+    if not return_attention:
+        return attn_out
+
+    assert attention_results is not None
+    return attn_out, torch.cat(attention_results, dim=0)
 
 
 class SelfAttention(nn.Module):

@@ -481,6 +481,19 @@ class FieldSpaceAttentionModule(nn.Module):
 
         self.block: Optional[FieldSpaceAttentionBlock] = block
         self.concat_dim = -2 if with_var_att else 0
+        self.capture_attention: bool = False
+        self.last_attention: Optional[Dict[str, Any]] = None
+
+    def set_attention_capture(self, enabled: bool = True, clear: bool = True) -> None:
+        self.capture_attention = bool(enabled)
+        if clear or not enabled:
+            self.last_attention = None
+
+    def get_last_attention(self, clear: bool = False) -> Optional[Dict[str, Any]]:
+        attention = self.last_attention
+        if clear:
+            self.last_attention = None
+        return attention
     
     def forward(
         self,
@@ -501,6 +514,8 @@ class FieldSpaceAttentionModule(nn.Module):
         :return: Updated zoom groups with tensors shaped like ``(b, v, t, n, d, f)``.
         """
 
+        capture_attention = bool(getattr(self, "capture_attention", False))
+        self.last_attention = None
         x_ress, qs, Ks, Vs, masks, shapes, seq_lens = [], [], [], [], [], [], []
         active_group_indices = [k for k, is_active in enumerate(self.active_groups) if is_active]
         for block, k in zip(self.blocks, active_group_indices):
@@ -522,7 +537,37 @@ class FieldSpaceAttentionModule(nn.Module):
             mask = torch.concat(masks, dim=self.concat_dim) if self.use_mask else None
 
             # Shared attention across all groups.
-            att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
+            if capture_attention:
+                att_out, attention_weights = safe_scaled_dot_product_attention(
+                    q,
+                    K,
+                    V,
+                    mask=mask,
+                    return_attention=True,
+                )
+                self.last_attention = {
+                    "weights": attention_weights.detach(),
+                    "active_group_indices": tuple(active_group_indices),
+                    "group_seq_lens": tuple(int(seq_len) for seq_len in seq_lens),
+                    "group_shapes": [dict(shape) for shape in shapes],
+                    "group_block_metadata": [
+                        {
+                            "token_zoom": int(getattr(block, "token_zoom", -1)),
+                            "seq_zoom": int(getattr(block, "seq_zoom", -1)),
+                            "q_zooms": tuple(int(zoom) for zoom in getattr(block, "q_zooms", ())),
+                            "kv_zooms": tuple(int(zoom) for zoom in getattr(block, "kv_zooms", ())),
+                            "with_var_att": bool(getattr(block, "with_var_att", False)),
+                        }
+                        for block in self.blocks
+                    ],
+                    "concat_dim": self.concat_dim,
+                    "q_shape": tuple(q.shape),
+                    "k_shape": tuple(K.shape),
+                    "v_shape": tuple(V.shape),
+                    "mask_shape": None if mask is None else tuple(mask.shape),
+                }
+            else:
+                att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
 
             # Split attention outputs back to per-group chunks.
             att_outs = att_out.split(seq_lens, dim=self.concat_dim)
@@ -746,6 +791,8 @@ class FieldSpaceAttentionBlock(nn.Module):
             self.self_att = False
 
         self.token_zoom: int = grid_layer_field.zoom
+        self.seq_zoom: int = seq_zoom
+        self.with_var_att: bool = with_var_att
 
         self.q_projection_layers: nn.ModuleDict = nn.ModuleDict()
         self.kv_projection_layers: nn.ModuleDict = nn.ModuleDict()
@@ -1045,6 +1092,20 @@ class FieldSpaceAttentionBlock(nn.Module):
             self.att_pattern = 'b v T N D t n d (NH H) -> (b v T N D) NH (t n d) H'
             self.mask_pattern = 'b v T N D t n d 1 -> (b v T N D) 1 1 (v t n d)'
             self.att_pattern_reverse = '(b v T N D) NH (t n d) H -> b v (T t) (N n) (D d) 1 1 1 (NH H)'
+
+        self.capture_attention: bool = False
+        self.last_attention: Optional[Dict[str, Any]] = None
+
+    def set_attention_capture(self, enabled: bool = True, clear: bool = True) -> None:
+        self.capture_attention = bool(enabled)
+        if clear or not enabled:
+            self.last_attention = None
+
+    def get_last_attention(self, clear: bool = False) -> Optional[Dict[str, Any]]:
+        attention = self.last_attention
+        if clear:
+            self.last_attention = None
+        return attention
 
     def get_ms_features(self, zooms: List[int]) -> Dict[int, int]:
         """
@@ -1391,13 +1452,32 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param sample_configs: Sampling configuration per zoom.
         :return: Updated zoom tensors shaped like ``(b, v, t, n, d, f)``.
         """
+        capture_attention = bool(getattr(self, "capture_attention", False))
+        self.last_attention = None
         x_base, q, K, V, mask, shape = self.create_QKV(
             x_zooms,
             emb=emb,
             sample_configs=sample_configs,
             mask_zooms=mask_zooms,
         )
-        att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
+        if capture_attention:
+            att_out, attention_weights = safe_scaled_dot_product_attention(
+                q,
+                K,
+                V,
+                mask=mask,
+                return_attention=True,
+            )
+            self.last_attention = {
+                "weights": attention_weights.detach(),
+                "shape": dict(shape),
+                "q_shape": tuple(q.shape),
+                "k_shape": tuple(K.shape),
+                "v_shape": tuple(V.shape),
+                "mask_shape": None if mask is None else tuple(mask.shape),
+            }
+        else:
+            att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
         return self.forward_mlp(
             x_zooms,
             x_base,
