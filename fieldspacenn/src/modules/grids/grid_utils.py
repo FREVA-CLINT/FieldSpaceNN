@@ -793,7 +793,11 @@ def get_matching_time_patch(
     ts_end = sample_configs[zoom_h]['n_future_ts'] - sample_configs[zoom_target]['n_future_ts']
     
     b,nv,nt,n = x_h.shape[:4]
-    c = x_h.shape[-2:]
+    # Preserve every axis after the spatial patch axis.  Neighborhood gathering
+    # adds an ``nh`` axis before depth/features, so keeping only the final two
+    # axes would fold ``nh`` into space for lower zooms while the target zoom
+    # retained it, making multi-zoom concatenation impossible.
+    c = x_h.shape[4:]
     
     if sample_configs[zoom_h]['zoom_patch_sample'] == -1 and sample_configs[zoom_target]['zoom_patch_sample'] == -1:
         # Global case: just slice the aligned time range.

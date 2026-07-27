@@ -225,7 +225,16 @@ class Tokenizer(nn.Module):
         x_out = []
         for zoom in self.input_zooms:
             x = x_zooms[zoom]
-            x, mask = self.grid_layers_overlap[str(zoom)].get_nh(x, zoom, **sample_configs[zoom], mask=mask, zoom_patch_out=self.token_zoom)
+            # Each zoom must receive the caller's mask.  The neighborhood mask
+            # returned for one zoom has a zoom-specific spatial shape and must
+            # not be reused as the input mask for the next zoom.
+            x, _ = self.grid_layers_overlap[str(zoom)].get_nh(
+                x,
+                zoom,
+                **sample_configs[zoom],
+                mask=mask,
+                zoom_patch_out=self.token_zoom,
+            )
 
             x = get_matching_time_patch(x, zoom, max(self.input_zooms), sample_configs)
 

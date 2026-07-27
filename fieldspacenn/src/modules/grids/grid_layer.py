@@ -301,25 +301,85 @@ class GridLayer(nn.Module):
             and ``(b, ..., n, nh, m)`` respectively.
         """
 
-        # Get neighborhood indices and adjacency mask.
-        adjc_patch, adjc_mask = get_nh_idx_of_patch(self.adjc, patch_index, zoom_patch_sample)
-        
-        # Gather neighborhood data
-        x = gather_nh_data(x, adjc_patch)
+        zoom_patch_out = self.zoom if zoom_patch_out is None else zoom_patch_out
+
+        # Work with patch-local indices. Neighbors outside the sampled region
+        # are replaced by a valid local fallback and tracked in ``adjc_mask``.
+        adjc_patch, adjc_mask = get_nh_idx_of_patch(
+            self.adjc, patch_index, zoom_patch_sample
+        )
+
+        # Match the global overlap layout: retain the patch points and append
+        # only neighbors that cross each output-token boundary. Gathering all
+        # nine neighbors for every point produces a different token size and is
+        # both redundant and incompatible with ``get_number_of_points_in_patch``.
+        if zoom_patch_out == self.zoom:
+            neighbor_columns = torch.arange(
+                self.adjc.shape[-1], device=adjc_patch.device
+            )
+        else:
+            neighbor_columns = torch.tensor(
+                [2, 4, 6, 8], device=adjc_patch.device
+            )
+
+        indices = adjc_patch.index_select(-1, neighbor_columns)
+        invalid = adjc_mask.index_select(-1, neighbor_columns)
+
+        points_per_token = 4 ** (self.zoom - zoom_patch_out)
+        n_tokens = indices.shape[1] // points_per_token
+        indices = indices.view(
+            indices.shape[0], n_tokens, points_per_token, indices.shape[-1]
+        )
+        invalid = invalid.view_as(indices)
+
+        token_starts = (
+            torch.arange(n_tokens, device=indices.device, dtype=indices.dtype)
+            * points_per_token
+        ).view(1, n_tokens, 1, 1)
+        outside_token = (
+            (indices < token_starts)
+            | (indices >= token_starts + points_per_token)
+            | invalid
+        )
+
+        boundary_counts = outside_token.sum(dim=(-1, -2))
+        if boundary_counts.unique().numel() != 1:
+            raise ValueError("neighbourhood not consistent across sampled token patches")
+        n_boundary = int(boundary_counts.reshape(-1)[0])
+
+        boundary_indices = indices[outside_token].view(
+            indices.shape[0], n_tokens, n_boundary
+        )
+        patch_indices = torch.concat((indices[..., 0], boundary_indices), dim=-1)
+
+        boundary_invalid = invalid[outside_token].view(
+            invalid.shape[0], n_tokens, n_boundary
+        )
+        patch_mask = torch.concat((invalid[..., 0], boundary_invalid), dim=-1)
+
+        def gather_patch(data: torch.Tensor) -> torch.Tensor:
+            batch = patch_indices.shape[0]
+            data = data.view(batch, -1, data.shape[-2], data.shape[-1])
+            gather_indices = patch_indices.view(batch, 1, -1, 1).expand(
+                -1, data.shape[1], -1, data.shape[-1]
+            )
+            gathered = torch.gather(data, -2, gather_indices)
+            return gathered.view(
+                -1, n_tokens, patch_indices.shape[-1], data.shape[-1]
+            )
+
+        x = gather_patch(x)
 
         if mask is not None:
-            # Combine provided mask with adjacency mask.
-            mask = gather_nh_data(mask, adjc_patch)
-            mask = mask.view(adjc_mask.shape[0], -1, *mask.shape[1:])
+            mask = gather_patch(mask)
+            mask = mask.view(patch_mask.shape[0], -1, *mask.shape[1:])
+            invalid_expanded = patch_mask.unsqueeze(1).unsqueeze(-1).expand_as(mask)
             if mask.dtype == torch.bool:
-                # Mark invalid neighbors as masked.
-                mask = torch.logical_or(mask, adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask))
+                mask = torch.logical_or(mask, invalid_expanded)
             else:
-                # Fill invalid neighbors for float masks (e.g., additive attention masks).
-                mask.masked_fill_(adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1).expand_as(mask), float("inf"))
+                mask.masked_fill_(invalid_expanded, float("inf"))
         else:
-            # Use adjacency mask if no mask is provided.
-            mask = adjc_mask.unsqueeze(dim=-1).unsqueeze(dim=1)
+            mask = patch_mask.unsqueeze(dim=-1).unsqueeze(dim=1)
         
         return x, mask
     
@@ -484,7 +544,12 @@ class GridLayer(nn.Module):
 
         elif mask is not None:
             # Broadcast masks when they do not include b/v/t axes.
-            mask = mask.unsqueeze(dim=1).expand(-1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1)
+            # ``get_sample_patch_with_nh`` creates an adjacency mask shaped
+            # (b, 1, n, nh, m).  Add both the variable axis and the refined
+            # spatial/depth axis before expanding it to the full tensor layout.
+            mask = mask.unsqueeze(dim=1).unsqueeze(dim=-2).expand(
+                -1, bvt[1], bvt[2], -1, -1, 4**zoom_diff, -1
+            )
 
         x = x.view(*bvt, s//4**(input_zoom - zoom_patch_out), -1, *fs)
     
