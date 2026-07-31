@@ -71,8 +71,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             source_groups,
             target_groups,
             sample_configs,
-            mask_groups,
-            emb_groups,
+            mask_zooms=mask_groups,
+            emb=emb_groups,
             prefix='train'
         )
 
@@ -107,8 +107,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             source_groups,
             target_groups,
             sample_configs,
-            mask_groups,
-            emb_groups,
+            mask_zooms=mask_groups,
+            emb=emb_groups,
             prefix='val'
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups

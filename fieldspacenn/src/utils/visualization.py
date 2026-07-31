@@ -286,8 +286,11 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
 
     save_paths = []
 
-    B, V, T, _, _, _ = gt_zooms[zoom_levels[-1]].shape
-    plot_ts = (T-1) - np.arange(plot_n_ts)
+    ref_zoom = zoom_levels_output_gt[-1]
+    _, v_out, t_out, _, _, _ = output_zooms[ref_zoom].shape
+    _, v_gt, t_gt, _, _, _ = gt_zooms[ref_zoom].shape
+    max_vars = min(v_out, v_gt)
+    max_ts = min(t_out, t_gt)
 
     if max_vars <= 0 or max_ts <= 0:
         return []

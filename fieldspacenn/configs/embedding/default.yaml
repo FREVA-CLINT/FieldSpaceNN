@@ -44,3 +44,9 @@ MGEmbedder:
 StaticVariableEmbedder:
   in_channels: 2
   embed_dim: 64
+ForcingEmbedder:
+  in_channels: null
+  embed_dim: 64
+  hidden_dim: 64
+  forcing_names: ${oc.select:data_variables.embedding_1D,[]}
+  shared: false

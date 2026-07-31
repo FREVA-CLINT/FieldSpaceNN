@@ -744,7 +744,7 @@ class BaseDataset(Dataset):
             if arr.dtype == np.float64:
                 arr = arr.astype(np.float32, copy=False)
             # Normalize in raw array layout first.
-            data_g = torch.from_numpy(arr)
+            data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
             if self.normalize_data:
                 for k, variable in enumerate(variables):
                     data_g[k] = self.var_normalizers[zoom][variable].normalize(data_g[k])
@@ -1164,8 +1164,14 @@ class BaseDataset(Dataset):
             selected_var_ids[group] = np.array(
                 [self.all_variable_ids[var_name] for var_name in selected_vars[group]], dtype=np.int64
             )
-            selected_mask_indices[group] = np.arange(running_var_offset, running_var_offset + len(selected_vars[group]))
-            running_var_offset += len(selected_vars[group])
+            if group in ('embedding', 'embedding_1D'):
+                selected_mask_indices[group] = np.array([], dtype=np.int64)
+            else:
+                selected_mask_indices[group] = np.arange(
+                    running_var_offset,
+                    running_var_offset + len(selected_vars[group]),
+                )
+                running_var_offset += len(selected_vars[group])
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
@@ -1244,7 +1250,12 @@ class BaseDataset(Dataset):
                 drop_mask_zoom_groups = [None for _ in group_keys]
             else:
                 for group in group_keys:
-                    drop_mask_zoom_groups.append(drop_mask_zoom[selected_mask_indices[group]].unsqueeze(0))
+                    if group in ('embedding', 'embedding_1D'):
+                        drop_mask_zoom_groups.append(None)
+                    else:
+                        drop_mask_zoom_groups.append(
+                            drop_mask_zoom[selected_mask_indices[group]].unsqueeze(0)
+                        )
     
             start_times_source = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
             end_times_source = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
@@ -1322,7 +1333,7 @@ class BaseDataset(Dataset):
                 if group == 'embedding_1D':
                     source_zooms_groups[group_idx][zoom] = self.get_forcing_data(
                         ds_source,
-                        time_indices,
+                        time_indices_emb,
                         selected_vars[group],
                         zoom,
                     )
@@ -1461,13 +1472,15 @@ class BaseDataset(Dataset):
                 mask_zooms_groups_[zoom] = torch.concat(mask_groups_zoom, dim=-1)
 
             reference_zoom = max(source_zooms_groups_out_.keys())
-            emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
-                    'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
+            emb = {'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
                     'TimeProgressEmbedder': emb_groups[0]['TimeProgressEmbedder'],
                     'PressureLevelEmbedder': emb_groups[0]['PressureLevelEmbedder'],
                     'TimeIndexEmbedder': emb_groups[0]['TimeIndexEmbedder'],
-                    'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[-1], dtype=torch.long),
-                    'ForcingEmbedder': emb_groups[0]['ForcingEmbedder']}
+                    'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[-1], dtype=torch.long)}
+            if 'StaticVariableEmbedder' in emb_groups[0]:
+                emb['StaticVariableEmbedder'] = emb_groups[0]['StaticVariableEmbedder']
+            if 'ForcingEmbedder' in emb_groups[0]:
+                emb['ForcingEmbedder'] = emb_groups[0]['ForcingEmbedder']
 
             emb_groups = [emb]
             source_zooms_groups_out = [source_zooms_groups_out_]
