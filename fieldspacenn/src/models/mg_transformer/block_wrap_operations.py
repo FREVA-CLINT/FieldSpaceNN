@@ -7,8 +7,6 @@ import torch.nn as nn
 
 from ...modules.field_space.field_space_base import (
     GLOBAL_EMBEDDER_CACHE_KEY,
-    coarsen_zoom,
-    refine_zoom,
 )
 from ...modules.grids.grid_utils import decode_zooms, encode_zooms, to_zoom
 from ...modules.grids.grid_layer import GridLayer
@@ -432,108 +430,6 @@ class ShiftGroupsBlockWrapOperation(BlockWrapOperation):
             x_zooms_groups[group_idx] = x_zooms
 
         return x_zooms_groups
-
-
-class RefineGroupsBlockWrapConfig(BlockWrapConfig):
-    operation_kind = "refine_groups"
-
-    def __init__(self, refine_zooms: Mapping[int, int], **kwargs: Any) -> None:
-        self.refine_zooms: Dict[int, int]
-
-        inputs = copy.deepcopy(locals())
-        for input_name, value in inputs.items():
-            if input_name == "kwargs":
-                for kw_name, kw_value in value.items():
-                    setattr(self, kw_name, kw_value)
-            elif input_name == "refine_zooms":
-                setattr(self, input_name, {int(key): int(val) for key, val in value.items()})
-            else:
-                setattr(self, input_name, value)
-
-    def build(
-        self,
-        *,
-        grid_layers: nn.ModuleDict,
-    ) -> BlockWrapOperation:
-        del grid_layers
-        return RefineGroupsBlockWrapOperation(refine_zooms=self.refine_zooms)
-
-
-class RefineGroupsBlockWrapOperation(BlockWrapOperation):
-    operation_kind = "refine_groups"
-
-    def __init__(self, *, refine_zooms: Mapping[int, int]) -> None:
-        super().__init__()
-        self.refine_zooms = dict(refine_zooms)
-        if not self.refine_zooms:
-            raise ValueError("RefineGroupsBlockWrapOperation requires a non-empty refine_zooms mapping.")
-
-    def pre(
-        self,
-        x_zooms_groups: ZoomGroups,
-        context: BlockWrapContext,
-    ) -> Tuple[ZoomGroups, None]:
-        del context
-        for group_idx, x_zooms in enumerate(x_zooms_groups):
-            for in_zoom, out_zoom in self.refine_zooms.items():
-                if in_zoom not in x_zooms:
-                    raise ValueError(
-                        f"RefineGroupsBlockWrapOperation requires zoom {in_zoom} in group {group_idx}."
-                    )
-                x_zooms[out_zoom] = refine_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
-            x_zooms_groups[group_idx] = x_zooms
-        return x_zooms_groups, None
-
-
-class CoarsenGroupsBlockWrapConfig(BlockWrapConfig):
-    operation_kind = "coarsen_groups"
-
-    def __init__(self, coarsen_zooms: Mapping[int, int], **kwargs: Any) -> None:
-        self.coarsen_zooms: Dict[int, int]
-
-        inputs = copy.deepcopy(locals())
-        for input_name, value in inputs.items():
-            if input_name == "kwargs":
-                for kw_name, kw_value in value.items():
-                    setattr(self, kw_name, kw_value)
-            elif input_name == "coarsen_zooms":
-                setattr(self, input_name, {int(key): int(val) for key, val in value.items()})
-            else:
-                setattr(self, input_name, value)
-
-    def build(
-        self,
-        *,
-        grid_layers: nn.ModuleDict,
-    ) -> BlockWrapOperation:
-        del grid_layers
-        return CoarsenGroupsBlockWrapOperation(coarsen_zooms=self.coarsen_zooms)
-
-
-class CoarsenGroupsBlockWrapOperation(BlockWrapOperation):
-    operation_kind = "coarsen_groups"
-
-    def __init__(self, *, coarsen_zooms: Mapping[int, int]) -> None:
-        super().__init__()
-        self.coarsen_zooms = dict(coarsen_zooms)
-        if not self.coarsen_zooms:
-            raise ValueError("CoarsenGroupsBlockWrapOperation requires a non-empty coarsen_zooms mapping.")
-
-    def pre(
-        self,
-        x_zooms_groups: ZoomGroups,
-        context: BlockWrapContext,
-    ) -> Tuple[ZoomGroups, None]:
-        del context
-        for group_idx, x_zooms in enumerate(x_zooms_groups):
-            for in_zoom, out_zoom in self.coarsen_zooms.items():
-                if in_zoom not in x_zooms:
-                    raise ValueError(
-                        f"CoarsenGroupsBlockWrapOperation requires zoom {in_zoom} in group {group_idx}."
-                    )
-                x_zooms[out_zoom] = coarsen_zoom(x_zooms[in_zoom], in_zoom, out_zoom)
-            x_zooms_groups[group_idx] = x_zooms
-        return x_zooms_groups, None
 
 
 class ReencodeZoomsBlockWrapConfig(BlockWrapConfig):
@@ -1076,6 +972,8 @@ class MergeGroupsBlockWrapOperation(BlockWrapOperation):
         for group_idx, group_shapes in enumerate(state.group_shapes):
             restored_group: ZoomGroup = {}
             for zoom in state.zoom_order:
+                if zoom not in merged_group0:
+                    continue
                 shape = group_shapes[zoom]
                 if group_idx == 0:
                     flat_width = int(shape[1])

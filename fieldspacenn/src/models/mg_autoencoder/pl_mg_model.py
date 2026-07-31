@@ -61,7 +61,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         :param batch_idx: Index of the current batch.
         :return: Training loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.datamodule.dataset_train
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         # Inject patch indices into the sampling configuration.

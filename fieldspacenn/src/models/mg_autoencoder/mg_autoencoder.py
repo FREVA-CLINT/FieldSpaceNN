@@ -4,7 +4,12 @@ import torch
 import torch.nn as nn
 
 from ..mg_transformer.mg_base_model import MG_base_model, create_encoder_decoder_block, create_missing_zooms
-from ..mg_transformer.mg_transformer import DiffDecoder
+from ..mg_transformer.mg_transformer import BlockExecutionStage
+from ..mg_transformer.block_wrap_operations import (
+    BlockWrapConfig,
+    BlockWrapContext,
+    create_block_wrap_operation,
+)
 from ...modules.field_space.field_space_base import DiffDecoder
 
 class MG_AutoEncoder(MG_base_model):
@@ -45,50 +50,161 @@ class MG_AutoEncoder(MG_base_model):
 
         self.out_features: int = out_features
 
-        # Construct blocks based on configurations
-        self.encoder_blocks: nn.ModuleDict = nn.ModuleDict()
-        self.decoder_blocks: nn.ModuleDict = nn.ModuleDict()
-
-        in_features = [in_features]*len(in_zooms)
-
-        # Build encoder blocks, tracking output feature/zoom changes.
-        for block_key, block_conf in encoder_block_configs.items():
-            assert isinstance(block_key, str), "block keys should be strings"
-            block = create_encoder_decoder_block(
-                block_conf,
-                in_zooms,
-                in_features,
-                n_groups_variables,
-                grid_layers=self.grid_layers,
-                **kwargs,
-            )
-
-            self.encoder_blocks[block_key] = block
-
-            in_features = block.out_features
-            in_zooms = block.out_zooms
+        in_features = [in_features] * len(in_zooms)
+        self.encoder_blocks, in_zooms, in_features = self._build_block_stack(
+            encoder_block_configs,
+            in_zooms,
+            in_features,
+            n_groups_variables,
+            kwargs,
+        )
 
         self.bottleneck_zooms: Sequence[int] = in_zooms
 
-        # Build decoder blocks, tracking output feature/zoom changes.
-        for block_key, block_conf in decoder_block_configs.items():
+        self.decoder_blocks, in_zooms, in_features = self._build_block_stack(
+            decoder_block_configs,
+            in_zooms,
+            in_features,
+            n_groups_variables,
+            kwargs,
+        )
+
+        self.decoder: DiffDecoder = DiffDecoder()
+
+    def _build_block_stack(
+        self,
+        block_configs: Mapping[str, Any],
+        in_zooms: Sequence[int],
+        in_features: Sequence[int],
+        n_groups_variables: Sequence[int],
+        block_build_kwargs: Mapping[str, Any],
+    ) -> tuple[nn.ModuleDict, Sequence[int], Sequence[int]]:
+        modules = nn.ModuleDict()
+        current_in_zooms = list(in_zooms)
+        current_in_features = list(in_features)
+        n_groups_depths = list(
+            block_build_kwargs.get(
+                "n_groups_depths",
+                [1] * len(n_groups_variables),
+            )
+        )
+
+        for block_key, block_conf in block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
+
+            if isinstance(block_conf, BlockWrapConfig):
+                stage_block_configs = getattr(block_conf, "block_configs", None)
+                if not stage_block_configs:
+                    raise ValueError(
+                        "Autoencoder BlockWrapConfig entries must define nested block_configs."
+                    )
+
+                stage_build_kwargs = dict(block_build_kwargs)
+                stage_build_kwargs.update(
+                    block_conf.get_block_build_overrides(
+                        n_groups_variables=n_groups_variables,
+                        n_groups_depths=n_groups_depths,
+                        base_block_kwargs=stage_build_kwargs,
+                    )
+                )
+                stage_in_zooms = block_conf.get_stage_input_zooms(current_in_zooms)
+                stage_in_features = block_conf.get_stage_input_features(
+                    current_in_zooms=current_in_zooms,
+                    current_in_features=current_in_features,
+                )
+                stage_blocks = nn.ModuleDict()
+                current_in_zooms = list(stage_in_zooms)
+                current_in_features = list(stage_in_features)
+                stage_n_groups_variables = list(
+                    stage_build_kwargs.pop("n_groups_variables", n_groups_variables)
+                )
+                stage_n_groups_depths = list(
+                    stage_build_kwargs.pop("n_groups_depths", n_groups_depths)
+                )
+                stage_shared_indexed_group_variables = list(
+                    stage_build_kwargs.pop(
+                        "shared_indexed_group_variables",
+                        [False] * len(stage_n_groups_variables),
+                    )
+                )
+                stage_shared_indexed_group_depths = list(
+                    stage_build_kwargs.pop(
+                        "shared_indexed_group_depths",
+                        [False] * len(stage_n_groups_variables),
+                    )
+                )
+                stage_shared_indexed_group_space = list(
+                    stage_build_kwargs.pop(
+                        "shared_indexed_group_space",
+                        [False] * len(stage_n_groups_variables),
+                    )
+                )
+                for stage_block_key, stage_block_conf in stage_block_configs.items():
+                    stage_block = create_encoder_decoder_block(
+                        stage_block_conf,
+                        current_in_zooms,
+                        current_in_features,
+                        stage_n_groups_variables,
+                        self.grid_layers,
+                        stage_n_groups_depths,
+                        stage_shared_indexed_group_variables,
+                        stage_shared_indexed_group_depths,
+                        stage_shared_indexed_group_space,
+                        **stage_build_kwargs,
+                    )
+                    stage_blocks[stage_block_key] = stage_block
+                    current_in_zooms = list(stage_block.out_zooms)
+                    current_in_features = list(stage_block.out_features)
+
+                modules[block_key] = BlockExecutionStage(
+                    wrap_operations={
+                        block_key: create_block_wrap_operation(
+                            block_conf,
+                            grid_layers=self.grid_layers,
+                        )
+                    },
+                    blocks=stage_blocks,
+                )
+                continue
+
             block = create_encoder_decoder_block(
                 block_conf,
-                in_zooms,
-                in_features,
+                current_in_zooms,
+                current_in_features,
                 n_groups_variables,
                 grid_layers=self.grid_layers,
-                **kwargs,
+                **block_build_kwargs,
             )
-            self.decoder_blocks[block_key] = block
+            modules[block_key] = block
+            current_in_zooms = list(block.out_zooms)
+            current_in_features = list(block.out_features)
 
-            in_features = block.out_features
-            in_zooms = block.out_zooms
+        return modules, current_in_zooms, current_in_features
 
-        block.out_features = [in_features[0]]
-        
-        self.decoder: DiffDecoder = DiffDecoder()
+    @staticmethod
+    def _run_block_stack(
+        blocks: nn.ModuleDict,
+        x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        sample_configs: Mapping[int, Any],
+        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
+        emb_groups: Optional[Sequence[Dict[str, Any]]],
+    ) -> Sequence[Optional[Dict[int, torch.Tensor]]]:
+        context = BlockWrapContext(
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            sample_configs=sample_configs,
+        )
+        for block in blocks.values():
+            if isinstance(block, BlockExecutionStage):
+                x_zooms_groups = block(x_zooms_groups, context)
+            else:
+                x_zooms_groups = block(
+                    x_zooms_groups,
+                    sample_configs=context.sample_configs,
+                    mask_groups=context.mask_groups,
+                    emb_groups=context.emb_groups,
+                )
+        return x_zooms_groups
 
     def ae_encode(
         self,
@@ -107,9 +223,13 @@ class MG_AutoEncoder(MG_base_model):
         :param emb_groups: Optional list of embedding dictionaries aligned with inputs.
         :return: Encoded zoom-group mappings.
         """
-        for k, block in enumerate(self.encoder_blocks.values()):
-            x_zooms_groups = block(x_zooms_groups, sample_configs=sample_configs, mask_groups=mask_groups, emb_groups=emb_groups)
-        return x_zooms_groups
+        return self._run_block_stack(
+            self.encoder_blocks,
+            x_zooms_groups,
+            sample_configs,
+            mask_groups,
+            emb_groups,
+        )
 
     def ae_decode(
         self,
@@ -130,8 +250,13 @@ class MG_AutoEncoder(MG_base_model):
         :param out_zoom: Optional target zoom level to decode outputs into.
         :return: Decoded zoom-group mappings.
         """
-        for k, block in enumerate(self.decoder_blocks.values()):
-            x_zooms_groups = block(x_zooms_groups, sample_configs=sample_configs, mask_groups=mask_groups, emb_groups=emb_groups)
+        x_zooms_groups = self._run_block_stack(
+            self.decoder_blocks,
+            x_zooms_groups,
+            sample_configs,
+            mask_groups,
+            emb_groups,
+        )
         
         if out_zoom is not None:
             # Optionally decode to a single requested zoom after the decoder stack.
