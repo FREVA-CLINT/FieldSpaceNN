@@ -12,6 +12,8 @@ from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, Fiel
 from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
 from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
 from ...modules.field_space.zoom_level_transform import (
+    ReencodeZoomsLayer,
+    ReencodeZoomsLayerConfig,
     ZoomLevelTransformConfig,
     ZoomLevelTransformLayer,
 )
@@ -213,6 +215,13 @@ def create_encoder_decoder_block(
     if isinstance(block_conf, ConservativeLayerConfig):
         block = ConservativeLayer(in_zooms)
         block.out_features = in_features
+
+    elif isinstance(block_conf, ReencodeZoomsLayerConfig):
+        block = ReencodeZoomsLayer(
+            config=block_conf,
+            in_zooms=in_zooms,
+            in_features=in_features,
+        )
 
     elif isinstance(block_conf, ZoomLevelTransformConfig):
         block = ZoomLevelTransformLayer(
