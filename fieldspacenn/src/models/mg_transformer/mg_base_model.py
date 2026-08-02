@@ -213,7 +213,10 @@ def create_encoder_decoder_block(
 
     # Select the correct block implementation based on the config type.
     if isinstance(block_conf, ConservativeLayerConfig):
-        block = ConservativeLayer(in_zooms)
+        block = ConservativeLayer(
+            in_zooms,
+            mean_strengths=block_conf.mean_strengths,
+        )
         block.out_features = in_features
 
     elif isinstance(block_conf, ReencodeZoomsLayerConfig):

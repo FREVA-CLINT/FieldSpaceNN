@@ -111,7 +111,26 @@ def add_time_overlap_from_neighbor_patches(
 
 
 class ConservativeLayerConfig:
-    pass
+    """Configure how strongly each zoom contributes its local mean to its parent."""
+
+    def __init__(
+        self,
+        mean_strengths: Optional[Mapping[int, float]] = None,
+    ) -> None:
+        """
+        Store per-child-zoom mean strengths.
+
+        A value for zoom ``z`` scales the local mean added from ``z`` to the next
+        lower configured zoom. Unspecified zooms retain the original strength of
+        ``1.0``.
+
+        :param mean_strengths: Optional mapping from child zoom to mean strength.
+        :return: None.
+        """
+        self.mean_strengths = {
+            int(zoom): float(strength)
+            for zoom, strength in (mean_strengths or {}).items()
+        }
 
 
 
@@ -692,13 +711,17 @@ class ConservativeLayer(nn.Module):
   
     def __init__(self,
                  in_zooms: List[int],
-                 first_feature_only=False
+                 first_feature_only: bool = False,
+                 mean_strengths: Optional[Mapping[int, float]] = None,
                 ) -> None: 
         """
         Initialize a conservative layer that preserves coarse averages.
 
         :param in_zooms: Input zoom levels.
         :param first_feature_only: Whether to apply conservation to first feature only.
+        :param mean_strengths: Optional mapping from child zoom to the factor applied
+            to its local mean before adding it to the next lower configured zoom.
+            Unspecified child zooms use ``1.0``.
         :return: None.
         """
       
@@ -707,14 +730,30 @@ class ConservativeLayer(nn.Module):
         self.ffo: bool = first_feature_only
 
         self.proj_layers: nn.ModuleDict = nn.ModuleDict()
-        self.out_zooms: List[int] = in_zooms
+        self.out_zooms: List[int] = [int(zoom) for zoom in in_zooms]
         
-        zooms_sorted = [int(t) for t in torch.tensor(in_zooms).sort(descending=True).values]
+        zooms_sorted = sorted(self.out_zooms, reverse=True)
         
         self.cons_dict = dict(zip(zooms_sorted[:-1],zooms_sorted[1:]))
         self.cons_dict[zooms_sorted[-1]] = zooms_sorted[-1]
 
-        self.in_zooms: List[int] = in_zooms
+        configured_strengths = {
+            int(zoom): float(strength)
+            for zoom, strength in (mean_strengths or {}).items()
+        }
+        child_zooms = set(zooms_sorted[:-1])
+        invalid_zooms = sorted(set(configured_strengths) - child_zooms)
+        if invalid_zooms:
+            raise ValueError(
+                "mean_strengths can only contain zooms with a lower configured "
+                f"parent; got {invalid_zooms} for in_zooms={self.out_zooms}."
+            )
+        self.mean_strengths: Dict[int, float] = {
+            zoom: configured_strengths.get(zoom, 1.0)
+            for zoom in child_zooms
+        }
+
+        self.in_zooms: List[int] = self.out_zooms
     
 
     def forward(
@@ -745,7 +784,16 @@ class ConservativeLayer(nn.Module):
                     mean = x.mean(dim=-3)
                     x = (x-mean.unsqueeze(dim=-3)).view(*x.shape[:3], -1, *x.shape[-2:])
 
-                    x_patch = get_matching_time_patch(x_zooms[self.cons_dict[zoom]], self.cons_dict[zoom], zoom, sample_configs) + mean
+                    mean_strength = self.mean_strengths[zoom]
+                    x_patch = (
+                        get_matching_time_patch(
+                            x_zooms[self.cons_dict[zoom]],
+                            self.cons_dict[zoom],
+                            zoom,
+                            sample_configs,
+                        )
+                        + mean_strength * mean
+                    )
 
                     x_zooms[self.cons_dict[zoom]] = insert_matching_time_patch(x_zooms[self.cons_dict[zoom]], x_patch, self.cons_dict[zoom], zoom, sample_configs)
 
