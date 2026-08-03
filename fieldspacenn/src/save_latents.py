@@ -1,4 +1,4 @@
-"""Encode a dataset with a trained multi-grid autoencoder and save its latents."""
+"""Encode a dataset with a trained multi-grid autoencoder into a Zarr store."""
 
 from __future__ import annotations
 
@@ -15,61 +15,10 @@ import zarr
 from hydra import compose, initialize_config_dir
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
+from lightning.pytorch.callbacks import BasePredictionWriter
 from omegaconf import ListConfig, OmegaConf, open_dict
 
 from .utils.helpers import load_from_state_dict
-
-
-def _cpu_tensor(tensor: torch.Tensor) -> torch.Tensor:
-    return tensor.detach().to(device="cpu").contiguous()
-
-
-def concatenate_latents(
-    predictions: Sequence[Mapping[str, Any]],
-) -> List[Dict[int, torch.Tensor]]:
-    """Concatenate every predicted group and zoom along the batch dimension."""
-    if not predictions:
-        raise ValueError("The encoder returned no prediction batches.")
-
-    outputs = [prediction.get("output") for prediction in predictions]
-    if any(not isinstance(output, (list, tuple)) for output in outputs):
-        raise TypeError("Expected each prediction's `output` to be a list of latent groups.")
-
-    group_count = len(outputs[0])
-    if any(len(output) != group_count for output in outputs):
-        raise ValueError("The number of latent groups changed between prediction batches.")
-
-    latents: List[Dict[int, torch.Tensor]] = []
-    for group_index in range(group_count):
-        group_batches = [output[group_index] for output in outputs]
-        populated_groups = [group for group in group_batches if group]
-        if not populated_groups:
-            latents.append({})
-            continue
-        if any(not isinstance(group, Mapping) for group in populated_groups):
-            raise TypeError(f"Latent group {group_index} is not a zoom-to-tensor mapping.")
-
-        zooms = {int(zoom) for zoom in populated_groups[0]}
-        for group in populated_groups[1:]:
-            if {int(zoom) for zoom in group} != zooms:
-                raise ValueError(
-                    f"The available zooms changed between batches for latent group {group_index}."
-                )
-
-        group_latents: Dict[int, torch.Tensor] = {}
-        for zoom in sorted(zooms):
-            tensors = []
-            for group in populated_groups:
-                tensor = group.get(zoom, group.get(str(zoom)))
-                if not torch.is_tensor(tensor):
-                    raise TypeError(
-                        f"Latent group {group_index}, zoom {zoom} is not a tensor."
-                    )
-                tensors.append(_cpu_tensor(tensor))
-            group_latents[zoom] = torch.cat(tensors, dim=0)
-        latents.append(group_latents)
-
-    return latents
 
 
 def _variable_groups(dataset: Any) -> List[Dict[str, Any]]:
@@ -94,6 +43,13 @@ def _mapping_value(mapping: Mapping[Any, Any], key: int) -> Any:
     raise KeyError(f"Key {key} not found in {list(mapping)}")
 
 
+def _zoom_tensor(mapping: Mapping[Any, torch.Tensor], zoom: int) -> torch.Tensor:
+    tensor = mapping.get(zoom, mapping.get(str(zoom)))
+    if not torch.is_tensor(tensor):
+        raise TypeError(f"Latent zoom {zoom} is not a tensor.")
+    return tensor
+
+
 def _as_file_list(files: Any) -> List[str]:
     if isinstance(files, ListConfig):
         return [str(path) for path in OmegaConf.to_container(files, resolve=True)]
@@ -109,7 +65,7 @@ def _source_files(dataset: Any, zoom: int) -> List[str]:
     return _as_file_list(_mapping_value(sources, zoom)["files"])
 
 
-def _source_coordinates(dataset: Any, expected_times: int) -> Dict[str, Any]:
+def _source_coordinates(dataset: Any) -> Dict[str, Any]:
     reference_zoom = min(int(zoom) for zoom in dataset.index_map)
     files = _source_files(dataset, reference_zoom)
     time_by_file: Dict[int, np.ndarray] = {}
@@ -133,44 +89,84 @@ def _source_coordinates(dataset: Any, expected_times: int) -> Dict[str, Any]:
         file_index = int(row[0])
         for source_time_index in row[2:]:
             time_values.append(time_by_file[file_index][int(source_time_index)])
-    time = np.asarray(time_values)
-    if len(time) != expected_times:
-        raise ValueError(
-            "Source time-coordinate length does not match encoded batch dimension: "
-            f"time={len(time)}, encoded={expected_times}."
-        )
 
     return {
-        "time": time,
+        "reference_zoom": reference_zoom,
+        "time": np.asarray(time_values),
         "time_attrs": time_attrs,
         "level": level_values,
         "level_attrs": level_attrs,
     }
 
 
-def _create_array(
+def _flatten_batch_indices(batch_indices: Any) -> List[int]:
+    if batch_indices is None:
+        return []
+    if torch.is_tensor(batch_indices):
+        return [int(index) for index in batch_indices.detach().cpu().view(-1).tolist()]
+    if isinstance(batch_indices, np.ndarray):
+        return [int(index) for index in batch_indices.reshape(-1).tolist()]
+    if isinstance(batch_indices, (list, tuple)):
+        indices: List[int] = []
+        for item in batch_indices:
+            indices.extend(_flatten_batch_indices(item))
+        return indices
+    return [int(batch_indices)]
+
+
+def _create_empty_array(
     group: Any,
     name: str,
-    data: np.ndarray,
+    shape: Sequence[int],
+    chunks: Sequence[int],
+    dtype: Any,
     dimensions: Sequence[str],
-    chunks: Sequence[int] | None = None,
     attrs: Mapping[str, Any] | None = None,
+    fill_value: Any = None,
 ) -> Any:
-    chunk_shape = tuple(chunks or data.shape)
+    if fill_value is None:
+        fill_value = np.nan if np.issubdtype(np.dtype(dtype), np.floating) else 0
     kwargs = {
-        "shape": tuple(data.shape),
-        "chunks": chunk_shape,
-        "dtype": data.dtype,
-        "fill_value": np.nan if np.issubdtype(data.dtype, np.floating) else 0,
+        "shape": tuple(shape),
+        "chunks": tuple(chunks),
+        "dtype": dtype,
+        "fill_value": fill_value,
     }
     try:
         array = group.create_array(name, dimension_names=tuple(dimensions), **kwargs)
     except TypeError:
-        array = group.create_array(name, **kwargs)
+        try:
+            array = group.create_array(name, **kwargs)
+        except AttributeError:
+            array = group.create_dataset(name, **kwargs)
+    except AttributeError:
+        array = group.create_dataset(name, **kwargs)
+
     array.attrs["_ARRAY_DIMENSIONS"] = list(dimensions)
     if attrs:
         array.attrs.update(dict(attrs))
-    array[...] = data
+    return array
+
+
+def _create_coordinate(
+    group: Any,
+    name: str,
+    values: np.ndarray,
+    attrs: Mapping[str, Any] | None = None,
+    chunk_size: int | None = None,
+) -> Any:
+    values = np.asarray(values)
+    chunks = (min(chunk_size or len(values), len(values)),)
+    array = _create_empty_array(
+        group=group,
+        name=name,
+        shape=values.shape,
+        chunks=chunks,
+        dtype=values.dtype,
+        dimensions=(name,),
+        attrs=attrs,
+    )
+    array[...] = values
     return array
 
 
@@ -185,9 +181,15 @@ def _variable_data_and_dimensions(
             f"got {tuple(tensor.shape)}."
         )
 
-    # Put the spatial cell after level so the conventional climate-field layout
-    # becomes (time, level, cell) when all auxiliary latent axes are singleton.
-    data = tensor[:, :, variable_index].permute(0, 1, 2, 4, 3, 5)
+    # Move only one variable from the accelerator to CPU at a time. Put cell
+    # after level so the common layouts become (time, cell) and
+    # (time, level, cell).
+    data = (
+        tensor[:, :, variable_index]
+        .detach()
+        .to(device="cpu")
+        .permute(0, 1, 2, 4, 3, 5)
+    )
     dimensions = ["time", "sample", "token_time", "level", "cell", "feature"]
     required_dimensions = {"time", "cell"}
     selectors = tuple(
@@ -199,159 +201,316 @@ def _variable_data_and_dimensions(
         for size, dimension in zip(data.shape, dimensions)
         if size > 1 or dimension in required_dimensions
     ]
-    return data[selectors].numpy(), retained_dimensions
+    return data[selectors].contiguous().numpy(), retained_dimensions
 
 
-def save_zarr(
-    output_path: Path,
-    latents: Sequence[Mapping[int, torch.Tensor]],
-    dataset: Any,
-    checkpoint: Path,
-    config_dir: Path,
-    config_name: str,
-    test_split: Any,
-    time_chunk: int,
-    overwrite: bool,
-) -> None:
-    groups = _variable_groups(dataset)
-    if len(groups) != len(latents):
-        raise ValueError(
-            "Latent group count does not match configured variable groups: "
-            f"latents={len(latents)}, variables={len(groups)}."
+class LatentZarrPredictionWriter(BasePredictionWriter):
+    """Write each predicted latent batch directly to its final Zarr region."""
+
+    def __init__(
+        self,
+        output_path: Path,
+        dataset: Any,
+        checkpoint: Path,
+        config_dir: Path,
+        config_name: str,
+        test_split: Any,
+        time_chunk: int,
+        overwrite: bool,
+    ) -> None:
+        super().__init__(write_interval="batch")
+        self.output_path = output_path
+        self.dataset = dataset
+        self.checkpoint = checkpoint
+        self.config_dir = config_dir
+        self.config_name = config_name
+        self.time_chunk = int(time_chunk)
+        self.overwrite = bool(overwrite)
+        self.variable_groups = _variable_groups(dataset)
+        self.source_coordinates = _source_coordinates(dataset)
+        self.n_times = len(self.source_coordinates["time"])
+        self.reference_zoom = int(self.source_coordinates["reference_zoom"])
+
+        if self.n_times == 0:
+            raise ValueError("The configured dataset contains no source time coordinates.")
+        if output_path.exists() and not overwrite:
+            raise FileExistsError(
+                f"Output store already exists: {output_path}. Pass --overwrite to replace it."
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.temporary_path = Path(
+            tempfile.mkdtemp(prefix=f".{output_path.name}.", dir=str(output_path.parent))
         )
-    if not latents or not any(latents):
-        raise ValueError("No populated latent groups were produced.")
-
-    first_tensor = next(tensor for group in latents for tensor in group.values())
-    source_coordinates = _source_coordinates(dataset, expected_times=int(first_tensor.shape[0]))
-    zooms = sorted({int(zoom) for group in latents for zoom in group})
-
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(
-            f"Output store already exists: {output_path}. Pass --overwrite to replace it."
-        )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = Path(
-        tempfile.mkdtemp(prefix=f".{output_path.name}.", dir=str(output_path.parent))
-    )
-
-    try:
-        root = zarr.open_group(str(temporary_path), mode="w")
-        root.attrs.update(
+        self.root = zarr.open_group(str(self.temporary_path), mode="w")
+        self.root.attrs.update(
             {
                 "format_version": 1,
                 "representation": "fieldspacenn_autoencoder_latent",
                 "checkpoint": str(checkpoint),
                 "config_dir": str(config_dir),
                 "config_name": config_name,
-                "variable_groups": groups,
+                "variable_groups": self.variable_groups,
                 "test_split": OmegaConf.to_container(test_split, resolve=True),
-                "zoom_groups": [f"zoom_{zoom}" for zoom in zooms],
+                "zoom_groups": [],
             }
         )
 
-        for zoom in zooms:
-            zoom_group = root.create_group(f"zoom_{zoom}")
-            zoom_group.attrs.update(
-                {
-                    "healpix_nested": True,
-                    "healpix_zoom": zoom,
-                    "representation": "autoencoder_latent",
-                }
-            )
-            _create_array(
-                zoom_group,
-                "time",
-                source_coordinates["time"],
-                ("time",),
-                chunks=(min(time_chunk, len(source_coordinates["time"])),),
-                attrs=source_coordinates["time_attrs"],
+        self.zoom_groups: Dict[int, Any] = {}
+        self.arrays: Dict[tuple[int, str], Any] = {}
+        self.coordinate_sizes: Dict[int, Dict[str, int]] = {}
+        self.written_times = np.zeros(self.n_times, dtype=bool)
+        self.finalized = False
+
+    def _batch_time_indices(self, batch_indices: Any) -> np.ndarray:
+        dataset_indices = _flatten_batch_indices(batch_indices)
+        if not dataset_indices:
+            raise ValueError("Lightning did not provide batch indices for streaming Zarr output.")
+
+        rows = self.dataset.index_map[self.reference_zoom]
+        time_indices: List[int] = []
+        running_index = 0
+        lookup: Dict[tuple[int, int], int] = {}
+        for row in rows:
+            file_index = int(row[0])
+            for source_time_index in row[2:]:
+                lookup[(file_index, int(source_time_index))] = running_index
+                running_index += 1
+        for dataset_index in dataset_indices:
+            row = rows[dataset_index]
+            file_index = int(row[0])
+            for source_time_index in row[2:]:
+                time_indices.append(lookup[(file_index, int(source_time_index))])
+        return np.asarray(time_indices, dtype=np.int64)
+
+    def _ensure_zoom_group(self, zoom: int, tensor: torch.Tensor) -> Any:
+        if zoom in self.zoom_groups:
+            return self.zoom_groups[zoom]
+
+        cell_count = int(tensor.shape[4])
+        expected_cell_count = 12 * (2**zoom) ** 2
+        if cell_count != expected_cell_count:
+            raise ValueError(
+                f"Zoom {zoom} has {cell_count} cells; expected {expected_cell_count} for HEALPix. "
+                "Streaming output currently requires full-globe latent batches."
             )
 
-            cell_count = int(next(group[zoom].shape[4] for group in latents if zoom in group))
-            expected_cell_count = 12 * (2**zoom) ** 2
-            if cell_count != expected_cell_count:
+        group = self.root.create_group(f"zoom_{zoom}")
+        group.attrs.update(
+            {
+                "healpix_nested": True,
+                "healpix_zoom": zoom,
+                "representation": "autoencoder_latent",
+            }
+        )
+        _create_coordinate(
+            group,
+            "time",
+            self.source_coordinates["time"],
+            attrs=self.source_coordinates["time_attrs"],
+            chunk_size=self.time_chunk,
+        )
+        _create_coordinate(group, "cell", np.arange(cell_count, dtype=np.int64))
+
+        self.zoom_groups[zoom] = group
+        self.coordinate_sizes[zoom] = {"time": self.n_times, "cell": cell_count}
+        self.root.attrs["zoom_groups"] = [
+            f"zoom_{known_zoom}" for known_zoom in sorted(self.zoom_groups)
+        ]
+        return group
+
+    def _ensure_dimension_coordinate(self, zoom: int, dimension: str, size: int) -> None:
+        existing_size = self.coordinate_sizes[zoom].get(dimension)
+        if existing_size is not None:
+            if existing_size != size:
                 raise ValueError(
-                    f"Zoom {zoom} has {cell_count} cells; expected {expected_cell_count} for HEALPix."
+                    f"Dimension {dimension} at zoom {zoom} changed from {existing_size} to {size}."
                 )
-            _create_array(
-                zoom_group,
-                "cell",
-                np.arange(cell_count, dtype=np.int64),
-                ("cell",),
+            return
+
+        group = self.zoom_groups[zoom]
+        if dimension == "level":
+            values = self.source_coordinates["level"]
+            if values is None:
+                overwrite_depths = getattr(self.dataset, "overwrite_depths", None)
+                values = (
+                    np.arange(size, dtype=np.int64)
+                    if overwrite_depths is None
+                    else np.asarray(overwrite_depths.detach().cpu())
+                )
+            if len(values) != size:
+                raise ValueError(
+                    "Source level coordinate does not match the latent level dimension: "
+                    f"source={len(values)}, latent={size}."
+                )
+            attrs = self.source_coordinates["level_attrs"]
+        else:
+            values = np.arange(size, dtype=np.int64)
+            attrs = None
+        _create_coordinate(group, dimension, values, attrs=attrs)
+        self.coordinate_sizes[zoom][dimension] = size
+
+    def _ensure_variable_array(
+        self,
+        zoom: int,
+        variable: str,
+        variable_group: str,
+        data: np.ndarray,
+        dimensions: Sequence[str],
+    ) -> Any:
+        key = (zoom, variable)
+        if key in self.arrays:
+            array = self.arrays[key]
+            expected_shape = (self.n_times, *data.shape[1:])
+            if tuple(array.shape) != expected_shape:
+                raise ValueError(
+                    f"Latent shape for {variable} at zoom {zoom} changed: "
+                    f"stored={array.shape}, batch={data.shape}."
+                )
+            return array
+
+        for dimension, size in zip(dimensions[1:], data.shape[1:]):
+            self._ensure_dimension_coordinate(zoom, dimension, int(size))
+
+        shape = (self.n_times, *data.shape[1:])
+        chunks = (min(self.time_chunk, self.n_times), *data.shape[1:])
+        array = _create_empty_array(
+            group=self.zoom_groups[zoom],
+            name=variable,
+            shape=shape,
+            chunks=chunks,
+            dtype=data.dtype,
+            dimensions=dimensions,
+            attrs={
+                "representation": "autoencoder_latent",
+                "source_variable": variable,
+                "variable_group": variable_group,
+                "coordinates": "time cell" + (" level" if "level" in dimensions else ""),
+            },
+        )
+        self.arrays[key] = array
+        return array
+
+    @staticmethod
+    def _write_time_rows(array: Any, time_indices: np.ndarray, data: np.ndarray) -> None:
+        if len(np.unique(time_indices)) != len(time_indices):
+            raise ValueError(f"A prediction batch contains duplicate time indices: {time_indices}.")
+        if len(time_indices) > 0 and np.array_equal(
+            time_indices, np.arange(time_indices[0], time_indices[0] + len(time_indices))
+        ):
+            array[int(time_indices[0]) : int(time_indices[-1]) + 1] = data
+            return
+        selection = (time_indices,) + (slice(None),) * (data.ndim - 1)
+        array.oindex[selection] = data
+
+    def write_on_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: Any,
+        prediction: Mapping[str, Any],
+        batch_indices: Any,
+        batch: Any,
+        batch_idx: int,
+        dataloader_idx: int,
+    ) -> None:
+        if not trainer.is_global_zero:
+            return
+        if prediction is None or "output" not in prediction:
+            raise ValueError(f"Prediction batch {batch_idx} has no `output` entry.")
+        output_groups = prediction["output"]
+        if not isinstance(output_groups, (list, tuple)):
+            raise TypeError("Prediction `output` must be a list of latent variable groups.")
+        if len(output_groups) != len(self.variable_groups):
+            raise ValueError(
+                "Latent group count does not match configured variable groups: "
+                f"latents={len(output_groups)}, variables={len(self.variable_groups)}."
             )
 
-            coordinate_sizes: Dict[str, int] = {}
-            for latent_group, variable_group in zip(latents, groups):
-                if zoom not in latent_group:
-                    continue
-                tensor = latent_group[zoom]
-                variables = variable_group["variables"]
+        first_group = next((group for group in output_groups if group), None)
+        if first_group is None:
+            raise ValueError(f"Prediction batch {batch_idx} contains no latent tensors.")
+        first_zoom = int(next(iter(first_group)))
+        batch_size = int(_zoom_tensor(first_group, first_zoom).shape[0])
+        time_indices = self._batch_time_indices(batch_indices)
+        if len(time_indices) != batch_size:
+            raise ValueError(
+                f"Time index count {len(time_indices)} does not match latent batch size {batch_size}."
+            )
+
+        for output_group, variable_group in zip(output_groups, self.variable_groups):
+            if not output_group:
+                continue
+            variables = variable_group["variables"]
+            for zoom_key in output_group:
+                zoom = int(zoom_key)
+                tensor = _zoom_tensor(output_group, zoom)
+                if int(tensor.shape[0]) != batch_size:
+                    raise ValueError(f"Batch size differs between latent groups at zoom {zoom}.")
                 if int(tensor.shape[2]) != len(variables):
                     raise ValueError(
                         f"Group {variable_group['name']} at zoom {zoom} contains "
                         f"{tensor.shape[2]} variables, expected {len(variables)}: {variables}."
                     )
+                self._ensure_zoom_group(zoom, tensor)
                 for variable_index, variable in enumerate(variables):
                     data, dimensions = _variable_data_and_dimensions(tensor, variable_index)
-                    chunks = list(data.shape)
-                    chunks[0] = min(time_chunk, data.shape[0])
-                    _create_array(
-                        zoom_group,
-                        variable,
-                        data,
-                        dimensions,
-                        chunks=chunks,
-                        attrs={
-                            "representation": "autoencoder_latent",
-                            "source_variable": variable,
-                            "variable_group": variable_group["name"],
-                            "coordinates": "time cell" + (" level" if "level" in dimensions else ""),
-                        },
+                    array = self._ensure_variable_array(
+                        zoom=zoom,
+                        variable=variable,
+                        variable_group=variable_group["name"],
+                        data=data,
+                        dimensions=dimensions,
                     )
-                    for dimension, size in zip(dimensions, data.shape):
-                        coordinate_sizes[dimension] = int(size)
+                    self._write_time_rows(array, time_indices, data)
 
-            if "level" in coordinate_sizes:
-                level = source_coordinates["level"]
-                if level is None:
-                    overwrite_depths = getattr(dataset, "overwrite_depths", None)
-                    level = (
-                        np.arange(coordinate_sizes["level"], dtype=np.int64)
-                        if overwrite_depths is None
-                        else np.asarray(overwrite_depths.detach().cpu())
-                    )
-                if len(level) != coordinate_sizes["level"]:
-                    raise ValueError(
-                        "Source level coordinate does not match the latent level dimension: "
-                        f"source={len(level)}, "
-                        f"latent={coordinate_sizes['level']}."
-                    )
-                _create_array(
-                    zoom_group,
-                    "level",
-                    level,
-                    ("level",),
-                    attrs=source_coordinates["level_attrs"],
+        self.written_times[time_indices] = True
+
+    def finalize(self) -> None:
+        if self.finalized:
+            return
+        missing_times = np.flatnonzero(~self.written_times)
+        if len(missing_times):
+            preview = missing_times[:10].tolist()
+            raise ValueError(
+                f"Streaming prediction did not write {len(missing_times)} time rows; "
+                f"first missing indices: {preview}."
+            )
+        if not self.arrays:
+            raise ValueError("Streaming prediction created no latent variable arrays.")
+
+        expected_variables = {
+            variable
+            for group in self.variable_groups
+            for variable in group["variables"]
+        }
+        for zoom in self.zoom_groups:
+            stored_variables = {
+                variable for stored_zoom, variable in self.arrays if stored_zoom == zoom
+            }
+            if stored_variables != expected_variables:
+                raise ValueError(
+                    f"Zoom {zoom} has incomplete variables: stored={sorted(stored_variables)}, "
+                    f"expected={sorted(expected_variables)}."
                 )
-            for dimension in ("sample", "token_time", "feature"):
-                if dimension in coordinate_sizes:
-                    _create_array(
-                        zoom_group,
-                        dimension,
-                        np.arange(coordinate_sizes[dimension], dtype=np.int64),
-                        (dimension,),
-                    )
 
-        if output_path.exists():
-            if output_path.is_dir():
-                shutil.rmtree(output_path)
+        zarr.consolidate_metadata(str(self.temporary_path))
+        if self.output_path.exists():
+            if self.output_path.is_dir():
+                shutil.rmtree(self.output_path)
             else:
-                output_path.unlink()
-        os.replace(temporary_path, output_path)
-    except Exception:
-        shutil.rmtree(temporary_path, ignore_errors=True)
-        raise
+                self.output_path.unlink()
+        os.replace(self.temporary_path, self.output_path)
+        self.finalized = True
+
+    def abort(self) -> None:
+        if not self.finalized:
+            shutil.rmtree(self.temporary_path, ignore_errors=True)
+
+    def summary_lines(self) -> List[str]:
+        return [
+            f"  zoom={zoom} variable={variable} shape={tuple(array.shape)} dtype={array.dtype}"
+            for (zoom, variable), array in sorted(self.arrays.items())
+        ]
 
 
 def _parse_args() -> argparse.Namespace:
@@ -384,6 +543,17 @@ def _parse_devices(value: str) -> Any:
     return value
 
 
+def _validate_single_device(devices: Any) -> None:
+    if devices == 1:
+        return
+    if isinstance(devices, list) and len(devices) == 1:
+        return
+    raise ValueError(
+        "Streaming latent export currently supports exactly one device because each rank "
+        "would otherwise write only its own dataset shard. Use --devices 1."
+    )
+
+
 def main() -> None:
     args = _parse_args()
     config_dir = Path(args.config_dir).expanduser().resolve()
@@ -398,6 +568,8 @@ def main() -> None:
         raise ValueError(f"Output must use the .zarr extension: {output_path}")
     if args.time_chunk < 1:
         raise ValueError("--time-chunk must be at least 1.")
+    devices = _parse_devices(args.devices)
+    _validate_single_device(devices)
 
     with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
         cfg = compose(config_name=args.config_name, overrides=args.override)
@@ -426,19 +598,8 @@ def main() -> None:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
-    trainer = Trainer(
-        accelerator=args.accelerator,
-        devices=_parse_devices(args.devices),
-        precision=args.precision,
-        logger=False,
-        enable_checkpointing=False,
-    )
-
-    predictions = trainer.predict(model=model, dataloaders=data_module.test_dataloader())
-    latents = concatenate_latents(predictions)
-    save_zarr(
+    writer = LatentZarrPredictionWriter(
         output_path=output_path,
-        latents=latents,
         dataset=test_dataset,
         checkpoint=checkpoint,
         config_dir=config_dir,
@@ -447,11 +608,29 @@ def main() -> None:
         time_chunk=args.time_chunk,
         overwrite=args.overwrite,
     )
+    trainer = Trainer(
+        accelerator=args.accelerator,
+        devices=devices,
+        precision=args.precision,
+        logger=False,
+        enable_checkpointing=False,
+        callbacks=[writer],
+    )
 
-    print(f"Saved {len(test_dataset)} encoded sample(s) to {output_path}")
-    for group_index, zooms in enumerate(latents):
-        for zoom, tensor in zooms.items():
-            print(f"  group={group_index} zoom={zoom} shape={tuple(tensor.shape)} dtype={tensor.dtype}")
+    try:
+        trainer.predict(
+            model=model,
+            dataloaders=data_module.test_dataloader(),
+            return_predictions=False,
+        )
+        writer.finalize()
+    except BaseException:
+        writer.abort()
+        raise
+
+    print(f"Streamed {writer.n_times} encoded sample(s) to {output_path}")
+    for line in writer.summary_lines():
+        print(line)
 
 
 if __name__ == "__main__":
