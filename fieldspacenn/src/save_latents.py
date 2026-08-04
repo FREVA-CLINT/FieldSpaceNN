@@ -1,4 +1,4 @@
-"""Encode a dataset with a trained multi-grid autoencoder into a Zarr store."""
+"""Encode a dataset into one Zarr store per latent zoom level."""
 
 from __future__ import annotations
 
@@ -233,34 +233,22 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
 
         if self.n_times == 0:
             raise ValueError("The configured dataset contains no source time coordinates.")
-        if output_path.exists() and not overwrite:
-            raise FileExistsError(
-                f"Output store already exists: {output_path}. Pass --overwrite to replace it."
-            )
-
         output_path.parent.mkdir(parents=True, exist_ok=True)
         self.temporary_path = Path(
             tempfile.mkdtemp(prefix=f".{output_path.name}.", dir=str(output_path.parent))
         )
-        self.root = zarr.open_group(str(self.temporary_path), mode="w")
-        self.root.attrs.update(
-            {
-                "format_version": 1,
-                "representation": "fieldspacenn_autoencoder_latent",
-                "checkpoint": str(checkpoint),
-                "config_dir": str(config_dir),
-                "config_name": config_name,
-                "variable_groups": self.variable_groups,
-                "test_split": OmegaConf.to_container(test_split, resolve=True),
-                "zoom_groups": [],
-            }
-        )
-
-        self.zoom_groups: Dict[int, Any] = {}
+        self.test_split = OmegaConf.to_container(test_split, resolve=True)
+        self.zoom_stores: Dict[int, Any] = {}
+        self.output_paths: Dict[int, Path] = {}
         self.arrays: Dict[tuple[int, str], Any] = {}
         self.coordinate_sizes: Dict[int, Dict[str, int]] = {}
-        self.written_times = np.zeros(self.n_times, dtype=bool)
+        self.written_times: Dict[int, np.ndarray] = {}
         self.finalized = False
+
+    def _zoom_output_path(self, zoom: int) -> Path:
+        return self.output_path.with_name(
+            f"{self.output_path.stem}_zoom_{zoom}{self.output_path.suffix}"
+        )
 
     def _batch_time_indices(self, batch_indices: Any) -> np.ndarray:
         dataset_indices = _flatten_batch_indices(batch_indices)
@@ -283,9 +271,9 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                 time_indices.append(lookup[(file_index, int(source_time_index))])
         return np.asarray(time_indices, dtype=np.int64)
 
-    def _ensure_zoom_group(self, zoom: int, tensor: torch.Tensor) -> Any:
-        if zoom in self.zoom_groups:
-            return self.zoom_groups[zoom]
+    def _ensure_zoom_store(self, zoom: int, tensor: torch.Tensor) -> Any:
+        if zoom in self.zoom_stores:
+            return self.zoom_stores[zoom]
 
         cell_count = int(tensor.shape[4])
         expected_cell_count = 12 * (2**zoom) ** 2
@@ -295,29 +283,41 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                 "Streaming output currently requires full-globe latent batches."
             )
 
-        group = self.root.create_group(f"zoom_{zoom}")
-        group.attrs.update(
+        output_path = self._zoom_output_path(zoom)
+        if output_path.exists() and not self.overwrite:
+            raise FileExistsError(
+                f"Output store already exists: {output_path}. Pass --overwrite to replace it."
+            )
+
+        store_path = self.temporary_path / output_path.name
+        store = zarr.open_group(str(store_path), mode="w")
+        store.attrs.update(
             {
+                "format_version": 1,
+                "representation": "fieldspacenn_autoencoder_latent",
+                "checkpoint": str(self.checkpoint),
+                "config_dir": str(self.config_dir),
+                "config_name": self.config_name,
+                "variable_groups": self.variable_groups,
+                "test_split": self.test_split,
                 "healpix_nested": True,
                 "healpix_zoom": zoom,
-                "representation": "autoencoder_latent",
             }
         )
         _create_coordinate(
-            group,
+            store,
             "time",
             self.source_coordinates["time"],
             attrs=self.source_coordinates["time_attrs"],
             chunk_size=self.time_chunk,
         )
-        _create_coordinate(group, "cell", np.arange(cell_count, dtype=np.int64))
+        _create_coordinate(store, "cell", np.arange(cell_count, dtype=np.int64))
 
-        self.zoom_groups[zoom] = group
+        self.zoom_stores[zoom] = store
+        self.output_paths[zoom] = output_path
         self.coordinate_sizes[zoom] = {"time": self.n_times, "cell": cell_count}
-        self.root.attrs["zoom_groups"] = [
-            f"zoom_{known_zoom}" for known_zoom in sorted(self.zoom_groups)
-        ]
-        return group
+        self.written_times[zoom] = np.zeros(self.n_times, dtype=bool)
+        return store
 
     def _ensure_dimension_coordinate(self, zoom: int, dimension: str, size: int) -> None:
         existing_size = self.coordinate_sizes[zoom].get(dimension)
@@ -328,7 +328,7 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                 )
             return
 
-        group = self.zoom_groups[zoom]
+        store = self.zoom_stores[zoom]
         if dimension == "level":
             values = self.source_coordinates["level"]
             if values is None:
@@ -347,7 +347,7 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
         else:
             values = np.arange(size, dtype=np.int64)
             attrs = None
-        _create_coordinate(group, dimension, values, attrs=attrs)
+        _create_coordinate(store, dimension, values, attrs=attrs)
         self.coordinate_sizes[zoom][dimension] = size
 
     def _ensure_variable_array(
@@ -375,7 +375,7 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
         shape = (self.n_times, *data.shape[1:])
         chunks = (min(self.time_chunk, self.n_times), *data.shape[1:])
         array = _create_empty_array(
-            group=self.zoom_groups[zoom],
+            group=self.zoom_stores[zoom],
             name=variable,
             shape=shape,
             chunks=chunks,
@@ -451,7 +451,7 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                         f"Group {variable_group['name']} at zoom {zoom} contains "
                         f"{tensor.shape[2]} variables, expected {len(variables)}: {variables}."
                     )
-                self._ensure_zoom_group(zoom, tensor)
+                self._ensure_zoom_store(zoom, tensor)
                 for variable_index, variable in enumerate(variables):
                     data, dimensions = _variable_data_and_dimensions(tensor, variable_index)
                     array = self._ensure_variable_array(
@@ -463,18 +463,11 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                     )
                     self._write_time_rows(array, time_indices, data)
 
-        self.written_times[time_indices] = True
+                self.written_times[zoom][time_indices] = True
 
     def finalize(self) -> None:
         if self.finalized:
             return
-        missing_times = np.flatnonzero(~self.written_times)
-        if len(missing_times):
-            preview = missing_times[:10].tolist()
-            raise ValueError(
-                f"Streaming prediction did not write {len(missing_times)} time rows; "
-                f"first missing indices: {preview}."
-            )
         if not self.arrays:
             raise ValueError("Streaming prediction created no latent variable arrays.")
 
@@ -483,7 +476,14 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
             for group in self.variable_groups
             for variable in group["variables"]
         }
-        for zoom in self.zoom_groups:
+        for zoom in self.zoom_stores:
+            missing_times = np.flatnonzero(~self.written_times[zoom])
+            if len(missing_times):
+                preview = missing_times[:10].tolist()
+                raise ValueError(
+                    f"Zoom {zoom} did not write {len(missing_times)} time rows; "
+                    f"first missing indices: {preview}."
+                )
             stored_variables = {
                 variable for stored_zoom, variable in self.arrays if stored_zoom == zoom
             }
@@ -493,13 +493,16 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
                     f"expected={sorted(expected_variables)}."
                 )
 
-        zarr.consolidate_metadata(str(self.temporary_path))
-        if self.output_path.exists():
-            if self.output_path.is_dir():
-                shutil.rmtree(self.output_path)
-            else:
-                self.output_path.unlink()
-        os.replace(self.temporary_path, self.output_path)
+        for zoom, output_path in sorted(self.output_paths.items()):
+            temporary_store = self.temporary_path / output_path.name
+            zarr.consolidate_metadata(str(temporary_store))
+            if output_path.exists():
+                if output_path.is_dir():
+                    shutil.rmtree(output_path)
+                else:
+                    output_path.unlink()
+            os.replace(temporary_store, output_path)
+        self.temporary_path.rmdir()
         self.finalized = True
 
     def abort(self) -> None:
@@ -508,7 +511,8 @@ class LatentZarrPredictionWriter(BasePredictionWriter):
 
     def summary_lines(self) -> List[str]:
         return [
-            f"  zoom={zoom} variable={variable} shape={tuple(array.shape)} dtype={array.dtype}"
+            f"  store={self.output_paths[zoom]} variable={variable} "
+            f"shape={tuple(array.shape)} dtype={array.dtype}"
             for (zoom, variable), array in sorted(self.arrays.items())
         ]
 
@@ -518,7 +522,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config-dir", required=True, help="Directory containing the Hydra config.")
     parser.add_argument("--config-name", default="composed_config", help="Hydra config name.")
     parser.add_argument("--checkpoint", required=True, help="Trained autoencoder checkpoint.")
-    parser.add_argument("--output", required=True, help="Destination .zarr store.")
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="Output name template; e.g. latents.zarr creates latents_zoom_<level>.zarr.",
+    )
     parser.add_argument("--accelerator", default="cpu", help="Lightning accelerator (cpu, gpu, mps).")
     parser.add_argument("--devices", default="1", help="Lightning device count or device list.")
     parser.add_argument("--precision", default="32-true", help="Lightning inference precision.")
@@ -628,7 +636,10 @@ def main() -> None:
         writer.abort()
         raise
 
-    print(f"Streamed {writer.n_times} encoded sample(s) to {output_path}")
+    print(
+        f"Streamed {writer.n_times} encoded sample(s) to "
+        f"{len(writer.output_paths)} zoom-specific store(s)"
+    )
     for line in writer.summary_lines():
         print(line)
 

@@ -111,6 +111,8 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
     def _get_sample_configs(self, stage: str) -> Mapping[int, Any]:
         if stage == "predict":
             dataset = self.trainer.predict_dataloaders.dataset
+        elif stage == "train":
+            dataset = self.trainer.train_dataloader.dataset
         else:
             dataset = self.trainer.val_dataloaders.dataset
         return dataset.sampling_zooms_collate or dataset.sampling_zooms
@@ -431,16 +433,31 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         device = source_group[max(source_group.keys())].device
-        ts = torch.tensor([0.25, 0.5, 0.75, 1.0], device=device)
+        ts = torch.tensor([0.0, 0.25, 0.5, 0.75], device=device)
 
-        source_p = {zoom: source_group[zoom][0:1] for zoom in source_group.keys()}
-        target_p = {zoom: target_group[zoom][0:1] for zoom in target_group.keys()}
-        mask_p = (
-            {zoom: mask_group[zoom][0:1] for zoom in mask_group.keys()}
-            if mask_group
-            else None
-        )
-        emb_p = self._slice_batch_item(emb_group, index=0) if emb_group else None
+        source_groups_p = [
+            {zoom: tensor[0:1] for zoom, tensor in group.items()} if group else None
+            for group in source_groups
+        ]
+        target_groups_p = [
+            {zoom: tensor[0:1] for zoom, tensor in group.items()} if group else None
+            for group in target_groups
+        ]
+        mask_groups_p = [
+            {zoom: tensor[0:1] for zoom, tensor in group.items()} if group else None
+            for group in mask_groups
+        ]
+        emb_groups_p = [
+            self._slice_batch_item(group, index=0) if group else None
+            for group in emb_groups
+        ]
+
+        source_p = source_groups_p[group_idx]
+        target_p = target_groups_p[group_idx]
+        mask_p = mask_groups_p[group_idx]
+        emb_p = emb_groups_p[group_idx]
+        if source_p is None or target_p is None:
+            return
 
         patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
         sample_configs_p = merge_sampling_dicts(
@@ -448,10 +465,10 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             patch_index_zooms_p,
         )
 
-        target_groups_p: List[Optional[Dict[int, torch.Tensor]]] = [target_p.copy()]
-        mask_groups_p = [mask_p.copy()] if mask_p else [None]
-        emb_groups_p = [emb_p] if emb_p else [None]
-        noise_groups_p = [self.flow_matching.generate_noise(target_p)]
+        noise_groups_p = [
+            self.flow_matching.generate_noise(group) if group else None
+            for group in target_groups_p
+        ]
         time_dtype = next(iter(target_p.values())).dtype
 
         for t in ts:
@@ -471,7 +488,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             )
 
             _, _, pred_x1_groups = self._extract_training_losses(pred_x1_outputs)
-            pred_x1_group = pred_x1_groups[0] if pred_x1_groups else None
+            pred_x1_group = (
+                pred_x1_groups[group_idx]
+                if group_idx < len(pred_x1_groups)
+                else None
+            )
             if not pred_x1_group:
                 continue
 

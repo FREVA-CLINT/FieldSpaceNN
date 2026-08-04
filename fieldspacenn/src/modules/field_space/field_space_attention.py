@@ -9,6 +9,7 @@ import torch.nn as nn
 from ..base import get_layer, MLP_fac
 from ..factorization import broadcast_indexed_tensor, build_indexed_dims
 from .field_space_base import (
+    GLOBAL_EMBEDDER_CACHE_KEY,
     Tokenizer,
     LinEmbLayer,
     add_time_overlap_from_neighbor_patches,
@@ -21,6 +22,77 @@ from ..transformer.transformer_base import safe_scaled_dot_product_attention
 from ..embedding.embedder import get_embedder
 
 from ..grids.grid_utils import insert_matching_time_patch
+
+_TIME_EMBEDDING_KEYS = (
+    "TimeEmbedder",
+    "TimeProgressEmbedder",
+    "TimeIndexEmbedder",
+)
+
+
+def _align_time_embeddings_to_tokens(
+    emb: Optional[Dict[str, Any]],
+    *,
+    zoom: int,
+    token_len_time: int,
+    field_time_steps: int,
+) -> Optional[Dict[str, Any]]:
+    """Select the final timestep of every temporal token for time-aware inputs."""
+    if emb is None or token_len_time == 1:
+        return emb
+    if token_len_time < 1:
+        raise ValueError(f"token_len_time must be positive, got {token_len_time}")
+    if field_time_steps % token_len_time != 0:
+        raise ValueError(
+            f"Field time length {field_time_steps} is not divisible by "
+            f"token_len_time={token_len_time} at zoom {zoom}"
+        )
+
+    aligned_emb = dict(emb)
+    aligned_any = False
+    for emb_key in _TIME_EMBEDDING_KEYS:
+        if emb_key not in emb:
+            continue
+
+        zoom_values = emb[emb_key]
+        if not isinstance(zoom_values, Mapping):
+            raise ValueError(
+                f"{emb_key} must map zoom levels to tensors when "
+                f"token_len_time={token_len_time}"
+            )
+
+        zoom_key: Union[int, str]
+        if zoom in zoom_values:
+            zoom_key = zoom
+        elif str(zoom) in zoom_values:
+            zoom_key = str(zoom)
+        else:
+            raise ValueError(f"{emb_key} has no entry for active zoom {zoom}")
+
+        values = zoom_values[zoom_key]
+        if not torch.is_tensor(values) or values.ndim < 2:
+            shape = None if not torch.is_tensor(values) else tuple(values.shape)
+            raise ValueError(
+                f"{emb_key}[{zoom}] must be a tensor with batch and time axes; "
+                f"got {type(values).__name__} with shape {shape}"
+            )
+        if values.shape[1] != field_time_steps:
+            raise ValueError(
+                f"{emb_key}[{zoom}] has time length {values.shape[1]}, expected "
+                f"{field_time_steps} to match the field before temporal tokenization"
+            )
+
+        aligned_zoom_values = dict(zoom_values)
+        aligned_zoom_values[zoom_key] = values[
+            :, token_len_time - 1 : field_time_steps : token_len_time, ...
+        ].clone()
+        aligned_emb[emb_key] = aligned_zoom_values
+        aligned_any = True
+
+    if aligned_any:
+        aligned_emb.pop(GLOBAL_EMBEDDER_CACHE_KEY, None)
+    return aligned_emb
+
 
 def _is_sequence_value(value: Any) -> bool:
     return isinstance(value, (list, tuple, ListConfig))
@@ -84,27 +156,61 @@ def _normalize_ext_rank_depth(
     value: Any,
     n_groups: int,
     zooms: Sequence[int],
+    name: str = "rank_depth",
 ) -> List[Dict[int, Any]]:
-    """Normalize Ext rank_depth as scalar or group-by-zoom values."""
+    """Normalize an Ext depth rank as scalar or group-by-zoom values."""
     if not _is_sequence_value(value) and not isinstance(value, Mapping):
-        per_zoom = _normalize_axis_values(value, zooms, "rank_depth")
+        per_zoom = _normalize_axis_values(value, zooms, name)
         return [dict(per_zoom) for _ in range(n_groups)]
 
     if isinstance(value, Mapping):
-        group_values = _normalize_group_values(value, n_groups, "rank_depth")
+        group_values = _normalize_group_values(value, n_groups, name)
     else:
         values = list(value)
         is_nested = any(_is_sequence_value(item) or isinstance(item, Mapping) for item in values)
         if not is_nested:
             raise ValueError(
-                "Ext rank_depth must be a scalar or nested group-by-zoom values"
+                f"Ext {name} must be a scalar or nested group-by-zoom values"
             )
-        group_values = _normalize_group_values(values, n_groups, "rank_depth")
+        group_values = _normalize_group_values(values, n_groups, name)
 
     return [
-        _normalize_axis_values(group_value, zooms, f"rank_depth[{group_index}]")
+        _normalize_axis_values(group_value, zooms, f"{name}[{group_index}]")
         for group_index, group_value in enumerate(group_values)
     ]
+
+
+def _validate_numeric_leaves(
+    value: Any,
+    name: str,
+    *,
+    allow_none: bool,
+    minimum: int,
+) -> None:
+    """Validate scalar or nested numeric configuration values."""
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            _validate_numeric_leaves(
+                item,
+                f"{name}[{key}]",
+                allow_none=allow_none,
+                minimum=minimum,
+            )
+        return
+    if _is_sequence_value(value):
+        for index, item in enumerate(value):
+            _validate_numeric_leaves(
+                item,
+                f"{name}[{index}]",
+                allow_none=allow_none,
+                minimum=minimum,
+            )
+        return
+    if value is None and allow_none:
+        return
+    if value is None or int(value) < minimum:
+        comparison = "non-negative" if minimum == 0 else "positive"
+        raise ValueError(f"{name} must be {comparison}")
 
 
 class FieldSpaceAttentionConfig:
@@ -127,7 +233,9 @@ class FieldSpaceAttentionConfig:
         rank_space: Union[List[int], int, None] = None,
         n_rank_space: Union[List[int], int, None] = None,
         rank_time: Union[List[int], int, None] = None,
+        n_rank_time: Union[List[int], int, None] = None,
         rank_depth: Union[List[int], int, None] = None,
+        n_rank_depth: Union[List[int], int, None] = None,
         rank_features: Union[List[int], int, None] = None,
         n_times: Union[List[int], int] = 1,
         n_depths: Union[List[int], int, None] = None,
@@ -177,8 +285,11 @@ class FieldSpaceAttentionConfig:
         :param token_overlap_mlp_time: MLP overlap along time.
         :param token_overlap_mlp_depth: MLP overlap along depth.
         :param rank_space: Optional rank for space.
+        :param n_rank_space: Optional indexed-tensor rank for space.
         :param rank_time: Optional rank for time.
+        :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
         :param rank_variables: Optional rank for features.
         :param seq_len_zoom: Sequence zoom for attention.
@@ -220,7 +331,9 @@ class FieldSpaceAttentionConfig:
         self.rank_space: Union[List[int], int, None]
         self.n_rank_space: Union[List[int], int, None]
         self.rank_time: Union[List[int], int, None]
+        self.n_rank_time: Union[List[int], int, None]
         self.rank_depth: Union[List[int], int, None]
+        self.n_rank_depth: Union[List[int], int, None]
         self.rank_features: Union[List[int], int, None]
         self.rank_variables: Union[List[int], int, None]
         self.n_times: Union[List[int], int]
@@ -261,6 +374,25 @@ class FieldSpaceAttentionConfig:
 
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
+
+        _validate_numeric_leaves(
+            n_rank_time,
+            "n_rank_time",
+            allow_none=True,
+            minimum=0,
+        )
+        _validate_numeric_leaves(
+            n_rank_space,
+            "n_rank_space",
+            allow_none=True,
+            minimum=0,
+        )
+        _validate_numeric_leaves(
+            n_rank_depth,
+            "n_rank_depth",
+            allow_none=True,
+            minimum=0,
+        )
 
         use_indexed_emb_layer, use_variable_emb_layer = _resolve_alias(use_indexed_emb_layer, use_variable_emb_layer)
         use_indexed_layer_norm, use_variable_layer_norm = _resolve_alias(use_indexed_layer_norm, use_variable_layer_norm)
@@ -310,7 +442,9 @@ class FieldSpaceAttentionModule(nn.Module):
         rank_space: Union[List[int], int, None] = None,
         n_rank_space: Union[List[int], int, None] = None,
         rank_time: Union[List[int], int, None] = None,
+        n_rank_time: Union[List[int], int, None] = None,
         rank_depth: Union[List[int], int, None] = None,
+        n_rank_depth: Union[List[int], int, None] = None,
         rank_features: Union[List[int], int, None] = None,
         n_times: Union[List[int], int] = 1,
         n_depths: Union[List[int], int, None] = None,
@@ -373,8 +507,11 @@ class FieldSpaceAttentionModule(nn.Module):
         :param token_overlap_mlp_time: MLP overlap along time.
         :param token_overlap_mlp_depth: MLP overlap along depth.
         :param rank_space: Optional rank for space.
+        :param n_rank_space: Optional indexed-tensor rank for space.
         :param rank_time: Optional rank for time.
+        :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
         :param rank_variables: Optional rank for variables.
         :param seq_len_zoom: Sequence zoom for attention.
@@ -410,6 +547,18 @@ class FieldSpaceAttentionModule(nn.Module):
         
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
+
+        for name, value in (
+            ("n_rank_time", n_rank_time),
+            ("n_rank_space", n_rank_space),
+            ("n_rank_depth", n_rank_depth),
+        ):
+            _validate_numeric_leaves(
+                value,
+                name,
+                allow_none=True,
+                minimum=0,
+            )
 
         # Normalize per-group configs so indexing is consistent across variable groups.
         n_groups = len(n_groups_variables)
@@ -533,6 +682,9 @@ class FieldSpaceAttentionModule(nn.Module):
                     n_rank_space, in_zooms, "n_rank_space"
                 ),
                 "rank_time": _normalize_axis_values(rank_time, in_zooms, "rank_time"),
+                "n_rank_time": _normalize_axis_values(
+                    n_rank_time, in_zooms, "n_rank_time"
+                ),
                 "rank_features": _normalize_axis_values(
                     rank_features, in_zooms, "rank_features"
                 ),
@@ -540,6 +692,12 @@ class FieldSpaceAttentionModule(nn.Module):
             }
             rank_depth_by_group = _normalize_ext_rank_depth(
                 rank_depth, n_groups, in_zooms
+            )
+            n_rank_depth_by_group = _normalize_ext_rank_depth(
+                n_rank_depth,
+                n_groups,
+                in_zooms,
+                name="n_rank_depth",
             )
         else:
             per_zoom_values = {}
@@ -556,6 +714,9 @@ class FieldSpaceAttentionModule(nn.Module):
                     n_rank_space, "n_rank_space"
                 ),
                 "rank_time": _collapse_shared_value(rank_time, "rank_time"),
+                "n_rank_time": _collapse_shared_value(
+                    n_rank_time, "n_rank_time"
+                ),
                 "rank_features": _collapse_shared_value(
                     rank_features, "rank_features"
                 ),
@@ -563,6 +724,9 @@ class FieldSpaceAttentionModule(nn.Module):
             }
             rank_depth_by_group = _normalize_group_values(
                 rank_depth, n_groups, "rank_depth"
+            )
+            n_rank_depth_by_group = _normalize_group_values(
+                n_rank_depth, n_groups, "n_rank_depth"
             )
 
         seq_zoom = min((min(q_zooms + kv_zooms)), seq_len_zoom)  
@@ -623,7 +787,9 @@ class FieldSpaceAttentionModule(nn.Module):
                         rank_space = zoom_or_shared["rank_space"],
                         n_rank_space = zoom_or_shared["n_rank_space"],
                         rank_time = zoom_or_shared["rank_time"],
+                        n_rank_time = zoom_or_shared["n_rank_time"],
                         rank_depth = rank_depth_by_group[k],
+                        n_rank_depth = n_rank_depth_by_group[k],
                         rank_features = zoom_or_shared["rank_features"],
                         rank_variables = zoom_or_shared["rank_variables"],
                         n_times = zoom_or_shared["n_times"],
@@ -761,7 +927,9 @@ class FieldSpaceAttentionBlock(nn.Module):
         rank_space: Optional[int] = None,
         n_rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
+        n_rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
+        n_rank_depth: Optional[int] = None,
         rank_features: Optional[int] = None,
         rank_variables: Optional[int] = None,
         n_times: int = 1,
@@ -822,8 +990,11 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param token_overlap_mlp_time: MLP overlap along time.
         :param token_overlap_mlp_depth: MLP overlap along depth.
         :param rank_space: Optional rank for space.
+        :param n_rank_space: Optional indexed-tensor rank for space.
         :param rank_time: Optional rank for time.
+        :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
         :param dropout: Dropout rate.
         :param n_head_channels: Head channel size.
@@ -854,6 +1025,28 @@ class FieldSpaceAttentionBlock(nn.Module):
         """
                
         super().__init__()
+
+        for name, value in (
+            ("n_rank_time", n_rank_time),
+            ("n_rank_space", n_rank_space),
+            ("n_rank_depth", n_rank_depth),
+        ):
+            _validate_numeric_leaves(
+                value,
+                name,
+                allow_none=True,
+                minimum=0,
+            )
+
+        self.n_rank_time = (
+            None if n_rank_time is None else int(n_rank_time)
+        )
+        self.n_rank_space = (
+            None if n_rank_space is None else int(n_rank_space)
+        )
+        self.n_rank_depth = (
+            None if n_rank_depth is None else int(n_rank_depth)
+        )
 
         target_zooms = q_zooms if target_zooms is None else target_zooms
         self.target_zooms: List[int] = target_zooms
@@ -1006,7 +1199,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         emb_tokenizer = Tokenizer(
             input_zooms=[input_zoom_field] if embedder and embedder.has_space() else [],
             token_zoom=token_zoom,
-            token_len_time=token_len_time if embedder and embedder.has_time() else 1,
+            token_len_time=1,
             token_len_depth=token_len_depth if embedder and embedder.has_depth() else 1,
             overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
             grid_layers=grid_layers
@@ -1027,18 +1220,20 @@ class FieldSpaceAttentionBlock(nn.Module):
                 return {}
 
             indexed_n_depths = max(1, int(n_depths) // max(1, int(token_len_depth))) if int(n_depths) > 1 else 1
-            indexed_n_space = 12 * 4**int(token_zoom) if n_rank_space is not None and int(n_rank_space) > 0 and int(token_zoom) >= 0 else 1
-            indexed_rank_space = int(n_rank_space) if indexed_n_space > 1 else None
+            indexed_n_space = 12 * 4**int(token_zoom) if self.n_rank_space is not None and self.n_rank_space > 0 and int(token_zoom) >= 0 else 1
+            indexed_rank_space = self.n_rank_space if indexed_n_space > 1 else None
 
             return build_indexed_dims(
                 n_variables=int(n_variables_local),
                 rank_variables=rank_variables_local,
                 same_values_variables=shared_indexed_variables,
                 n_times=int(n_times) if int(n_times) > 1 else 1,
+                rank_time=self.n_rank_time,
                 n_space=indexed_n_space,
                 rank_space=indexed_rank_space,
                 same_values_space=shared_indexed_space,
                 n_depths=indexed_n_depths,
+                rank_depth=self.n_rank_depth,
                 same_values_depths=shared_indexed_depths,
             )
 
@@ -1374,28 +1569,18 @@ class FieldSpaceAttentionBlock(nn.Module):
         return x
     
     
-    def select_emb(self, emb: Optional[Dict[str, Any]], sample_configs: Optional[Dict[str, Any]] = None):
-        """
-        Select embedding entries for the active zooms.
-
-        :param emb: Embedding dictionary or None.
-        :param sample_configs: Optional sampling configuration dictionary.
-        :return: Filtered embedding dictionary or None.
-        """
-        if sample_configs is None:
-            sample_configs = {}
-
-        if emb is None:
-            return None
-
-        # Shallow copy to avoid mutating the caller's embeddings.
-        emb_cpy = dict(emb)
-        for emb_key in ("TimeEmbedder", "TimeProgressEmbedder"):
-            if emb_key not in emb_cpy or not isinstance(emb_cpy[emb_key], dict):
-                continue
-            emb_cpy[emb_key] = {max(self.q_zooms): emb_cpy[emb_key][max(self.q_zooms)]}
-
-        return emb_cpy
+    def select_emb(
+        self,
+        emb: Optional[Dict[str, Any]],
+        field_time_steps: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Align time-aware embedding inputs with the outer temporal tokens."""
+        return _align_time_embeddings_to_tokens(
+            emb,
+            zoom=max(self.q_zooms),
+            token_len_time=self.token_len_time,
+            field_time_steps=field_time_steps,
+        )
 
     def _get_att_gamma(
         self,
@@ -1466,7 +1651,10 @@ class FieldSpaceAttentionBlock(nn.Module):
         # Tokenize input zoom tensors for attention.
         x = self.tokenizer(x_zooms_att, sample_configs)
 
-        emb_tokenized = emb#self.select_emb(emb)
+        emb_tokenized = self.select_emb(
+            emb,
+            field_time_steps=int(x.shape[2] * x.shape[5]),
+        )
 
         # Q path may include embedding projection.
         if self.emb_layer_q_field is not None:
@@ -1603,7 +1791,10 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param sample_configs: Sampling configuration per zoom.
         :return: Updated zoom tensors.
         """
-        emb_tokenized = emb
+        emb_tokenized = self.select_emb(
+            emb,
+            field_time_steps=int(x_base.shape[2] * x_base.shape[5]),
+        )
 
         att_out = rearrange(att_out, self.att_pattern_reverse, **shape)
 
@@ -1726,7 +1917,9 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         rank_space: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         n_rank_space: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_time: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
+        n_rank_time: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_depth: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
+        n_rank_depth: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_features: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_variables: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         n_times: Union[Mapping[int, int], Sequence[int], int] = 1,
@@ -1807,8 +2000,14 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         self.rank_time_by_zoom = _normalize_axis_values(
             rank_time, self.in_zooms, "rank_time"
         )
+        self.n_rank_time_by_zoom = _normalize_axis_values(
+            n_rank_time, self.in_zooms, "n_rank_time"
+        )
         self.rank_depth_by_zoom = _normalize_axis_values(
             rank_depth, self.in_zooms, "rank_depth"
+        )
+        self.n_rank_depth_by_zoom = _normalize_axis_values(
+            n_rank_depth, self.in_zooms, "n_rank_depth"
         )
         self.rank_features_by_zoom = _normalize_axis_values(
             rank_features, self.in_zooms, "rank_features"
@@ -1822,6 +2021,18 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 n_times, self.in_zooms, "n_times"
             ).items()
         }
+
+        for name, values in (
+            ("n_rank_time", self.n_rank_time_by_zoom),
+            ("n_rank_space", self.n_rank_space_by_zoom),
+            ("n_rank_depth", self.n_rank_depth_by_zoom),
+        ):
+            _validate_numeric_leaves(
+                values,
+                name,
+                allow_none=True,
+                minimum=0,
+            )
 
         self.token_zoom = int(token_zoom)
         self.token_len_depth = int(token_len_depth)
@@ -2290,12 +2501,14 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 self.n_times_by_zoom[zoom]
                 if self.n_times_by_zoom[zoom] > 1 else 1
             ),
+            rank_time=self.n_rank_time_by_zoom[zoom],
             n_space=indexed_n_space,
             rank_space=(
                 int(n_rank_space) if indexed_n_space > 1 else None
             ),
             same_values_space=self.shared_indexed_space,
             n_depths=indexed_n_depths,
+            rank_depth=self.n_rank_depth_by_zoom[zoom],
             same_values_depths=self.shared_indexed_depths,
         )
 
@@ -2320,10 +2533,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         emb_tokenizer = Tokenizer(
             [input_zoom_field] if embedder and embedder.has_space() else [],
             self.token_zoom,
-            token_len_time=(
-                self.token_len_time_by_zoom[zoom]
-                if embedder and embedder.has_time() else 1
-            ),
+            token_len_time=1,
             token_len_depth=(
                 self.token_len_depth if embedder and embedder.has_depth() else 1
             ),
@@ -2398,7 +2608,15 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             if mlp and self.separate_mlp_norm
             else self.pre_layers[key]
         )
-        x = pre_layer(x, emb=emb, sample_configs=sample_configs)
+        aligned_emb = _align_time_embeddings_to_tokens(
+            emb,
+            zoom=zoom,
+            token_len_time=self.token_len_time_by_zoom[zoom],
+            field_time_steps=int(
+                x.shape[2] * self.token_len_time_by_zoom[zoom]
+            ),
+        )
+        x = pre_layer(x, emb=aligned_emb, sample_configs=sample_configs)
         return self.get_time_depth_overlaps(
             x,
             overlap_time=(

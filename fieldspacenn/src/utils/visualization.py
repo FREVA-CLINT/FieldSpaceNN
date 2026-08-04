@@ -9,6 +9,8 @@ import numpy as np
 import torch
 from scipy.interpolate import griddata
 
+from ..modules.grids.grid_utils import get_matching_time_patch
+
 def healpix_plot_local(
     values: np.ndarray,
     zoom: int,
@@ -287,6 +289,35 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     save_paths = []
 
     ref_zoom = zoom_levels_output_gt[-1]
+
+    def _align_to_reference(
+        tensors_by_zoom: Dict[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        return {
+            zoom: get_matching_time_patch(
+                tensor,
+                zoom_h=zoom,
+                zoom_target=ref_zoom,
+                sample_configs=sample_configs,
+            )
+            if (
+                _is_plot_tensor(tensor)
+                and zoom in sample_configs
+                and ref_zoom in sample_configs
+            )
+            else tensor
+            for zoom, tensor in tensors_by_zoom.items()
+        }
+
+    # Zooms can contain different amounts of temporal context. Align all rows to
+    # the reference zoom before choosing a shared timestep index so that each row
+    # depicts the same physical time.
+    input_zooms = _align_to_reference(input_zooms)
+    output_zooms = _align_to_reference(output_zooms)
+    gt_zooms = _align_to_reference(gt_zooms)
+    if mask_zooms is not None:
+        mask_zooms = _align_to_reference(mask_zooms)
+
     _, v_out, t_out, _, _, _ = output_zooms[ref_zoom].shape
     _, v_gt, t_gt, _, _, _ = gt_zooms[ref_zoom].shape
     max_vars = min(v_out, v_gt)

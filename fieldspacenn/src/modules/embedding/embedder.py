@@ -1106,7 +1106,7 @@ class DiffusionStepEmbedder(BaseEmbedder):
         """
         super().__init__(name, in_channels, embed_dim)
         # keep batch and channel dimensions
-        self.keep_dims: List[str] = ["b", "t", "c"]
+        self.keep_dims: List[str] = ["b", "c"]
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn: nn.Module = nn.Sequential(

@@ -77,12 +77,13 @@ def _normalize_ext_rank_depth(
     value: Any,
     n_groups: int,
     zooms: Sequence[int],
+    name: str = "rank_depth",
 ) -> List[Dict[int, Any]]:
     if not _is_sequence_value(value) and not isinstance(value, Mapping):
-        per_zoom = _normalize_axis_values(value, zooms, "rank_depth")
+        per_zoom = _normalize_axis_values(value, zooms, name)
         return [dict(per_zoom) for _ in range(n_groups)]
     if isinstance(value, Mapping):
-        group_values = _normalize_group_values(value, n_groups, "rank_depth")
+        group_values = _normalize_group_values(value, n_groups, name)
     else:
         values = list(value)
         if not any(
@@ -90,11 +91,11 @@ def _normalize_ext_rank_depth(
             for item in values
         ):
             raise ValueError(
-                "Ext rank_depth must be a scalar or nested group-by-zoom values"
+                f"Ext {name} must be a scalar or nested group-by-zoom values"
             )
-        group_values = _normalize_group_values(values, n_groups, "rank_depth")
+        group_values = _normalize_group_values(values, n_groups, name)
     return [
-        _normalize_axis_values(group_value, zooms, f"rank_depth[{group_index}]")
+        _normalize_axis_values(group_value, zooms, f"{name}[{group_index}]")
         for group_index, group_value in enumerate(group_values)
     ]
 
@@ -143,7 +144,9 @@ class FieldSpaceLayerConfig:
         token_overlap_depth: bool = False,
         rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
+        n_rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
+        n_rank_depth: Optional[int] = None,
         rank_variables: Optional[int] = None,
         n_times: int = 1,
         n_rank_space: Optional[int] = None,
@@ -177,7 +180,10 @@ class FieldSpaceLayerConfig:
         :param token_overlap_depth: Whether to overlap depth tokens.
         :param rank_space: Optional rank for space.
         :param rank_time: Optional rank for time.
+        :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param n_rank_depth: Optional indexed-tensor rank for depth.
+        :param n_rank_space: Optional indexed-tensor rank for space.
         :param in_token_len_time: Input token length along time.
         :param in_token_len_depth: Input token length along depth.
         :param out_token_len_time: Output token length along time.
@@ -202,7 +208,9 @@ class FieldSpaceLayerConfig:
         self.token_overlap_depth: bool
         self.rank_space: Optional[int]
         self.rank_time: Optional[int]
+        self.n_rank_time: Optional[int]
         self.rank_depth: Optional[int]
+        self.n_rank_depth: Optional[int]
         self.rank_variables: Optional[int]
         self.n_times: int
         self.n_rank_space: Optional[int]
@@ -248,6 +256,18 @@ class FieldSpaceLayerConfig:
         _validate_numeric_leaves(
             n_rank_space,
             "n_rank_space",
+            allow_none=True,
+            minimum=0,
+        )
+        _validate_numeric_leaves(
+            n_rank_time,
+            "n_rank_time",
+            allow_none=True,
+            minimum=0,
+        )
+        _validate_numeric_leaves(
+            n_rank_depth,
+            "n_rank_depth",
             allow_none=True,
             minimum=0,
         )
@@ -399,10 +419,21 @@ class FieldSpaceLayerModule(nn.Module):
                 layer_zooms,
                 "n_rank_space",
             )
+            n_rank_time = _normalize_axis_values(
+                kwargs.get("n_rank_time"),
+                layer_zooms,
+                "n_rank_time",
+            )
             rank_depth = _normalize_ext_rank_depth(
                 kwargs.get("rank_depth"),
                 n_groups,
                 layer_zooms,
+            )
+            n_rank_depth = _normalize_ext_rank_depth(
+                kwargs.get("n_rank_depth"),
+                n_groups,
+                layer_zooms,
+                name="n_rank_depth",
             )
             in_features = in_features_by_zoom
             target_features = target_features_by_zoom
@@ -442,10 +473,20 @@ class FieldSpaceLayerModule(nn.Module):
                 n_groups,
                 "n_rank_space",
             )
+            n_rank_time = _collapse_shared_value(
+                kwargs.get("n_rank_time"),
+                n_groups,
+                "n_rank_time",
+            )
             rank_depth = _normalize_group_values(
                 kwargs.get("rank_depth"),
                 n_groups,
                 "rank_depth",
+            )
+            n_rank_depth = _normalize_group_values(
+                kwargs.get("n_rank_depth"),
+                n_groups,
+                "n_rank_depth",
             )
             in_features = [
                 in_features_by_zoom[int(zoom)] for zoom in x_zooms
@@ -544,7 +585,9 @@ class FieldSpaceLayerModule(nn.Module):
             block_kwargs["rank_variables"] = rank_variables
             block_kwargs["n_times"] = n_times
             block_kwargs["n_rank_space"] = n_rank_space
+            block_kwargs["n_rank_time"] = n_rank_time
             block_kwargs["n_depths"] = n_depths[i]
+            block_kwargs["n_rank_depth"] = n_rank_depth[i]
             block_kwargs.update(shared_values)
 
             block_class = (
@@ -617,7 +660,9 @@ class FieldSpaceLayerBlock(nn.Module):
         token_overlap_depth: bool = False,
         rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
+        n_rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
+        n_rank_depth: Optional[int] = None,
         rank_variables: Optional[int] = None,
         n_times: int = 1,
         n_rank_space: Optional[int] = None,
@@ -655,7 +700,10 @@ class FieldSpaceLayerBlock(nn.Module):
         :param token_overlap_depth: Whether to overlap depth tokens.
         :param rank_space: Optional rank for space.
         :param rank_time: Optional rank for time.
+        :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param n_rank_depth: Optional indexed-tensor rank for depth.
+        :param n_rank_space: Optional indexed-tensor rank for space.
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param hidden_dim_mixed: Width of the shared cross-variable latent branch.
@@ -681,6 +729,12 @@ class FieldSpaceLayerBlock(nn.Module):
         self.n_rank_space = (
             None if n_rank_space is None else int(n_rank_space)
         )
+        self.n_rank_time = (
+            None if n_rank_time is None else int(n_rank_time)
+        )
+        self.n_rank_depth = (
+            None if n_rank_depth is None else int(n_rank_depth)
+        )
         self.n_depths = 1 if n_depths is None else int(n_depths)
         if self.rank_variables is not None and self.rank_variables < 0:
             raise ValueError("rank_variables must be non-negative")
@@ -688,6 +742,10 @@ class FieldSpaceLayerBlock(nn.Module):
             raise ValueError("n_times must be positive")
         if self.n_rank_space is not None and self.n_rank_space < 0:
             raise ValueError("n_rank_space must be non-negative")
+        if self.n_rank_time is not None and self.n_rank_time < 0:
+            raise ValueError("n_rank_time must be non-negative")
+        if self.n_rank_depth is not None and self.n_rank_depth < 0:
+            raise ValueError("n_rank_depth must be non-negative")
         if self.n_depths <= 0:
             raise ValueError("n_depths must be positive")
         self.hidden_dim = (
@@ -990,6 +1048,7 @@ class FieldSpaceLayerBlock(nn.Module):
             rank_variables=self.rank_variables,
             same_values_variables=True,
             n_times=self.n_times,
+            rank_time=self.n_rank_time,
             same_values_times=True,
             n_space=indexed_n_space,
             rank_space=(
@@ -997,6 +1056,7 @@ class FieldSpaceLayerBlock(nn.Module):
             ),
             same_values_space=True,
             n_depths=indexed_n_depths,
+            rank_depth=self.n_rank_depth,
             same_values_depths=True,
         )
 
@@ -1224,7 +1284,17 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             Sequence[Optional[int]],
             Optional[int],
         ] = None,
+        n_rank_time: Union[
+            Mapping[int, Optional[int]],
+            Sequence[Optional[int]],
+            Optional[int],
+        ] = None,
         rank_depth: Union[
+            Mapping[int, Optional[int]],
+            Sequence[Optional[int]],
+            Optional[int],
+        ] = None,
+        n_rank_depth: Union[
             Mapping[int, Optional[int]],
             Sequence[Optional[int]],
             Optional[int],
@@ -1332,11 +1402,27 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             self.layer_zooms,
             "rank_time",
         )
+        self.n_rank_time_by_zoom = {
+            zoom: None if value is None else int(value)
+            for zoom, value in _normalize_axis_values(
+                n_rank_time,
+                self.layer_zooms,
+                "n_rank_time",
+            ).items()
+        }
         self.rank_depth_by_zoom = _normalize_axis_values(
             rank_depth,
             self.layer_zooms,
             "rank_depth",
         )
+        self.n_rank_depth_by_zoom = {
+            zoom: None if value is None else int(value)
+            for zoom, value in _normalize_axis_values(
+                n_rank_depth,
+                self.layer_zooms,
+                "n_rank_depth",
+            ).items()
+        }
         self.rank_variables_by_zoom = {
             zoom: None if value is None else int(value)
             for zoom, value in _normalize_axis_values(
@@ -1387,6 +1473,16 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             if value is not None and value < 0:
                 raise ValueError(
                     f"n_rank_space[{zoom}] must be non-negative"
+                )
+        for zoom, value in self.n_rank_time_by_zoom.items():
+            if value is not None and value < 0:
+                raise ValueError(
+                    f"n_rank_time[{zoom}] must be non-negative"
+                )
+        for zoom, value in self.n_rank_depth_by_zoom.items():
+            if value is not None and value < 0:
+                raise ValueError(
+                    f"n_rank_depth[{zoom}] must be non-negative"
                 )
         uses_indexed_parameters = (
             self.use_indexed_input
@@ -1634,6 +1730,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             rank_variables=self.rank_variables_by_zoom[zoom],
             same_values_variables=True,
             n_times=self.n_times_by_zoom[zoom],
+            rank_time=self.n_rank_time_by_zoom[zoom],
             same_values_times=True,
             n_space=indexed_n_space,
             rank_space=(
@@ -1641,6 +1738,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             ),
             same_values_space=True,
             n_depths=indexed_n_depths,
+            rank_depth=self.n_rank_depth_by_zoom[zoom],
             same_values_depths=True,
         )
 
