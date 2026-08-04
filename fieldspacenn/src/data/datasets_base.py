@@ -278,7 +278,8 @@ class BaseDataset(Dataset):
         Initialize the dataset with sampling, masking, and normalization settings.
 
         :param mapping_fcn: Callable to build mapping weights between grids.
-        :param norm_dict: Path to the JSON normalization statistics file.
+        :param norm_dict: Optional path to the JSON normalization statistics file. If
+            omitted, data is left unchanged.
         :param lazy_load: Whether to lazily load xarray datasets.
         :param mask_zooms: Optional mask configuration per zoom level.
         :param p_dropout: Base dropout probability for spatial masking.
@@ -536,8 +537,11 @@ class BaseDataset(Dataset):
             unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
         )
 
-        with open(norm_dict) as json_file:
-            norm_dict = json.load(json_file)
+        if norm_dict is None:
+            normalization_config = None
+        else:
+            with open(norm_dict) as json_file:
+                normalization_config = json.load(json_file)
 
         self.var_normalizers: Dict[int, Dict[str, Any]] = {}
         self.forcing_normalizers: Dict[int, Dict[str, Any]] = {}
@@ -545,29 +549,31 @@ class BaseDataset(Dataset):
             self.var_normalizers[zoom] = {}
             self.forcing_normalizers[zoom] = {}
             for var in all_variables:
-                if str(zoom) in norm_dict[var].keys():
+                if normalization_config is None:
+                    self.var_normalizers[zoom][var] = normalizers.IdentityNormalizer()
+                elif str(zoom) in normalization_config[var].keys():
                     # Zoom-specific stats override global stats when available.
-                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    norm_class = normalization_config[var][str(zoom)]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var][str(zoom)]['stats'],
-                        norm_dict[var][str(zoom)]['normalizer'])
+                        normalization_config[var][str(zoom)]['stats'],
+                        normalization_config[var][str(zoom)]['normalizer'])
                 else:
-                    norm_class = norm_dict[var]['normalizer']['class']
+                    norm_class = normalization_config[var]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var]['stats'],
-                        norm_dict[var]['normalizer'])
+                        normalization_config[var]['stats'],
+                        normalization_config[var]['normalizer'])
 
             # Forcings may use the normalizer configuration, but raw physical
             # values remain valid when no statistics have been provided.
             for var in self.forcing_variables:
-                if var not in norm_dict:
+                if normalization_config is None or var not in normalization_config:
                     continue
-                if str(zoom) in norm_dict[var].keys():
-                    norm_definition = norm_dict[var][str(zoom)]
+                if str(zoom) in normalization_config[var].keys():
+                    norm_definition = normalization_config[var][str(zoom)]
                 else:
-                    norm_definition = norm_dict[var]
+                    norm_definition = normalization_config[var]
                 norm_class = norm_definition['normalizer']['class']
                 assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                 self.forcing_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(

@@ -80,6 +80,19 @@ class DataNormalizer:
         raise NotImplementedError("This method should be implemented by subclasses.")
 
 
+class IdentityNormalizer(DataNormalizer):
+    """Leave data unchanged when no normalization statistics are configured."""
+
+    def normalize(self, data: torch.Tensor):
+        return data
+
+    def denormalize(self, data: torch.Tensor):
+        return data
+
+    def denormalize_var(self, data_var: torch.Tensor, data: Optional[torch.Tensor] = None):
+        return data_var
+
+
 class QuantileNormalizer(DataNormalizer):
     """
     Normalizer that scales data using min-max normalization based on quantiles from precomputed statistics.
