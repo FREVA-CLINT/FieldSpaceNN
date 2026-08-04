@@ -96,18 +96,79 @@ class MGFlowMatching:
         if self.separate_noise_on_zoom:
             return {int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()}
 
-        max_zoom = max(x_zooms.keys())
-        noise = torch.randn_like(x_zooms[max_zoom])
-        noise_zooms: Dict[int, torch.Tensor] = {}
-        for zoom in x_zooms.keys():
-            noise_zooms[int(zoom)] = noise.view(
-                *x_zooms[zoom].shape[:3],
-                -1,
-                4 ** (max_zoom - zoom),
-                x_zooms[zoom].shape[-2],
-                x_zooms[zoom].shape[-1],
-            ).mean(dim=-3)
-        return noise_zooms
+        if not x_zooms:
+            return {}
+
+        zooms = sorted((int(zoom) for zoom in x_zooms.keys()), reverse=True)
+        for zoom in zooms:
+            if x_zooms[zoom].ndim != 6:
+                raise ValueError(
+                    "Shared multizoom noise expects tensors with shape "
+                    f"(b, v, t, n, d, f), but zoom {zoom} has shape "
+                    f"{tuple(x_zooms[zoom].shape)}."
+                )
+
+        max_zoom = zooms[0]
+        noise_zooms: Dict[int, torch.Tensor] = {
+            max_zoom: torch.randn_like(x_zooms[max_zoom])
+        }
+
+        # Build correlated noise recursively so intermediate zooms can provide
+        # noise for timesteps that are not present at the finest zoom.
+        for higher_zoom, zoom in zip(zooms, zooms[1:]):
+            higher = x_zooms[higher_zoom]
+            current = x_zooms[zoom]
+
+            compatible_dimensions = (0, 1, 4, 5)
+            mismatched_dimensions = [
+                dimension
+                for dimension in compatible_dimensions
+                if higher.shape[dimension] != current.shape[dimension]
+            ]
+            if mismatched_dimensions:
+                raise ValueError(
+                    "Cannot share noise between zooms "
+                    f"{higher_zoom} and {zoom}: batch, variable, depth, and "
+                    "feature dimensions must match, but got shapes "
+                    f"{tuple(higher.shape)} and {tuple(current.shape)}."
+                )
+            if higher.device != current.device:
+                raise ValueError(
+                    "Cannot share noise between zooms "
+                    f"{higher_zoom} and {zoom} on different devices "
+                    f"({higher.device} and {current.device})."
+                )
+
+            spatial_factor = 4 ** (higher_zoom - zoom)
+            expected_higher_size = current.shape[3] * spatial_factor
+            if higher.shape[3] != expected_higher_size:
+                raise ValueError(
+                    "Cannot share noise between zooms "
+                    f"{higher_zoom} and {zoom}: expected spatial size "
+                    f"{expected_higher_size} at zoom {higher_zoom} "
+                    f"(4**{higher_zoom - zoom} times size {current.shape[3]}), "
+                    f"but got {higher.shape[3]}."
+                )
+
+            sigma = 1.0 / (2 ** (max_zoom - zoom))
+            current_noise = torch.randn_like(current) * sigma
+            overlap = min(higher.shape[2], current.shape[2])
+            if overlap > 0:
+                higher_overlap = noise_zooms[higher_zoom][:, :, -overlap:]
+                pooled_overlap = higher_overlap.reshape(
+                    higher.shape[0],
+                    higher.shape[1],
+                    overlap,
+                    current.shape[3],
+                    spatial_factor,
+                    higher.shape[4],
+                    higher.shape[5],
+                ).mean(dim=4)
+                current_noise[:, :, -overlap:] = pooled_overlap.to(dtype=current.dtype)
+
+            noise_zooms[zoom] = current_noise
+
+        return {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms.keys()}
 
     def apply_mask_to_noise(
         self,
