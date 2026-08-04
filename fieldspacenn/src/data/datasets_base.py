@@ -17,6 +17,13 @@ warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
 
+
+# Reuse fully loaded files between train/validation dataset instances in the
+# same process. This avoids holding duplicate copies when both splits point to
+# the same backing stores.
+_IN_MEMORY_DATASET_CACHE: Dict[str, xr.Dataset] = {}
+
+
 def skewed_random_p(
     size: Union[int, Sequence[int], torch.Size],
     exponent: float = 2,
@@ -253,6 +260,7 @@ class BaseDataset(Dataset):
         mapping_fcn: Optional[Callable[..., Any]] = None,
         norm_dict: Optional[str] = None,
         lazy_load: bool = True,
+        load_into_memory: bool = False,
         mask_zooms: Optional[Mapping[int, Any]] = None,
         p_dropout: float = 0,
         p_dropout_all: float = 0,
@@ -281,6 +289,9 @@ class BaseDataset(Dataset):
         :param norm_dict: Optional path to the JSON normalization statistics file. If
             omitted, data is left unchanged.
         :param lazy_load: Whether to lazily load xarray datasets.
+        :param load_into_memory: Whether to load every unique source/target file once
+            and serve all samples from a process-wide in-memory cache. This takes
+            precedence over ``lazy_load``.
         :param mask_zooms: Optional mask configuration per zoom level.
         :param p_dropout: Base dropout probability for spatial masking.
         :param p_dropout_all: Probability to drop entire samples across zooms.
@@ -335,6 +346,8 @@ class BaseDataset(Dataset):
 
         self.norm_dict: Optional[str] = norm_dict
         self.lazy_load: bool = lazy_load
+        self.load_into_memory: bool = bool(load_into_memory)
+        self._in_memory_datasets: Dict[str, xr.Dataset] = {}
         self.random_p: bool = random_p
         self.p_dropout: float = p_dropout
         self.skewness_exp: float = skewness_exp
@@ -582,6 +595,35 @@ class BaseDataset(Dataset):
         self.normalize_data: bool = normalize_data
         self.len_dataset: int = len(list(self.index_map.values())[0])
 
+        if self.load_into_memory:
+            self._preload_datasets()
+
+
+    def _dataset_file_paths(self) -> List[str]:
+        """Return unique source and target file paths in configuration order."""
+        paths: List[str] = []
+        for role in ("source", "target"):
+            role_config = self.data_dict.get(role)
+            if not role_config:
+                continue
+
+            entries = [role_config] if "files" in role_config else role_config.values()
+            for entry in entries:
+                files = entry["files"]
+                if isinstance(files, (list, tuple, ListConfig)):
+                    paths.extend(str(path) for path in files)
+                else:
+                    paths.append(str(files))
+
+        return list(dict.fromkeys(paths))
+
+    def _preload_datasets(self) -> None:
+        """Load all configured datasets and retain process-wide shared references."""
+        for path in self._dataset_file_paths():
+            if path not in _IN_MEMORY_DATASET_CACHE:
+                _IN_MEMORY_DATASET_CACHE[path] = xr.load_dataset(path, decode_times=False)
+            self._in_memory_datasets[path] = _IN_MEMORY_DATASET_CACHE[path]
+
 
     def get_indices_from_patch_idx(self, patch_idx: int) -> np.ndarray:
         """
@@ -606,7 +648,14 @@ class BaseDataset(Dataset):
         :param drop_source: Whether to skip loading target when sharing the source.
         :return: Tuple of (source dataset, target dataset or None).
         """
-        if self.lazy_load:
+        if self.load_into_memory:
+            try:
+                ds_source = self._in_memory_datasets[str(file_path_source)]
+            except KeyError as exc:
+                raise KeyError(
+                    f"Dataset file was not preloaded: {file_path_source}"
+                ) from exc
+        elif self.lazy_load:
             ds_source = xr.open_dataset(file_path_source, decode_times=False)
         else:
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
@@ -618,7 +667,14 @@ class BaseDataset(Dataset):
             ds_target = None
             
         else:
-            if self.lazy_load:
+            if self.load_into_memory:
+                try:
+                    ds_target = self._in_memory_datasets[str(file_path_target)]
+                except KeyError as exc:
+                    raise KeyError(
+                        f"Dataset file was not preloaded: {file_path_target}"
+                    ) from exc
+            elif self.lazy_load:
                 ds_target = xr.open_dataset(file_path_target, decode_times=False)
             else:
                 ds_target = xr.load_dataset(file_path_target, decode_times=False)
@@ -1379,9 +1435,10 @@ class BaseDataset(Dataset):
             patch_index_zooms[zoom] = torch.tensor(patch_index)
             
         
-        ds_source.close()
-        if ds_target is not None:
-            ds_target.close()
+        if not self.load_into_memory:
+            ds_source.close()
+            if ds_target is not None and ds_target is not ds_source:
+                ds_target.close()
 
         source_zooms_groups_out = []
         target_zooms_groups_out = []

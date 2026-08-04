@@ -1,5 +1,6 @@
 from collections.abc import Mapping as MappingABC
 from typing import Any, Dict, Optional, Sequence, Tuple
+import warnings
 
 import torch
 from lightning.pytorch import LightningDataModule
@@ -195,6 +196,20 @@ class DataModule(LightningDataModule):
         self.prefetch_factor: Optional[int] = prefetch_factor
         self.persistent_workers: bool = persistent_workers
         self.shuffle: bool = shuffle
+
+        in_memory_datasets = [
+            dataset
+            for dataset in (dataset_train, dataset_val, dataset_test)
+            if dataset is not None and getattr(dataset, "load_into_memory", False)
+        ]
+        if in_memory_datasets and max(self.num_workers, self.num_val_workers) > 0:
+            warnings.warn(
+                "`load_into_memory=True` with DataLoader workers may replicate the "
+                "cached dataset in spawned worker processes. Use `num_workers=0` and "
+                "`num_val_workers=0` unless the multiprocessing strategy is known to "
+                "share memory safely.",
+                UserWarning,
+            )
 
     def train_dataloader(self):
         """
