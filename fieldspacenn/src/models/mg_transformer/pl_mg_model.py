@@ -64,6 +64,17 @@ class LightningMGModel(pl.LightningModule):
         self.lambda_loss_groups = lambda_loss_groups
 
     @staticmethod
+    def _dataset_applies_diff(dataset: Any) -> bool:
+        """Return whether a dataset encodes finer zooms as residuals."""
+        seen = set()
+        while dataset is not None and id(dataset) not in seen:
+            seen.add(id(dataset))
+            if hasattr(dataset, "apply_diff"):
+                return bool(dataset.apply_diff)
+            dataset = getattr(dataset, "dataset", None)
+        return True
+
+    @staticmethod
     def _extract_depth_loss_scaler_config(
         lambda_loss_dict: Mapping[str, Any],
     ) -> Dict[str, float]:
@@ -537,8 +548,6 @@ class LightningMGModel(pl.LightningModule):
             mask = mask_groups[group_idx]
             emb = emb_groups[group_idx]
 
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom)
-
             self.logger.log_tensor_plot(
                 plot_types=["healpix_plot_zooms_var"],
                 input=source,
@@ -550,18 +559,26 @@ class LightningMGModel(pl.LightningModule):
                 plot_name=f"epoch_{self.current_epoch}",
             )
 
-            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
-            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
-            self.logger.log_tensor_plot(
-                plot_types=["healpix_plot_zooms_var"],
-                input=source_comp,
-                output=output_comp,
-                gt=target_comp,
-                mask={max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None,
-                sample_configs=sample_configs,
-                emb=emb,
-                plot_name=f"epoch_{self.current_epoch}_combined",
-            )
+            if self._dataset_applies_diff(dataset):
+                output_comp = decode_zooms(
+                    output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom
+                )
+                source_comp = decode_zooms(
+                    source, sample_configs=sample_configs, out_zoom=max_zoom
+                )
+                target_comp = decode_zooms(
+                    target, sample_configs=sample_configs_target, out_zoom=max_zoom
+                )
+                self.logger.log_tensor_plot(
+                    plot_types=["healpix_plot_zooms_var"],
+                    input=source_comp,
+                    output=output_comp,
+                    gt=target_comp,
+                    mask={max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None,
+                    sample_configs=sample_configs,
+                    emb=emb,
+                    plot_name=f"epoch_{self.current_epoch}_combined",
+                )
             
         return loss
 

@@ -26,7 +26,9 @@ _INDEXED_DATASET_CACHE_BY_PATH: Dict[str, int] = {}
 
 
 def _canonical_path(path: str) -> str:
-    return os.path.abspath(os.path.expanduser(os.fspath(path)))
+    # Resolve relative components and symlinks so source/target aliases for the
+    # same physical file share one cache entry.
+    return os.path.realpath(os.path.abspath(os.path.expanduser(os.fspath(path))))
 
 
 def _clear_indexed_dataset_cache() -> None:
@@ -188,6 +190,21 @@ class InMemoryHealPixLoader(HealPixLoader):
                 )
             return dataset[sorted(variables)].isel(time=time_indices).load()
 
+    @staticmethod
+    def _print_cache_event(
+        action: str,
+        cache_index: int,
+        entry: _IndexedDatasetCacheEntry,
+    ) -> None:
+        size_mib = float(entry.dataset.nbytes) / (1024.0 ** 2)
+        variables = ",".join(sorted(entry.variables))
+        print(
+            f"[InMemoryHealPixLoader pid={os.getpid()}] {action} cache[{cache_index}] "
+            f"path={entry.path} time_rows={len(entry.original_time_indices)} "
+            f"variables={len(entry.variables)} [{variables}] size={size_mib:.2f} MiB",
+            flush=True,
+        )
+
     @classmethod
     def _register_cache_entry(
         cls,
@@ -203,15 +220,15 @@ class InMemoryHealPixLoader(HealPixLoader):
             dataset = cls._load_subset(path, requested_times, requested_variables)
             cache_index = len(_INDEXED_DATASET_CACHE)
             _INDEXED_DATASET_CACHE_BY_PATH[path] = cache_index
-            _INDEXED_DATASET_CACHE.append(
-                _IndexedDatasetCacheEntry(
-                    path=path,
-                    dataset=dataset,
-                    original_time_indices=requested_times,
-                    time_positions={int(value): idx for idx, value in enumerate(requested_times)},
-                    variables=requested_variables,
-                )
+            entry = _IndexedDatasetCacheEntry(
+                path=path,
+                dataset=dataset,
+                original_time_indices=requested_times,
+                time_positions={int(value): idx for idx, value in enumerate(requested_times)},
+                variables=requested_variables,
             )
+            _INDEXED_DATASET_CACHE.append(entry)
+            cls._print_cache_event("loaded", cache_index, entry)
             return cache_index
 
         entry = _INDEXED_DATASET_CACHE[cache_index]
@@ -221,6 +238,7 @@ class InMemoryHealPixLoader(HealPixLoader):
             np.array_equal(union_times, entry.original_time_indices)
             and union_variables == entry.variables
         ):
+            cls._print_cache_event("reused", cache_index, entry)
             return cache_index
 
         dataset = cls._load_subset(path, union_times, union_variables)
@@ -230,6 +248,7 @@ class InMemoryHealPixLoader(HealPixLoader):
         entry.time_positions = {int(value): idx for idx, value in enumerate(union_times)}
         entry.variables = union_variables
         previous_dataset.close()
+        cls._print_cache_event("expanded", cache_index, entry)
         return cache_index
 
     def _register_required_datasets(self) -> None:

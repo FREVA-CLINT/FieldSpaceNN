@@ -429,6 +429,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         if source_group is None or target_group is None:
             return
 
+        dataset = self.trainer.val_dataloaders.dataset
+        plot_combined = self._dataset_applies_diff(dataset)
+
         max_zooms = [max(group.keys()) for group in target_groups if group]
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
@@ -496,14 +499,16 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             if not pred_x1_group:
                 continue
 
-            if self.decode_zooms:
+            if plot_combined and self.decode_zooms:
                 pred_x1_comp = decode_zooms(
                     pred_x1_group.copy(),
                     sample_configs=sample_configs_p,
                     out_zoom=max_zoom,
                 )
-            else:
+            elif plot_combined:
                 pred_x1_comp = {max_zoom: pred_x1_group[max_zoom]}
+            else:
+                pred_x1_comp = None
 
             self.logger.log_healpix_tensor_plot(
                 source_p,
@@ -516,6 +521,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 self.current_epoch,
                 output_comp=pred_x1_comp,
                 plot_name=f"_flow_{t.item():.2f}",
+                plot_combined=plot_combined,
             )
 
     def predict_step(
