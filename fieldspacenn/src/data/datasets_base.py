@@ -634,6 +634,33 @@ class BaseDataset(Dataset):
         """
         raise NotImplementedError
 
+    def _get_file_path(self, role: str, zoom: int, file_index: int) -> str:
+        """Resolve a configured source or target path for one sample."""
+        file_zoom = max(self.zooms) if self.single_source else zoom
+        return str(self.data_dict[role][file_zoom]["files"][file_index])
+
+    def _translate_time_indices(
+        self,
+        file_path: str,
+        time_indices: Sequence[int],
+    ) -> np.ndarray:
+        """Translate file-relative indices into the active dataset's positions."""
+        del file_path
+        return np.asarray(time_indices, dtype=np.int64)
+
+    def _infer_mapping_zoom(self, ds: xr.Dataset, requested_zoom: int) -> int:
+        """Infer the mapping zoom from an already opened dataset."""
+        if "cell" in ds.sizes:
+            mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
+        elif "ncells" in ds.sizes:
+            mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
+        else:
+            mapping_zoom = requested_zoom if requested_zoom in self.mapping else max(self.mapping.keys())
+
+        if mapping_zoom is None:
+            mapping_zoom = requested_zoom if requested_zoom in self.mapping else max(self.mapping.keys())
+        return int(mapping_zoom)
+
     def get_files(
         self,
         file_path_source: str,
@@ -1078,23 +1105,24 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        if self.apply_diff:
+            data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
 
-        target_encode_zooms = set(target_return_zooms)
-        if target_encode_zooms == set(sample_configs_target.keys()):
-            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
-        else:
-            data_target_encode = {
-                zoom: data_target[zoom]
-                for zoom in sorted(data_target.keys())
-                if zoom in target_encode_zooms
-            }
-            sample_configs_target_encode = {
-                zoom: sample_configs_target[zoom]
-                for zoom in sorted(sample_configs_target.keys())
-                if zoom in target_encode_zooms
-            }
-            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
+            target_encode_zooms = set(target_return_zooms)
+            if target_encode_zooms == set(sample_configs_target.keys()):
+                data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
+            else:
+                data_target_encode = {
+                    zoom: data_target[zoom]
+                    for zoom in sorted(data_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                sample_configs_target_encode = {
+                    zoom: sample_configs_target[zoom]
+                    for zoom in sorted(sample_configs_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
 
         available_zooms = sorted(data_source.keys())
 
@@ -1276,28 +1304,13 @@ class BaseDataset(Dataset):
             file_index = int(row[0])
             patch_index = int(row[1])
             time_indices = row[2:].tolist()
-            if self.single_source:
-                source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
-                target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                
-            else:
-                source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
-                target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
-
-            with xr.open_dataset(source_file) as ds:
-                if "cell" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
-                elif "ncells" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
-                else:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
-
-                if mapping_zoom is None:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+            source_file = self._get_file_path("source", zoom, file_index)
+            target_file = self._get_file_path("target", zoom, file_index)
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
                 loaded = True if self.load_once else False
+            mapping_zoom = self._infer_mapping_zoom(ds_source, zoom)
 
             # Align the global dropout mask to this zoom's time window.
             if drop_mask_input is not None:
@@ -1322,10 +1335,14 @@ class BaseDataset(Dataset):
             start_times_source = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
             end_times_source = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
 
-            time_indices_source = np.stack(
+            time_indices_source_original = np.stack(
                 [np.arange(s, e + 1) for s, e in zip(start_times_source, end_times_source)],
                 axis=0
             ).reshape(-1)
+            time_indices_source = self._translate_time_indices(
+                source_file,
+                time_indices_source_original,
+            )
 
             ds_source_zoom = self.select_ranges(ds_source,
                     time_indices_source,
@@ -1336,10 +1353,14 @@ class BaseDataset(Dataset):
 
             start_times_emb = np.array(time_indices) - self.sample_configs_emb[zoom]['n_past_ts']
             end_times_emb = np.array(time_indices) + self.sample_configs_emb[zoom]['n_future_ts']
-            time_indices_emb = np.stack(
+            time_indices_emb_original = np.stack(
                 [np.arange(s, e + 1) for s, e in zip(start_times_emb, end_times_emb)],
                 axis=0
             ).reshape(-1)
+            time_indices_emb = self._translate_time_indices(
+                source_file,
+                time_indices_emb_original,
+            )
 
             if (
                 self.sample_configs_emb[zoom]['n_past_ts'] == self.sampling_zooms[zoom]['n_past_ts']
@@ -1373,10 +1394,14 @@ class BaseDataset(Dataset):
                 target_time_indices = np.array(time_indices) + self.target_time_shift
                 start_times_target = target_time_indices - self.sampling_zooms_target[zoom]['n_past_ts']
                 end_times_target = target_time_indices + self.sampling_zooms_target[zoom]['n_future_ts']
-                time_indices_target = np.stack(
+                time_indices_target_original = np.stack(
                     [np.arange(s, e + 1) for s, e in zip(start_times_target, end_times_target)],
                     axis=0
                 ).reshape(-1)
+                time_indices_target = self._translate_time_indices(
+                    target_file,
+                    time_indices_target_original,
+                )
                 ds_target_zoom = self.select_ranges(
                     ds_target,
                     time_indices_target,
@@ -1414,7 +1439,9 @@ class BaseDataset(Dataset):
                     drop_mask=None if group == 'embedding' else drop_mask_zoom_groups[group_idx],
                 )
 
-                if ds_target is not None:
+                # Static and one-dimensional embeddings are source-only and are
+                # not returned as target groups.
+                if ds_target is not None and group != 'embedding':
                     data_target, _, _ = self.get_data(
                         ds_target_zoom,
                         patch_index,

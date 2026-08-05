@@ -1,4 +1,5 @@
 from collections.abc import Mapping as MappingABC
+import multiprocessing
 from typing import Any, Dict, Optional, Sequence, Tuple
 import warnings
 
@@ -197,12 +198,36 @@ class DataModule(LightningDataModule):
         self.persistent_workers: bool = persistent_workers
         self.shuffle: bool = shuffle
 
-        in_memory_datasets = [
+        datasets_and_workers = (
+            (dataset_train, self.num_workers),
+            (dataset_val, self.num_val_workers),
+            (dataset_test, self.num_workers),
+        )
+        fork_only_datasets = [
             dataset
-            for dataset in (dataset_train, dataset_val, dataset_test)
-            if dataset is not None and getattr(dataset, "load_into_memory", False)
+            for dataset, worker_count in datasets_and_workers
+            if dataset is not None
+            and worker_count > 0
+            and getattr(dataset, "requires_fork_workers", False)
         ]
-        if in_memory_datasets and max(self.num_workers, self.num_val_workers) > 0:
+        if fork_only_datasets:
+            start_method = multiprocessing.get_context().get_start_method()
+            if start_method != "fork":
+                raise ValueError(
+                    "`InMemoryHealPixLoader` with DataLoader workers requires the "
+                    f"`fork` multiprocessing start method, but `{start_method}` is active. "
+                    "Set worker counts to zero or use `HealPixLoader`."
+                )
+
+        legacy_in_memory_datasets = [
+            dataset
+            for dataset, worker_count in datasets_and_workers
+            if dataset is not None
+            and worker_count > 0
+            and getattr(dataset, "load_into_memory", False)
+            and not getattr(dataset, "requires_fork_workers", False)
+        ]
+        if legacy_in_memory_datasets:
             warnings.warn(
                 "`load_into_memory=True` with DataLoader workers may replicate the "
                 "cached dataset in spawned worker processes. Use `num_workers=0` and "
