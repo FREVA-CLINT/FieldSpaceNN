@@ -2,7 +2,7 @@ import os
 import hydra
 from hydra.utils import instantiate
 from lightning.pytorch import Trainer
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig
 import torch
 from ..src.utils.helpers import load_pretrained_checkpoints, freeze_zoom_levels
