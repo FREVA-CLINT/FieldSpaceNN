@@ -54,12 +54,18 @@ class CustomImageLogger(Logger):
             ckpt_path = self.cfg.get("ckpt_path_pretrained")
             run_id = self.logger_conf.get("id")
             if not run_id or (ckpt_path is not None):
+                # Generate the ID without accessing ``WandbLogger.experiment``.
+                # Accessing ``experiment`` starts the W&B background service, which
+                # is unsafe before Lightning launches ``ddp_fork`` workers.
+                from wandb.util import generate_id
+
+                run_id = generate_id()
                 fresh_logger_conf = dict(self.logger_conf)
                 fresh_logger_conf.pop("id", None)
-                self._internal_logger = WandbLogger(**fresh_logger_conf, id=None)
+                self._internal_logger = WandbLogger(**fresh_logger_conf, id=run_id)
                 if rank_zero_only.rank == 0:
                     # Save the new run id to the config for other processes
-                    OmegaConf.update(self.cfg, f"logger.id", self._internal_logger.experiment.id, merge=True)
+                    OmegaConf.update(self.cfg, "logger.id", run_id, merge=True)
             else:
                 self._internal_logger = WandbLogger(**self.logger_conf)
 
