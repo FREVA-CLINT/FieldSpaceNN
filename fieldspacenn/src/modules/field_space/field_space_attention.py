@@ -265,6 +265,7 @@ class FieldSpaceAttentionConfig:
         use_indexed_att_gammas: Optional[bool] = None,
         use_indexed_mlp_gammas: Optional[bool] = None,
         block_type: Literal["legacy", "ext"] = "legacy",
+        in_zooms: Optional[List[int]] = None,
         **kwargs: Any
     ) -> None:
         """
@@ -275,6 +276,8 @@ class FieldSpaceAttentionConfig:
             indicating which groups get a FieldSpaceAttention block.
         :param q_zooms: Query zoom levels or -1 to default to input zooms.
         :param kv_zooms: Key/value zoom levels or -1 to default to input zooms.
+        :param in_zooms: Input zoom levels for this attention layer. When omitted,
+            the model builder uses ``q_zooms``.
         :param att_dim: Attention feature dimension.
         :param target_zooms: Optional target zooms for updates.
         :param token_len_depth: Token length along depth.
@@ -1365,8 +1368,25 @@ class FieldSpaceAttentionBlock(nn.Module):
             assert n_variables>1, "n_variables need to be fixed and >1 for att_dim_mixed > 0" 
             in_size_q = token_size_in_overlap[:-1] + [token_size_in_overlap[-1] * n_variables]
             in_size_kv = token_size_in_overlap[:-1] + [token_size_in_overlap[-1] * n_variables]
-            self.q_projection_layer_mixed = get_layer(in_size_q, [1, 1 , 1, att_dim_mixed], ranks=ranks_qkv, n_variables=1, indexed_dims=indexed_dims_qkv, fac_mode=fac_mode, rank_variables=rank_variables_qkv)
-            self.kv_projection_layer_mixed = get_layer(in_size_kv, [1, 1 , 1, att_dim_mixed*2], ranks=ranks_qkv, n_variables=1, indexed_dims=indexed_dims_kv, fac_mode=fac_mode, rank_variables=rank_variables_qkv)
+            # The variable axis is folded into the feature axis below, so mixed
+            # projections operate on one shared variable slot and cannot use
+            # variable-indexed parameters.
+            self.q_projection_layer_mixed = get_layer(
+                in_size_q,
+                [1, 1, 1, att_dim_mixed],
+                ranks=ranks_qkv,
+                n_variables=1,
+                indexed_dims={},
+                fac_mode=fac_mode,
+            )
+            self.kv_projection_layer_mixed = get_layer(
+                in_size_kv,
+                [1, 1, 1, att_dim_mixed * 2],
+                ranks=ranks_qkv,
+                n_variables=1,
+                indexed_dims={},
+                fac_mode=fac_mode,
+            )
             self.mixed_pattern: str = 'b v T N D t n d f -> b 1 T N D t n d (v f)'
 
         # Learned residual scaling for attention and MLP updates.
@@ -1440,7 +1460,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         else:
             # Standard attention packs only token dims into sequence.
             self.att_pattern = 'b v T N D t n d (NH H) -> (b v T N D) NH (t n d) H'
-            self.mask_pattern = 'b v T N D t n d 1 -> (b v T N D) 1 1 (v t n d)'
+            self.mask_pattern = 'b v T N D t n d 1 -> (b v T N D) 1 1 (t n d)'
             self.att_pattern_reverse = '(b v T N D) NH (t n d) H -> b v (T t) (N n) (D d) 1 1 1 (NH H)'
 
     def get_ms_features(self, zooms: List[int]) -> Dict[int, int]:
@@ -1692,13 +1712,35 @@ class FieldSpaceAttentionBlock(nn.Module):
         # Chunk tokens into attention-friendly layout.
         q = rearrange(q, self.att_pattern_chunks, **self.rearrange_dict)
 
-        mask = mask_zooms[zoom_field] if zoom_field in mask_zooms.keys() else None
+        mask = None
+        if mask_zooms:
+            available_masks = {
+                zoom: mask_zooms[zoom]
+                for zoom in self.qkv_zooms
+                if zoom in mask_zooms
+            }
+            if available_masks:
+                # Masks arrive on the input grids, just like the fields.  Tokenize
+                # them before packing attention instead of looking for a mask at
+                # token_zoom (which need not be an input zoom).
+                mask = self.tokenizer(available_masks, sample_configs)
         # Optional spatial neighborhood expansion for KV.
         if self.seq_overlap_space:
-            kv, mask = self.grid_layer_att.get_nh(kv, input_zoom=zoom_field, sample_configs=sample_configs[zoom_field], mask=mask)
+            kv, _ = self.grid_layer_att.get_nh(kv, input_zoom=zoom_field, sample_configs=sample_configs[zoom_field])
             kv = rearrange(kv, self.att_pattern_chunks_w_nh, **self.rearrange_dict_nh)
+            if mask is not None:
+                mask, _ = self.grid_layer_att.get_nh(
+                    mask,
+                    input_zoom=zoom_field,
+                    sample_configs=sample_configs[zoom_field],
+                )
+                mask = rearrange(mask, self.att_pattern_chunks_w_nh, **self.rearrange_dict_nh)
         else:
             kv = rearrange(kv, self.att_pattern_chunks, **self.rearrange_dict)
+            if mask is not None:
+                mask = rearrange(
+                    mask, self.att_pattern_chunks, **self.rearrange_dict
+                )
 
         # Apply time/depth overlap to KV and mask if configured.
         kv = self.get_time_depth_overlaps(kv, overlap_time=self.seq_overlap_time, overlap_depth=self.seq_overlap_depth)
@@ -2661,19 +2703,33 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         q = rearrange(q, self.att_pattern_chunks, **self.rearrange_dict)
         kv = torch.cat((k, v), dim=-1)
         if self.seq_overlap_space:
-            kv, mask = self.grid_layer_att.get_nh(
+            kv, _ = self.grid_layer_att.get_nh(
                 kv,
                 input_zoom=self.grid_layer_field.zoom,
                 sample_configs=sample_configs[self.grid_layer_field.zoom],
-                mask=mask,
             )
             kv = rearrange(
                 kv,
                 self.att_pattern_chunks_w_nh,
                 **self.rearrange_dict_nh,
             )
+            if mask is not None:
+                mask, _ = self.grid_layer_att.get_nh(
+                    mask,
+                    input_zoom=self.grid_layer_field.zoom,
+                    sample_configs=sample_configs[self.grid_layer_field.zoom],
+                )
+                mask = rearrange(
+                    mask,
+                    self.att_pattern_chunks_w_nh,
+                    **self.rearrange_dict_nh,
+                )
         else:
             kv = rearrange(kv, self.att_pattern_chunks, **self.rearrange_dict)
+            if mask is not None:
+                mask = rearrange(
+                    mask, self.att_pattern_chunks, **self.rearrange_dict
+                )
         kv = self.get_time_depth_overlaps(
             kv,
             overlap_time=self.seq_overlap_time,
@@ -2818,11 +2874,57 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             k = torch.cat((k, k_mixed.expand(*expand_shape)), dim=-1)
             v = torch.cat((v, v_mixed.expand(*expand_shape)), dim=-1)
 
-        mask = mask_zooms.get(self.grid_layer_field.zoom)
+        mask = self._project_ext_masks(mask_zooms, q, sample_configs)
         q, k, v, mask, shape = self._pack_ext_qkv(
             q, k, v, mask, sample_configs
         )
         return preprocessed, q, k, v, mask, shape
+
+    def _project_ext_masks(
+        self,
+        mask_zooms: Dict[int, torch.Tensor],
+        projected: torch.Tensor,
+        sample_configs: Dict[int, Dict[str, Any]],
+    ) -> Optional[torch.Tensor]:
+        """Tokenize masks and reduce them to the summed Q/K/V token layout."""
+        projected_masks: List[torch.Tensor] = []
+        for zoom in self.q_zooms:
+            if zoom not in mask_zooms:
+                continue
+            mask = self.tokenizers[str(zoom)](
+                {zoom: mask_zooms[zoom]}, sample_configs
+            )
+            for dim in range(5, 9):
+                target_size = projected.shape[dim]
+                if mask.shape[dim] in {1, target_size}:
+                    continue
+                if target_size != 1:
+                    raise ValueError(
+                        f"Mask for zoom {zoom} cannot be reduced from shape "
+                        f"{tuple(mask.shape)} to Q/K/V shape {tuple(projected.shape)}"
+                    )
+                if mask.dtype == torch.bool:
+                    mask = mask.all(dim=dim, keepdim=True)
+                else:
+                    mask = mask.amin(dim=dim, keepdim=True)
+            projected_masks.append(mask)
+
+        if not projected_masks:
+            return None
+
+        mask = projected_masks[0]
+        for other in projected_masks[1:]:
+            if other.shape != mask.shape:
+                raise ValueError(
+                    "Tokenized masks for summed Q/K/V projections must have "
+                    f"identical shapes, got {tuple(mask.shape)} and {tuple(other.shape)}"
+                )
+            mask = (
+                torch.logical_and(mask, other)
+                if mask.dtype == torch.bool and other.dtype == torch.bool
+                else torch.minimum(mask, other)
+            )
+        return mask
 
     def forward_mlp(
         self,

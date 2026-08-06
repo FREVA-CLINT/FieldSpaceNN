@@ -1063,17 +1063,23 @@ class FieldSpaceLayerBlock(nn.Module):
 
     def update_time_embedder(self, emb: Dict[str, Any]) -> None:
         """
-        Normalize zoom-keyed time embeddings to the max input zoom.
+        Normalize zoom-keyed time embeddings to the max input zoom and copy
+        them to newly produced output zooms.
 
         :param emb: Embedding dictionary containing zoom-keyed time embeddings.
         :return: None.
         """
-        for emb_key in ("TimeEmbedder", "TimeProgressEmbedder"):
+        for emb_key in (
+            "TimeEmbedder",
+            "TimeProgressEmbedder",
+            "TimeIndexEmbedder",
+        ):
             if emb_key not in emb or not isinstance(emb[emb_key], dict):
                 continue
 
             ref_zoom = max(self.in_zooms) if max(self.in_zooms) in emb[emb_key].keys() else max(emb[emb_key].keys())
-            for zoom in self.in_zooms:
+            output_zooms = list(self.target_features_dict)
+            for zoom in dict.fromkeys([*self.in_zooms, *output_zooms]):
                 emb[emb_key][zoom] = emb[emb_key][ref_zoom]
 
     def get_time_depth_overlaps(self, x: torch.Tensor) -> torch.Tensor:

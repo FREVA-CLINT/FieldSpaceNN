@@ -122,14 +122,11 @@ class InMemoryHealPixLoader(HealPixLoader):
         sampling_times_emb: Optional[Mapping[str, Any]] = None,
         sampling_zooms_target: Optional[Mapping[int, Mapping[str, Any]]] = None,
         load_into_memory: bool = True,
-        load_n_samples_time: int = 1,
         distributed_shard: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the indexed in-memory loader.
 
-        ``load_n_samples_time`` is accepted for configuration compatibility but
-        intentionally forced to one. Use the legacy loader for grouped items.
         ``distributed_shard`` requires external DDP ranks (for example Slurm
         tasks launched with ``srun``) and preloads only the local contiguous
         section of the logical dataset.
@@ -140,7 +137,6 @@ class InMemoryHealPixLoader(HealPixLoader):
                 "`HealPixLoader(load_into_memory=False)` for lazy loading."
             )
 
-        del load_n_samples_time
         super().__init__(
             data_dict=data_dict,
             sampling_zooms=sampling_zooms,
@@ -148,7 +144,6 @@ class InMemoryHealPixLoader(HealPixLoader):
             sampling_times_emb=sampling_times_emb,
             sampling_zooms_target=sampling_zooms_target,
             load_into_memory=False,
-            load_n_samples_time=1,
             **kwargs,
         )
 

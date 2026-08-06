@@ -234,11 +234,35 @@ def create_encoder_decoder_block(
         )
 
     elif isinstance(block_conf, FieldSpaceAttentionConfig):
+        stage_zooms = [int(zoom) for zoom in in_zooms]
+        attention_in_zooms = block_conf.in_zooms
+        if attention_in_zooms is None:
+            attention_in_zooms = block_conf.q_zooms
+        if attention_in_zooms == -1:
+            attention_in_zooms = stage_zooms
+        else:
+            attention_in_zooms = [int(zoom) for zoom in attention_in_zooms]
+
+        feature_by_zoom = {
+            zoom: n_features
+            for zoom, n_features in zip(stage_zooms, in_features)
+        }
+        missing_zooms = [
+            zoom for zoom in attention_in_zooms if zoom not in feature_by_zoom
+        ]
+        if missing_zooms:
+            raise ValueError(
+                f"Attention in_zooms {missing_zooms} are not present in stage in_zooms"
+            )
+        attention_in_features = [
+            feature_by_zoom[zoom] for zoom in attention_in_zooms
+        ]
+
         block = FieldSpaceAttentionModule(
                 grid_layers,
-                in_zooms,
+                attention_in_zooms,
                 out_zooms,
-                in_features = in_features,
+                in_features = attention_in_features,
                 token_zoom = block_conf.token_zoom,
                 groups = block_conf.groups,
                 q_zooms  = block_conf.q_zooms,

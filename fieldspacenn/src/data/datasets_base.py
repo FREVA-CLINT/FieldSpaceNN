@@ -1,5 +1,7 @@
 import copy
 import json
+import math
+from numbers import Integral, Real
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -252,6 +254,23 @@ def _build_sample_configs_emb(
 
     return sample_configs_emb
 
+
+def _validate_probability(value: Any, parameter_name: str) -> float:
+    """Return a finite probability in the inclusive interval [0, 1]."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"`{parameter_name}` must be a numeric probability in [0, 1].")
+    probability = float(value)
+    if not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError(f"`{parameter_name}` must be finite and in [0, 1], got {value!r}.")
+    return probability
+
+
+def _validate_minimum_span(value: Any, parameter_name: str) -> int:
+    """Return a non-negative integer minimum retained span."""
+    if isinstance(value, bool) or not isinstance(value, Integral) or int(value) < 0:
+        raise ValueError(f"`{parameter_name}` must be a non-negative integer, got {value!r}.")
+    return int(value)
+
 #def create_mask(random_p, drop_mask, ):
 
 class BaseDataset(Dataset):
@@ -278,7 +297,8 @@ class BaseDataset(Dataset):
         mask_ts_mode: str = 'repeat',
         variables_as_features: bool = False,
         variable_group_zooms: Optional[Mapping[str, Any]] = None,
-        load_n_samples_time: int = 1,
+        time_step_dropout_probability: float = 0.0,
+        min_unmasked_time_step_span: int = 1,
         target_time_shift: int = 0,
         overwrite_depths: Optional[Sequence[float]] = None,
     ) -> None:
@@ -311,7 +331,10 @@ class BaseDataset(Dataset):
         :param variable_group_zooms: Optional mapping from variable-group name to the
             zoom levels where that group should be loaded. Omitted groups default to all
             sampling zooms.
-        :param load_n_samples_time: Number of time samples stacked as batch.
+        :param time_step_dropout_probability: Probability of masking each timestep
+            at the lowest zoom. Its mask is shared with corresponding higher-zoom steps.
+        :param min_unmasked_time_step_span: Minimum retained run length enforced on
+            the lowest zoom's source window.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
         :param overwrite_depths: Optional replacement values for the vertical ``level``
             coordinate. Applied only when the loaded variables expose a ``level`` dimension.
@@ -362,7 +385,6 @@ class BaseDataset(Dataset):
         self.output_max_zoom_only: bool = output_max_zoom_only
         self.variables_as_features: bool = variables_as_features
 
-        self.load_n_samples_time: int = load_n_samples_time
         self.target_time_shift: int = target_time_shift
         self.overwrite_depths: Optional[torch.Tensor] = (
             torch.as_tensor(overwrite_depths, dtype=torch.float32)
@@ -379,6 +401,10 @@ class BaseDataset(Dataset):
         )
 
         self.p_dropout_all: float = p_dropout_all
+        self._configure_time_step_masking(
+            probability=time_step_dropout_probability,
+            minimum_span=min_unmasked_time_step_span,
+        )
 
 
         if "files" in self.data_dict['source'].keys():
@@ -426,7 +452,7 @@ class BaseDataset(Dataset):
 
         # Build index map of (file, time window, region) per zoom.
         # Store index maps as compact numpy arrays to reduce Python object overhead.
-        # Each row is: [file_idx, region_idx, t0, t1, ..., t(load_n_samples_time-1)]
+        # Each row is one independent sample: [file_idx, region_idx, center_time].
         self.index_map: Dict[int, List[List[int]]] = dict(
             zip(self.zooms, [[] for _ in self.zooms])
         )
@@ -464,16 +490,10 @@ class BaseDataset(Dataset):
             else:
                 time_indices = [t for t in self.sample_timesteps if start_idx <= t <= end_idx]
 
-            # drop incomplete groups instead of raising when load_n_samples_time does not divide cleanly
-            n_complete = len(time_indices) // self.load_n_samples_time
-            time_indices = time_indices[: n_complete * self.load_n_samples_time]
-
             if len(time_indices) == 0:
                 continue
 
-            time_entries = np.array(time_indices).reshape(-1, self.load_n_samples_time)
-
-            for time_entry in time_entries:
+            for center_time in time_indices:
                 for zoom in self.zooms:
                     for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
                         if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
@@ -481,7 +501,7 @@ class BaseDataset(Dataset):
                         else:
                             region_idx_zoom = region_idx_max//4**(self.sampling_zooms[max(self.zooms)]['zoom_patch_sample'] - self.sampling_zooms[zoom]['zoom_patch_sample'])
 
-                        row = [int(file_idx), int(region_idx_zoom)] + [int(t) for t in time_entry]
+                        row = [int(file_idx), int(region_idx_zoom), int(center_time)]
                         self.index_map[zoom].append(row)
                 
         self.index_map = {
@@ -597,6 +617,113 @@ class BaseDataset(Dataset):
 
         if self.load_into_memory:
             self._preload_datasets()
+
+
+    def _configure_time_step_masking(
+        self,
+        probability: float,
+        minimum_span: int,
+    ) -> None:
+        """Validate scalar temporal masking settings for the lowest zoom."""
+        probability = _validate_probability(
+            probability,
+            "time_step_dropout_probability",
+        )
+        minimum_span = _validate_minimum_span(
+            minimum_span,
+            "min_unmasked_time_step_span",
+        )
+        lowest_zoom = self.zooms[0]
+        lowest_window_length = (
+            1
+            + int(self.sampling_zooms[lowest_zoom]["n_past_ts"])
+            + int(self.sampling_zooms[lowest_zoom]["n_future_ts"])
+        )
+        if minimum_span > lowest_window_length:
+            raise ValueError(
+                f"Minimum unmasked span {minimum_span} exceeds the lowest zoom "
+                f"{lowest_zoom} source-window length {lowest_window_length}."
+            )
+
+        self.time_step_dropout_probability = probability
+        self.min_unmasked_time_step_span = minimum_span
+
+    def _time_offsets(self, zoom: int) -> torch.Tensor:
+        """Return center-relative offsets for one zoom's source window."""
+        sampling = self.sampling_zooms[zoom]
+        return torch.arange(
+            -int(sampling["n_past_ts"]),
+            int(sampling["n_future_ts"]) + 1,
+            dtype=torch.long,
+        )
+
+    @staticmethod
+    def _mask_short_unmasked_runs(mask: torch.Tensor, minimum_span: int) -> torch.Tensor:
+        """Mask every retained run shorter than ``minimum_span``."""
+        if minimum_span <= 1 or mask.numel() == 0:
+            return mask.clone()
+
+        result = mask.clone()
+        run_start: Optional[int] = None
+        for index in range(mask.numel() + 1):
+            is_unmasked = index < mask.numel() and not bool(mask[index])
+            if is_unmasked and run_start is None:
+                run_start = index
+            elif not is_unmasked and run_start is not None:
+                if index - run_start < minimum_span:
+                    result[run_start:index] = True
+                run_start = None
+        return result
+
+    def _generate_time_step_masks(self) -> Dict[int, torch.Tensor]:
+        """Draw at the lowest zoom and project its mask to every higher zoom."""
+        offsets_by_zoom = {zoom: self._time_offsets(zoom) for zoom in self.zooms}
+        lowest_zoom = self.zooms[0]
+        lowest_offsets = offsets_by_zoom[lowest_zoom]
+        lowest_mask = torch.rand(lowest_offsets.numel()) < self.time_step_dropout_probability
+        lowest_mask = self._mask_short_unmasked_runs(
+            lowest_mask,
+            self.min_unmasked_time_step_span,
+        )
+
+        lowest_start = int(lowest_offsets[0])
+        masks: Dict[int, torch.Tensor] = {}
+        for zoom, offsets in offsets_by_zoom.items():
+            positions = offsets - lowest_start
+            mask = torch.zeros(offsets.numel(), dtype=torch.bool)
+            within_lowest = torch.logical_and(positions >= 0, positions < lowest_mask.numel())
+            mask[within_lowest] = lowest_mask[positions[within_lowest]]
+            masks[zoom] = mask
+        return masks
+
+    @staticmethod
+    def _merge_time_step_mask(
+        existing_mask: Optional[torch.Tensor],
+        time_step_mask: torch.Tensor,
+        data: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast and merge a temporal mask into a field mask."""
+        if data.ndim != 5:
+            raise ValueError(f"Expected unbatched field data with 5 dims, got {tuple(data.shape)}.")
+        if time_step_mask.numel() != data.shape[1]:
+            raise ValueError(
+                f"Time-step mask length {time_step_mask.numel()} does not match "
+                f"field time length {data.shape[1]}."
+            )
+        temporal = time_step_mask.view(1, -1, 1, 1, 1).expand(
+            data.shape[0],
+            data.shape[1],
+            data.shape[2],
+            data.shape[3],
+            1,
+        )
+        if existing_mask is None:
+            return temporal.clone()
+        if existing_mask.dtype.is_floating_point:
+            merged = existing_mask.clone()
+            merged[temporal.expand_as(merged)] = 0
+            return merged
+        return torch.logical_or(existing_mask.to(torch.bool), temporal.expand_as(existing_mask))
 
 
     def _dataset_file_paths(self) -> List[str]:
@@ -775,7 +902,8 @@ class BaseDataset(Dataset):
         :param mapping: Mapping dictionary for grid transforms.
         :param mapping_zoom: Zoom level of the mapping source.
         :param zoom: Zoom level of the requested data.
-        :param drop_mask: Optional dropout mask tensor of shape ``(v, t, n)`` or ``(1, v, t, n)``.
+        :param drop_mask: Optional dropout mask tensor of shape ``(v, t, n)``. A legacy
+            leading singleton dimension is also accepted internally.
         :return: Tuple ``(data_g, drop_mask, depth_values)`` where ``data_g`` is a tensor of
             shape ``(v, t, n, d, f)`` (matching the ``(b, v, t, n, d, f)`` base shape with
             ``b`` handled by the caller), ``drop_mask`` is a tensor of shape
@@ -916,7 +1044,7 @@ class BaseDataset(Dataset):
         The output stores only raw fractions, not precomputed sinusoidal features.
 
         :param ds: Zoom-sliced dataset for the current sample.
-        :return: Tensor of shape ``(b, t, 2)`` containing
+        :return: Tensor of shape ``(t, 2)`` containing
             ``[day_fraction, year_fraction]``.
         """
         decoded_times = self._decode_time_values(ds)
@@ -932,8 +1060,8 @@ class BaseDataset(Dataset):
             np.asarray(timestamps.dayofyear, dtype=np.int64).astype(np.float32) - 1.0 + utc_day_fraction
         ) / year_length
 
-        day_fraction = torch.from_numpy(utc_day_fraction).view(self.load_n_samples_time, -1)
-        year_fraction = torch.from_numpy(year_fraction).view(self.load_n_samples_time, -1)
+        day_fraction = torch.from_numpy(utc_day_fraction)
+        year_fraction = torch.from_numpy(year_fraction)
 
         return torch.stack((day_fraction, year_fraction), dim=-1).to(torch.float32)
 
@@ -964,7 +1092,7 @@ class BaseDataset(Dataset):
         :param time_indices: Exact time indices used by the corresponding field sample.
         :param variables: Forcing variable names to load.
         :param zoom: Zoom whose optional normalization statistics should be used.
-        :return: Mapping of forcing name to tensors shaped ``(b, t, n)``.
+        :return: Mapping of forcing name to tensors shaped ``(t, n)``.
         """
         forcing_data: Dict[str, torch.Tensor] = {}
         for variable in variables:
@@ -997,11 +1125,7 @@ class BaseDataset(Dataset):
             if self.normalize_data and variable in self.forcing_normalizers[zoom]:
                 forcing = self.forcing_normalizers[zoom][variable].normalize(forcing)
             forcing = torch.nan_to_num(forcing)
-            forcing_data[variable] = rearrange(
-                forcing,
-                '(b t) n -> b t n',
-                b=self.load_n_samples_time,
-            )
+            forcing_data[variable] = forcing
 
         return forcing_data
 
@@ -1073,12 +1197,11 @@ class BaseDataset(Dataset):
         :param data_source: Mapping from zoom to source tensor of shape ``(v, t, n, d, f)``.
         :param data_target: Mapping from zoom to target tensor of shape ``(v, t, n, d, f)``.
         :param mask_mapping_zooms: Mapping from zoom to mask tensor of shape ``(v, t, n, d, f)``.
-        :param patch_index_zooms: Mapping from zoom to patch index tensor of shape ``(1,)``.
+        :param patch_index_zooms: Mapping from zoom to scalar patch-index tensors.
         :param hr_dopout: Whether high-resolution dropout is active.
         :return: Tuple ``(data_source, data_target, sample_configs, mask_mapping_zooms)`` where
-            data tensors are reshaped to ``(b, v, t, n, d, f)`` (or ``(b, 1, t, n, 1, f)``
-            when ``variables_as_features`` is enabled), aligning with the base
-            ``(b, v, t, n, d, f)`` convention.
+            data tensors remain unbatched as ``(v, t, n, d, f)`` (or
+            ``(1, t, n, 1, f)`` when ``variables_as_features`` is enabled).
         """
         sample_configs_source = copy.deepcopy(self.sampling_zooms)
         sample_configs_target = copy.deepcopy(self.sampling_zooms_target)
@@ -1149,21 +1272,16 @@ class BaseDataset(Dataset):
                     data_source[zoom][mask_zoom.expand_as(data_source[zoom])] = 0
 
             if self.variables_as_features:
-                data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                data_source[zoom] = rearrange(data_source[zoom], 'v t n d f -> 1 t n 1 (v d f)')
+                data_target[zoom] = rearrange(data_target[zoom], 'v t n d f -> 1 t n 1 (v d f)')
 
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
                 else:
-                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v t n d f -> 1 t n 1 (v d f)')
             else:
-                data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
-
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
-                else:
-                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
         for key, value in patch_index_zooms.items():
             if key in sample_configs_source:
@@ -1188,7 +1306,7 @@ class BaseDataset(Dataset):
                 sampling_zoom = self.sampling_zooms[zoom]
                 mask_n_last_ts = sampling_zoom.get('mask_n_last_ts', 0)
                 if mask_n_last_ts > 0:
-                    time_len = data_source[zoom].shape[2]
+                    time_len = data_source[zoom].shape[1]
                     n_mask = min(mask_n_last_ts, time_len)
                     if n_mask == 0:
                         continue
@@ -1196,13 +1314,13 @@ class BaseDataset(Dataset):
                     if mask_mapping_zooms[zoom].numel()==1:
                         mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
 
-                    mask_mapping_zooms[zoom][:, :, -n_mask:] = True 
+                    mask_mapping_zooms[zoom][:, -n_mask:] = True
                    
                     if self.mask_ts_mode == 'repeat' and time_len > n_mask:
-                        repeat_source = data_source[zoom][:, :, -(n_mask + 1)].unsqueeze(2)
-                        data_source[zoom][:, :, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, :, -n_mask:])
+                        repeat_source = data_source[zoom][:, -(n_mask + 1)].unsqueeze(1)
+                        data_source[zoom][:, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, -n_mask:])
                     else:
-                        data_source[zoom][:, :, -n_mask:] = 0.
+                        data_source[zoom][:, -n_mask:] = 0.
 
         if self.output_max_zoom_only:
             max_zoom = max(data_source.keys())
@@ -1224,12 +1342,12 @@ class BaseDataset(Dataset):
         :param index: Dataset index to retrieve.
         :return: Tuple ``(sources, targets, masks, embeddings, patch_index_zooms)`` where
             ``sources`` and ``targets`` are lists of per-group zoom mappings to tensors of
-            shape ``(b, v, t, n, d, f)`` (or ``(b, 1, t, n, 1, f)`` when variables are folded
+            shape ``(v, t, n, d, f)`` (or ``(1, t, n, 1, f)`` when variables are folded
             into features), ``masks`` follow the same shape, ``embeddings`` holds per-group
             tensors such as ``VariableEmbedder`` of shape ``(v,)``, ``GroupDepthEmbedder`` as
-            ``(group_id, depth_ids)``, ``TimeEmbedder`` of shape ``(b, t)``, and
-            ``TimeProgressEmbedder`` of shape ``(b, t, 2)``, and
-            ``patch_index_zooms`` maps zoom to index tensors of shape ``(1,)``.
+            ``(group_id, depth_ids)``, ``TimeEmbedder`` of shape ``(t,)``, and
+            ``TimeProgressEmbedder`` of shape ``(t, 2)``, and
+            ``patch_index_zooms`` maps zoom to scalar tensors.
         """
         selected_vars = {}
         selected_var_ids = {}
@@ -1265,6 +1383,7 @@ class BaseDataset(Dataset):
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
+        time_step_masks = self._generate_time_step_masks()
 
         # Only build a global dropout mask when a single source ensures shared indexing.
         if self.single_source and hr_dopout:
@@ -1380,7 +1499,7 @@ class BaseDataset(Dataset):
             data_time_zooms_emb[zoom] = torch.as_tensor(
                 np.array(ds_emb_zoom.time.values, copy=True),
                 dtype=torch.float32,
-            ).view(self.load_n_samples_time, -1)
+            ).reshape(-1)
             time_progress_zooms_emb[zoom] = self._get_time_progress(ds_emb_zoom)
             
             target_window_differs = (
@@ -1438,6 +1557,12 @@ class BaseDataset(Dataset):
                     zoom,
                     drop_mask=None if group == 'embedding' else drop_mask_zoom_groups[group_idx],
                 )
+                if group != 'embedding':
+                    drop_mask_zoom_group = self._merge_time_step_mask(
+                        drop_mask_zoom_group,
+                        time_step_masks[zoom],
+                        data_source,
+                    )
 
                 # Static and one-dimensional embeddings are source-only and are
                 # not returned as target groups.
@@ -1480,8 +1605,10 @@ class BaseDataset(Dataset):
             if group == 'embedding': 
                 # Extract static embeddings once so they can be attached to other groups.
                 StaticVariableEmbedder = source_zooms_groups[group_idx]
-                StaticVariableEmbedder = dict(zip(StaticVariableEmbedder.keys(), 
-                                                  [rearrange(t, 'v (b t) n f d-> b t n (v f d)', b=self.load_n_samples_time) for t in StaticVariableEmbedder.values()]))
+                StaticVariableEmbedder = {
+                    zoom: rearrange(tensor, 'v t n d f -> t n (v d f)')
+                    for zoom, tensor in StaticVariableEmbedder.items()
+                }
             elif group == 'embedding_1D':
                 ForcingEmbedder = source_zooms_groups[group_idx]
 
@@ -1506,8 +1633,8 @@ class BaseDataset(Dataset):
                 group_id = torch.tensor(self.embed_group_ids[group], dtype=torch.long)
                 max_zoom = max(source_zooms.keys())
                 depth_ids = torch.arange(source_zooms[max_zoom].shape[-2], dtype=torch.long)
-                emb_group['variables_sampled'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
-                emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group]).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['variables_sampled'] = torch.tensor(list(var_indices[group]))
+                emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group])
                 emb_group['variable_names_sampled'] = [str(var_name) for var_name in selected_vars[group]]
                 emb_group['GroupDepthEmbedder'] = (group_id, depth_ids)
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
@@ -1577,9 +1704,6 @@ class BaseDataset(Dataset):
             target_zooms_groups_out = [target_zooms_groups_out_]
             mask_zooms_groups = [mask_zooms_groups_]
         
-        for zoom, indices in patch_index_zooms.items():
-            patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
-
         self.sample_configs_source = sample_configs_source if 'sample_configs_source' in locals() else copy.deepcopy(self.sampling_zooms)
         self.sample_configs_target = sample_configs_target if 'sample_configs_target' in locals() else copy.deepcopy(self.sampling_zooms_target)
         self.sample_configs_emb = _build_sample_configs_emb(self.sampling_zooms, self.sampling_times_emb)
