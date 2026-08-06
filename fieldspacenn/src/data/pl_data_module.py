@@ -203,6 +203,18 @@ class DataModule(LightningDataModule):
             (dataset_val, self.num_val_workers),
             (dataset_test, self.num_workers),
         )
+        rank_sharded_datasets = [
+            dataset
+            for dataset, _ in datasets_and_workers
+            if dataset is not None and getattr(dataset, "distributed_shard", False)
+        ]
+        if rank_sharded_datasets and self.use_costum_ddp_sampler:
+            raise ValueError(
+                "Rank-sharded in-memory datasets already contain only this DDP "
+                "rank's contiguous items. Set `use_costum_ddp_sampler=false` to "
+                "avoid applying a second DistributedSampler."
+            )
+
         fork_only_datasets = [
             dataset
             for dataset, worker_count in datasets_and_workers
