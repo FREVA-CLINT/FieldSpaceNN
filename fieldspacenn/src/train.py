@@ -45,6 +45,7 @@ def train(cfg: DictConfig) -> None:
             model,
             cfg.ckpt_path_pretrained,
             freeze_pretrained=getattr(cfg, "freeze_pretrained", False),
+            device="cpu",
             print_keys=True,
         )
 
