@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torch.nn.modules.loss import _Loss
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from torch.optim import AdamW, Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 

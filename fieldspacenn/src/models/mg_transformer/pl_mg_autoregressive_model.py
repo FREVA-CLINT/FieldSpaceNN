@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, List
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from ...utils.helpers import merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms

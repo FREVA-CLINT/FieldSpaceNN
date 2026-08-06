@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...models.mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms

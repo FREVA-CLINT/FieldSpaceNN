@@ -7,7 +7,7 @@ from torch.nn.modules.loss import _Loss
 from torch.optim import AdamW, Optimizer
 
 from torch.optim.lr_scheduler import LRScheduler
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from ...utils.schedulers import CosineWarmupScheduler
 

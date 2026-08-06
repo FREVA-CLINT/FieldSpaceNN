@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from .pl_mg_probabilistic import LightningProbabilisticModel
 from ...modules.diffusion.mg_gaussian_diffusion import MGGaussianDiffusion

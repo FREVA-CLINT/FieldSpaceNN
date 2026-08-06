@@ -2,7 +2,7 @@ import copy
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from .mg_diffusion_model import MGDiffusionModel
 from ..mg_transformer.pl_mg_model import LightningMGModel

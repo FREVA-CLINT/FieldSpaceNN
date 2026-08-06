@@ -4,7 +4,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, List
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from ...modules.grids.grid_utils import decode_zooms
 from ...utils.losses import MGMultiLoss, ReluPressureLevelScaler
 from ...utils.schedulers import CosineWarmupScheduler
