@@ -2254,7 +2254,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 emb_aggregation=emb_aggregation,
             )
             self.pre_layers[key] = pre_layer
-            if self.separate_mlp_norm:
+            if self.separate_mlp_norm and zoom in self.target_zooms:
                 self.mlp_pre_layers[key] = self._build_ext_pre_layer(
                     zoom=zoom,
                     token_shape=token_shape,
@@ -2313,30 +2313,30 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                     bias=False,
                 )
 
-            mlp_in_shape = [
-                token_shape[0] + 2 * int(self.token_overlap_mlp_time),
-                token_shape[1],
-                token_shape[2] + 2 * int(self.token_overlap_mlp_depth),
-                token_shape[3],
-            ]
-            mlp_ranks = ranks if self.use_ranks_mlp else [None] * len(ranks)
-            self.mlp_projection_layers[key] = get_layer(
-                mlp_in_shape,
-                [1, 1, 1, self.att_dim_total],
-                ranks=mlp_ranks,
-                n_variables=(
-                    self.n_variables if self.use_variable_mlp else 1
-                ),
-                indexed_dims=indexed_mlp,
-                fac_mode=fac_mode,
-                rank_variables=(
-                    self.rank_variables_by_zoom[zoom]
-                    if self.use_ranks_mlp else None
-                ),
-                bias=False,
-            )
-
             if zoom in self.target_zooms:
+                mlp_in_shape = [
+                    token_shape[0] + 2 * int(self.token_overlap_mlp_time),
+                    token_shape[1],
+                    token_shape[2] + 2 * int(self.token_overlap_mlp_depth),
+                    token_shape[3],
+                ]
+                mlp_ranks = ranks if self.use_ranks_mlp else [None] * len(ranks)
+                self.mlp_projection_layers[key] = get_layer(
+                    mlp_in_shape,
+                    [1, 1, 1, self.att_dim_total],
+                    ranks=mlp_ranks,
+                    n_variables=(
+                        self.n_variables if self.use_variable_mlp else 1
+                    ),
+                    indexed_dims=indexed_mlp,
+                    fac_mode=fac_mode,
+                    rank_variables=(
+                        self.rank_variables_by_zoom[zoom]
+                        if self.use_ranks_mlp else None
+                    ),
+                    bias=False,
+                )
+
                 output_shape = [
                     *update_shape[:-1],
                     update_shape[-1] * self.update_multiplier,
