@@ -24,6 +24,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         flow_matching: MGFlowMatching,
         lr_groups: Mapping[str, Mapping[str, Any]],
         lambda_loss_dict: Mapping[str, Any],
+        data_variables: Optional[Mapping[str, Any]] = None,
         weight_decay: float = 0.0,
         sampler: str = "euler",
         n_samples: int = 1,
@@ -39,6 +40,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             model=model,
             lr_groups=lr_groups,
             lambda_loss_dict=lambda_loss_dict,
+            data_variables=data_variables,
             weight_decay=weight_decay,
         )
 
@@ -186,65 +188,88 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             else [1.0] * len(source_groups)
         )
 
-        group_var_counts = []
+        normalizer = self._loss_normalizer(
+            [target_groups[idx] for idx in valid_indices if target_groups[idx] is not None]
+        )
+        group_loss_inputs = []
         for idx in valid_indices:
-            source = source_groups[idx]
-            assert source is not None
-            group_var_counts.append(float(next(iter(source.values())).shape[1]))
-        group_weights = torch.tensor(group_var_counts, device=device, dtype=torch.float32)
-        group_weights = group_weights / group_weights.sum()
-
-        for local_idx, idx in enumerate(valid_indices):
             source = source_groups[idx]
             output = output_groups[idx]
             target = target_groups[idx]
             mask = mask_groups[idx]
             emb = emb_groups[idx]
-            lambda_group = float(lambda_groups[idx])
-            weight_group = group_weights[local_idx]
-
             assert source is not None and output is not None and target is not None
 
+            group_loss_inputs.append(
+                {
+                    "source": source,
+                    "output": output,
+                    "target": target,
+                    "mask": mask,
+                    "emb": emb,
+                    "group_index": idx,
+                    "lambda_group": float(lambda_groups[idx]),
+                    "variable_weight_map": self._build_group_variable_weight_map(idx, target, emb),
+                }
+            )
+
+        group_lambda_normalizer = self._group_lambda_normalizer(group_loss_inputs)
+
+        for group_input in group_loss_inputs:
+            effective_group_lambda = (
+                float(group_input["lambda_group"]) / float(group_lambda_normalizer)
+            )
+
             loss, loss_dict = self.loss_zooms(
-                output,
-                target,
-                mask=mask,
+                group_input["output"],
+                group_input["target"],
+                mask=group_input["mask"],
                 sample_configs=sample_configs,
                 prefix=f"{prefix}/",
-                emb=emb,
+                emb=group_input["emb"],
+                variable_weight_map=group_input["variable_weight_map"],
+                group_index=group_input["group_index"],
+                group_lambda=effective_group_lambda,
+                normalizer=normalizer,
             )
-            total_loss = total_loss + loss * (lambda_group * weight_group)
-            loss_dict_total.update(loss_dict)
+            total_loss = total_loss + loss
+            self._merge_loss_dict(loss_dict_total, loss_dict)
 
         if self.loss_composed.has_elements:
             max_zooms = [max(target.keys()) for target in target_groups if target]
             if max_zooms:
                 max_zoom = max(max_zooms)
-                for local_idx, idx in enumerate(valid_indices):
-                    source = source_groups[idx]
-                    output = output_groups[idx]
-                    target = target_groups[idx]
-                    mask = mask_groups[idx]
-                    emb = emb_groups[idx]
-                    lambda_group = float(lambda_groups[idx])
-                    weight_group = group_weights[local_idx]
-
-                    if not source or not output or not target:
-                        continue
-
-                    output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-                    target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                for group_input in group_loss_inputs:
+                    output_comp = decode_zooms(
+                        group_input["output"].copy(), sample_configs=sample_configs, out_zoom=max_zoom
+                    )
+                    target_comp = decode_zooms(
+                        group_input["target"].copy(), sample_configs=sample_configs, out_zoom=max_zoom
+                    )
+                    mask_comp = (
+                        decode_zooms(
+                            group_input["mask"], sample_configs=sample_configs, out_zoom=max_zoom
+                        )
+                        if group_input["mask"] is not None
+                        else None
+                    )
 
                     loss, loss_dict = self.loss_composed(
                         output_comp,
                         target_comp,
-                        mask=mask,
+                        mask=mask_comp,
                         sample_configs=sample_configs,
                         prefix=f"{prefix}/composed_",
-                        emb=emb,
+                        emb=group_input["emb"],
+                        variable_weight_map=group_input["variable_weight_map"],
+                        group_index=group_input["group_index"],
+                        group_lambda=(
+                            float(group_input["lambda_group"]) / float(group_lambda_normalizer)
+                        ),
+                        normalizer=normalizer,
                     )
-                    total_loss = total_loss + loss * (lambda_group * weight_group)
-                    loss_dict_total.update(loss_dict)
+                    total_loss = total_loss + loss
+                    self._merge_loss_dict(loss_dict_total, loss_dict)
 
         return total_loss, loss_dict_total
 
