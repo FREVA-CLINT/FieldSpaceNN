@@ -297,8 +297,6 @@ class BaseDataset(Dataset):
         mask_ts_mode: str = 'repeat',
         variables_as_features: bool = False,
         variable_group_zooms: Optional[Mapping[str, Any]] = None,
-        time_step_dropout_probability: float = 0.0,
-        min_unmasked_time_step_span: int = 1,
         target_time_shift: int = 0,
         overwrite_depths: Optional[Sequence[float]] = None,
     ) -> None:
@@ -331,10 +329,6 @@ class BaseDataset(Dataset):
         :param variable_group_zooms: Optional mapping from variable-group name to the
             zoom levels where that group should be loaded. Omitted groups default to all
             sampling zooms.
-        :param time_step_dropout_probability: Probability of masking each timestep
-            at the lowest zoom. Its mask is shared with corresponding higher-zoom steps.
-        :param min_unmasked_time_step_span: Minimum retained run length enforced on
-            the lowest zoom's source window.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
         :param overwrite_depths: Optional replacement values for the vertical ``level``
             coordinate. Applied only when the loaded variables expose a ``level`` dimension.
@@ -401,10 +395,7 @@ class BaseDataset(Dataset):
         )
 
         self.p_dropout_all: float = p_dropout_all
-        self._configure_time_step_masking(
-            probability=time_step_dropout_probability,
-            minimum_span=min_unmasked_time_step_span,
-        )
+        self._configure_time_step_masking()
 
 
         if "files" in self.data_dict['source'].keys():
@@ -619,34 +610,32 @@ class BaseDataset(Dataset):
             self._preload_datasets()
 
 
-    def _configure_time_step_masking(
-        self,
-        probability: float,
-        minimum_span: int,
-    ) -> None:
-        """Validate scalar temporal masking settings for the lowest zoom."""
-        probability = _validate_probability(
-            probability,
-            "time_step_dropout_probability",
-        )
-        minimum_span = _validate_minimum_span(
-            minimum_span,
-            "min_unmasked_time_step_span",
-        )
-        lowest_zoom = self.zooms[0]
-        lowest_window_length = (
-            1
-            + int(self.sampling_zooms[lowest_zoom]["n_past_ts"])
-            + int(self.sampling_zooms[lowest_zoom]["n_future_ts"])
-        )
-        if minimum_span > lowest_window_length:
-            raise ValueError(
-                f"Minimum unmasked span {minimum_span} exceeds the lowest zoom "
-                f"{lowest_zoom} source-window length {lowest_window_length}."
+    def _configure_time_step_masking(self) -> None:
+        """Validate temporal masking settings stored on each source zoom."""
+        self.p_drop_ts_zooms: Dict[int, float] = {}
+        self.min_unmasked_ts_zooms: Dict[int, int] = {}
+        for zoom in self.zooms:
+            sampling = self.sampling_zooms[zoom]
+            probability = _validate_probability(
+                sampling.get("p_drop_ts", 0.0),
+                f"sampling_zooms[{zoom}].p_drop_ts",
             )
-
-        self.time_step_dropout_probability = probability
-        self.min_unmasked_time_step_span = minimum_span
+            minimum_span = _validate_minimum_span(
+                sampling.get("min_unmasked_ts", 0),
+                f"sampling_zooms[{zoom}].min_unmasked_ts",
+            )
+            window_length = (
+                1
+                + int(sampling["n_past_ts"])
+                + int(sampling["n_future_ts"])
+            )
+            if minimum_span > window_length:
+                raise ValueError(
+                    f"Minimum unmasked span {minimum_span} for zoom {zoom} exceeds "
+                    f"its source-window length {window_length}."
+                )
+            self.p_drop_ts_zooms[zoom] = probability
+            self.min_unmasked_ts_zooms[zoom] = minimum_span
 
     def _time_offsets(self, zoom: int) -> torch.Tensor:
         """Return center-relative offsets for one zoom's source window."""
@@ -676,24 +665,33 @@ class BaseDataset(Dataset):
         return result
 
     def _generate_time_step_masks(self) -> Dict[int, torch.Tensor]:
-        """Draw at the lowest zoom and project its mask to every higher zoom."""
-        offsets_by_zoom = {zoom: self._time_offsets(zoom) for zoom in self.zooms}
-        lowest_zoom = self.zooms[0]
-        lowest_offsets = offsets_by_zoom[lowest_zoom]
-        lowest_mask = torch.rand(lowest_offsets.numel()) < self.time_step_dropout_probability
-        lowest_mask = self._mask_short_unmasked_runs(
-            lowest_mask,
-            self.min_unmasked_time_step_span,
-        )
-
-        lowest_start = int(lowest_offsets[0])
+        """Draw additional masks per zoom and inherit all lower-zoom masks."""
         masks: Dict[int, torch.Tensor] = {}
-        for zoom, offsets in offsets_by_zoom.items():
-            positions = offsets - lowest_start
-            mask = torch.zeros(offsets.numel(), dtype=torch.bool)
-            within_lowest = torch.logical_and(positions >= 0, positions < lowest_mask.numel())
-            mask[within_lowest] = lowest_mask[positions[within_lowest]]
+        masked_lower_offsets = set()
+        for zoom in self.zooms:
+            offsets = self._time_offsets(zoom)
+            probability = self.p_drop_ts_zooms[zoom]
+            if probability == 0:
+                mask = torch.zeros(offsets.numel(), dtype=torch.bool)
+            elif probability == 1:
+                mask = torch.ones(offsets.numel(), dtype=torch.bool)
+            else:
+                mask = torch.rand(offsets.numel()) < probability
+
+            if masked_lower_offsets:
+                inherited = torch.tensor(
+                    [int(offset) in masked_lower_offsets for offset in offsets],
+                    dtype=torch.bool,
+                )
+                mask = torch.logical_or(mask, inherited)
+            mask = self._mask_short_unmasked_runs(
+                mask,
+                self.min_unmasked_ts_zooms[zoom],
+            )
             masks[zoom] = mask
+            masked_lower_offsets.update(
+                int(offset) for offset in offsets[mask].tolist()
+            )
         return masks
 
     @staticmethod
