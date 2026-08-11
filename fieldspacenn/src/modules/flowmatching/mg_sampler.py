@@ -123,7 +123,15 @@ class EulerFlowSampler:
             raise ValueError(f"`time_range` must satisfy 0 <= start <= end <= 1, got {time_range}.")
 
         if x_t_groups is None:
-            x_t_groups = [self.flow_matching.generate_noise(group) if group else None for group in input_groups]
+            x_t_groups = [
+                self.flow_matching.generate_noise(
+                    group,
+                    self.flow_matching._variable_names(emb_groups[index])
+                    if emb_groups is not None and index < len(emb_groups) else None,
+                )
+                if group else None
+                for index, group in enumerate(input_groups)
+            ]
         x_t_groups = self._apply_known_values(x_t_groups, input_groups, mask_groups)
 
         first_valid_group = next((group for group in x_t_groups if group), None)

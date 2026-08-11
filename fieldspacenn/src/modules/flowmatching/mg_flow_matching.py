@@ -1,6 +1,9 @@
+import math
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import torch
+
+from ..grids.grid_utils import encode_zooms, to_zoom
 
 
 class MGFlowMatching:
@@ -14,6 +17,7 @@ class MGFlowMatching:
         separate_noise_on_zoom: bool = True,
         interpolation_mode: str = "linear",
         rectified_time_epsilon: float = 1e-5,
+        norm_dict: Optional[Mapping[Any, Any]] = None,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -24,10 +28,12 @@ class MGFlowMatching:
             ``"linear"`` (default) and ``"rectified"``.
         :param rectified_time_epsilon: Lower bound for ``1 - t`` in rectified
             mode for numerical stability near ``t=1``.
+        :param norm_dict: Optional per-variable, per-zoom data standard deviations.
         :return: None.
         """
         self.time_embed_key: str = time_embed_key
         self.separate_noise_on_zoom: bool = separate_noise_on_zoom
+        self.norm_dict: Optional[Mapping[Any, Any]] = norm_dict
         mode_normalized = str(interpolation_mode).strip().lower()
         if mode_normalized == "recitified":
             mode_normalized = "rectified"
@@ -86,15 +92,161 @@ class MGFlowMatching:
             raise ValueError(f"`time_range` must satisfy 0 <= start <= end <= 1, got {time_range}.")
         return start + (end - start) * torch.rand(batch_size, device=device)
 
-    def generate_noise(self, x_zooms: Mapping[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+    @staticmethod
+    def _std_from_definition(definition: Any) -> Optional[Any]:
+        if not isinstance(definition, Mapping):
+            return definition
+        if "std" in definition:
+            return definition["std"]
+        stats = definition.get("stats")
+        if isinstance(stats, Mapping) and "std" in stats:
+            return stats["std"]
+        return None
+
+    @staticmethod
+    def _variable_names(
+        emb_group: Optional[Mapping[str, Any]],
+    ) -> Optional[Sequence[str]]:
+        if emb_group is None or "variable_names_sampled" not in emb_group:
+            return None
+        return [str(name) for name in emb_group["variable_names_sampled"]]
+
+    def _normalization_scale(
+        self,
+        zoom: int,
+        tensor: torch.Tensor,
+        variable_names: Optional[Sequence[str]],
+    ) -> torch.Tensor:
+        """Return per-variable normalization values broadcast to a model tensor."""
+        assert self.norm_dict is not None
+        zoom_key: Any = zoom if zoom in self.norm_dict else str(zoom)
+
+        if zoom_key in self.norm_dict:
+            zoom_definition = self.norm_dict[zoom_key]
+            std_values = self._std_from_definition(zoom_definition)
+            if std_values is None and isinstance(zoom_definition, Mapping):
+                names = list(variable_names) if variable_names is not None else list(zoom_definition)
+                std_values = [
+                    self._std_from_definition(zoom_definition[name]) for name in names
+                ]
+        else:
+            names = list(variable_names) if variable_names is not None else list(self.norm_dict)
+            std_values = []
+            for name in names:
+                variable_definition = self.norm_dict[name]
+                if not isinstance(variable_definition, Mapping):
+                    raise ValueError(f"Missing zoom {zoom} normalization for variable `{name}`.")
+                variable_zoom_key: Any = (
+                    zoom if zoom in variable_definition else str(zoom)
+                )
+                if variable_zoom_key not in variable_definition:
+                    raise ValueError(f"Missing zoom {zoom} normalization for variable `{name}`.")
+                std_values.append(
+                    self._std_from_definition(variable_definition[variable_zoom_key])
+                )
+
+        if std_values is None or (
+            isinstance(std_values, Sequence)
+            and not isinstance(std_values, (str, bytes))
+            and any(value is None for value in std_values)
+        ):
+            raise ValueError(f"Could not find standard deviations for zoom {zoom}.")
+
+        std = torch.as_tensor(std_values, device=tensor.device, dtype=tensor.dtype)
+        n_variables, n_depths = tensor.shape[1], tensor.shape[-2]
+        if std.ndim == 0:
+            return std
+        if std.ndim == 1:
+            if std.shape[0] == n_variables:
+                return std.view(1, n_variables, 1, 1, 1, 1)
+            if n_variables == 1 and std.shape[0] == n_depths:
+                return std.view(1, 1, 1, 1, n_depths, 1)
+        if std.ndim == 2 and std.shape[0] == n_variables and std.shape[1] in {1, n_depths}:
+            return std.view(1, n_variables, 1, 1, std.shape[1], 1)
+        raise ValueError(
+            f"Normalization std shape {tuple(std.shape)} cannot broadcast to "
+            f"zoom {zoom} tensor shape {tuple(tensor.shape)}."
+        )
+
+    def _generate_normalized_shared_noise(
+        self,
+        x_zooms: Mapping[int, torch.Tensor],
+        zooms: Sequence[int],
+        variable_names: Optional[Sequence[str]],
+    ) -> Dict[int, torch.Tensor]:
+        """Build unscaled shared pyramid fields, residualize them, then normalize."""
+        max_zoom = zooms[0]
+        max_time = max(x_zooms[zoom].shape[2] for zoom in zooms)
+        finest_shape = list(x_zooms[max_zoom].shape)
+        finest_shape[2] = max_time
+        finest_noise = torch.randn_like(x_zooms[max_zoom].new_empty(finest_shape))
+
+        raw_zooms: Dict[int, torch.Tensor] = {}
+        for zoom in zooms:
+            raw_zooms[zoom], _ = to_zoom(
+                finest_noise, max_zoom, zoom
+            )
+
+        # Use the data pyramid's residual operator on the complete unscaled hierarchy.
+        full_field_configs = {
+            zoom: {
+                "n_past_ts": 0,
+                "n_future_ts": 0,
+                "zoom_patch_sample": -1,
+            }
+            for zoom in zooms
+        }
+        components = encode_zooms(raw_zooms, full_field_configs, {})
+
+        noise_zooms: Dict[int, torch.Tensor] = {}
+        for index, zoom in enumerate(zooms):
+            time_length = x_zooms[zoom].shape[2]
+            component = components[zoom][:, :, -time_length:]
+            if component.shape != x_zooms[zoom].shape:
+                raise ValueError(
+                    f"Cannot share noise at zoom {zoom}: derived shape "
+                    f"{tuple(component.shape)} does not match "
+                    f"{tuple(x_zooms[zoom].shape)}."
+                )
+            n_fine = 4 ** (max_zoom - zoom)
+            if index == len(zooms) - 1:
+                # An average of N independent finest cells has std 1 / sqrt(N).
+                raw_std = 1.0 / math.sqrt(n_fine)
+            else:
+                coarse_zoom = zooms[index + 1]
+                n_coarse = 4 ** (max_zoom - coarse_zoom)
+                # Var(fine average - containing coarse average) = 1/N_f - 1/N_c.
+                raw_std = math.sqrt(1.0 / n_fine - 1.0 / n_coarse)
+
+            norm_std = self._normalization_scale(zoom, component, variable_names)
+            noise_zooms[zoom] = component * (norm_std / raw_std)
+
+        return {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms}
+
+    def generate_noise(
+        self,
+        x_zooms: Mapping[int, torch.Tensor],
+        variable_names: Optional[Sequence[str]] = None,
+    ) -> Dict[int, torch.Tensor]:
         """
         Generate Gaussian noise per zoom level.
 
         :param x_zooms: Input tensors per zoom of shape ``(b, v, t, n, d, f)``.
+        :param variable_names: Optional variable names matching the tensor variable axis.
         :return: Noise tensors per zoom with matching shapes.
         """
         if self.separate_noise_on_zoom:
-            return {int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()}
+            noise_zooms = {
+                int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()
+            }
+            if self.norm_dict is not None:
+                noise_zooms = {
+                    int(zoom): noise * self._normalization_scale(
+                        int(zoom), noise, variable_names
+                    )
+                    for zoom, noise in noise_zooms.items()
+                }
+            return noise_zooms
 
         if not x_zooms:
             return {}
@@ -109,6 +261,11 @@ class MGFlowMatching:
                 )
 
         max_zoom = zooms[0]
+        if self.norm_dict is not None:
+            return self._generate_normalized_shared_noise(
+                x_zooms, zooms, variable_names
+            )
+
         noise_zooms: Dict[int, torch.Tensor] = {
             max_zoom: torch.randn_like(x_zooms[max_zoom])
         }
@@ -342,13 +499,20 @@ class MGFlowMatching:
         :param model_kwargs: Additional model keyword arguments.
         :return: List of ``(target_velocity, model_output, pred_x1)`` tuples.
         """
-        if noise_groups is None:
-            noise_groups = [self.generate_noise(group) if group else None for group in gt_groups]
-
         if mask_groups is None:
             mask_groups = [None] * len(gt_groups)
         if emb_groups is None:
             emb_groups = [{} for _ in gt_groups]
+        if noise_groups is None:
+            noise_groups = [
+                self.generate_noise(
+                    group,
+                    self._variable_names(emb_groups[index])
+                    if index < len(emb_groups) else None,
+                )
+                if group else None
+                for index, group in enumerate(gt_groups)
+            ]
 
         adjusted_noise_groups: List[Optional[Dict[int, torch.Tensor]]] = []
         x_t_groups: List[Optional[Dict[int, torch.Tensor]]] = []

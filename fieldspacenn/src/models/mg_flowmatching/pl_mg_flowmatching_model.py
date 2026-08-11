@@ -494,8 +494,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         )
 
         noise_groups_p = [
-            self.flow_matching.generate_noise(group) if group else None
-            for group in target_groups_p
+            self.flow_matching.generate_noise(
+                group, self.flow_matching._variable_names(emb_group)
+            )
+            if group else None
+            for group, emb_group in zip(target_groups_p, emb_groups_p)
         ]
         time_dtype = next(iter(target_p.values())).dtype
 
@@ -567,8 +570,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         if initialize_from_noise:
             x_t_groups = [
-                self.flow_matching.generate_noise(group) if group else None
-                for group in input_groups
+                self.flow_matching.generate_noise(
+                    group, self.flow_matching._variable_names(emb_group)
+                )
+                if group else None
+                for group, emb_group in zip(input_groups, emb_groups)
             ]
         else:
             x_t_groups = self._copy_groups(input_groups)
