@@ -118,19 +118,54 @@ class MGFlowMatching:
     @staticmethod
     def _variable_names(
         emb_group: Optional[Mapping[str, Any]],
-    ) -> Optional[Sequence[str]]:
+    ) -> Optional[Sequence[Any]]:
         if emb_group is None or "variable_names_sampled" not in emb_group:
             return None
-        return [str(name) for name in emb_group["variable_names_sampled"]]
+        names = []
+        for name in emb_group["variable_names_sampled"]:
+            if isinstance(name, str):
+                names.append(name)
+            elif isinstance(name, Sequence):
+                names.append(tuple(str(batch_name) for batch_name in name))
+            else:
+                names.append(str(name))
+        return names
 
     def _normalization_scale(
         self,
         zoom: int,
         tensor: torch.Tensor,
-        variable_names: Optional[Sequence[str]],
+        variable_names: Optional[Sequence[Any]],
     ) -> torch.Tensor:
         """Return per-variable normalization values broadcast to a model tensor."""
         assert self.norm_dict is not None
+
+        # Default collation transposes per-sample name lists into one tuple per
+        # variable position. Resolve those names separately for every batch item.
+        if variable_names is not None and any(
+            not isinstance(name, str) for name in variable_names
+        ):
+            if len(variable_names) != tensor.shape[1]:
+                raise ValueError(
+                    "Collated variable names must match the tensor variable axis."
+                )
+            name_columns = [list(names) for names in variable_names]
+            if any(len(names) != tensor.shape[0] for names in name_columns):
+                raise ValueError(
+                    "Collated variable names must contain one name per batch item."
+                )
+            batch_scales = [
+                self._normalization_scale(
+                    zoom,
+                    tensor[batch_index:batch_index + 1],
+                    [names[batch_index] for names in name_columns],
+                )
+                for batch_index in range(tensor.shape[0])
+            ]
+            if all(scale.ndim == 0 for scale in batch_scales):
+                return batch_scales[0]
+            return torch.cat(batch_scales, dim=0)
+
         zoom_key: Any = zoom if zoom in self.norm_dict else str(zoom)
 
         if zoom_key in self.norm_dict:
@@ -184,7 +219,7 @@ class MGFlowMatching:
         self,
         x_zooms: Mapping[int, torch.Tensor],
         zooms: Sequence[int],
-        variable_names: Optional[Sequence[str]],
+        variable_names: Optional[Sequence[Any]],
     ) -> Dict[int, torch.Tensor]:
         """Build unscaled shared pyramid fields, residualize them, then normalize."""
         max_zoom = zooms[0]
@@ -238,7 +273,7 @@ class MGFlowMatching:
     def generate_noise(
         self,
         x_zooms: Mapping[int, torch.Tensor],
-        variable_names: Optional[Sequence[str]] = None,
+        variable_names: Optional[Sequence[Any]] = None,
     ) -> Dict[int, torch.Tensor]:
         """
         Generate Gaussian noise per zoom level.

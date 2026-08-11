@@ -402,7 +402,20 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 return value[index:index + 1]
             return value
         if isinstance(value, dict):
-            return {k: LightningMGFlowMatchingModel._slice_batch_item(v, index=index) for k, v in value.items()}
+            sliced = {}
+            for key, item in value.items():
+                if key == "variable_names_sampled":
+                    sliced[key] = [
+                        name
+                        if isinstance(name, str)
+                        else tuple(name[index:index + 1])
+                        for name in item
+                    ]
+                else:
+                    sliced[key] = LightningMGFlowMatchingModel._slice_batch_item(
+                        item, index=index
+                    )
+            return sliced
         return value
 
     def _select_block_for_time(self, time_value: float, inference: bool = False) -> int:
@@ -436,6 +449,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         patch_index_zooms: Dict[int, torch.Tensor],
     ) -> None:
+        if not hasattr(self.logger, "log_healpix_tensor_plot"):
+            return
+
         group_idx = next(
             (
                 idx
