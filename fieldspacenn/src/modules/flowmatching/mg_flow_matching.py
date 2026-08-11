@@ -1,5 +1,7 @@
+import json
 import math
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+import os
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import torch
 
@@ -17,7 +19,9 @@ class MGFlowMatching:
         separate_noise_on_zoom: bool = True,
         interpolation_mode: str = "linear",
         rectified_time_epsilon: float = 1e-5,
-        norm_dict: Optional[Mapping[Any, Any]] = None,
+        norm_dict: Optional[
+            Union[Mapping[Any, Any], str, os.PathLike[str]]
+        ] = None,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -28,12 +32,20 @@ class MGFlowMatching:
             ``"linear"`` (default) and ``"rectified"``.
         :param rectified_time_epsilon: Lower bound for ``1 - t`` in rectified
             mode for numerical stability near ``t=1``.
-        :param norm_dict: Optional per-variable, per-zoom data standard deviations.
+        :param norm_dict: Optional per-variable, per-zoom data standard deviations,
+            either as a mapping or a path to a JSON file.
         :return: None.
         """
         self.time_embed_key: str = time_embed_key
         self.separate_noise_on_zoom: bool = separate_noise_on_zoom
-        self.norm_dict: Optional[Mapping[Any, Any]] = norm_dict
+        if isinstance(norm_dict, (str, os.PathLike)):
+            with open(os.path.expanduser(norm_dict), "r", encoding="utf-8") as handle:
+                loaded_norm_dict = json.load(handle)
+            if not isinstance(loaded_norm_dict, Mapping):
+                raise ValueError("`norm_dict` JSON must contain an object at its root.")
+            self.norm_dict: Optional[Mapping[Any, Any]] = loaded_norm_dict
+        else:
+            self.norm_dict = norm_dict
         mode_normalized = str(interpolation_mode).strip().lower()
         if mode_normalized == "recitified":
             mode_normalized = "rectified"
