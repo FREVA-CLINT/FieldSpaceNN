@@ -32,6 +32,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         decode_zooms: bool = True,
         sampling_steps_per_block: int = 50,
         block_loss_weights: Optional[Sequence[float]] = None,
+        restore_unmasked_source_after_prediction: bool = False,
     ) -> None:
         """
         Initialize the multi-block flow-matching Lightning wrapper.
@@ -52,6 +53,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         self.n_samples: int = int(n_samples)
         self.max_batchsize: int = int(max_batchsize)
         self.decode_zooms: bool = bool(decode_zooms)
+        self.restore_unmasked_source_after_prediction: bool = bool(
+            restore_unmasked_source_after_prediction
+        )
         self.sampling_steps_per_block: int = int(sampling_steps_per_block)
         if self.sampling_steps_per_block <= 0:
             raise ValueError("`sampling_steps_per_block` must be > 0.")
@@ -606,6 +610,37 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             n_steps=self.sampling_steps_per_block,
         )
 
+    @staticmethod
+    def _restore_unmasked_source_values(
+        output_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """Replace known (unmasked) prediction values with their source values."""
+        restored_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group_idx, output_group in enumerate(output_groups):
+            if not output_group:
+                restored_groups.append(output_group)
+                continue
+
+            source_group = source_groups[group_idx] if group_idx < len(source_groups) else None
+            mask_group = mask_groups[group_idx] if group_idx < len(mask_groups) else None
+            restored_group: Dict[int, torch.Tensor] = {}
+            for zoom, output in output_group.items():
+                if not source_group or zoom not in source_group or not mask_group or zoom not in mask_group:
+                    restored_group[int(zoom)] = output
+                    continue
+
+                mask = mask_group[zoom]
+                known = ~mask if mask.dtype == torch.bool else mask <= 0
+                restored_group[int(zoom)] = torch.where(
+                    known.expand_as(output),
+                    source_group[zoom],
+                    output,
+                )
+            restored_groups.append(restored_group)
+        return restored_groups
+
     def _predict_step(
         self,
         source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -630,6 +665,13 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 emb_groups=emb_groups,
                 sample_configs=sample_configs,
                 initialize_from_noise=(block_idx == 0),
+            )
+
+        if self.restore_unmasked_source_after_prediction:
+            current_groups = self._restore_unmasked_source_values(
+                current_groups,
+                source_groups,
+                mask_groups,
             )
 
         if not self.decode_zooms:

@@ -12,6 +12,75 @@ from ..grids.grid_utils import insert_matching_time_patch, get_matching_time_pat
 
 _AXIS_POOL = list("g") + list(string.ascii_lowercase.replace("g","")) + list(string.ascii_uppercase)
 GLOBAL_EMBEDDER_CACHE_KEY = "_global_embedder_cache"
+_TIME_EMBEDDING_KEYS = (
+    "TimeEmbedder",
+    "TimeProgressEmbedder",
+    "TimeIndexEmbedder",
+)
+
+
+def align_time_embeddings_to_tokens(
+    emb: Optional[Dict[str, Any]],
+    *,
+    zoom: int,
+    token_len_time: int,
+    field_time_steps: int,
+) -> Optional[Dict[str, Any]]:
+    """Select the final timestep of every temporal token for time-aware inputs."""
+    if emb is None or token_len_time == 1:
+        return emb
+    if token_len_time < 1:
+        raise ValueError(f"token_len_time must be positive, got {token_len_time}")
+    if field_time_steps % token_len_time != 0:
+        raise ValueError(
+            f"Field time length {field_time_steps} is not divisible by "
+            f"token_len_time={token_len_time} at zoom {zoom}"
+        )
+
+    aligned_emb = dict(emb)
+    aligned_any = False
+    for emb_key in _TIME_EMBEDDING_KEYS:
+        if emb_key not in emb:
+            continue
+
+        zoom_values = emb[emb_key]
+        if not isinstance(zoom_values, Mapping):
+            raise ValueError(
+                f"{emb_key} must map zoom levels to tensors when "
+                f"token_len_time={token_len_time}"
+            )
+
+        zoom_key: Union[int, str]
+        if zoom in zoom_values:
+            zoom_key = zoom
+        elif str(zoom) in zoom_values:
+            zoom_key = str(zoom)
+        else:
+            raise ValueError(f"{emb_key} has no entry for active zoom {zoom}")
+
+        values = zoom_values[zoom_key]
+        if not torch.is_tensor(values) or values.ndim < 2:
+            shape = None if not torch.is_tensor(values) else tuple(values.shape)
+            raise ValueError(
+                f"{emb_key}[{zoom}] must be a tensor with batch and time axes; "
+                f"got {type(values).__name__} with shape {shape}"
+            )
+        if values.shape[1] != field_time_steps:
+            raise ValueError(
+                f"{emb_key}[{zoom}] has time length {values.shape[1]}, expected "
+                f"{field_time_steps} to match the field before temporal tokenization"
+            )
+
+        aligned_zoom_values = dict(zoom_values)
+        aligned_zoom_values[zoom_key] = values[
+            :, token_len_time - 1 : field_time_steps : token_len_time, ...
+        ].clone()
+        aligned_emb[emb_key] = aligned_zoom_values
+        aligned_any = True
+
+    if aligned_any:
+        aligned_emb.pop(GLOBAL_EMBEDDER_CACHE_KEY, None)
+    return aligned_emb
 
 
 def add_depth_overlap_from_neighbor_patches(

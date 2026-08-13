@@ -271,6 +271,29 @@ def _validate_minimum_span(value: Any, parameter_name: str) -> int:
         raise ValueError(f"`{parameter_name}` must be a non-negative integer, got {value!r}.")
     return int(value)
 
+
+def _validate_dropout_indices(
+    value: Any,
+    parameter_name: str,
+    expected_length: int,
+) -> torch.Tensor:
+    """Validate a fixed binary time-step dropout mask."""
+    if value is None:
+        return torch.zeros(expected_length, dtype=torch.bool)
+    if not isinstance(value, (list, tuple, ListConfig, np.ndarray, torch.Tensor)):
+        raise ValueError(
+            f"`{parameter_name}` must be a binary sequence of length {expected_length}."
+        )
+
+    values = torch.as_tensor(list(value) if isinstance(value, ListConfig) else value)
+    if values.ndim != 1 or values.numel() != expected_length:
+        raise ValueError(
+            f"`{parameter_name}` must have length {expected_length}, got shape {tuple(values.shape)}."
+        )
+    if values.dtype != torch.bool and not torch.all((values == 0) | (values == 1)):
+        raise ValueError(f"`{parameter_name}` values must be binary (0/1 or bool).")
+    return values.to(dtype=torch.bool)
+
 #def create_mask(random_p, drop_mask, ):
 
 class BaseDataset(Dataset):
@@ -614,6 +637,7 @@ class BaseDataset(Dataset):
         """Validate temporal masking settings stored on each source zoom."""
         self.p_drop_ts_zooms: Dict[int, float] = {}
         self.min_unmasked_ts_zooms: Dict[int, int] = {}
+        self.dropout_indices_zooms: Dict[int, torch.Tensor] = {}
         for zoom in self.zooms:
             sampling = self.sampling_zooms[zoom]
             probability = _validate_probability(
@@ -634,8 +658,14 @@ class BaseDataset(Dataset):
                     f"Minimum unmasked span {minimum_span} for zoom {zoom} exceeds "
                     f"its source-window length {window_length}."
                 )
+            dropout_indices = _validate_dropout_indices(
+                sampling.get("dropout_indices"),
+                f"sampling_zooms[{zoom}].dropout_indices",
+                expected_length=window_length,
+            )
             self.p_drop_ts_zooms[zoom] = probability
             self.min_unmasked_ts_zooms[zoom] = minimum_span
+            self.dropout_indices_zooms[zoom] = dropout_indices
 
     def _time_offsets(self, zoom: int) -> torch.Tensor:
         """Return center-relative offsets for one zoom's source window."""
@@ -677,6 +707,8 @@ class BaseDataset(Dataset):
                 mask = torch.ones(offsets.numel(), dtype=torch.bool)
             else:
                 mask = torch.rand(offsets.numel()) < probability
+
+            mask = torch.logical_or(mask, self.dropout_indices_zooms[zoom])
 
             if masked_lower_offsets:
                 inherited = torch.tensor(
