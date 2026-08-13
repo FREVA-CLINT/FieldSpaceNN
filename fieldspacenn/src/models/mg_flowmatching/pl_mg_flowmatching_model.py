@@ -431,7 +431,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         device = source_group[max(source_group.keys())].device
-        ts = torch.tensor([0.25, 0.5, 0.75, 1.0], device=device)
+        ts = torch.tensor([0.0, 0.25, 0.5, 0.75], device=device)
 
         source_p = {zoom: source_group[zoom][0:1] for zoom in source_group.keys()}
         target_p = {zoom: target_group[zoom][0:1] for zoom in target_group.keys()}
@@ -568,7 +568,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         elif len(self.model.in_zooms) > 0:
             max_zoom = max(self.model.in_zooms)
 
-        if max_zoom is None:
+        if max_zoom is None or not self.trainer.predict_dataloaders.dataset.apply_diff:
             return current_groups
 
         decoded_outputs: List[Optional[Dict[int, torch.Tensor]]] = []

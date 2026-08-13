@@ -39,7 +39,7 @@ MGEmbedder:
   shared: false
   in_channels: 2
   embed_dim: 64
-  n_variables: 5
+  n_variables: 1
   init_method: spherical_harmonics
 StaticVariableEmbedder:
   in_channels: 2

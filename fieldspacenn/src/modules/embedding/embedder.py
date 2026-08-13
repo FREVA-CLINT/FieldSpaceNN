@@ -951,12 +951,13 @@ class ForcingEmbedder(ZoomBaseEmbedder):
         :param sample_configs: Sampling configuration by zoom.
         :return: Embedded forcing tensor shaped ``(b, t, embed_dim)``.
         """
-        if self.zoom not in emb:
+        zoom = output_zoom if output_zoom is not None and output_zoom in emb else self.zoom
+        if zoom not in emb:
             raise KeyError(
-                f"ForcingEmbedder zoom {self.zoom} is missing. Available zooms: {list(emb.keys())}."
+                f"ForcingEmbedder zoom {zoom} is missing. Available zooms: {list(emb.keys())}."
             )
 
-        forcing_data = emb[self.zoom]
+        forcing_data = emb[zoom]
         expected_names = set(self.forcing_names)
         input_names = set(forcing_data.keys())
         if input_names != expected_names:
@@ -969,20 +970,20 @@ class ForcingEmbedder(ZoomBaseEmbedder):
 
         ts_start = 0
         ts_end = 0
-        if output_zoom is not None and output_zoom != self.zoom:
+        if output_zoom is not None and output_zoom != zoom:
             if sample_configs is None:
                 raise ValueError("sample_configs is required when aligning forcing time windows.")
             ts_start = (
-                sample_configs[self.zoom]['n_past_ts']
+                sample_configs[zoom]['n_past_ts']
                 - sample_configs[output_zoom]['n_past_ts']
             )
             ts_end = (
-                sample_configs[self.zoom]['n_future_ts']
+                sample_configs[zoom]['n_future_ts']
                 - sample_configs[output_zoom]['n_future_ts']
             )
             if ts_start < 0 or ts_end < 0:
                 raise ValueError(
-                    f"Cannot expand forcing time window from zoom {self.zoom} "
+                    f"Cannot expand forcing time window from zoom {zoom} "
                     f"to zoom {output_zoom}."
                 )
 
@@ -1316,8 +1317,30 @@ class EmbedderSequential(nn.Module):
 
         # Combine embeddings according to the mode
         if self.mode == 'concat':
-            # Concatenate along the channel dimension
-            embed_out = torch.cat(embeddings, dim=-1)
+            # Concatenation does not apply PyTorch's implicit broadcasting. Expand
+            # singleton variable/time/space/depth axes to the common shape first,
+            # matching the broadcasting semantics used by sum/average modes.
+            target_shape = [
+                max(embedding.shape[dim] for embedding in embeddings)
+                for dim in range(embeddings[0].ndim - 1)
+            ]
+            embeddings_broadcast = []
+            for embedding in embeddings:
+                incompatible_dims = [
+                    dim
+                    for dim, target_size in enumerate(target_shape)
+                    if embedding.shape[dim] not in (1, target_size)
+                ]
+                if incompatible_dims:
+                    raise ValueError(
+                        "Cannot concatenate embeddings with incompatible shapes: "
+                        f"{[tuple(value.shape) for value in embeddings]}."
+                    )
+                embeddings_broadcast.append(
+                    embedding.expand(*target_shape, embedding.shape[-1])
+                )
+
+            embed_out = torch.cat(embeddings_broadcast, dim=-1)
         elif self.mode == 'sum':
             # Sum the embeddings
             emb_sum = embeddings[0]

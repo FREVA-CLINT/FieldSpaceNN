@@ -1,9 +1,11 @@
+import math
+from collections import defaultdict
 from collections.abc import Mapping as MappingABC
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import torch
 from lightning.pytorch import LightningDataModule
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from torch.utils.data.dataloader import default_collate
 
 from ..data.datasets_regular import RegularDataset
@@ -61,6 +63,125 @@ class IdentityAllocator:
         :return: Collated batch.
         """
         return _default_collate_with_fallback(batch)
+
+
+class _BucketSamplerEpochSetter:
+    """Expose a sampler-shaped ``set_epoch`` hook for Lightning."""
+
+    def __init__(self, batch_sampler: "DistributedTimeBucketBatchSampler") -> None:
+        self.batch_sampler = batch_sampler
+
+    def set_epoch(self, epoch: int) -> None:
+        self.batch_sampler.set_epoch(epoch)
+
+
+class DistributedTimeBucketBatchSampler(Sampler[List[int]]):
+    """Build homogeneous time-length batches and partition them across DDP ranks."""
+
+    def __init__(
+        self,
+        dataset: Any,
+        batch_size: int,
+        shuffle: bool = True,
+        drop_last: bool = False,
+        seed: int = 0,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
+    ) -> None:
+        signatures = getattr(dataset, "sample_time_length_signatures", None)
+        if signatures is None:
+            raise ValueError(
+                "Time-length bucketing requires dataset.sample_time_length_signatures."
+            )
+        if len(signatures) != len(dataset):
+            raise ValueError(
+                "Time-length signatures must align one-to-one with dataset samples."
+            )
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}.")
+
+        if num_replicas is None:
+            num_replicas = (
+                torch.distributed.get_world_size()
+                if torch.distributed.is_available() and torch.distributed.is_initialized()
+                else 1
+            )
+        if rank is None:
+            rank = (
+                torch.distributed.get_rank()
+                if torch.distributed.is_available() and torch.distributed.is_initialized()
+                else 0
+            )
+        if num_replicas <= 0:
+            raise ValueError(f"num_replicas must be positive, got {num_replicas}.")
+        if rank < 0 or rank >= num_replicas:
+            raise ValueError(f"rank {rank} must be in [0, {num_replicas}).")
+
+        buckets: Dict[Tuple[int, ...], List[int]] = defaultdict(list)
+        for index, signature in enumerate(signatures):
+            buckets[tuple(int(value) for value in signature)].append(index)
+
+        self.buckets: Dict[Tuple[int, ...], List[int]] = dict(buckets)
+        self.batch_size = int(batch_size)
+        self.shuffle = bool(shuffle)
+        self.drop_last = bool(drop_last)
+        self.seed = int(seed)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.epoch = 0
+        # Lightning advances custom batch samplers through
+        # ``dataloader.batch_sampler.sampler.set_epoch``.
+        self.sampler = _BucketSamplerEpochSetter(self)
+
+    @property
+    def global_batch_size(self) -> int:
+        return self.batch_size * self.num_replicas
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __len__(self) -> int:
+        if self.drop_last:
+            return sum(
+                len(indices) // self.global_batch_size
+                for indices in self.buckets.values()
+            )
+        return sum(
+            math.ceil(len(indices) / self.global_batch_size)
+            for indices in self.buckets.values()
+        )
+
+    def __iter__(self) -> Iterator[List[int]]:
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        local_batches: List[List[int]] = []
+
+        for signature in sorted(self.buckets):
+            bucket_indices = list(self.buckets[signature])
+            if self.shuffle and len(bucket_indices) > 1:
+                order = torch.randperm(len(bucket_indices), generator=generator).tolist()
+                bucket_indices = [bucket_indices[position] for position in order]
+
+            remainder = len(bucket_indices) % self.global_batch_size
+            if remainder:
+                if self.drop_last:
+                    bucket_indices = bucket_indices[:-remainder]
+                else:
+                    padding_size = self.global_batch_size - remainder
+                    repeats = math.ceil(padding_size / len(bucket_indices))
+                    bucket_indices.extend((bucket_indices * repeats)[:padding_size])
+
+            rank_start = self.rank * self.batch_size
+            rank_end = rank_start + self.batch_size
+            for start in range(0, len(bucket_indices), self.global_batch_size):
+                global_batch = bucket_indices[start:start + self.global_batch_size]
+                local_batches.append(global_batch[rank_start:rank_end])
+
+        if self.shuffle and len(local_batches) > 1:
+            order = torch.randperm(len(local_batches), generator=generator).tolist()
+            local_batches = [local_batches[position] for position in order]
+
+        yield from local_batches
 
 
 class BatchReshapeAllocator:
@@ -160,7 +281,9 @@ class DataModule(LightningDataModule):
         use_costum_ddp_sampler: bool = False,
         prefetch_factor: Optional[int] = None,
         persistent_workers: bool = False,
-        shuffle: bool = False
+        shuffle: bool = False,
+        bucket_by_time_length: bool = False,
+        bucket_seed: int = 0,
     ):
         """
         Initialize the data module and its datasets/collators.
@@ -175,6 +298,9 @@ class DataModule(LightningDataModule):
         :param prefetch_factor: Optional prefetch factor for dataloaders.
         :param persistent_workers: Whether to keep dataloader workers alive.
         :param shuffle: Whether to shuffle training dataset.
+        :param bucket_by_time_length: Whether to batch samples with identical
+            effective temporal lengths using a DDP-aware batch sampler.
+        :param bucket_seed: Base seed for deterministic bucket shuffling.
         :return: None.
         """
         super().__init__()
@@ -195,6 +321,30 @@ class DataModule(LightningDataModule):
         self.prefetch_factor: Optional[int] = prefetch_factor
         self.persistent_workers: bool = persistent_workers
         self.shuffle: bool = shuffle
+        self.bucket_by_time_length: bool = bool(bucket_by_time_length)
+        self.bucket_seed: int = int(bucket_seed)
+
+    def _bucketed_dataloader(
+        self,
+        dataset: Any,
+        collator: Any,
+        num_workers: int,
+        shuffle: bool,
+    ) -> DataLoader:
+        batch_sampler = DistributedTimeBucketBatchSampler(
+            dataset=dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            seed=self.bucket_seed,
+        )
+        return DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=collator,
+            prefetch_factor=self.prefetch_factor,
+            persistent_workers=self.persistent_workers,
+        )
 
     def train_dataloader(self):
         """
@@ -202,6 +352,14 @@ class DataModule(LightningDataModule):
 
         :return: Training DataLoader instance.
         """
+        if self.bucket_by_time_length:
+            return self._bucketed_dataloader(
+                self.dataset_train,
+                self.train_collator,
+                self.num_workers,
+                self.shuffle,
+            )
+
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_train, shuffle=False)
         else:
@@ -216,6 +374,14 @@ class DataModule(LightningDataModule):
 
         :return: Validation DataLoader instance.
         """
+        if self.bucket_by_time_length:
+            return self._bucketed_dataloader(
+                self.dataset_val,
+                self.val_collator,
+                self.num_val_workers,
+                False,
+            )
+
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_val, shuffle=False)
         else:
@@ -231,6 +397,14 @@ class DataModule(LightningDataModule):
 
         :return: Test DataLoader instance.
         """
+        if self.bucket_by_time_length:
+            return self._bucketed_dataloader(
+                self.dataset_test,
+                self.test_collator,
+                self.num_workers,
+                False,
+            )
+
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_test, shuffle=False)
         else:
