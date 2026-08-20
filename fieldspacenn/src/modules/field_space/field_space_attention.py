@@ -430,7 +430,7 @@ class FieldSpaceAttentionModule(nn.Module):
         embed_confs: Dict[str, Any] = {},
         global_embedders: Optional[nn.ModuleDict] = None,
         fac_mode: str = "Tucker",
-        emb_aggregation: str = "shift_scale",
+        emb_modulation_mode: str = "shift_scale",
         block_type: Literal["legacy", "ext"] = "legacy",
     ) -> None:
         """
@@ -488,6 +488,7 @@ class FieldSpaceAttentionModule(nn.Module):
         :param use_variable_att_gammas: Whether attention residual gammas are variable-specific.
         :param use_variable_mlp_gammas: Whether MLP residual gammas are variable-specific.
         :param embed_confs: Embedding configuration dictionary.
+        :param emb_modulation_mode: How embeddings modulate field tensors.
         :param layer_confs: Layer configuration for attention blocks.
         :param layer_confs_emb: Layer configuration for embedding blocks.
         :return: None.
@@ -756,7 +757,7 @@ class FieldSpaceAttentionModule(nn.Module):
                         embedder_cache_key=embedder_cache_key,
                         n_variables=n_groups_variables[k],
                         fac_mode=fac_mode,
-                        emb_aggregation=emb_aggregation,
+                        emb_modulation_mode=emb_modulation_mode,
                         update=update,
                         separate_mlp_norm=separate_mlp_norm,
                         mlp_residual_from_attention=mlp_residual_from_attention,
@@ -896,7 +897,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         with_var_att: bool = False,
         n_variables: int = 1,
         fac_mode: str = "Tucker",
-        emb_aggregation: str = "shift_scale",
+        emb_modulation_mode: str = "shift_scale",
         update: str = 'shift',
         layer_norm: bool = True,
         separate_mlp_norm: bool = False,
@@ -948,6 +949,7 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param dropout: Dropout rate.
         :param n_head_channels: Head channel size.
         :param embed_confs: Embedding configuration dictionary.
+        :param emb_modulation_mode: How embeddings modulate field tensors.
         :param seq_len_time: Sequence length along time.
         :param seq_len_depth: Sequence length along depth.
         :param seq_overlap_space: Overlap along space.
@@ -1247,7 +1249,7 @@ class FieldSpaceAttentionBlock(nn.Module):
             field_tokenizer= emb_tokenizer,
             output_zoom=max(self.q_zooms),
             layer_norm=True,
-            emb_aggregation=emb_aggregation,
+            emb_modulation_mode=emb_modulation_mode,
             emb_ranks=emb_ranks,
             embedder_cache_key=embedder_cache_key,
         )
@@ -1268,7 +1270,7 @@ class FieldSpaceAttentionBlock(nn.Module):
                 field_tokenizer= emb_tokenizer,
                 output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
-                emb_aggregation=emb_aggregation,
+                emb_modulation_mode=emb_modulation_mode,
                 emb_ranks=emb_ranks,
                 embedder_cache_key=embedder_cache_key,
             )
@@ -1291,7 +1293,7 @@ class FieldSpaceAttentionBlock(nn.Module):
                 field_tokenizer= emb_tokenizer,
                 output_zoom=max(self.q_zooms),
                 layer_norm=layer_norm,
-                emb_aggregation=emb_aggregation,
+                emb_modulation_mode=emb_modulation_mode,
                 emb_ranks=emb_ranks,
                 embedder_cache_key=embedder_cache_key,
             )
@@ -1925,7 +1927,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         with_var_att: bool = False,
         n_variables: int = 1,
         fac_mode: str = "Tucker",
-        emb_aggregation: str = "shift_scale",
+        emb_modulation_mode: str = "shift_scale",
         update: str = "shift",
         layer_norm: bool = True,
         separate_mlp_norm: bool = False,
@@ -2239,7 +2241,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 indexed_emb=indexed_emb,
                 indexed_norm=indexed_norm,
                 layer_norm=layer_norm,
-                emb_aggregation=emb_aggregation,
+                emb_modulation_mode=emb_modulation_mode,
             )
             self.pre_layers[key] = pre_layer
             if self.separate_mlp_norm and zoom in self.target_zooms:
@@ -2257,7 +2259,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                     indexed_emb=indexed_emb,
                     indexed_norm=indexed_norm,
                     layer_norm=layer_norm,
-                    emb_aggregation=emb_aggregation,
+                    emb_modulation_mode=emb_modulation_mode,
                 )
 
             qkv_in_shape = [
@@ -2516,7 +2518,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         indexed_emb: Dict[str, Dict[str, Any]],
         indexed_norm: Dict[str, Dict[str, Any]],
         layer_norm: bool,
-        emb_aggregation: str,
+        emb_modulation_mode: str,
     ) -> LinEmbLayer:
         emb_tokenizer = Tokenizer(
             [input_zoom_field] if embedder and embedder.has_space() else [],
@@ -2552,7 +2554,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             field_tokenizer=emb_tokenizer,
             output_zoom=zoom,
             layer_norm=layer_norm,
-            emb_aggregation=emb_aggregation,
+            emb_modulation_mode=emb_modulation_mode,
             emb_ranks=emb_ranks,
             embedder_cache_key=embedder_cache_key,
         )

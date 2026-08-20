@@ -370,7 +370,7 @@ class TransformerBlock(EmbedBlock):
             emb_ranks: Optional[List[Optional[int]]] = None,
             n_variables: int = 1,
             fac_mode: str = "Tucker",
-            emb_aggregation: str = "shift_scale",
+            emb_modulation_mode: str = "shift_scale",
             **kwargs: Any
     ):
         super().__init__()
@@ -424,7 +424,7 @@ class TransformerBlock(EmbedBlock):
 
                 trans_block = rearrange_fn(SelfAttention(att_dim, out_features_list[i], n_heads, ranks=ranks, n_variables=n_variables, fac_mode=fac_mode, qkv_proj=False, cross=cross), spatial_dim_count, seq_length, proj_layer_q=q_layer, proj_layer_kv=kv_layer, grid_layer=kwargs['grid_layer'] if 'grid_layer' in kwargs.keys() else None)
      
-            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, ranks=ranks, emb_ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode, emb_aggregation=emb_aggregation, identity_if_equal=True, embedder=embedders[i], layer_norm=True, spatial_dim_count=spatial_dim_count))
+            lin_emb_layers.append(LinEmbLayer(in_features, att_dim, ranks=ranks, emb_ranks=emb_ranks, n_variables=n_variables, fac_mode=fac_mode, emb_modulation_mode=emb_modulation_mode, identity_if_equal=True, embedder=embedders[i], layer_norm=True, spatial_dim_count=spatial_dim_count))
 
 
             # Skip connection layer: Identity if in_features == out_features_list, else a linear projection

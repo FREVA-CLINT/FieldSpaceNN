@@ -1195,13 +1195,21 @@ class EmbedderManager:
 
 
 class EmbedderSequential(nn.Module):
-    def __init__(self, embedders: ModuleDict, mode: str = 'sum', spatial_dim_count: int = 2) -> None:
+    def __init__(
+        self,
+        embedders: ModuleDict,
+        mode: str = 'sum',
+        spatial_dim_count: int = 2,
+        expand_variable_dim: bool = True,
+    ) -> None:
         """
         Initialize a sequential embedder combiner.
 
         :param embedders: Mapping of embedder name to embedder instance.
         :param mode: Combination mode ("average", "sum", or "concat").
         :param spatial_dim_count: Number of spatial dimensions represented by "s".
+        :param expand_variable_dim: Expand singleton variable axes to the runtime
+            variable count before combining embeddings.
         :return: None.
         """
         super(EmbedderSequential, self).__init__()
@@ -1209,7 +1217,50 @@ class EmbedderSequential(nn.Module):
         assert mode in ['average', 'sum', 'concat'], "Mode must be 'average', 'sum', or 'concat'."
         self.mode: str = mode
         self.spatial_dim_count: int = spatial_dim_count
+        self.expand_variable_dim: bool = expand_variable_dim
         self.activation: nn.Module = nn.Identity()
+
+    def _embed_one(
+        self,
+        embedder_name: str,
+        embedder: BaseEmbedder,
+        inputs: Dict[str, torch.Tensor],
+        sample_configs: Optional[Dict[str, Any]],
+        output_zoom: Optional[int],
+        variable_embedder_size: Optional[int],
+    ) -> torch.Tensor:
+        """Run and expand one embedder into the canonical field layout."""
+        if embedder_name not in inputs:
+            raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
+
+        embed_output = embedder(
+            inputs[embedder_name],
+            sample_configs=sample_configs,
+            output_zoom=output_zoom,
+        )
+
+        expected_ndim = len(embedder.keep_dims) + (
+            (self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0
+        )
+        if embed_output.ndim != expected_ndim:
+            embed_output = embed_output.unsqueeze(1)
+
+        embed_output = expand_tensor(
+            embed_output,
+            dims=4 + self.spatial_dim_count,
+            keep_dims=embedder.keep_dims,
+        )
+        if (
+            variable_embedder_size is not None
+            and embed_output.shape[1] == 1
+            and variable_embedder_size > 1
+        ):
+            embed_output = embed_output.expand(
+                embed_output.shape[0],
+                variable_embedder_size,
+                *embed_output.shape[2:],
+            )
+        return embed_output
 
     @staticmethod
     def _get_variable_embedder_size(inputs: Dict[str, Any]) -> Optional[int]:
@@ -1287,32 +1338,24 @@ class EmbedderSequential(nn.Module):
         :return: Combined embedding tensor with shape ``(b, v, t, s, c)``.
         """
         embeddings = []
-        variable_embedder_size = self._get_variable_embedder_size(inputs)
+        variable_embedder_size = (
+            self._get_variable_embedder_size(inputs)
+            if self.expand_variable_dim
+            else None
+        )
 
         # Apply each embedder to its respective input
         for embedder_name, embedder in self.embedders.items():
-            # Get the input tensor for the current embedder
-            if embedder_name not in inputs:
-                raise ValueError(f"Input for embedder '{embedder_name}' is missing.")
-
-            input_tensor = inputs[embedder_name]
-                    
-            embed_output = embedder(input_tensor, sample_configs=sample_configs, output_zoom=output_zoom)     
-
-            # Add time dimension
-            if embed_output.ndim != len(embedder.keep_dims) + ((self.spatial_dim_count - 1) if "s" in embedder.keep_dims else 0):
-                embed_output = embed_output.unsqueeze(1)
-
-
-            # Reshape the output to the target output_shape
-            embed_output = expand_tensor(embed_output, dims=4 + self.spatial_dim_count, keep_dims=embedder.keep_dims)
-            if variable_embedder_size is not None and embed_output.shape[1] == 1 and variable_embedder_size > 1:
-                embed_output = embed_output.expand(
-                    embed_output.shape[0],
+            embeddings.append(
+                self._embed_one(
+                    embedder_name,
+                    embedder,
+                    inputs,
+                    sample_configs,
+                    output_zoom,
                     variable_embedder_size,
-                    *embed_output.shape[2:],
                 )
-            embeddings.append(embed_output)
+            )
 
         # Combine embeddings according to the mode
         if self.mode == 'concat':
@@ -1343,6 +1386,48 @@ class EmbedderSequential(nn.Module):
             return sum([emb.embed_dim for _, emb in self.embedders.items()])
         else:
             return [emb.embed_dim for _, emb in self.embedders.items()][-1]
+
+
+class IndependentEmbedderSequential(EmbedderSequential):
+    """Run configured embedders independently without combining their outputs."""
+
+    def __init__(self, embedders: ModuleDict, spatial_dim_count: int = 2) -> None:
+        super().__init__(
+            embedders,
+            mode="sum",
+            spatial_dim_count=spatial_dim_count,
+            expand_variable_dim=False,
+        )
+        self.mode = "independent"
+
+    def forward(
+        self,
+        inputs: Dict[str, torch.Tensor],
+        sample_configs: Optional[Dict[str, Any]] = None,
+        output_zoom: Optional[int] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Return each expanded embedding separately in configuration order.
+
+        Unlike combination modes, axes omitted from an embedder's ``keep_dims``
+        remain singleton dimensions and are not expanded to match other embedders.
+        """
+        return {
+            embedder_name: self._embed_one(
+                embedder_name,
+                embedder,
+                inputs,
+                sample_configs,
+                output_zoom,
+                variable_embedder_size=None,
+            )
+            for embedder_name, embedder in self.embedders.items()
+        }
+
+    @property
+    def get_out_channels(self) -> List[int]:
+        """Return the separate channel count of every configured embedder."""
+        return [embedder.embed_dim for embedder in self.embedders.values()]
         
 
 def get_embedder_from_dict(dict_: Dict[str, Any]) -> Any:
@@ -1372,7 +1457,8 @@ def get_embedder(
 
     :param embed_names: Embedder name(s) or list of embedder name groups.
     :param embed_confs: Mapping from embedder name to constructor kwargs.
-    :param embed_mode: Combination mode ("average", "sum", or "concat").
+    :param embed_mode: Embedding mode ("average", "sum", "concat", or
+        "independent").
     :param kwargs: Extra keyword arguments forwarded to each embedder.
     :return: Embedder instance(s) or None.
     """
@@ -1394,7 +1480,18 @@ def get_embedder(
                 emb = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name], **kwargs)
                 emb_dict[emb.name] = emb
             
-            embedders.append(EmbedderSequential(emb_dict, mode=embed_mode, spatial_dim_count = 1))
+            if embed_mode == "independent":
+                embedder_seq = IndependentEmbedderSequential(
+                    emb_dict,
+                    spatial_dim_count=1,
+                )
+            else:
+                embedder_seq = EmbedderSequential(
+                    emb_dict,
+                    mode=embed_mode,
+                    spatial_dim_count=1,
+                )
+            embedders.append(embedder_seq)
 
         if return_list:
             return embedders

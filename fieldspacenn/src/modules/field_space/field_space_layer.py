@@ -9,13 +9,10 @@ import copy
 from ..base import get_layer, MLP_fac
 from ..factorization import build_indexed_dims
 from .field_space_base import (
-    LinEmbLayer,
     Tokenizer,
-    align_time_embeddings_to_tokens,
     add_time_overlap_from_neighbor_patches,
     add_depth_overlap_from_neighbor_patches,
 )
-from ..embedding.embedder import get_embedder
 
 
 def _is_sequence_value(value: Any) -> bool:
@@ -167,14 +164,6 @@ class FieldSpaceLayerConfig:
         use_indexed_input: bool = False,
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
-        embed_confs: Optional[Dict[str, Any]] = None,
-        emb_aggregation: str = "shift_scale",
-        layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_ranks_emb_layer: bool = True,
         type: str = 'linear',
         block_type: Literal["legacy", "ext"] = "legacy",
         **kwargs: Any
@@ -206,14 +195,6 @@ class FieldSpaceLayerConfig:
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param hidden_dim_mixed: Width of the shared cross-variable latent branch.
-        :param embed_confs: Embedder names and constructor settings.
-        :param emb_aggregation: How embeddings are combined with tokenized fields.
-        :param layer_norm: Whether to normalize tokenized inputs before projection.
-        :param use_variable_emb_layer: Whether embedding parameters vary by variable.
-        :param use_variable_layer_norm: Whether norm affine parameters vary by variable.
-        :param use_indexed_emb_layer: Indexed-tensor alias for embedding parameters.
-        :param use_indexed_layer_norm: Indexed-tensor alias for norm parameters.
-        :param use_ranks_emb_layer: Whether embedding projections use configured ranks.
         :param type: Layer type ("linear" or "mlp").
         :param kwargs: Additional keyword arguments assigned as attributes.
         :return: None.
@@ -247,34 +228,10 @@ class FieldSpaceLayerConfig:
         self.use_indexed_input: bool
         self.use_indexed_output: bool
         self.use_indexed_mlp: bool
-        self.embed_confs: Dict[str, Any]
-        self.emb_aggregation: str
-        self.layer_norm: bool
-        self.use_variable_emb_layer: bool
-        self.use_variable_layer_norm: bool
-        self.use_indexed_emb_layer: bool
-        self.use_indexed_layer_norm: bool
-        self.use_ranks_emb_layer: bool
         self.type: str
         self.block_type: Literal["legacy", "ext"]
 
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> tuple[bool, bool]:
-            resolved = legacy_value if indexed_value is None else indexed_value
-            return bool(resolved), bool(resolved)
-
         hidden_dim_mixed = int(hidden_dim_mixed)
-        embed_confs = {} if embed_confs is None else embed_confs
-        use_indexed_emb_layer, use_variable_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        use_indexed_layer_norm, use_variable_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
         if "att_dim_mixed" in kwargs:
             raise TypeError(
                 "Field-space layers use hidden_dim_mixed; "
@@ -336,8 +293,6 @@ class FieldSpaceLayerConfig:
 
         inputs = copy.deepcopy(locals())
         for input, value in inputs.items():
-            if input in {'self', '_resolve_alias'}:
-                continue
             if input == 'kwargs':
                 for input_kw, value_kw in value.items():
                     setattr(self, input_kw, value_kw)
@@ -353,18 +308,6 @@ class FieldSpaceLayerModule(nn.Module):
                  field_zoom: int,
                  n_groups_variables: List[int] = [1],
                  n_groups_depths: Optional[List[int]] = None,
-                 shared_indexed_group_variables: Union[List[bool], bool] = False,
-                 shared_indexed_group_depths: Union[List[bool], bool] = False,
-                 shared_indexed_group_space: Union[List[bool], bool] = False,
-                 embed_confs: Optional[Dict[str, Any]] = None,
-                 global_embedders: Optional[nn.ModuleDict] = None,
-                 emb_aggregation: str = "shift_scale",
-                 layer_norm: bool = False,
-                 use_variable_emb_layer: bool = True,
-                 use_variable_layer_norm: bool = True,
-                 use_indexed_emb_layer: Optional[bool] = None,
-                 use_indexed_layer_norm: Optional[bool] = None,
-                 use_ranks_emb_layer: bool = True,
                  **kwargs: Any):
         """
         Initialize a field-space layer module with per-group blocks.
@@ -381,7 +324,6 @@ class FieldSpaceLayerModule(nn.Module):
         super().__init__()
         self.blocks: nn.ModuleList = nn.ModuleList()
         n_groups = len(n_groups_variables)
-        embed_confs = {} if embed_confs is None else embed_confs
         block_type = kwargs.get("block_type", "legacy")
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
@@ -424,56 +366,6 @@ class FieldSpaceLayerModule(nn.Module):
             n_groups,
             "n_depths",
         )
-        shared_indexed_group_depths = _normalize_group_values(
-            shared_indexed_group_depths,
-            n_groups,
-            "shared_indexed_group_depths",
-        )
-        shared_indexed_group_variables = bool(_collapse_shared_value(
-            shared_indexed_group_variables,
-            n_groups,
-            "shared_indexed_group_variables",
-        ))
-        shared_indexed_group_space = bool(_collapse_shared_value(
-            shared_indexed_group_space,
-            n_groups,
-            "shared_indexed_group_space",
-        ))
-
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
-
-        use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
-
-        input_zoom_field = int(embed_confs.get("input_zoom", min(in_zooms)))
-        zoom_key = str(input_zoom_field)
-        embedder_cache_key = None
-        has_configured_embedder = bool(embed_confs.get("embed_names"))
-        if (
-            has_configured_embedder
-            and global_embedders is not None
-            and zoom_key in global_embedders
-        ):
-            shared_embedder = global_embedders[zoom_key]
-            embedder_cache_key = zoom_key
-        elif has_configured_embedder:
-            shared_embedder = get_embedder(
-                **embed_confs,
-                grid_layers=grid_layers,
-                zoom=input_zoom_field,
-            )
-        else:
-            shared_embedder = None
         hidden_dim_shared = _collapse_shared_value(
             kwargs.get("hidden_dim"),
             n_groups,
@@ -656,18 +548,6 @@ class FieldSpaceLayerModule(nn.Module):
                 n_groups,
                 "fac_mode",
             ),
-            "embed_confs": embed_confs,
-            "embedder": shared_embedder,
-            "embedder_cache_key": embedder_cache_key,
-            "emb_aggregation": emb_aggregation,
-            "layer_norm": bool(layer_norm),
-            "use_variable_emb_layer": bool(use_variable_emb_layer),
-            "use_variable_layer_norm": bool(use_variable_layer_norm),
-            "use_indexed_emb_layer": use_indexed_emb_layer,
-            "use_indexed_layer_norm": use_indexed_layer_norm,
-            "use_ranks_emb_layer": bool(use_ranks_emb_layer),
-            "shared_indexed_variables": shared_indexed_group_variables,
-            "shared_indexed_space": shared_indexed_group_space,
         }
         if shared_values["hidden_dim_mixed"] < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
@@ -708,9 +588,6 @@ class FieldSpaceLayerModule(nn.Module):
             block_kwargs["n_rank_time"] = n_rank_time
             block_kwargs["n_depths"] = n_depths[i]
             block_kwargs["n_rank_depth"] = n_rank_depth[i]
-            block_kwargs["shared_indexed_depths"] = bool(
-                shared_indexed_group_depths[i]
-            )
             block_kwargs.update(shared_values)
 
             block_class = (
@@ -796,19 +673,6 @@ class FieldSpaceLayerBlock(nn.Module):
         use_indexed_input: bool = False,
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
-        shared_indexed_variables: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
-        embed_confs: Optional[Dict[str, Any]] = None,
-        embedder: Optional[nn.Module] = None,
-        embedder_cache_key: Optional[str] = None,
-        emb_aggregation: str = "shift_scale",
-        layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_ranks_emb_layer: bool = True,
         residual: bool = False,
         residual_gamma: bool = False,
         n_variables: int = 1,
@@ -851,28 +715,6 @@ class FieldSpaceLayerBlock(nn.Module):
         """
 
         super().__init__()
-        embed_confs = {} if embed_confs is None else embed_confs
-
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
-
-        self.use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        self.use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
-        self.use_variable_emb_layer = bool(use_variable_emb_layer)
-        self.use_variable_layer_norm = bool(use_variable_layer_norm)
-        self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
-        self.shared_indexed_variables = bool(shared_indexed_variables)
-        self.shared_indexed_depths = bool(shared_indexed_depths)
-        self.shared_indexed_space = bool(shared_indexed_space)
         self.hidden_dim_mixed = int(hidden_dim_mixed)
         if self.hidden_dim_mixed < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
@@ -947,7 +789,6 @@ class FieldSpaceLayerBlock(nn.Module):
         self.out_zooms: Optional[List[int]] = out_zooms
         self.in_zooms: List[int] = in_zooms
         self.field_zoom: int = int(field_zoom)
-        self.in_token_len_time = int(in_token_len_time)
         self.in_token_len_depth = int(in_token_len_depth)
         self.out_token_len_depth = int(out_token_len_depth)
         if self.in_token_len_depth <= 0:
@@ -1028,76 +869,6 @@ class FieldSpaceLayerBlock(nn.Module):
         self.indexed_dims_input = indexed_dims_input
         self.indexed_dims_output = indexed_dims_output
         self.indexed_dims_mlp = indexed_dims_mlp
-
-        input_zoom_field = int(embed_confs.get("input_zoom", min(in_zooms)))
-        if embedder is None:
-            embedder = get_embedder(
-                **embed_confs,
-                grid_layers=grid_layers,
-                zoom=input_zoom_field,
-            )
-        emb_tokenizer = Tokenizer(
-            [input_zoom_field] if embedder and embedder.has_space() else [],
-            self.field_zoom,
-            grid_layers=grid_layers,
-            token_len_time=1,
-            token_len_depth=(
-                self.in_token_len_depth
-                if embedder and embedder.has_depth()
-                else 1
-            ),
-            overlap_thickness=int(
-                embed_confs.get("token_overlap_space", False)
-            ),
-        )
-        pre_shape = [
-            in_token_len_time,
-            in_features_space,
-            in_token_len_depth,
-            1,
-        ]
-        pre_shape[1] = in_features_space if embedder and embedder.has_space() else 1
-        emb_ranks = embed_confs.get("ranks", [*ranks, None])
-        if not self.use_ranks_emb_layer:
-            emb_ranks = [None] * len(emb_ranks)
-        indexed_dims_emb = self._build_indexed_dims(
-            self.use_indexed_emb_layer,
-            preserve_variable_default=False,
-            shared_indexed_variables=self.shared_indexed_variables,
-            shared_indexed_times=False,
-            shared_indexed_depths=self.shared_indexed_depths,
-            shared_indexed_space=self.shared_indexed_space,
-        )
-        indexed_dims_norm = self._build_indexed_dims(
-            self.use_indexed_layer_norm,
-            preserve_variable_default=False,
-            shared_indexed_variables=self.shared_indexed_variables,
-            shared_indexed_times=False,
-            shared_indexed_depths=self.shared_indexed_depths,
-            shared_indexed_space=self.shared_indexed_space,
-        )
-        self.pre_layer = LinEmbLayer(
-            pre_shape,
-            pre_shape,
-            ranks=(ranks if self.use_ranks_emb_layer else [None] * len(ranks)),
-            emb_ranks=emb_ranks,
-            n_variables=(
-                self.n_variables if self.use_variable_emb_layer else 1
-            ),
-            n_variable_norm=(
-                self.n_variables if self.use_variable_layer_norm else 1
-            ),
-            indexed_dims=indexed_dims_emb,
-            indexed_dims_norm=indexed_dims_norm,
-            fac_mode=fac_mode,
-            identity_if_equal=True,
-            embedder=embedder,
-            field_tokenizer=emb_tokenizer,
-            output_zoom=max(self.in_zooms),
-            layer_norm=bool(layer_norm),
-            emb_aggregation=emb_aggregation,
-            embedder_cache_key=embedder_cache_key,
-        )
 
         if self.hidden_dim_mixed > 0:
             latent_shape = [1, 1, 1, self.hidden_dim]
@@ -1253,10 +1024,6 @@ class FieldSpaceLayerBlock(nn.Module):
         enabled: bool,
         *,
         preserve_variable_default: bool,
-        shared_indexed_variables: bool = True,
-        shared_indexed_times: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
     ) -> Optional[Dict[str, Dict[str, Any]]]:
         if not enabled:
             if not preserve_variable_default:
@@ -1279,25 +1046,25 @@ class FieldSpaceLayerBlock(nn.Module):
         return build_indexed_dims(
             n_variables=self.n_variables,
             rank_variables=self.rank_variables,
-            same_values_variables=shared_indexed_variables,
+            same_values_variables=True,
             n_times=self.n_times,
             rank_time=self.n_rank_time,
-            same_values_times=shared_indexed_times,
+            same_values_times=True,
             n_space=indexed_n_space,
             rank_space=(
                 self.n_rank_space if indexed_n_space > 1 else None
             ),
-            same_values_space=shared_indexed_space,
+            same_values_space=True,
             n_depths=indexed_n_depths,
             rank_depth=self.n_rank_depth,
-            same_values_depths=shared_indexed_depths,
+            same_values_depths=True,
         )
 
 
     def update_time_embedder(self, emb: Dict[str, Any]) -> None:
         """
-        Copy a reference time embedding to input/output zooms that do not
-        already have their own values.
+        Normalize zoom-keyed time embeddings to the max input zoom and copy
+        them to newly produced output zooms.
 
         :param emb: Embedding dictionary containing zoom-keyed time embeddings.
         :return: None.
@@ -1313,8 +1080,7 @@ class FieldSpaceLayerBlock(nn.Module):
             ref_zoom = max(self.in_zooms) if max(self.in_zooms) in emb[emb_key].keys() else max(emb[emb_key].keys())
             output_zooms = list(self.target_features_dict)
             for zoom in dict.fromkeys([*self.in_zooms, *output_zooms]):
-                if zoom not in emb[emb_key]:
-                    emb[emb_key][zoom] = emb[emb_key][ref_zoom]
+                emb[emb_key][zoom] = emb[emb_key][ref_zoom]
 
     def get_time_depth_overlaps(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -1428,23 +1194,8 @@ class FieldSpaceLayerBlock(nn.Module):
 
         x = self.tokenizer(x_zooms, sample_configs=sample_configs)
 
-        emb_tokenized = emb
         if emb:
             self.update_time_embedder(emb)
-            emb_tokenized = align_time_embeddings_to_tokens(
-                emb,
-                zoom=max(self.in_zooms),
-                token_len_time=self.in_token_len_time,
-                field_time_steps=int(
-                    x.shape[2] * self.in_token_len_time
-                ),
-            )
-
-        x = self.pre_layer(
-            x,
-            emb=emb_tokenized,
-            sample_configs=sample_configs,
-        )
 
         x = self.get_time_depth_overlaps(x)
 
@@ -1453,12 +1204,12 @@ class FieldSpaceLayerBlock(nn.Module):
             x_mixed = rearrange(x, self.mixed_pattern)
             latent = self.input_projection_layer(
                 x,
-                emb=emb_tokenized,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
             latent_mixed = self.input_projection_layer_mixed(
                 x_mixed,
-                emb=emb_tokenized,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
             expand_shape = (-1, nv, *([-1] * 7))
@@ -1469,24 +1220,24 @@ class FieldSpaceLayerBlock(nn.Module):
             if self.type == "mlp":
                 latent = self.mlp_layer1(
                     latent,
-                    emb=emb_tokenized,
+                    emb=emb,
                     sample_configs=layer_sample_config,
                 )
                 latent = self.mlp_activation(latent)
                 latent = self.mlp_layer2(
                     latent,
-                    emb=emb_tokenized,
+                    emb=emb,
                     sample_configs=layer_sample_config,
                 )
             x = self.output_projection_layer(
                 latent,
-                emb=emb_tokenized,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
         else:
             x = self.layer(
                 x,
-                emb=emb_tokenized,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
         x = x.split(tuple(self.n_out_features_zooms.values()), dim=-3)
@@ -1576,19 +1327,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         use_indexed_input: bool = False,
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
-        shared_indexed_variables: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
-        embed_confs: Optional[Dict[str, Any]] = None,
-        embedder: Optional[nn.Module] = None,
-        embedder_cache_key: Optional[str] = None,
-        emb_aggregation: str = "shift_scale",
-        layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_ranks_emb_layer: bool = True,
         residual: bool = False,
         residual_gamma: bool = False,
         n_variables: int = 1,
@@ -1596,14 +1334,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         block_type: Literal["legacy", "ext"] = "ext",
     ) -> None:
         nn.Module.__init__(self)
-
-        embed_confs = {} if embed_confs is None else embed_confs
-
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
 
         if hidden_dim is None or int(hidden_dim) <= 0:
             raise ValueError(
@@ -1731,20 +1461,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self.use_indexed_input = bool(use_indexed_input)
         self.use_indexed_output = bool(use_indexed_output)
         self.use_indexed_mlp = bool(use_indexed_mlp)
-        self.use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        self.use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
-        self.use_variable_emb_layer = bool(use_variable_emb_layer)
-        self.use_variable_layer_norm = bool(use_variable_layer_norm)
-        self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
-        self.shared_indexed_variables = bool(shared_indexed_variables)
-        self.shared_indexed_depths = bool(shared_indexed_depths)
-        self.shared_indexed_space = bool(shared_indexed_space)
         if self.in_token_len_depth <= 0:
             raise ValueError("in_token_len_depth must be positive")
         if self.out_token_len_depth <= 0:
@@ -1827,7 +1543,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         ]
 
         self.input_tokenizers = nn.ModuleDict()
-        self.pre_layers = nn.ModuleDict()
         self.input_projection_layers = nn.ModuleDict()
         self.input_projection_layers_mixed = nn.ModuleDict()
         self.target_tokenizers = nn.ModuleDict()
@@ -1870,14 +1585,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     "specifications across all input zooms"
                 )
 
-        input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
-        if embedder is None:
-            embedder = get_embedder(
-                **embed_confs,
-                grid_layers=grid_layers,
-                zoom=input_zoom_field,
-            )
-
         for zoom in self.in_zooms:
             key = str(zoom)
             tokenizer = Tokenizer(
@@ -1890,12 +1597,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             )
             self.input_tokenizers[key] = tokenizer
             n_space = tokenizer.get_features()[0][zoom]
-            pre_shape = [
-                self.in_token_len_time_by_zoom[zoom],
-                n_space * self.in_features_dict[zoom],
-                self.in_token_len_depth,
-                1,
-            ]
             input_shape = [
                 self.in_token_len_time_by_zoom[zoom]
                 + 2 * int(self.token_overlap_time),
@@ -1905,77 +1606,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 1,
             ]
             self.input_shapes_by_zoom[zoom] = input_shape
-            ranks = self._ranks_for_zoom(zoom)
-            emb_ranks = embed_confs.get("ranks", [*ranks, None])
-            if not self.use_ranks_emb_layer:
-                emb_ranks = [None] * len(emb_ranks)
-            indexed_dims_emb = self._build_indexed_dims_for_zoom(
-                zoom,
-                self.use_indexed_emb_layer,
-                preserve_variable_default=False,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_emb_layer else 1
-                ),
-                include_rank_variables=self.use_ranks_emb_layer,
-                shared_indexed_variables=self.shared_indexed_variables,
-                shared_indexed_times=False,
-                shared_indexed_depths=self.shared_indexed_depths,
-                shared_indexed_space=self.shared_indexed_space,
-            )
-            indexed_dims_norm = self._build_indexed_dims_for_zoom(
-                zoom,
-                self.use_indexed_layer_norm,
-                preserve_variable_default=False,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_layer_norm else 1
-                ),
-                include_rank_variables=False,
-                shared_indexed_variables=self.shared_indexed_variables,
-                shared_indexed_times=False,
-                shared_indexed_depths=self.shared_indexed_depths,
-                shared_indexed_space=self.shared_indexed_space,
-            )
-            emb_tokenizer = Tokenizer(
-                [input_zoom_field] if embedder and embedder.has_space() else [],
-                self.field_zoom,
-                grid_layers=grid_layers,
-                token_len_time=1,
-                token_len_depth=(
-                    self.in_token_len_depth
-                    if embedder and embedder.has_depth()
-                    else 1
-                ),
-                overlap_thickness=int(
-                    embed_confs.get("token_overlap_space", False)
-                ),
-            )
-            pre_shape[1] = input_shape[1] if embedder and embedder.has_space() else 1
-            self.pre_layers[key] = LinEmbLayer(
-                pre_shape,
-                pre_shape,
-                ranks=(
-                    ranks
-                    if self.use_ranks_emb_layer
-                    else [None] * len(ranks)
-                ),
-                emb_ranks=emb_ranks,
-                n_variables=(
-                    self.n_variables if self.use_variable_emb_layer else 1
-                ),
-                n_variable_norm=(
-                    self.n_variables if self.use_variable_layer_norm else 1
-                ),
-                indexed_dims=indexed_dims_emb,
-                indexed_dims_norm=indexed_dims_norm,
-                fac_mode=self.fac_mode,
-                identity_if_equal=True,
-                embedder=embedder,
-                field_tokenizer=emb_tokenizer,
-                output_zoom=zoom,
-                layer_norm=bool(layer_norm),
-                emb_aggregation=emb_aggregation,
-                embedder_cache_key=embedder_cache_key,
-            )
             self.input_projection_layers[key] = get_layer(
                 input_shape,
                 [1, 1, 1, self.hidden_dim],
@@ -2081,12 +1711,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         enabled: bool,
         *,
         preserve_variable_default: bool,
-        n_variables_local: Optional[int] = None,
-        include_rank_variables: bool = True,
-        shared_indexed_variables: bool = True,
-        shared_indexed_times: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
     ) -> Optional[Dict[str, Dict[str, Any]]]:
         if not enabled:
             if not preserve_variable_default:
@@ -2108,28 +1732,20 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             else 1
         )
         return build_indexed_dims(
-            n_variables=(
-                self.n_variables
-                if n_variables_local is None
-                else int(n_variables_local)
-            ),
-            rank_variables=(
-                self.rank_variables_by_zoom[zoom]
-                if include_rank_variables
-                else None
-            ),
-            same_values_variables=shared_indexed_variables,
+            n_variables=self.n_variables,
+            rank_variables=self.rank_variables_by_zoom[zoom],
+            same_values_variables=True,
             n_times=self.n_times_by_zoom[zoom],
             rank_time=self.n_rank_time_by_zoom[zoom],
-            same_values_times=shared_indexed_times,
+            same_values_times=True,
             n_space=indexed_n_space,
             rank_space=(
                 n_rank_space if indexed_n_space > 1 else None
             ),
-            same_values_space=shared_indexed_space,
+            same_values_space=True,
             n_depths=indexed_n_depths,
             rank_depth=self.n_rank_depth_by_zoom[zoom],
-            same_values_depths=shared_indexed_depths,
+            same_values_depths=True,
         )
 
     def _initialize_ext_residuals(self) -> None:
@@ -2204,24 +1820,10 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self,
         zoom: int,
         x_zooms: Dict[int, torch.Tensor],
-        emb: Optional[Dict[str, Any]],
         sample_configs: Dict[str, Any],
-    ) -> tuple[torch.Tensor, Optional[Dict[str, Any]]]:
+    ) -> torch.Tensor:
         x = self.input_tokenizers[str(zoom)](
             {zoom: x_zooms[zoom]},
-            sample_configs=sample_configs,
-        )
-        emb_tokenized = align_time_embeddings_to_tokens(
-            emb,
-            zoom=zoom,
-            token_len_time=self.in_token_len_time_by_zoom[zoom],
-            field_time_steps=int(
-                x.shape[2] * self.in_token_len_time_by_zoom[zoom]
-            ),
-        )
-        x = self.pre_layers[str(zoom)](
-            x,
-            emb=emb_tokenized,
             sample_configs=sample_configs,
         )
         if self.token_overlap_time:
@@ -2236,7 +1838,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 overlap=1,
                 pad_mode="edge",
             )
-        return x, emb_tokenized
+        return x
 
     def forward(
         self,
@@ -2259,7 +1861,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
 
         projections: List[torch.Tensor] = []
         mixed_projections: List[torch.Tensor] = []
-        latent_emb = emb
         layer_sample_config = sample_configs.get(self.field_zoom, {})
         runtime_variable_counts = {
             zoom: int(x_zooms[zoom].shape[1])
@@ -2279,18 +1880,15 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     f"every input zoom; got {invalid_runtime_counts}"
                 )
         for zoom in self.in_zooms:
-            x, emb_tokenized = self._preprocess_input_zoom(
+            x = self._preprocess_input_zoom(
                 zoom,
                 x_zooms,
-                emb,
                 sample_configs,
             )
-            if zoom == self.in_zooms[0]:
-                latent_emb = emb_tokenized
             projections.append(
                 self.input_projection_layers[str(zoom)](
                     x,
-                    emb=emb_tokenized,
+                    emb=emb,
                     sample_configs=layer_sample_config,
                 )
             )
@@ -2302,7 +1900,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 mixed_projections.append(
                     self.input_projection_layers_mixed[str(zoom)](
                         x_mixed,
-                        emb=emb_tokenized,
+                        emb=emb,
                         sample_configs=layer_sample_config,
                     )
                 )
@@ -2324,13 +1922,13 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         if self.type == "mlp":
             latent = self.mlp_layer1(
                 latent,
-                emb=latent_emb,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
             latent = self.mlp_activation(latent)
             latent = self.mlp_layer2(
                 latent,
-                emb=latent_emb,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
 
@@ -2338,7 +1936,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         for zoom in self.target_zooms:
             x_zoom_out = self.output_projection_layers[str(zoom)](
                 latent,
-                emb=latent_emb,
+                emb=emb,
                 sample_configs=layer_sample_config,
             )
             x_zoom_out = rearrange(

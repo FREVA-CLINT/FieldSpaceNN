@@ -26,7 +26,7 @@ defaults = {
     'att_dim': 256,
     'att_dim_mixed': 0,
     "fac_mode": "Tucker",
-    "emb_aggregation": "shift_scale",
+    "emb_modulation_mode": "shift_scale",
     'embed_confs': {},
     'dropout': 0,
     'with_residual': False,
@@ -194,7 +194,10 @@ def create_encoder_decoder_block(
     """
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
     fac_mode = check_get([block_conf, kwargs, defaults], "fac_mode")
-    emb_aggregation = check_get([block_conf, kwargs, defaults], "emb_aggregation")
+    emb_modulation_mode = check_get(
+        [block_conf, kwargs, defaults],
+        "emb_modulation_mode",
+    )
     dropout = check_get([block_conf, kwargs, defaults], "dropout")
     out_zooms = check_get([block_conf, {'out_zooms':in_zooms}], "out_zooms")
     use_mask = check_get([block_conf, kwargs, defaults], "use_mask")
@@ -324,7 +327,7 @@ def create_encoder_decoder_block(
                 use_indexed_mlp_gammas = block_conf.use_indexed_mlp_gammas,
                 block_type = block_conf.block_type,
                 fac_mode=fac_mode,
-                emb_aggregation=emb_aggregation)
+                emb_modulation_mode=emb_modulation_mode)
         block.out_features = in_features
 
     elif isinstance(block_conf, MultiZoomHealpixConvConfig):
@@ -360,9 +363,6 @@ def create_encoder_decoder_block(
                 out_zooms=block_conf.out_zooms,
                 n_groups_variables=list(n_groups_variables),
                 n_groups_depths=list(n_groups_depths),
-                shared_indexed_group_variables=list(shared_indexed_group_variables),
-                shared_indexed_group_depths=list(shared_indexed_group_depths),
-                shared_indexed_group_space=list(shared_indexed_group_space),
                 in_features=in_features,
                 target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                 mult = block_conf.mult,
@@ -390,15 +390,6 @@ def create_encoder_decoder_block(
                 use_indexed_input=block_conf.use_indexed_input,
                 use_indexed_output=block_conf.use_indexed_output,
                 use_indexed_mlp=block_conf.use_indexed_mlp,
-                embed_confs=embed_confs,
-                global_embedders=global_embedders,
-                emb_aggregation=emb_aggregation,
-                layer_norm=block_conf.layer_norm,
-                use_variable_emb_layer=block_conf.use_variable_emb_layer,
-                use_variable_layer_norm=block_conf.use_variable_layer_norm,
-                use_indexed_emb_layer=block_conf.use_indexed_emb_layer,
-                use_indexed_layer_norm=block_conf.use_indexed_layer_norm,
-                use_ranks_emb_layer=block_conf.use_ranks_emb_layer,
                 block_type=block_conf.block_type,
                 fac_mode=fac_mode)
     return block
