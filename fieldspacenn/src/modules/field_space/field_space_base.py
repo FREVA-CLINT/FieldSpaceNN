@@ -516,10 +516,6 @@ class EmbLayer(nn.Module):
         
         emb_ = self.get_emb_fcn(emb, sample_configs)
         shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
-
-        n = shift.shape[-1]
-        shift = shift.view(*shift.shape[:3], -1, n)
-
         x = x + shift
 
         return x
@@ -536,10 +532,6 @@ class EmbLayer(nn.Module):
         
         emb_ = self.get_emb_fcn(emb, sample_configs)
         scale = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
-
-        n = scale.shape[-1]
-        scale = scale.view(*scale.shape[:3], -1, n)
-
         x = x * (1 + scale)
 
         return x
@@ -556,10 +548,6 @@ class EmbLayer(nn.Module):
         
         emb_ = self.get_emb_fcn(emb, sample_configs)
         e = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
-
-        n = e.shape[-1]
-        e = e.view(*e.shape[:3], -1, n)
-
         x = torch.concat((x, e), dim=-1)
 
         return x
