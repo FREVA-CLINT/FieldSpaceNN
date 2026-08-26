@@ -219,7 +219,7 @@ class MG_Transformer(MG_base_model):
 
         self.decoder: DiffDecoder = DiffDecoder()
 
-    def _iter_attention_block_configs(
+    def _iter_embedding_block_configs(
         self,
         block_configs: Optional[Mapping[str, Any]],
         block_wrap_configs: Optional[Mapping[str, Any]],
@@ -240,11 +240,20 @@ class MG_Transformer(MG_base_model):
         if "input_zoom" in embed_confs:
             return int(embed_confs["input_zoom"])
 
-        q_zooms = getattr(block_conf, "q_zooms", self.in_zooms)
-        if isinstance(q_zooms, int):
-            return int(min(self.in_zooms)) if q_zooms == -1 else int(q_zooms)
+        q_zooms = getattr(block_conf, "q_zooms", None)
+        if q_zooms is not None:
+            if isinstance(q_zooms, int):
+                return (
+                    int(min(self.in_zooms))
+                    if q_zooms == -1
+                    else int(q_zooms)
+                )
+            return int(min(q_zooms))
 
-        return int(min(q_zooms))
+        block_in_zooms = getattr(block_conf, "in_zooms", None)
+        if block_in_zooms:
+            return int(min(block_in_zooms))
+        return int(min(self.in_zooms))
 
     def _build_global_embedders(
         self,
@@ -254,7 +263,10 @@ class MG_Transformer(MG_base_model):
         global_embedders = nn.ModuleDict()
         global_embed_confs_by_zoom: Dict[str, Dict[str, Any]] = {}
 
-        for block_conf in self._iter_attention_block_configs(block_configs, block_wrap_configs):
+        for block_conf in self._iter_embedding_block_configs(
+            block_configs,
+            block_wrap_configs,
+        ):
             embed_confs = getattr(block_conf, "embed_confs", None)
             if not embed_confs or not embed_confs.get("embed_names"):
                 continue
