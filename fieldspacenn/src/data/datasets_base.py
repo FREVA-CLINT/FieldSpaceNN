@@ -49,17 +49,26 @@ def invert_dict(d: Mapping[Any, Any]) -> Dict[Any, List[Any]]:
 
 def _normalize_variables_config(
     variables_cfg: Mapping[str, Any],
-) -> Tuple[Dict[str, List[str]], Dict[str, Optional[int]]]:
+) -> Tuple[
+    Dict[str, List[str]],
+    Dict[str, Optional[int]],
+    Dict[str, Optional[List[int]]],
+]:
     """
-    Normalize variable config to ordered names per group and optional explicit ids.
+    Normalize variable config to ordered names, optional ids, and level indices.
 
     Supported group formats:
     - list: ``group: [var_a, var_b]``
     - dict with shorthand ids: ``group: {var_a: 0, var_b: 4}``
-    - dict with explicit field: ``group: {var_a: {variable_id: 0}}``
+    - dict with explicit fields:
+      ``group: {var_a: {variable_id: 0, level_indices: [-2, -1]}}``
+
+    ``level_indices`` may also be a single integer. Negative indices follow the
+    usual Python/xarray convention. Variables without this field retain all levels.
     """
     variables_by_group: Dict[str, List[str]] = {}
     explicit_ids: Dict[str, Optional[int]] = {}
+    level_indices: Dict[str, Optional[List[int]]] = {}
 
     for group, group_vars in variables_cfg.items():
         if isinstance(group_vars, (list, ListConfig)):
@@ -67,6 +76,7 @@ def _normalize_variables_config(
             variables_by_group[group] = var_names
             for var_name in var_names:
                 explicit_ids[var_name] = None
+                level_indices[var_name] = None
             continue
 
         if isinstance(group_vars, Mapping):
@@ -76,13 +86,30 @@ def _normalize_variables_config(
                 var_names.append(var_name)
 
                 var_id: Optional[int] = None
+                var_level_indices: Optional[List[int]] = None
                 if isinstance(var_conf, Mapping):
                     if "variable_id" in var_conf and var_conf["variable_id"] is not None:
                         var_id = int(var_conf["variable_id"])
+                    configured_indices = var_conf.get("level_indices")
+                    if configured_indices is not None:
+                        if isinstance(configured_indices, (int, np.integer)):
+                            var_level_indices = [int(configured_indices)]
+                        elif isinstance(configured_indices, (list, tuple, ListConfig)):
+                            if not configured_indices:
+                                raise ValueError(
+                                    f"`level_indices` for variable `{var_name}` must not be empty."
+                                )
+                            var_level_indices = [int(index) for index in configured_indices]
+                        else:
+                            raise ValueError(
+                                f"Unsupported `level_indices` for variable `{var_name}`: "
+                                f"{type(configured_indices)}. Use an int or a list of ints."
+                            )
                 elif var_conf is not None:
                     var_id = int(var_conf)
 
                 explicit_ids[var_name] = var_id
+                level_indices[var_name] = var_level_indices
 
             variables_by_group[group] = var_names
             continue
@@ -92,7 +119,39 @@ def _normalize_variables_config(
             "Use a list or dict."
         )
 
-    return variables_by_group, explicit_ids
+    return variables_by_group, explicit_ids, level_indices
+
+
+def _select_level_statistics(stats: Any, level_indices: Sequence[int]) -> Any:
+    """Select configured levels from scalar or per-level normalization statistics."""
+    if isinstance(stats, Mapping):
+        return {
+            key: _select_level_statistics(value, level_indices)
+            for key, value in stats.items()
+        }
+    if isinstance(stats, (list, tuple, np.ndarray)):
+        values = np.asarray(stats)
+        if values.ndim != 1:
+            return stats
+        try:
+            return values[np.asarray(level_indices, dtype=np.int64)].tolist()
+        except IndexError as exc:
+            raise ValueError(
+                f"Configured level indices {list(level_indices)} do not fit normalization "
+                f"statistics with {values.shape[0]} levels."
+            ) from exc
+    return stats
+
+
+def _get_level_dimension(data_array: xr.DataArray) -> Optional[str]:
+    """Return the single vertical dimension of a variable, when present."""
+    level_dims = [dim for dim in data_array.dims if "level" in dim.lower()]
+    if len(level_dims) > 1:
+        raise ValueError(
+            f"Variable `{data_array.name}` has multiple level dimensions {level_dims}; "
+            "level-index selection requires exactly one."
+        )
+    return level_dims[0] if level_dims else None
 
 
 def _resolve_global_variable_ids(
@@ -303,8 +362,8 @@ class BaseDataset(Dataset):
             sampling zooms.
         :param load_n_samples_time: Number of time samples stacked as batch.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
-        :param overwrite_depths: Optional replacement values for the vertical ``level``
-            coordinate. Applied only when the loaded variables expose a ``level`` dimension.
+        :param overwrite_depths: Optional replacement values for a vertical dimension whose
+            name contains ``level`` (for example ``level`` or ``level_full``).
         :param adaptive_time_window: Clamp requested future windows to each file's
             available length instead of dropping files that are shorter than the
             configured window. Samples expose their effective lengths for bucketed
@@ -407,7 +466,7 @@ class BaseDataset(Dataset):
 
         self.time_steps_files: List[int] = []
         for k, file in enumerate(self.data_dict['source'][self.zooms[0]]['files']):
-            with xr.open_dataset(file) as ds:
+            with xr.open_dataset(file, create_default_indexes=False) as ds:
                 self.time_steps_files.append(len(ds.time))
 
         self.file_sampling_zooms: List[Dict[int, Dict[str, Any]]] = []
@@ -436,7 +495,11 @@ class BaseDataset(Dataset):
             self.file_sampling_zooms_target.append(sampling_zooms_target_file)
             self.file_sample_configs_emb.append(sample_configs_emb_file)
 
-        normalized_variables_by_group, explicit_variable_ids = _normalize_variables_config(self.data_dict['variables'])
+        (
+            normalized_variables_by_group,
+            explicit_variable_ids,
+            variable_level_indices,
+        ) = _normalize_variables_config(self.data_dict['variables'])
         normalized_variable_group_zooms = _normalize_variable_group_zooms_config(
             variable_group_zooms,
             list(normalized_variables_by_group.keys()),
@@ -542,6 +605,7 @@ class BaseDataset(Dataset):
 
         # Build variable group indices for embedding and masking.
         self.variables_by_group = normalized_variables_by_group
+        self.variable_level_indices = variable_level_indices
         self.data_dict['variables'] = self.variables_by_group
         self.variable_group_zooms = normalized_variable_group_zooms
         self.group_zooms = {
@@ -587,7 +651,10 @@ class BaseDataset(Dataset):
                 # Multi-source: build a per-zoom mapping using that zoom's grid.
                 mapping_grid_type = {}
                 for grid_type in self.grid_types:
-                    with xr.open_dataset(self.data_dict['source'][zoom]['files'][0]) as ds:
+                    with xr.open_dataset(
+                        self.data_dict['source'][zoom]['files'][0],
+                        create_default_indexes=False,
+                    ) as ds:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
                         mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
@@ -607,17 +674,20 @@ class BaseDataset(Dataset):
             for var in all_variables:
                 if str(zoom) in norm_dict[var].keys():
                     # Zoom-specific stats override global stats when available.
-                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    norm_definition = copy.deepcopy(norm_dict[var][str(zoom)])
+                    norm_class = norm_definition['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var][str(zoom)]['stats'],
-                        norm_dict[var][str(zoom)]['normalizer'])
                 else:
-                    norm_class = norm_dict[var]['normalizer']['class']
+                    norm_definition = copy.deepcopy(norm_dict[var])
+                    norm_class = norm_definition['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-                    self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var]['stats'],
-                        norm_dict[var]['normalizer'])
+                level_indices = self.variable_level_indices.get(var)
+                if level_indices is not None:
+                    norm_definition['stats'] = _select_level_statistics(
+                        norm_definition['stats'], level_indices
+                    )
+                self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                    norm_definition['stats'], norm_definition['normalizer'])
 
             # Forcings may use the normalizer configuration, but raw physical
             # values remain valid when no statistics have been provided.
@@ -661,7 +731,11 @@ class BaseDataset(Dataset):
         :return: Tuple of (source dataset, target dataset or None).
         """
         if self.lazy_load:
-            ds_source = xr.open_dataset(file_path_source, decode_times=False)
+            ds_source = xr.open_dataset(
+                file_path_source,
+                decode_times=False,
+                create_default_indexes=False,
+            )
         else:
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
 
@@ -673,7 +747,11 @@ class BaseDataset(Dataset):
             
         else:
             if self.lazy_load:
-                ds_target = xr.open_dataset(file_path_target, decode_times=False)
+                ds_target = xr.open_dataset(
+                    file_path_target,
+                    decode_times=False,
+                    create_default_indexes=False,
+                )
             else:
                 ds_target = xr.load_dataset(file_path_target, decode_times=False)
 
@@ -799,22 +877,58 @@ class BaseDataset(Dataset):
                 if drop_mask_ is not None:
                     drop_mask_ = drop_mask_[..., patch_indices]
 
-            ds_variables = ds[variables]
-            arr = ds_variables.to_array().to_numpy()
-            if arr.dtype == np.float64:
-                arr = arr.astype(np.float32, copy=False)
-            # Normalize in raw array layout first.
-            data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
-            if self.normalize_data:
-                for k, variable in enumerate(variables):
-                    data_g[k] = self.var_normalizers[zoom][variable].normalize(data_g[k])
+            variable_tensors = []
+            selected_depth_values = None
+            for variable in variables:
+                data_array = ds[variable]
+                level_dim = _get_level_dimension(data_array)
+                level_indices = self.variable_level_indices.get(variable)
+                if level_indices is not None:
+                    if level_dim is None:
+                        raise ValueError(
+                            f"Variable `{variable}` config defines `level_indices`, but its "
+                            f"dimensions are {data_array.dims}."
+                        )
+                    try:
+                        data_array = data_array.isel({level_dim: level_indices})
+                    except IndexError as exc:
+                        raise ValueError(
+                            f"Configured level indices {level_indices} are out of range for "
+                            f"variable `{variable}` with {data_array.sizes[level_dim]} levels."
+                        ) from exc
 
-            if 'level' not in ds_variables.dims:
-                data_g = data_g.unsqueeze(dim=2)
-            else:
-                depth_values = self._resolve_depth_values(ds_variables["level"].values)
+                arr = data_array.to_numpy()
+                if arr.dtype == np.float64:
+                    arr = arr.astype(np.float32, copy=False)
+                data_variable = torch.from_numpy(arr).unsqueeze(dim=-1)
+                if self.normalize_data:
+                    data_variable = self.var_normalizers[zoom][variable].normalize(data_variable)
 
-            data_g = data_g.transpose(2,3)
+                if level_dim is None:
+                    data_variable = data_variable.unsqueeze(dim=1)
+                else:
+                    variable_depth_values = self._resolve_depth_values(data_array[level_dim].values)
+                    if selected_depth_values is None:
+                        selected_depth_values = variable_depth_values
+                    elif not torch.equal(selected_depth_values, variable_depth_values):
+                        raise ValueError(
+                            "Variables in one group must select identical level coordinates; "
+                            f"variable `{variable}` selected {variable_depth_values.tolist()}, "
+                            f"expected {selected_depth_values.tolist()}."
+                        )
+
+                # Raw variables are (t, d, n, f) or (t, 1, n, f).
+                variable_tensors.append(data_variable.transpose(1, 2))
+
+            try:
+                data_g = torch.stack(variable_tensors, dim=0)
+            except RuntimeError as exc:
+                shapes = [tuple(tensor.shape) for tensor in variable_tensors]
+                raise ValueError(
+                    f"Variables in one group must have compatible selected shapes, got {shapes}."
+                ) from exc
+            if selected_depth_values is not None:
+                depth_values = selected_depth_values
 
             if not patch_dim and post_map:
                 data_g = data_g[:, :, indices.view(-1), :, :]
@@ -1306,7 +1420,7 @@ class BaseDataset(Dataset):
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
 
-            with xr.open_dataset(source_file) as ds:
+            with xr.open_dataset(source_file, create_default_indexes=False) as ds:
                 if "cell" in ds.sizes:
                     mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
                 elif "ncells" in ds.sizes:
