@@ -1,5 +1,6 @@
 import copy
 import json
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -45,6 +46,45 @@ def invert_dict(d: Mapping[Any, Any]) -> Dict[Any, List[Any]]:
     for key, value in d.items():
         inverted_d.setdefault(value, []).append(key)
     return inverted_d
+
+
+def _zarr_drop_variables(path: str, keep_variables: Sequence[str]) -> Optional[List[str]]:
+    """Return variables that xarray can skip while opening a consolidated Zarr store."""
+    metadata_path = Path(path) / ".zmetadata"
+    if not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))["metadata"]
+        array_names = {
+            key[: -len("/.zarray")]
+            for key in metadata
+            if key.endswith("/.zarray") and "/" not in key[: -len("/.zarray")]
+        }
+        keep = set(str(variable) for variable in keep_variables)
+        for variable in list(keep):
+            attributes = metadata.get(f"{variable}/.zattrs", {})
+            keep.update(attributes.get("_ARRAY_DIMENSIONS", []))
+        return sorted(array_names - keep)
+    except (OSError, KeyError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _open_selected_dataset(
+    path: str,
+    variables: Sequence[str],
+    *,
+    decode_times: bool = False,
+    create_default_indexes: bool = False,
+) -> xr.Dataset:
+    """Open a dataset while avoiding construction of unrelated Zarr variables."""
+    kwargs: Dict[str, Any] = {
+        "decode_times": decode_times,
+        "create_default_indexes": create_default_indexes,
+    }
+    drop_variables = _zarr_drop_variables(path, variables)
+    if drop_variables:
+        kwargs["drop_variables"] = drop_variables
+    return xr.open_dataset(path, **kwargs)
 
 
 def _normalize_variables_config(
@@ -433,8 +473,38 @@ class BaseDataset(Dataset):
         self.p_dropout_all: float = p_dropout_all
 
 
-        if "files" in self.data_dict['source'].keys():
-            all_files = self.data_dict['source']["files"]
+        (
+            normalized_variables_by_group,
+            explicit_variable_ids,
+            variable_level_indices,
+        ) = _normalize_variables_config(self.data_dict['variables'])
+
+        configured_variables = [
+            variable
+            for group, variables in normalized_variables_by_group.items()
+            if group not in ('embedding', 'embedding_1D')
+            for variable in variables
+        ]
+        self.variable_files: Optional[Dict[str, List[str]]] = None
+        variable_files_cfg = self.data_dict.get('variable_files')
+        if variable_files_cfg is not None:
+            self.variable_files = {}
+            missing_entries = sorted(set(configured_variables) - set(variable_files_cfg.keys()))
+            extra_entries = sorted(set(variable_files_cfg.keys()) - set(configured_variables))
+            if missing_entries or extra_entries:
+                raise ValueError(
+                    "`variable_files` must contain exactly the configured 2-D variables; "
+                    f"missing={missing_entries}, extra={extra_entries}."
+                )
+            for variable in configured_variables:
+                entry = variable_files_cfg[variable]
+                files = entry.get('files') if isinstance(entry, Mapping) else entry
+                if not isinstance(files, (list, tuple, ListConfig)):
+                    files = [files]
+                files = [str(path) for path in files]
+                if not files or any(not path for path in files):
+                    raise ValueError(f"No files configured for variable `{variable}`.")
+                self.variable_files[variable] = files
 
         all_files = []
         for data in self.data_dict['source'].values():
@@ -464,9 +534,28 @@ class BaseDataset(Dataset):
         else:
             self.sample_timesteps: Optional[List[int]] = None
 
+        anchor_files = list(self.data_dict['source'][self.zooms[0]]['files'])
+        if self.variable_files is not None:
+            expected_file_count = len(anchor_files)
+            bad_counts = {
+                variable: len(files)
+                for variable, files in self.variable_files.items()
+                if len(files) != expected_file_count
+            }
+            if bad_counts:
+                raise ValueError(
+                    "Each `variable_files` entry must have the same number of logical files "
+                    f"as the zoom anchor ({expected_file_count}); got {bad_counts}."
+                )
+            anchor_files = next(iter(self.variable_files.values()))
+
         self.time_steps_files: List[int] = []
-        for k, file in enumerate(self.data_dict['source'][self.zooms[0]]['files']):
-            with xr.open_dataset(file, create_default_indexes=False) as ds:
+        for file in anchor_files:
+            with _open_selected_dataset(
+                file,
+                configured_variables,
+                create_default_indexes=False,
+            ) as ds:
                 self.time_steps_files.append(len(ds.time))
 
         self.file_sampling_zooms: List[Dict[int, Dict[str, Any]]] = []
@@ -495,11 +584,6 @@ class BaseDataset(Dataset):
             self.file_sampling_zooms_target.append(sampling_zooms_target_file)
             self.file_sample_configs_emb.append(sample_configs_emb_file)
 
-        (
-            normalized_variables_by_group,
-            explicit_variable_ids,
-            variable_level_indices,
-        ) = _normalize_variables_config(self.data_dict['variables'])
         normalized_variable_group_zooms = _normalize_variable_group_zooms_config(
             variable_group_zooms,
             list(normalized_variables_by_group.keys()),
@@ -625,39 +709,57 @@ class BaseDataset(Dataset):
                 self.embed_group_ids[group] = embed_group_id
                 embed_group_id += 1
 
-        grid_types = [get_grid_type_from_var(ds, var) for var in all_variables]
-        self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
-        self.grid_types: np.ndarray = np.unique(grid_types)
-
-        self.grid_types_vars: Dict[Any, List[str]] = invert_dict(self.vars_grid_types)
-        for var, gtype in zip(all_variables, grid_types):
-            self.grid_types_vars[gtype].append(var)
-
         unique_files = np.unique(np.array(all_files))
 
         self.single_source: bool = len(unique_files) == 1
         self.mapping: Dict[int, Dict[Any, Any]] = {}
-        if self.single_source:
-            # Single-source: build a shared mapping at the highest zoom and reuse across zooms.
-            coords = [
-                get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
-            ]
-            mapping_hr = dict(
-                zip(self.grid_types, [mapping_fcn(coords_, max(self.zooms))[max(self.zooms)] for coords_ in coords])
+        metadata_ds = (
+            self._open_variable_dataset(0)
+            if self.variable_files is not None
+            else xr.open_dataset(
+                self.data_dict['source'][max(self.zooms)]['files'][0],
+                create_default_indexes=False,
             )
-            self.mapping[max(self.zooms)] = mapping_hr
-        else:
-            for zoom in self.zooms:
-                # Multi-source: build a per-zoom mapping using that zoom's grid.
-                mapping_grid_type = {}
-                for grid_type in self.grid_types:
-                    with xr.open_dataset(
-                        self.data_dict['source'][zoom]['files'][0],
-                        create_default_indexes=False,
-                    ) as ds:
-                        coords = get_coords_as_tensor(ds, grid_type=grid_type)
-                        mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
-                self.mapping[zoom] = mapping_grid_type
+        )
+        try:
+            grid_types = [get_grid_type_from_var(metadata_ds, var) for var in all_variables]
+            self.vars_grid_types: Dict[str, Any] = dict(zip(all_variables, grid_types))
+            self.grid_types: np.ndarray = np.unique(grid_types)
+
+            self.grid_types_vars: Dict[Any, List[str]] = invert_dict(self.vars_grid_types)
+            for var, gtype in zip(all_variables, grid_types):
+                self.grid_types_vars[gtype].append(var)
+
+            if self.single_source:
+                # Single-source: build a shared mapping at the highest zoom and reuse across zooms.
+                coords = [
+                    get_coords_as_tensor(metadata_ds, grid_type=grid_type)
+                    for grid_type in self.grid_types
+                ]
+                mapping_hr = dict(
+                    zip(
+                        self.grid_types,
+                        [
+                            mapping_fcn(coords_, max(self.zooms))[max(self.zooms)]
+                            for coords_ in coords
+                        ],
+                    )
+                )
+                self.mapping[max(self.zooms)] = mapping_hr
+            else:
+                for zoom in self.zooms:
+                    # Multi-source: build a per-zoom mapping using that zoom's grid.
+                    mapping_grid_type = {}
+                    for grid_type in self.grid_types:
+                        with xr.open_dataset(
+                            self.data_dict['source'][zoom]['files'][0],
+                            create_default_indexes=False,
+                        ) as ds_zoom:
+                            coords = get_coords_as_tensor(ds_zoom, grid_type=grid_type)
+                            mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
+                    self.mapping[zoom] = mapping_grid_type
+        finally:
+            metadata_ds.close()
 
         self.load_once: bool = (
             unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
@@ -721,6 +823,7 @@ class BaseDataset(Dataset):
         file_path_source: str,
         file_path_target: Optional[str] = None,
         drop_source: bool = False,
+        file_index: Optional[int] = None,
     ) -> Tuple[xr.Dataset, Optional[xr.Dataset]]:
         """
         Load source and target datasets from disk.
@@ -728,8 +831,14 @@ class BaseDataset(Dataset):
         :param file_path_source: Path to the source dataset file.
         :param file_path_target: Optional path to the target dataset file.
         :param drop_source: Whether to skip loading target when sharing the source.
+        :param file_index: Logical file index used by per-variable store mappings.
         :return: Tuple of (source dataset, target dataset or None).
         """
+        if self.variable_files is not None:
+            if file_index is None:
+                raise ValueError("`file_index` is required when using `variable_files`.")
+            return self._open_variable_dataset(file_index), None
+
         if self.lazy_load:
             ds_source = xr.open_dataset(
                 file_path_source,
@@ -756,6 +865,43 @@ class BaseDataset(Dataset):
                 ds_target = xr.load_dataset(file_path_target, decode_times=False)
 
         return ds_source, ds_target
+
+    def _open_variable_dataset(self, file_index: int) -> xr.Dataset:
+        """Open and lazily merge one aligned logical file from per-variable stores."""
+        if self.variable_files is None:
+            raise RuntimeError("No `variable_files` configuration is active.")
+
+        variables_by_path: Dict[str, List[str]] = {}
+        for variable, files in self.variable_files.items():
+            variables_by_path.setdefault(files[file_index], []).append(variable)
+
+        opened: List[xr.Dataset] = []
+        try:
+            pieces: List[xr.Dataset] = []
+            for path, variables in variables_by_path.items():
+                dataset = (
+                    _open_selected_dataset(
+                        path,
+                        variables,
+                        decode_times=False,
+                        create_default_indexes=False,
+                    )
+                    if self.lazy_load
+                    else xr.load_dataset(path, decode_times=False)
+                )
+                opened.append(dataset)
+                missing = [variable for variable in variables if variable not in dataset]
+                if missing:
+                    raise KeyError(f"Variables {missing} are missing from `{path}`.")
+                pieces.append(dataset[variables])
+
+            merged = xr.merge(pieces, compat='override', join='exact')
+            merged.set_close(lambda datasets=opened: [dataset.close() for dataset in datasets])
+            return merged
+        except Exception:
+            for dataset in opened:
+                dataset.close()
+            raise
 
     #def map_data(self):
 
@@ -1420,19 +1566,27 @@ class BaseDataset(Dataset):
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
 
-            with xr.open_dataset(source_file, create_default_indexes=False) as ds:
-                if "cell" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
-                elif "ncells" in ds.sizes:
-                    mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
-                else:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+            if self.variable_files is not None:
+                mapping_zoom = max(self.mapping.keys())
+            else:
+                with xr.open_dataset(source_file, create_default_indexes=False) as ds:
+                    if "cell" in ds.sizes:
+                        mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
+                    elif "ncells" in ds.sizes:
+                        mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
+                    else:
+                        mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
 
-                if mapping_zoom is None:
-                    mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
+                    if mapping_zoom is None:
+                        mapping_zoom = zoom if zoom in self.mapping else max(self.mapping.keys())
 
             if not loaded:
-                ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
+                ds_source, ds_target = self.get_files(
+                    source_file,
+                    file_path_target=target_file,
+                    drop_source=self.p_dropout > 0,
+                    file_index=file_index,
+                )
                 loaded = True if self.load_once else False
 
             # Align the global dropout mask to this zoom's time window.

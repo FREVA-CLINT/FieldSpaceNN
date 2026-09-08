@@ -22,6 +22,9 @@ class HealPixLoader(BaseDataset):
         Initialize a HealPix dataset loader and build per-zoom patch indices.
 
         :param data_dict: Dataset configuration including source/target file paths.
+            An optional ``variable_files`` mapping may assign each configured 2-D
+            variable to its own aligned logical file list; zoom-based configurations
+            without this mapping remain unchanged.
         :param sampling_zooms: Sampling configuration keyed by zoom level.
         :param sampling_zooms_collate: Optional collate configuration keyed by zoom level.
         :param sampling_times_emb: Optional shared embedding-only time window with
