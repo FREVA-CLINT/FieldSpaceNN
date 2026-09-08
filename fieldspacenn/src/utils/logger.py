@@ -4,9 +4,9 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import mlflow
 import torch
-from lightning.pytorch.loggers import WandbLogger, MLFlowLogger, Logger
+from lightning.pytorch.loggers import Logger, MLFlowLogger, WandbLogger
 from lightning.pytorch.utilities import rank_zero_only
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from .visualization import regular_plot, healpix_plot_zooms_var, healpix_plot_zooms_time
 from ..modules.grids.grid_utils import decode_zooms
@@ -47,6 +47,14 @@ class CustomImageLogger(Logger):
         self.plot_types: List[str] = plot_types or []
         self.logger_conf: Dict[str, Any] = kwargs
         self._internal_logger: Logger
+        self._composed_config_path = os.path.join(
+            str(cfg.trainer.default_root_dir), "composed_config.yaml"
+        )
+        self._mlflow_run_initialized = False
+        self._owns_active_mlflow_run = False
+        self._mlflow_log_system_metrics = False
+        self._mlflow_system_metrics_sampling_interval: Optional[int] = None
+        self._mlflow_system_metrics_samples_before_logging: Optional[int] = None
 
         OmegaConf.set_struct(cfg, False)
         if logger_type == 'wandb':
@@ -70,32 +78,99 @@ class CustomImageLogger(Logger):
                 self._internal_logger = WandbLogger(**self.logger_conf)
 
         elif logger_type == 'mlflow':
-            # Handle MLFlow setup and run starting
-            if rank_zero_only.rank == 0:
-                mlflow.enable_system_metrics_logging()
-                mlflow.set_tracking_uri(self.logger_conf.get("tracking_uri"))
-                mlflow.set_experiment(self.cfg.get("project_name"))
-                run_id = self.logger_conf.get("run_id")
-                mlflow.start_run(run_name=self.cfg.get("run_name"), run_id=run_id, tags={"user": getpass.getuser()})
-                if not run_id:
-                    new_run_id = mlflow.active_run().info.run_id
-                    # Save the new run id to the config for other processes
-                    OmegaConf.update(self.cfg, f"logger.run_id", new_run_id, merge=True)
-                
-                # Log all parameters
-                mlflow.log_params(OmegaConf.to_container(self.cfg, resolve=True))
-            
-            self._internal_logger = MLFlowLogger(**self.logger_conf)
+            mlflow_conf = dict(self.logger_conf)
+            workspace = mlflow_conf.pop("workspace", None)
+            self._mlflow_log_system_metrics = bool(
+                mlflow_conf.pop("log_system_metrics", False)
+            )
+            self._mlflow_system_metrics_sampling_interval = mlflow_conf.pop(
+                "system_metrics_sampling_interval", None
+            )
+            self._mlflow_system_metrics_samples_before_logging = mlflow_conf.pop(
+                "system_metrics_samples_before_logging", None
+            )
+
+            mlflow_conf.setdefault(
+                "experiment_name", self.cfg.get("project_name", "lightning_logs")
+            )
+            mlflow_conf.setdefault("run_name", self.cfg.get("run_name"))
+
+            tags = mlflow_conf.get("tags")
+            if isinstance(tags, DictConfig):
+                tags = OmegaConf.to_container(tags, resolve=True)
+            tags = dict(tags or {})
+            tags.setdefault("user", getpass.getuser())
+            mlflow_conf["tags"] = tags
+
+            tracking_uri = mlflow_conf.get("tracking_uri")
+            if tracking_uri:
+                mlflow.set_tracking_uri(tracking_uri)
+            if workspace:
+                if not hasattr(mlflow, "set_workspace"):
+                    raise RuntimeError(
+                        "MLflow workspace selection requires mlflow>=3.15.1; "
+                        f"found {mlflow.__version__}."
+                    )
+                mlflow.set_workspace(workspace)
+
+            # MLFlowLogger owns experiment creation, run resumption, metrics, and
+            # checkpoint logging. The fluent run is attached lazily from save() or
+            # the first logging call so system-metrics threads are not started
+            # before Lightning launches distributed worker processes.
+            self._internal_logger = MLFlowLogger(**mlflow_conf)
         else:
             raise ValueError(f"Unsupported logger_type: '{logger_type}'. Choose 'wandb' or 'mlflow'.")
-        
+
         # Create and save the full training configuration file
         if rank_zero_only.rank == 0:
-            # Create YAML config of training configuration
-            composed_config_path = f'{cfg.trainer.default_root_dir}/composed_config.yaml'
-            with open(composed_config_path, 'w') as file:
-                OmegaConf.save(config=cfg, f=file)
+            self._save_composed_config()
 
+    def _save_composed_config(self) -> None:
+        """Persist the resolved Hydra configuration beside the checkpoints."""
+        os.makedirs(os.path.dirname(self._composed_config_path), exist_ok=True)
+        OmegaConf.save(config=self.cfg, f=self._composed_config_path, resolve=True)
+
+    def _ensure_mlflow_run(self) -> None:
+        """Initialize one MLflow run and attach the optional system monitor."""
+        if not isinstance(self._internal_logger, MLFlowLogger):
+            return
+        if self._mlflow_run_initialized:
+            return
+
+        run_id = self._internal_logger.run_id
+        if run_id is None:
+            raise RuntimeError("MLflow did not create or resume a run.")
+
+        self._mlflow_run_initialized = True
+        self.logger_conf["run_id"] = run_id
+        OmegaConf.update(self.cfg, "logger.run_id", run_id, merge=True)
+        self._save_composed_config()
+
+        if self._mlflow_log_system_metrics:
+            if self._mlflow_system_metrics_sampling_interval is not None:
+                mlflow.set_system_metrics_sampling_interval(
+                    self._mlflow_system_metrics_sampling_interval
+                )
+            if self._mlflow_system_metrics_samples_before_logging is not None:
+                mlflow.set_system_metrics_samples_before_logging(
+                    self._mlflow_system_metrics_samples_before_logging
+                )
+
+            active_run = mlflow.active_run()
+            if active_run is None:
+                mlflow.start_run(run_id=run_id, log_system_metrics=True)
+                self._owns_active_mlflow_run = True
+            elif active_run.info.run_id != run_id:
+                raise RuntimeError(
+                    "Cannot attach MLflow system metrics: another run is already active "
+                    f"({active_run.info.run_id})."
+                )
+
+        self._internal_logger.experiment.log_artifact(
+            run_id,
+            self._composed_config_path,
+            artifact_path="config",
+        )
 
     @property
     def experiment(self):
@@ -114,19 +189,31 @@ class CustomImageLogger(Logger):
         """
         Log hyperparameters to the backend logger.
 
-        :param params: Hyperparameter mapping.
+        MLflow receives the instantiated architecture configuration from
+        ``cfg.model.model`` because the Lightning modules intentionally exclude the
+        wrapped model from ``save_hyperparameters``. Other backends receive the
+        hyperparameters supplied by Lightning.
+
+        :param params: Hyperparameter mapping supplied by Lightning.
         :param args: Additional positional arguments.
         :param kwargs: Additional keyword arguments.
         :return: None.
         """
-        self._internal_logger.log_hyperparams(params, *args, **kwargs)
+        self._ensure_mlflow_run()
+        backend_params = params
+        if isinstance(self._internal_logger, MLFlowLogger):
+            backend_params = OmegaConf.to_container(
+                self.cfg.model.model,
+                resolve=True,
+                throw_on_missing=False,
+            )
+        self._internal_logger.log_hyperparams(backend_params, *args, **kwargs)
 
         # Also log model config to wandb if it's the backend
         if isinstance(self._internal_logger, WandbLogger):
             self.experiment.config.update(OmegaConf.to_container(
                 self.cfg.get('model', {}), resolve=True, throw_on_missing=False
             ), allow_val_change=True)
-
 
     @rank_zero_only
     def log_metrics(self, metrics: Mapping[str, float], step: int):
@@ -137,16 +224,42 @@ class CustomImageLogger(Logger):
         :param step: Global step index.
         :return: None.
         """
+        self._ensure_mlflow_run()
         self._internal_logger.log_metrics(metrics, step)
+
+    @rank_zero_only
+    def save(self) -> None:
+        """Flush the wrapped logger and ensure MLflow has a run before fitting."""
+        self._ensure_mlflow_run()
+        self._internal_logger.save()
+
+    @rank_zero_only
+    def finalize(self, status: str = "success") -> None:
+        """Finalize the wrapped logger and stop MLflow system monitoring."""
+        self._internal_logger.finalize(status)
+
+        if self._owns_active_mlflow_run:
+            active_run = mlflow.active_run()
+            if active_run is not None and active_run.info.run_id == self.version:
+                mlflow_status = {
+                    "success": "FINISHED",
+                    "finished": "FINISHED",
+                    "failed": "FAILED",
+                }.get(status, "KILLED")
+                mlflow.end_run(status=mlflow_status)
+            self._owns_active_mlflow_run = False
+
+    @rank_zero_only
+    def after_save_checkpoint(self, checkpoint_callback: Any) -> None:
+        """Delegate checkpoint artifact handling to the selected backend."""
+        self._internal_logger.after_save_checkpoint(checkpoint_callback)
 
     def _get_validation_image_dir(self) -> str:
         if isinstance(self._internal_logger, WandbLogger):
             save_dir = os.path.join(self._internal_logger.save_dir, "validation_images")
         elif isinstance(self._internal_logger, MLFlowLogger):
-            if mlflow.active_run():
-                save_dir = os.path.join(mlflow.get_artifact_uri().replace("file://", ""), "validation_images")
-            else:
-                save_dir = "validation_images"
+            local_root = self.logger_conf.get("save_dir") or self.cfg.trainer.default_root_dir
+            save_dir = os.path.join(str(local_root), "validation_images")
         else:
             save_dir = "validation_images"
 
@@ -163,8 +276,13 @@ class CustomImageLogger(Logger):
                     f"plots/{os.path.basename(save_path).replace('.png', '')}",
                     [save_path],
                 )
-            elif isinstance(self._internal_logger, MLFlowLogger) and mlflow.active_run():
-                mlflow.log_artifact(save_path, artifact_path="plots")
+            elif isinstance(self._internal_logger, MLFlowLogger):
+                self._ensure_mlflow_run()
+                self._internal_logger.experiment.log_artifact(
+                    self.version,
+                    save_path,
+                    artifact_path="plots",
+                )
 
     def log_tensor_plot(
         self,

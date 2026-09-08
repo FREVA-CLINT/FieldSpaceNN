@@ -195,21 +195,15 @@ class FieldSpaceAttentionConfig:
         update: str = 'shift',
         separate_mlp_norm: bool = True,
         mlp_residual_from_attention: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_variable_qkv: bool = True,
-        use_variable_mlp: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_indexed_qkv: Optional[bool] = None,
-        use_indexed_mlp: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
+        use_indexed_qkv: bool = False,
+        use_indexed_mlp: bool = False,
         use_ranks_emb_layer: bool = True,
         use_ranks_qkv: bool = True,
         use_ranks_mlp: bool = True,
-        use_variable_att_gammas: bool = False,
-        use_variable_mlp_gammas: bool = False,
-        use_indexed_att_gammas: Optional[bool] = None,
-        use_indexed_mlp_gammas: Optional[bool] = None,
+        use_indexed_att_gammas: bool = False,
+        use_indexed_mlp_gammas: bool = False,
         block_type: Literal["legacy", "ext"] = "legacy",
         in_zooms: Optional[List[int]] = None,
         **kwargs: Any
@@ -252,15 +246,15 @@ class FieldSpaceAttentionConfig:
         :param separate_mlp_norm: Whether to separate MLP norm.
         :param mlp_residual_from_attention: Whether the MLP residual uses the
             post-attention tensor instead of the original zoom tensor.
-        :param use_variable_emb_layer: Whether embedding layers use variable-specific parameters.
-        :param use_variable_layer_norm: Whether embedding-layer layer norms use variable-specific affine params.
-        :param use_variable_qkv: Whether Q/KV/attention projection layers use variable-specific parameters.
-        :param use_variable_mlp: Whether the MLP branch uses variable-specific parameters.
+        :param use_indexed_emb_layer: Whether embedding layers use indexed parameters.
+        :param use_indexed_layer_norm: Whether embedding-layer layer norms use indexed affine params.
+        :param use_indexed_qkv: Whether Q/KV/attention projection layers use indexed parameters.
+        :param use_indexed_mlp: Whether the MLP branch uses indexed parameters.
         :param use_ranks_emb_layer: Whether embedding layers use the configured ranks.
         :param use_ranks_qkv: Whether Q/KV/attention projection layers use the configured ranks.
         :param use_ranks_mlp: Whether the MLP branch uses the configured ranks.
-        :param use_variable_att_gammas: Whether attention residual gammas are variable-specific.
-        :param use_variable_mlp_gammas: Whether MLP residual gammas are variable-specific.
+        :param use_indexed_att_gammas: Whether attention residual gammas use indexed parameters.
+        :param use_indexed_mlp_gammas: Whether MLP residual gammas use indexed parameters.
         :param kwargs: Additional keyword arguments assigned as attributes.
         :return: None.
         """
@@ -297,10 +291,6 @@ class FieldSpaceAttentionConfig:
         self.update: str
         self.separate_mlp_norm: bool
         self.mlp_residual_from_attention: bool
-        self.use_variable_emb_layer: bool
-        self.use_variable_layer_norm: bool
-        self.use_variable_qkv: bool
-        self.use_variable_mlp: bool
         self.use_indexed_emb_layer: bool
         self.use_indexed_layer_norm: bool
         self.use_indexed_qkv: bool
@@ -308,15 +298,9 @@ class FieldSpaceAttentionConfig:
         self.use_ranks_emb_layer: bool
         self.use_ranks_qkv: bool
         self.use_ranks_mlp: bool
-        self.use_variable_att_gammas: bool
-        self.use_variable_mlp_gammas: bool
         self.use_indexed_att_gammas: bool
         self.use_indexed_mlp_gammas: bool
         self.block_type: Literal["legacy", "ext"]
-
-        def _resolve_alias(indexed_value: Optional[bool], legacy_value: bool) -> tuple[bool, bool]:
-            resolved = legacy_value if indexed_value is None else indexed_value
-            return resolved, resolved
 
         n_depths_is_default = n_depths is None
         n_depths = 1 if n_depths is None else n_depths
@@ -343,17 +327,10 @@ class FieldSpaceAttentionConfig:
             minimum=0,
         )
 
-        use_indexed_emb_layer, use_variable_emb_layer = _resolve_alias(use_indexed_emb_layer, use_variable_emb_layer)
-        use_indexed_layer_norm, use_variable_layer_norm = _resolve_alias(use_indexed_layer_norm, use_variable_layer_norm)
-        use_indexed_qkv, use_variable_qkv = _resolve_alias(use_indexed_qkv, use_variable_qkv)
-        use_indexed_mlp, use_variable_mlp = _resolve_alias(use_indexed_mlp, use_variable_mlp)
-        use_indexed_att_gammas, use_variable_att_gammas = _resolve_alias(use_indexed_att_gammas, use_variable_att_gammas)
-        use_indexed_mlp_gammas, use_variable_mlp_gammas = _resolve_alias(use_indexed_mlp_gammas, use_variable_mlp_gammas)
-
         inputs = copy.deepcopy(locals())
 
         for input, value in inputs.items():
-            if input in {'self', '_resolve_alias'}:
+            if input == 'self':
                 continue
             if input == 'kwargs':
                 for input_kw, value_kw in value.items():
@@ -412,21 +389,15 @@ class FieldSpaceAttentionModule(nn.Module):
         update: str = 'shift',
         separate_mlp_norm: bool = True,
         mlp_residual_from_attention: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_variable_qkv: bool = True,
-        use_variable_mlp: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_indexed_qkv: Optional[bool] = None,
-        use_indexed_mlp: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
+        use_indexed_qkv: bool = False,
+        use_indexed_mlp: bool = False,
         use_ranks_emb_layer: bool = True,
         use_ranks_qkv: bool = True,
         use_ranks_mlp: bool = True,
-        use_variable_att_gammas: bool = False,
-        use_variable_mlp_gammas: bool = False,
-        use_indexed_att_gammas: Optional[bool] = None,
-        use_indexed_mlp_gammas: Optional[bool] = None,
+        use_indexed_att_gammas: bool = False,
+        use_indexed_mlp_gammas: bool = False,
         embed_confs: Dict[str, Any] = {},
         global_embedders: Optional[nn.ModuleDict] = None,
         fac_mode: str = "Tucker",
@@ -478,15 +449,15 @@ class FieldSpaceAttentionModule(nn.Module):
         :param separate_mlp_norm: Whether to separate MLP norm.
         :param mlp_residual_from_attention: Whether the MLP residual uses the
             post-attention tensor instead of the original zoom tensor.
-        :param use_variable_emb_layer: Whether embedding layers use variable-specific parameters.
-        :param use_variable_layer_norm: Whether embedding-layer layer norms use variable-specific affine params.
-        :param use_variable_qkv: Whether Q/KV/attention projection layers use variable-specific parameters.
-        :param use_variable_mlp: Whether the MLP branch uses variable-specific parameters.
+        :param use_indexed_emb_layer: Whether embedding layers use indexed parameters.
+        :param use_indexed_layer_norm: Whether embedding-layer layer norms use indexed affine params.
+        :param use_indexed_qkv: Whether Q/KV/attention projection layers use indexed parameters.
+        :param use_indexed_mlp: Whether the MLP branch uses indexed parameters.
         :param use_ranks_emb_layer: Whether embedding layers use the configured ranks.
         :param use_ranks_qkv: Whether Q/KV/attention projection layers use the configured ranks.
         :param use_ranks_mlp: Whether the MLP branch uses the configured ranks.
-        :param use_variable_att_gammas: Whether attention residual gammas are variable-specific.
-        :param use_variable_mlp_gammas: Whether MLP residual gammas are variable-specific.
+        :param use_indexed_att_gammas: Whether attention residual gammas use indexed parameters.
+        :param use_indexed_mlp_gammas: Whether MLP residual gammas use indexed parameters.
         :param embed_confs: Embedding configuration dictionary.
         :param emb_modulation_mode: How embeddings modulate field tensors.
         :param layer_confs: Layer configuration for attention blocks.
@@ -543,9 +514,6 @@ class FieldSpaceAttentionModule(nn.Module):
             "shared_indexed_group_space",
         )
 
-        def _resolve_alias(indexed_value: Optional[bool], legacy_value: bool) -> bool:
-            return legacy_value if indexed_value is None else indexed_value
-
         token_len_depth = _normalize_group_values(token_len_depth, n_groups, "token_len_depth")
         token_overlap_depth = _normalize_group_values(
             token_overlap_depth, n_groups, "token_overlap_depth"
@@ -572,14 +540,6 @@ class FieldSpaceAttentionModule(nn.Module):
         seq_len_time = _collapse_shared_value(seq_len_time, "seq_len_time")
         seq_overlap_space = _collapse_shared_value(seq_overlap_space, "seq_overlap_space")
         seq_overlap_time = _collapse_shared_value(seq_overlap_time, "seq_overlap_time")
-
-        use_indexed_emb_layer = _resolve_alias(use_indexed_emb_layer, use_variable_emb_layer)
-        use_indexed_layer_norm = _resolve_alias(use_indexed_layer_norm, use_variable_layer_norm)
-        use_indexed_qkv = _resolve_alias(use_indexed_qkv, use_variable_qkv)
-        use_indexed_mlp = _resolve_alias(use_indexed_mlp, use_variable_mlp)
-        use_indexed_att_gammas = _resolve_alias(use_indexed_att_gammas, use_variable_att_gammas)
-        use_indexed_mlp_gammas = _resolve_alias(use_indexed_mlp_gammas, use_variable_mlp_gammas)
-        
 
         self.out_zooms: List[int] = copy.deepcopy(out_zooms)
         in_zooms = copy.deepcopy(in_zooms)
@@ -761,10 +721,6 @@ class FieldSpaceAttentionModule(nn.Module):
                         update=update,
                         separate_mlp_norm=separate_mlp_norm,
                         mlp_residual_from_attention=mlp_residual_from_attention,
-                        use_variable_emb_layer=use_variable_emb_layer,
-                        use_variable_layer_norm=use_variable_layer_norm,
-                        use_variable_qkv=use_variable_qkv,
-                        use_variable_mlp=use_variable_mlp,
                         use_indexed_emb_layer=use_indexed_emb_layer,
                         use_indexed_layer_norm=use_indexed_layer_norm,
                         use_indexed_qkv=use_indexed_qkv,
@@ -772,8 +728,6 @@ class FieldSpaceAttentionModule(nn.Module):
                         use_ranks_emb_layer=use_ranks_emb_layer,
                         use_ranks_qkv=use_ranks_qkv,
                         use_ranks_mlp=use_ranks_mlp,
-                        use_variable_att_gammas=use_variable_att_gammas,
-                        use_variable_mlp_gammas=use_variable_mlp_gammas,
                         use_indexed_att_gammas=use_indexed_att_gammas,
                         use_indexed_mlp_gammas=use_indexed_mlp_gammas,
                         )
@@ -902,21 +856,15 @@ class FieldSpaceAttentionBlock(nn.Module):
         layer_norm: bool = True,
         separate_mlp_norm: bool = False,
         mlp_residual_from_attention: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_variable_qkv: bool = True,
-        use_variable_mlp: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_indexed_qkv: Optional[bool] = None,
-        use_indexed_mlp: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
+        use_indexed_qkv: bool = False,
+        use_indexed_mlp: bool = False,
         use_ranks_emb_layer: bool = True,
         use_ranks_qkv: bool = True,
         use_ranks_mlp: bool = True,
-        use_variable_att_gammas: bool = False,
-        use_variable_mlp_gammas: bool = False,
-        use_indexed_att_gammas: Optional[bool] = None,
-        use_indexed_mlp_gammas: Optional[bool] = None,
+        use_indexed_att_gammas: bool = False,
+        use_indexed_mlp_gammas: bool = False,
         in_zooms: Optional[List[int]] = None,
     ) -> None:
         """
@@ -963,15 +911,15 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param separate_mlp_norm: Whether to separate MLP norm.
         :param mlp_residual_from_attention: Whether the MLP residual uses the
             post-attention tensor instead of the original zoom tensor.
-        :param use_variable_emb_layer: Whether embedding layers use variable-specific parameters.
-        :param use_variable_layer_norm: Whether embedding-layer layer norms use variable-specific affine params.
-        :param use_variable_qkv: Whether Q/KV/attention projection layers use variable-specific parameters.
-        :param use_variable_mlp: Whether the MLP branch uses variable-specific parameters.
+        :param use_indexed_emb_layer: Whether embedding layers use indexed parameters.
+        :param use_indexed_layer_norm: Whether embedding-layer layer norms use indexed affine params.
+        :param use_indexed_qkv: Whether Q/KV/attention projection layers use indexed parameters.
+        :param use_indexed_mlp: Whether the MLP branch uses indexed parameters.
         :param use_ranks_emb_layer: Whether embedding layers use the configured ranks.
         :param use_ranks_qkv: Whether Q/KV/attention projection layers use the configured ranks.
         :param use_ranks_mlp: Whether the MLP branch uses the configured ranks.
-        :param use_variable_att_gammas: Whether attention residual gammas are variable-specific.
-        :param use_variable_mlp_gammas: Whether MLP residual gammas are variable-specific.
+        :param use_indexed_att_gammas: Whether attention residual gammas use indexed parameters.
+        :param use_indexed_mlp_gammas: Whether MLP residual gammas use indexed parameters.
         :return: None.
         """
                
@@ -1027,20 +975,10 @@ class FieldSpaceAttentionBlock(nn.Module):
         emb_ranks_default = embed_confs.get("ranks", [*ranks, None])
         shared_emb_ranks = [None] * len(emb_ranks_default)
 
-        def _resolve_alias(indexed_value: Optional[bool], legacy_value: bool) -> bool:
-            return legacy_value if indexed_value is None else indexed_value
-
-        use_indexed_emb_layer = _resolve_alias(use_indexed_emb_layer, use_variable_emb_layer)
-        use_indexed_layer_norm = _resolve_alias(use_indexed_layer_norm, use_variable_layer_norm)
-        use_indexed_qkv = _resolve_alias(use_indexed_qkv, use_variable_qkv)
-        use_indexed_mlp = _resolve_alias(use_indexed_mlp, use_variable_mlp)
-        use_indexed_att_gammas = _resolve_alias(use_indexed_att_gammas, use_variable_att_gammas)
-        use_indexed_mlp_gammas = _resolve_alias(use_indexed_mlp_gammas, use_variable_mlp_gammas)
-
-        n_variables_emb = n_variables if use_variable_emb_layer else 1
-        n_variables_norm = n_variables if use_variable_layer_norm else 1
-        n_variables_qkv = n_variables if use_variable_qkv else 1
-        n_variables_mlp = n_variables if use_variable_mlp else 1
+        n_variables_emb = n_variables
+        n_variables_norm = n_variables
+        n_variables_qkv = n_variables
+        n_variables_mlp = n_variables
 
         ranks_emb = ranks if use_ranks_emb_layer else shared_ranks
         ranks_qkv = ranks if use_ranks_qkv else shared_ranks
@@ -1189,37 +1127,37 @@ class FieldSpaceAttentionBlock(nn.Module):
             )
 
         indexed_dims_emb = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_emb_layer else 1,
+            n_variables_local=n_variables,
             rank_variables_local=rank_variables if use_ranks_emb_layer else None,
             include_indexing=use_indexed_emb_layer,
         )
         indexed_dims_norm = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_layer_norm else 1,
+            n_variables_local=n_variables,
             rank_variables_local=None,
             include_indexing=use_indexed_layer_norm,
         )
         indexed_dims_emb_kv = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_emb_layer else 1,
+            n_variables_local=n_variables,
             rank_variables_local=rank_variables if use_ranks_emb_layer else None,
             include_indexing=use_indexed_emb_layer,
         )
         indexed_dims_norm_kv = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_layer_norm else 1,
+            n_variables_local=n_variables,
             rank_variables_local=None,
             include_indexing=use_indexed_layer_norm,
         )
         indexed_dims_qkv = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_qkv else 1,
+            n_variables_local=n_variables,
             rank_variables_local=rank_variables_qkv,
             include_indexing=use_indexed_qkv,
         )
         indexed_dims_kv = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_qkv else 1,
+            n_variables_local=n_variables,
             rank_variables_local=rank_variables_qkv,
             include_indexing=use_indexed_qkv,
         )
         indexed_dims_mlp = _build_branch_indexed_dims(
-            n_variables_local=n_variables if use_variable_mlp else 1,
+            n_variables_local=n_variables,
             rank_variables_local=None,
             include_indexing=use_indexed_mlp,
         )
@@ -1338,8 +1276,6 @@ class FieldSpaceAttentionBlock(nn.Module):
             self.mixed_pattern: str = 'b v T N D t n d f -> b 1 T N D t n d (v f)'
 
         # Learned residual scaling for attention and MLP updates.
-        self.use_variable_att_gammas: bool = use_variable_att_gammas
-        self.use_variable_mlp_gammas: bool = use_variable_mlp_gammas
         self.use_indexed_att_gammas: bool = use_indexed_att_gammas
         self.use_indexed_mlp_gammas: bool = use_indexed_mlp_gammas
 
@@ -1932,21 +1868,15 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         layer_norm: bool = True,
         separate_mlp_norm: bool = False,
         mlp_residual_from_attention: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_variable_qkv: bool = True,
-        use_variable_mlp: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
-        use_indexed_qkv: Optional[bool] = None,
-        use_indexed_mlp: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
+        use_indexed_qkv: bool = False,
+        use_indexed_mlp: bool = False,
         use_ranks_emb_layer: bool = True,
         use_ranks_qkv: bool = True,
         use_ranks_mlp: bool = True,
-        use_variable_att_gammas: bool = False,
-        use_variable_mlp_gammas: bool = False,
-        use_indexed_att_gammas: Optional[bool] = None,
-        use_indexed_mlp_gammas: Optional[bool] = None,
+        use_indexed_att_gammas: bool = False,
+        use_indexed_mlp_gammas: bool = False,
         in_zooms: Optional[List[int]] = None,
     ) -> None:
         nn.Module.__init__(self)
@@ -2051,27 +1981,12 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         self.dropout_mlp = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.mlp_activation = nn.SiLU()
 
-        def resolve_flag(new: Optional[bool], legacy: bool) -> bool:
-            return bool(legacy if new is None else new)
-
-        self.use_indexed_emb_layer = resolve_flag(
-            use_indexed_emb_layer, use_variable_emb_layer
-        )
-        self.use_indexed_layer_norm = resolve_flag(
-            use_indexed_layer_norm, use_variable_layer_norm
-        )
-        self.use_indexed_qkv = resolve_flag(use_indexed_qkv, use_variable_qkv)
-        self.use_indexed_mlp = resolve_flag(use_indexed_mlp, use_variable_mlp)
-        self.use_indexed_att_gammas = resolve_flag(
-            use_indexed_att_gammas, use_variable_att_gammas
-        )
-        self.use_indexed_mlp_gammas = resolve_flag(
-            use_indexed_mlp_gammas, use_variable_mlp_gammas
-        )
-        self.use_variable_emb_layer = bool(use_variable_emb_layer)
-        self.use_variable_layer_norm = bool(use_variable_layer_norm)
-        self.use_variable_qkv = bool(use_variable_qkv)
-        self.use_variable_mlp = bool(use_variable_mlp)
+        self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
+        self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
+        self.use_indexed_qkv = bool(use_indexed_qkv)
+        self.use_indexed_mlp = bool(use_indexed_mlp)
+        self.use_indexed_att_gammas = bool(use_indexed_att_gammas)
+        self.use_indexed_mlp_gammas = bool(use_indexed_mlp_gammas)
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
         self.use_ranks_qkv = bool(use_ranks_qkv)
         self.use_ranks_mlp = bool(use_ranks_mlp)
@@ -2166,9 +2081,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             indexed_emb = self._build_ext_indexed_dims(
                 zoom,
                 enabled=self.use_indexed_emb_layer,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_emb_layer else 1
-                ),
+                n_variables_local=self.n_variables,
                 rank_variables_local=(
                     self.rank_variables_by_zoom[zoom]
                     if self.use_ranks_emb_layer else None
@@ -2177,17 +2090,13 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             indexed_norm = self._build_ext_indexed_dims(
                 zoom,
                 enabled=self.use_indexed_layer_norm,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_layer_norm else 1
-                ),
+                n_variables_local=self.n_variables,
                 rank_variables_local=None,
             )
             indexed_qkv = self._build_ext_indexed_dims(
                 zoom,
                 enabled=self.use_indexed_qkv,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_qkv else 1
-                ),
+                n_variables_local=self.n_variables,
                 rank_variables_local=(
                     self.rank_variables_by_zoom[zoom]
                     if self.use_ranks_qkv else None
@@ -2196,9 +2105,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             indexed_mlp = self._build_ext_indexed_dims(
                 zoom,
                 enabled=self.use_indexed_mlp,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_mlp else 1
-                ),
+                n_variables_local=self.n_variables,
                 rank_variables_local=(
                     self.rank_variables_by_zoom[zoom]
                     if self.use_ranks_mlp else None
@@ -2273,9 +2180,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 qkv_in_shape,
                 [1, 1, 1, 3 * self.att_dim],
                 ranks=qkv_ranks,
-                n_variables=(
-                    self.n_variables if self.use_variable_qkv else 1
-                ),
+                n_variables=self.n_variables,
                 indexed_dims=indexed_qkv,
                 fac_mode=fac_mode,
                 rank_variables=(
@@ -2315,9 +2220,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                     mlp_in_shape,
                     [1, 1, 1, self.att_dim_total],
                     ranks=mlp_ranks,
-                    n_variables=(
-                        self.n_variables if self.use_variable_mlp else 1
-                    ),
+                    n_variables=self.n_variables,
                     indexed_dims=indexed_mlp,
                     fac_mode=fac_mode,
                     rank_variables=(
@@ -2335,9 +2238,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                     [1, 1, 1, self.att_dim_total],
                     output_shape,
                     ranks=qkv_ranks,
-                    n_variables=(
-                        self.n_variables if self.use_variable_qkv else 1
-                    ),
+                    n_variables=self.n_variables,
                     indexed_dims=indexed_qkv,
                     fac_mode=fac_mode,
                     rank_variables=(
@@ -2350,9 +2251,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                     [1, 1, 1, self.att_dim_total],
                     output_shape,
                     ranks=mlp_ranks,
-                    n_variables=(
-                        self.n_variables if self.use_variable_mlp else 1
-                    ),
+                    n_variables=self.n_variables,
                     indexed_dims=indexed_mlp,
                     fac_mode=fac_mode,
                     rank_variables=(
@@ -2540,12 +2439,8 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             emb_shape,
             emb_shape,
             ranks=ranks,
-            n_variables=(
-                self.n_variables if self.use_variable_emb_layer else 1
-            ),
-            n_variable_norm=(
-                self.n_variables if self.use_variable_layer_norm else 1
-            ),
+            n_variables=self.n_variables,
+            n_variable_norm=self.n_variables,
             indexed_dims=indexed_emb,
             indexed_dims_norm=indexed_norm,
             fac_mode=self.fac_mode,

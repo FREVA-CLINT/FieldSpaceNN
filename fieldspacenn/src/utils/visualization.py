@@ -82,7 +82,7 @@ def healpix_plot_local(
 
 def _plot_healpix_panel(
     fig: plt.Figure,
-    values: np.ndarray,
+    values: Optional[np.ndarray],
     zoom: int,
     row_idx: int,
     col_idx: int,
@@ -110,6 +110,13 @@ def _plot_healpix_panel(
     :return: None.
     """
     plot_idx = row_idx * n_cols + col_idx + 1
+    if values is None:
+        ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "Unavailable", ha="center", va="center")
+        ax.set_axis_off()
+        return
+
     if sample_config.get("zoom_patch_sample", -1) == -1:
         hp.mollview(
             values,
@@ -145,6 +152,7 @@ def _plot_healpix_grid(
     Each row entry must define:
     - ``zoom``: zoom level
     - ``maps``: list of HEALPix maps for the row
+    - ``map_zooms``: optional per-map zoom levels (defaults to ``zoom``)
     - ``titles``: list of per-column titles
     - ``row_label``: optional suffix appended to each column title
 
@@ -162,13 +170,15 @@ def _plot_healpix_grid(
 
     for row_idx, row in enumerate(rows):
         zoom = row["zoom"]
-        sample_config = sample_configs[zoom]
         row_label = row.get("row_label", "")
         titles = row["titles"]
         maps = row["maps"]
         min_max = row["min_max"]
+        map_zooms = row.get("map_zooms", [zoom] * len(maps))
 
         for col_idx, values in enumerate(maps):
+            panel_zoom = map_zooms[col_idx]
+            sample_config = sample_configs[panel_zoom]
             title = titles[col_idx]
             if row_label:
                 title = f"{title} {row_label}"
@@ -176,7 +186,7 @@ def _plot_healpix_grid(
             _plot_healpix_panel(
                 fig=fig,
                 values=values,
-                zoom=zoom,
+                zoom=panel_zoom,
                 row_idx=row_idx,
                 col_idx=col_idx,
                 n_rows=n_rows,
@@ -210,19 +220,24 @@ def plot_zooms(
     :param sample_configs: Sampling configuration per zoom.
     :return: None.
     """
-    zoom_levels = sorted(input_maps.keys())
-    titles = ['Input', 'Output', 'Ground Truth', 'Error']
+    # Output and ground truth define the target zooms that should be plotted.
+    zoom_levels = sorted(set(output_maps) & set(gt_maps))
+    single_input_zoom = next(iter(input_maps)) if len(input_maps) == 1 else None
     rows = []
 
     for zoom in zoom_levels:
-        inp_map = input_maps[zoom]
+        input_zoom = zoom if zoom in input_maps else single_input_zoom
+        inp_map = input_maps.get(input_zoom) if input_zoom is not None else None
         out_map = output_maps[zoom]
         gt_map = gt_maps[zoom]
-        mask_map = mask_maps[zoom] if mask_maps is not None else None
+        mask_map = mask_maps.get(zoom) if mask_maps is not None else None
 
         error_map = (out_map - gt_map)  # * mask_map
 
         maps = [inp_map, out_map, gt_map, error_map]
+        titles = ['Input', 'Output', 'Ground Truth', 'Error']
+        if input_zoom is not None and input_zoom != zoom:
+            titles[0] = f'Input (zoom {input_zoom})'
         gt_min, gt_max = np.quantile(gt_map, [0.001, 0.999])
         error_map_min, error_map_max = np.quantile(error_map, [0.001, 0.999])
         min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
@@ -231,6 +246,7 @@ def plot_zooms(
             {
                 "zoom": zoom,
                 "maps": maps,
+                "map_zooms": [input_zoom if input_zoom is not None else zoom, zoom, zoom, zoom],
                 "titles": titles,
                 "min_max": min_max,
                 "row_label": f"(zoom {zoom})",

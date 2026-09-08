@@ -192,10 +192,8 @@ class FieldSpaceLayerConfig:
         embed_confs: Optional[Dict[str, Any]] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
         use_ranks_emb_layer: bool = True,
         type: str = 'linear',
         block_type: Literal["legacy", "ext"] = "legacy",
@@ -234,10 +232,6 @@ class FieldSpaceLayerConfig:
         :param embed_confs: Embedder configuration used to condition tokenized inputs.
         :param emb_modulation_mode: How embeddings modulate tokenized inputs.
         :param layer_norm: Whether to normalize tokenized inputs before projection.
-        :param use_variable_emb_layer: Legacy alias controlling indexed embedding
-            parameters; overridden by ``use_indexed_emb_layer`` when provided.
-        :param use_variable_layer_norm: Legacy alias controlling indexed layer-norm
-            parameters; overridden by ``use_indexed_layer_norm`` when provided.
         :param use_indexed_emb_layer: Whether embedding projections use indexed
             variable/time/space/depth parameters.
         :param use_indexed_layer_norm: Whether layer-norm affine parameters use
@@ -280,31 +274,14 @@ class FieldSpaceLayerConfig:
         self.embed_confs: Dict[str, Any]
         self.emb_modulation_mode: str
         self.layer_norm: bool
-        self.use_variable_emb_layer: bool
-        self.use_variable_layer_norm: bool
         self.use_indexed_emb_layer: bool
         self.use_indexed_layer_norm: bool
         self.use_ranks_emb_layer: bool
         self.type: str
         self.block_type: Literal["legacy", "ext"]
 
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> tuple[bool, bool]:
-            resolved = legacy_value if indexed_value is None else indexed_value
-            return bool(resolved), bool(resolved)
-
         hidden_dim_mixed = int(hidden_dim_mixed)
         embed_confs = {} if embed_confs is None else embed_confs
-        use_indexed_emb_layer, use_variable_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        use_indexed_layer_norm, use_variable_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
         if "att_dim_mixed" in kwargs:
             raise TypeError(
                 "Field-space layers use hidden_dim_mixed; "
@@ -390,10 +367,8 @@ class FieldSpaceLayerModule(nn.Module):
                  global_embedders: Optional[nn.ModuleDict] = None,
                  emb_modulation_mode: str = "shift_scale",
                  layer_norm: bool = False,
-                 use_variable_emb_layer: bool = True,
-                 use_variable_layer_norm: bool = True,
-                 use_indexed_emb_layer: Optional[bool] = None,
-                 use_indexed_layer_norm: Optional[bool] = None,
+                 use_indexed_emb_layer: bool = False,
+                 use_indexed_layer_norm: bool = False,
                  use_ranks_emb_layer: bool = True,
                  **kwargs: Any):
         """
@@ -469,21 +444,6 @@ class FieldSpaceLayerModule(nn.Module):
             n_groups,
             "shared_indexed_group_space",
         ))
-
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
-
-        use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
 
         input_zoom_field = int(embed_confs.get("input_zoom", min(in_zooms)))
         zoom_key = str(input_zoom_field)
@@ -691,8 +651,6 @@ class FieldSpaceLayerModule(nn.Module):
             "embedder_cache_key": embedder_cache_key,
             "emb_modulation_mode": emb_modulation_mode,
             "layer_norm": bool(layer_norm),
-            "use_variable_emb_layer": bool(use_variable_emb_layer),
-            "use_variable_layer_norm": bool(use_variable_layer_norm),
             "use_indexed_emb_layer": use_indexed_emb_layer,
             "use_indexed_layer_norm": use_indexed_layer_norm,
             "use_ranks_emb_layer": bool(use_ranks_emb_layer),
@@ -834,10 +792,8 @@ class FieldSpaceLayerBlock(nn.Module):
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
         use_ranks_emb_layer: bool = True,
         residual: bool = False,
         residual_gamma: bool = False,
@@ -883,22 +839,8 @@ class FieldSpaceLayerBlock(nn.Module):
         super().__init__()
         embed_confs = {} if embed_confs is None else embed_confs
 
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
-
-        self.use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        self.use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
-        self.use_variable_emb_layer = bool(use_variable_emb_layer)
-        self.use_variable_layer_norm = bool(use_variable_layer_norm)
+        self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
+        self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
         self.shared_indexed_variables = bool(shared_indexed_variables)
         self.shared_indexed_depths = bool(shared_indexed_depths)
@@ -1113,12 +1055,8 @@ class FieldSpaceLayerBlock(nn.Module):
             pre_shape,
             ranks=(ranks if self.use_ranks_emb_layer else [None] * len(ranks)),
             emb_ranks=emb_ranks,
-            n_variables=(
-                self.n_variables if self.use_variable_emb_layer else 1
-            ),
-            n_variable_norm=(
-                self.n_variables if self.use_variable_layer_norm else 1
-            ),
+            n_variables=self.n_variables,
+            n_variable_norm=self.n_variables,
             indexed_dims=indexed_dims_emb,
             indexed_dims_norm=indexed_dims_norm,
             fac_mode=fac_mode,
@@ -1622,10 +1560,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
-        use_variable_emb_layer: bool = True,
-        use_variable_layer_norm: bool = True,
-        use_indexed_emb_layer: Optional[bool] = None,
-        use_indexed_layer_norm: Optional[bool] = None,
+        use_indexed_emb_layer: bool = False,
+        use_indexed_layer_norm: bool = False,
         use_ranks_emb_layer: bool = True,
         residual: bool = False,
         residual_gamma: bool = False,
@@ -1636,12 +1572,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         nn.Module.__init__(self)
 
         embed_confs = {} if embed_confs is None else embed_confs
-
-        def _resolve_alias(
-            indexed_value: Optional[bool],
-            legacy_value: bool,
-        ) -> bool:
-            return bool(legacy_value if indexed_value is None else indexed_value)
 
         if hidden_dim is None or int(hidden_dim) <= 0:
             raise ValueError(
@@ -1769,16 +1699,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self.use_indexed_input = bool(use_indexed_input)
         self.use_indexed_output = bool(use_indexed_output)
         self.use_indexed_mlp = bool(use_indexed_mlp)
-        self.use_indexed_emb_layer = _resolve_alias(
-            use_indexed_emb_layer,
-            use_variable_emb_layer,
-        )
-        self.use_indexed_layer_norm = _resolve_alias(
-            use_indexed_layer_norm,
-            use_variable_layer_norm,
-        )
-        self.use_variable_emb_layer = bool(use_variable_emb_layer)
-        self.use_variable_layer_norm = bool(use_variable_layer_norm)
+        self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
+        self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
         self.shared_indexed_variables = bool(shared_indexed_variables)
         self.shared_indexed_depths = bool(shared_indexed_depths)
@@ -1951,9 +1873,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 zoom,
                 self.use_indexed_emb_layer,
                 preserve_variable_default=False,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_emb_layer else 1
-                ),
+                n_variables_local=self.n_variables,
                 include_rank_variables=self.use_ranks_emb_layer,
                 shared_indexed_variables=self.shared_indexed_variables,
                 shared_indexed_times=False,
@@ -1964,9 +1884,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 zoom,
                 self.use_indexed_layer_norm,
                 preserve_variable_default=False,
-                n_variables_local=(
-                    self.n_variables if self.use_variable_layer_norm else 1
-                ),
+                n_variables_local=self.n_variables,
                 include_rank_variables=False,
                 shared_indexed_variables=self.shared_indexed_variables,
                 shared_indexed_times=False,
@@ -1999,12 +1917,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     else [None] * len(ranks)
                 ),
                 emb_ranks=emb_ranks,
-                n_variables=(
-                    self.n_variables if self.use_variable_emb_layer else 1
-                ),
-                n_variable_norm=(
-                    self.n_variables if self.use_variable_layer_norm else 1
-                ),
+                n_variables=self.n_variables,
+                n_variable_norm=self.n_variables,
                 indexed_dims=indexed_dims_emb,
                 indexed_dims_norm=indexed_dims_norm,
                 fac_mode=self.fac_mode,
