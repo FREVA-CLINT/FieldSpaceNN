@@ -415,28 +415,6 @@ def get_zoom_x(x: torch.Tensor, zoom_patch_sample: Optional[int] = None, **kwarg
     return zoom_x
 
 
-def healpix_get_adjacent_cell_indices(zoom: int):
-    """
-    Get neighbor indices for a Healpix grid.
-
-    :param zoom: Healpix zoom level.
-    :return: Tuple of (adjacency, duplicates_mask), both shape ``(npix, 9)``.
-    """
-
-    nside = 2**zoom
-    npix = hp.nside2npix(nside)
-
-    adjc = torch.tensor(hp.get_all_neighbours(nside, np.arange(npix),nest=True)).transpose(0,1)
-
-    adjc = torch.concat((torch.arange(npix).view(-1,1),adjc),dim=-1)
-    duplicates = adjc == -1
-
-    c,n = torch.where(duplicates)
-    adjc[c,n] = adjc[c,0]
-
-    return adjc, duplicates
-
-
 def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
     """
     Get Healpix pixel coordinates (lon, lat) for a zoom level.
@@ -906,34 +884,6 @@ def healpix_get_adjacent_cell_indices(zoom: int):
     adjc[c,n] = adjc[c,0]
     return adjc, duplicates
 
-def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
-    """
-    Get Healpix pixel coordinates (lon, lat) for a zoom level.
-
-    :param zoom: Healpix zoom level.
-    :param return_numpy: Whether to return a NumPy array.
-    :return: Coordinate array of shape ``(npix, 2)``.
-    """
-    nside = 2**zoom
-
-    npix = hp.nside2npix(nside)  # Total number of pixels
-
-    # Get pixel indices as a PyTorch tensor
-    pixel_indices = torch.arange(npix, dtype=torch.long)
-
-    # Get theta (colatitude) and phi (longitude) for each pixel using healpy
-    theta, phi = hp.pix2ang(nside, pixel_indices.numpy(), nest=True)
-
-    # Convert theta and phi to PyTorch tensors
-    theta_tensor = torch.tensor(theta, dtype=torch.float32) - 0.5 * torch.pi
-    phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
-
-    coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
-
-    if return_numpy:
-        return coords.numpy()
-    else:
-        return coords
 
 def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
     """
