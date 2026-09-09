@@ -413,6 +413,13 @@ class BaseDataset(Dataset):
         self.p_dropout_all_zooms: Dict[int, float] = dict(
             zip(self.zooms, [self.sampling_zooms[zoom].get("p_drop", 0) for zoom in self.zooms])
         )
+        self.p_drop_var_zooms: Dict[int, float] = {
+            zoom: _validate_probability(
+                self.sampling_zooms[zoom].get("p_drop_var", 0.0),
+                f"sampling_zooms[{zoom}].p_drop_var",
+            )
+            for zoom in self.zooms
+        }
         self.mask_n_last_ts_zooms: Dict[int, int] = dict(
             zip(self.zooms, [self.sampling_zooms[zoom].get("mask_n_last_ts", 0) for zoom in self.zooms])
         )
@@ -754,6 +761,59 @@ class BaseDataset(Dataset):
             merged[temporal.expand_as(merged)] = 0
             return merged
         return torch.logical_or(existing_mask.to(torch.bool), temporal.expand_as(existing_mask))
+
+    def _generate_variable_masks(
+        self,
+        n_variables: int,
+        zooms: Optional[Sequence[int]] = None,
+    ) -> Dict[int, torch.Tensor]:
+        """Draw per-variable masks and inherit every mask from lower zooms."""
+        variable_masks: Dict[int, torch.Tensor] = {}
+        inherited = torch.zeros(n_variables, dtype=torch.bool)
+        active_zooms = self.zooms if zooms is None else sorted(zooms)
+        for zoom in active_zooms:
+            probability = self.p_drop_var_zooms[zoom]
+            if probability == 0:
+                mask = torch.zeros(n_variables, dtype=torch.bool)
+            elif probability == 1:
+                mask = torch.ones(n_variables, dtype=torch.bool)
+            else:
+                mask = torch.rand(n_variables) < probability
+            inherited = torch.logical_or(inherited, mask)
+            variable_masks[zoom] = inherited.clone()
+        return variable_masks
+
+    @staticmethod
+    def _merge_variable_mask(
+        existing_mask: Optional[torch.Tensor],
+        variable_mask: torch.Tensor,
+        data: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast and merge a per-variable mask into a field mask."""
+        if data.ndim != 5:
+            raise ValueError(f"Expected unbatched field data with 5 dims, got {tuple(data.shape)}.")
+        if variable_mask.numel() != data.shape[0]:
+            raise ValueError(
+                f"Variable mask length {variable_mask.numel()} does not match "
+                f"field variable count {data.shape[0]}."
+            )
+        per_variable = variable_mask.view(-1, 1, 1, 1, 1).expand(
+            data.shape[0],
+            data.shape[1],
+            data.shape[2],
+            data.shape[3],
+            1,
+        )
+        if existing_mask is None:
+            return per_variable.clone()
+        if existing_mask.dtype.is_floating_point:
+            merged = existing_mask.clone()
+            merged[per_variable.expand_as(merged)] = 0
+            return merged
+        return torch.logical_or(
+            existing_mask.to(torch.bool),
+            per_variable.expand_as(existing_mask),
+        )
 
 
     def _dataset_file_paths(self) -> List[str]:
@@ -1414,6 +1474,15 @@ class BaseDataset(Dataset):
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
         time_step_masks = self._generate_time_step_masks()
+        variable_masks_groups = []
+        for group in group_keys:
+            if group in ('embedding', 'embedding_1D'):
+                variable_masks_groups.append({})
+                continue
+            group_zooms = [zoom for zoom in self.zooms if zoom in self.group_zooms[group]]
+            variable_masks_groups.append(
+                self._generate_variable_masks(len(selected_vars[group]), group_zooms)
+            )
 
         # Only build a global dropout mask when a single source ensures shared indexing.
         if self.single_source and hr_dopout:
@@ -1591,6 +1660,11 @@ class BaseDataset(Dataset):
                     drop_mask_zoom_group = self._merge_time_step_mask(
                         drop_mask_zoom_group,
                         time_step_masks[zoom],
+                        data_source,
+                    )
+                    drop_mask_zoom_group = self._merge_variable_mask(
+                        drop_mask_zoom_group,
+                        variable_masks_groups[group_idx][zoom],
                         data_source,
                     )
 
