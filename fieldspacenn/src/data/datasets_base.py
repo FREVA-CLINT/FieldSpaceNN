@@ -163,7 +163,13 @@ def _normalize_variables_config(
 
 
 def _select_level_statistics(stats: Any, level_indices: Sequence[int]) -> Any:
-    """Select configured levels from scalar or per-level normalization statistics."""
+    """Select configured levels from full-column statistics.
+
+    A statistics vector whose length already equals the number of configured
+    levels is treated as preselected and retained in configuration order. This
+    allows normalization dictionaries to contain only the levels that are
+    actually loaded instead of requiring statistics for the entire column.
+    """
     if isinstance(stats, Mapping):
         return {
             key: _select_level_statistics(value, level_indices)
@@ -176,6 +182,8 @@ def _select_level_statistics(stats: Any, level_indices: Sequence[int]) -> Any:
         try:
             return values[np.asarray(level_indices, dtype=np.int64)].tolist()
         except IndexError as exc:
+            if values.shape[0] == len(level_indices):
+                return values.tolist()
             raise ValueError(
                 f"Configured level indices {list(level_indices)} do not fit normalization "
                 f"statistics with {values.shape[0]} levels."

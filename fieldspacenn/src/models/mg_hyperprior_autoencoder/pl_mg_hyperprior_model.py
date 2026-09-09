@@ -47,6 +47,18 @@ class LightningMGHyperpriorAutoEncoderModel(pl.LightningModule):
             self._freeze_modules(self.model.analysis_blocks, self.model.moment_projection)
         if freeze_synthesis_decoder:
             self._freeze_modules(self.model.synthesis_blocks, self.model.reconstruction_projection)
+        if self.stage == "pretrain":
+            # The pretraining forward path returns before the hyperprior is used.
+            # Freeze the complete inactive path so DDP does not wait for gradients
+            # from parameters that cannot contribute to the pretraining loss.
+            self._freeze_modules(
+                self.model.hyper_analysis_blocks,
+                self.model.hyperlatent_projection,
+                self.model.hyper_synthesis_blocks,
+                self.model.gaussian_params_projection,
+                self.model.entropy_bottleneck_adapter,
+                self.model.gaussian_conditional_adapter,
+            )
 
     def forward(
         self,
