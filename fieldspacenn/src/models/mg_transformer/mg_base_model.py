@@ -11,6 +11,12 @@ from ...modules.field_space.field_space_base import (
 from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, FieldSpaceLayerConfig
 from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
 from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
+from ...modules.field_space.zoom_level_transform import (
+    ReencodeZoomsLayer,
+    ReencodeZoomsLayerConfig,
+    ZoomLevelTransformConfig,
+    ZoomLevelTransformLayer,
+)
 from ...modules.grids.grid_layer import GridLayer
 from ...utils.helpers import check_get
 
@@ -20,7 +26,7 @@ defaults = {
     'att_dim': 256,
     'att_dim_mixed': 0,
     "fac_mode": "Tucker",
-    "emb_aggregation": "shift_scale",
+    "emb_modulation_mode": "shift_scale",
     'embed_confs': {},
     'dropout': 0,
     'with_residual': False,
@@ -188,7 +194,10 @@ def create_encoder_decoder_block(
     """
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
     fac_mode = check_get([block_conf, kwargs, defaults], "fac_mode")
-    emb_aggregation = check_get([block_conf, kwargs, defaults], "emb_aggregation")
+    emb_modulation_mode = check_get(
+        [block_conf, kwargs, defaults],
+        "emb_modulation_mode",
+    )
     dropout = check_get([block_conf, kwargs, defaults], "dropout")
     out_zooms = check_get([block_conf, {'out_zooms':in_zooms}], "out_zooms")
     use_mask = check_get([block_conf, kwargs, defaults], "use_mask")
@@ -207,15 +216,56 @@ def create_encoder_decoder_block(
 
     # Select the correct block implementation based on the config type.
     if isinstance(block_conf, ConservativeLayerConfig):
-        block = ConservativeLayer(in_zooms)
+        block = ConservativeLayer(
+            in_zooms,
+            mean_strengths=block_conf.mean_strengths,
+        )
         block.out_features = in_features
 
+    elif isinstance(block_conf, ReencodeZoomsLayerConfig):
+        block = ReencodeZoomsLayer(
+            config=block_conf,
+            in_zooms=in_zooms,
+            in_features=in_features,
+        )
+
+    elif isinstance(block_conf, ZoomLevelTransformConfig):
+        block = ZoomLevelTransformLayer(
+            config=block_conf,
+            in_zooms=in_zooms,
+            in_features=in_features,
+        )
+
     elif isinstance(block_conf, FieldSpaceAttentionConfig):
+        stage_zooms = [int(zoom) for zoom in in_zooms]
+        attention_in_zooms = block_conf.in_zooms
+        if attention_in_zooms is None:
+            attention_in_zooms = block_conf.q_zooms
+        if attention_in_zooms == -1:
+            attention_in_zooms = stage_zooms
+        else:
+            attention_in_zooms = [int(zoom) for zoom in attention_in_zooms]
+
+        feature_by_zoom = {
+            zoom: n_features
+            for zoom, n_features in zip(stage_zooms, in_features)
+        }
+        missing_zooms = [
+            zoom for zoom in attention_in_zooms if zoom not in feature_by_zoom
+        ]
+        if missing_zooms:
+            raise ValueError(
+                f"Attention in_zooms {missing_zooms} are not present in stage in_zooms"
+            )
+        attention_in_features = [
+            feature_by_zoom[zoom] for zoom in attention_in_zooms
+        ]
+
         block = FieldSpaceAttentionModule(
                 grid_layers,
-                in_zooms,
+                attention_in_zooms,
                 out_zooms,
-                in_features = in_features[0],
+                in_features = attention_in_features,
                 token_zoom = block_conf.token_zoom,
                 groups = block_conf.groups,
                 q_zooms  = block_conf.q_zooms,
@@ -240,7 +290,9 @@ def create_encoder_decoder_block(
                 rank_space = block_conf.rank_space,
                 n_rank_space = block_conf.n_rank_space,
                 rank_time = block_conf.rank_time,
+                n_rank_time = block_conf.n_rank_time,
                 rank_depth = block_conf.rank_depth,
+                n_rank_depth = block_conf.n_rank_depth,
                 rank_features = block_conf.rank_features,
                 n_times = block_conf.n_times,
                 n_depths = list(n_groups_depths) if getattr(block_conf, "n_depths_is_default", False) else block_conf.n_depths,
@@ -258,10 +310,6 @@ def create_encoder_decoder_block(
                 global_embedders = global_embedders,
                 separate_mlp_norm = block_conf.separate_mlp_norm,
                 mlp_residual_from_attention = block_conf.mlp_residual_from_attention,
-                use_variable_emb_layer = block_conf.use_variable_emb_layer,
-                use_variable_layer_norm = block_conf.use_variable_layer_norm,
-                use_variable_qkv = block_conf.use_variable_qkv,
-                use_variable_mlp = block_conf.use_variable_mlp,
                 use_indexed_emb_layer = block_conf.use_indexed_emb_layer,
                 use_indexed_layer_norm = block_conf.use_indexed_layer_norm,
                 use_indexed_qkv = block_conf.use_indexed_qkv,
@@ -269,12 +317,11 @@ def create_encoder_decoder_block(
                 use_ranks_emb_layer = block_conf.use_ranks_emb_layer,
                 use_ranks_qkv = block_conf.use_ranks_qkv,
                 use_ranks_mlp = block_conf.use_ranks_mlp,
-                use_variable_att_gammas = block_conf.use_variable_att_gammas,
-                use_variable_mlp_gammas = block_conf.use_variable_mlp_gammas,
                 use_indexed_att_gammas = block_conf.use_indexed_att_gammas,
                 use_indexed_mlp_gammas = block_conf.use_indexed_mlp_gammas,
+                block_type = block_conf.block_type,
                 fac_mode=fac_mode,
-                emb_aggregation=emb_aggregation)
+                emb_modulation_mode=emb_modulation_mode)
         block.out_features = in_features
 
     elif isinstance(block_conf, MultiZoomHealpixConvConfig):
@@ -308,6 +355,11 @@ def create_encoder_decoder_block(
                 block_conf.target_zooms,
                 block_conf.field_zoom,
                 out_zooms=block_conf.out_zooms,
+                n_groups_variables=list(n_groups_variables),
+                n_groups_depths=list(n_groups_depths),
+                shared_indexed_group_variables=list(shared_indexed_group_variables),
+                shared_indexed_group_depths=list(shared_indexed_group_depths),
+                shared_indexed_group_space=list(shared_indexed_group_space),
                 in_features=in_features,
                 target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                 mult = block_conf.mult,
@@ -319,9 +371,30 @@ def create_encoder_decoder_block(
                 token_overlap_space = block_conf.token_overlap_space,
                 token_overlap_time = block_conf.token_overlap_time,
                 token_overlap_depth = block_conf.token_overlap_depth,
+                rank_space = block_conf.rank_space,
+                rank_time = block_conf.rank_time,
+                rank_depth = block_conf.rank_depth,
+                rank_variables = block_conf.rank_variables,
+                n_times = block_conf.n_times,
+                n_rank_space = block_conf.n_rank_space,
+                n_rank_time = block_conf.n_rank_time,
+                n_depths = block_conf.n_depths,
+                n_rank_depth = block_conf.n_rank_depth,
                 residual = check_get([block_conf, {"residual": False}], "residual"),
                 residual_gamma = check_get([block_conf, {"residual_gamma": False}], "residual_gamma"),
                 type= block_conf.type,
+                hidden_dim_mixed=block_conf.hidden_dim_mixed,
+                use_indexed_input=block_conf.use_indexed_input,
+                use_indexed_output=block_conf.use_indexed_output,
+                use_indexed_mlp=block_conf.use_indexed_mlp,
+                embed_confs=embed_confs,
+                global_embedders=global_embedders,
+                emb_modulation_mode=emb_modulation_mode,
+                layer_norm=block_conf.layer_norm,
+                use_indexed_emb_layer=block_conf.use_indexed_emb_layer,
+                use_indexed_layer_norm=block_conf.use_indexed_layer_norm,
+                use_ranks_emb_layer=block_conf.use_ranks_emb_layer,
+                block_type=block_conf.block_type,
                 fac_mode=fac_mode)
     return block
 

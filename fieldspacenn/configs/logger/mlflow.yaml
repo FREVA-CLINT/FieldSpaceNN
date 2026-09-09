@@ -2,6 +2,18 @@ _target_: fieldspacenn.src.utils.logger.CustomImageLogger
 logger_type: mlflow
 save_snapshot_images: true
 log_snapshot_images: false
-experiment_name: "mg_autoencoder_experiment"
-tracking_uri: http://127.0.0.1:5000
-run_id: null
+save_dir: ${run_dir}/logs/${project_name}/${run_name}/
+experiment_name: ${project_name}
+run_name: ${run_name}
+tracking_uri: ${oc.env:MLFLOW_TRACKING_URI,https://mlflow.dkrz.de}
+# Set MLFLOW_WORKSPACE to e.g. personal-<username>. Leaving it unset lets the
+# tracking server select its default workspace.
+workspace: ${oc.env:MLFLOW_WORKSPACE,null}
+run_id: null  # Set this to resume an existing MLflow run.
+log_model: false
+log_system_metrics: true
+system_metrics_sampling_interval: 10
+system_metrics_samples_before_logging: 1
+tags:
+  framework: pytorch-lightning
+plot_types: ['time']

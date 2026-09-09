@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...models.mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms
@@ -61,7 +61,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         :param batch_idx: Index of the current batch.
         :return: Training loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.datamodule.dataset_train
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         # Inject patch indices into the sampling configuration.
@@ -71,8 +72,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             source_groups,
             target_groups,
             sample_configs,
-            mask_groups,
-            emb_groups,
+            mask_zooms=mask_groups,
+            emb=emb_groups,
             prefix='train'
         )
 
@@ -94,7 +95,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         :param batch_idx: Index of the current batch.
         :return: Validation loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.val_dataloaders.dataset
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
@@ -107,8 +109,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             source_groups,
             target_groups,
             sample_configs,
-            mask_groups,
-            emb_groups,
+            mask_zooms=mask_groups,
+            emb=emb_groups,
             prefix='val'
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups
@@ -128,8 +130,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             mask = mask_groups[group_idx]
             emb = emb_groups[group_idx]
 
-            # Decode outputs to the maximum zoom for visualization.
-
+            # Per-zoom values are meaningful with or without residual encoding.
             self.logger.log_tensor_plot(
                 plot_types=["healpix_plot_zooms_var"],
                 input=source,
@@ -141,20 +142,21 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
                 plot_name=f"epoch_{self.current_epoch}",
             )
 
-            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
-            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-            
-            self.logger.log_tensor_plot(
-                plot_types=["healpix_plot_zooms_var"],
-                input=source_comp,
-                output=output_comp,
-                gt=target_comp,
-                mask={max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None,
-                sample_configs=sample_configs,
-                emb=emb,
-                plot_name=f"epoch_{self.current_epoch}_combined",
-            )
+            if self._dataset_applies_diff(dataset):
+                source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
+                target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
+                output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+
+                self.logger.log_tensor_plot(
+                    plot_types=["healpix_plot_zooms_var"],
+                    input=source_comp,
+                    output=output_comp,
+                    gt=target_comp,
+                    mask={max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None,
+                    sample_configs=sample_configs,
+                    emb=emb,
+                    plot_name=f"epoch_{self.current_epoch}_combined",
+                )
 
         return loss
 

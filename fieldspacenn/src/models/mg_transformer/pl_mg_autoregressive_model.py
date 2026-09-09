@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, List
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from ...utils.helpers import merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms
@@ -434,7 +434,11 @@ class LightningMGAutoregressiveModel(LightningMGModel):
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
         self.log_dict(loss_dict, logger=True)
 
-        if batch_idx == 0 and rank_zero_only.rank == 0:
+        if (
+            batch_idx == 0
+            and rank_zero_only.rank == 0
+            and self._dataset_applies_diff(dataset)
+        ):
             group_idx = next((idx for idx, group in enumerate(output_groups) if group), None)
             if group_idx is None:
                 return loss

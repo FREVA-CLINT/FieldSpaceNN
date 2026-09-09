@@ -9,11 +9,11 @@ long_description = (here / 'README.md').read_text(encoding='utf-8')
 reqs = [str(ir.req) for ir in parse_requirements(here / 'requirements.txt')]
 
 setup(
-    name='stableclimgen',
+    name='fieldspacenn',
     version='0.1.0',
     description='A framework of AI methods for predicting and refining behaviour of volcanic eruptions',
     long_description=long_description,
-    url='https://github.com/FREVA-CLINT/climatereconstructionAI',
+    url='https://github.com/FREVA-CLINT/climatereconstructionAI/FieldSpaceNN',
     author='Climate Informatics and Technology group at DKRZ (Deutsches Klimarechenzentrum)',
     classifiers=[
         'Development Status :: 3 - Alpha',

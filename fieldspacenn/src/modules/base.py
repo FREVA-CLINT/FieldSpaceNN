@@ -160,6 +160,8 @@ class MLP_fac(nn.Module):
                  ranks: Optional[List[Optional[int]]] = None,
                  n_variables: int = 1,
                  indexed_dims: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
+                 indexed_dims_layer1: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
+                 indexed_dims_layer2: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
                  fac_mode: str = "Tucker",
                  gamma: bool = False
                 ) -> None: 
@@ -183,13 +185,21 @@ class MLP_fac(nn.Module):
             ranks = layer_confs.get("ranks", [None])
         n_variables = layer_confs.get("n_variables", n_variables)
         indexed_dims = layer_confs.get("indexed_dims", indexed_dims)
+        indexed_dims_layer1 = layer_confs.get(
+            "indexed_dims_layer1",
+            indexed_dims if indexed_dims_layer1 is None else indexed_dims_layer1,
+        )
+        indexed_dims_layer2 = layer_confs.get(
+            "indexed_dims_layer2",
+            indexed_dims if indexed_dims_layer2 is None else indexed_dims_layer2,
+        )
         fac_mode = layer_confs.get("fac_mode", fac_mode)
         self.layer1 = get_layer(
             in_features,
             out_features_1,
             ranks=ranks,
             n_variables=n_variables,
-            indexed_dims=indexed_dims,
+            indexed_dims=indexed_dims_layer1,
             fac_mode=fac_mode,
             bias=True,
         )
@@ -198,7 +208,7 @@ class MLP_fac(nn.Module):
             out_features,
             ranks=ranks,
             n_variables=n_variables,
-            indexed_dims=indexed_dims,
+            indexed_dims=indexed_dims_layer2,
             fac_mode=fac_mode,
             bias=True,
         )
@@ -239,10 +249,10 @@ class MLP_fac(nn.Module):
         :return: Output tensor with updated feature dimension.
         """
         
-        x = self.layer1(x, emb=emb)
+        x = self.layer1(x, emb=emb, **kwargs)
         x = self.activation(x)
         x = self.dropout(x)
-        x = self.layer2(x, emb=emb)
+        x = self.layer2(x, emb=emb, **kwargs)
 
         return self.rtn_fcn(x)
 

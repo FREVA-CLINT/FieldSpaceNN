@@ -489,6 +489,7 @@ class HealpixConvBlock(nn.Module):
         rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
+        fac_mode: str = "Tucker",
         layer_confs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
@@ -525,6 +526,7 @@ class HealpixConvBlock(nn.Module):
         :param rank_space: Optional rank applied on the neighborhood-space axis.
         :param rank_time: Optional rank applied on the time axis.
         :param rank_depth: Optional rank applied on the depth axis.
+        :param fac_mode: Factorization mode forwarded to the projection layers.
         :param layer_confs: Optional `get_layer` configuration dictionary.
         :return: None.
         """
@@ -556,6 +558,7 @@ class HealpixConvBlock(nn.Module):
         self.layer_confs: Dict[str, Any] = copy.deepcopy(layer_confs) if layer_confs is not None else {}
         self.layer_confs["n_variables"] = self.n_variables
         self.layer_confs["ranks"] = [self.rank_time, self.rank_space, self.rank_depth, None, None]
+        self.layer_confs["fac_mode"] = fac_mode
 
         if self.use_neighborhood:
             if self.grid_layer is None:

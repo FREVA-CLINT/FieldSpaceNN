@@ -61,7 +61,8 @@ class RegularDataset(Dataset):
     A PyTorch Dataset class for loading and processing climate data.
 
     :param data_dict: Dictionary containing input data paths and types.
-    :param norm_dict: Path to the JSON normalization statistics file.
+    :param norm_dict: Optional path to the JSON normalization statistics file. If
+        omitted, data is left unchanged.
     :param lazy_load: If True, enables lazy loading of data.
     :param n_sample_timesteps: Length of the data sequences to load.
     :param n_sample_vars: Number of variables to sample per item (-1 for all).
@@ -73,7 +74,7 @@ class RegularDataset(Dataset):
     def __init__(
         self,
         data_dict: Mapping[str, Any],
-        norm_dict: str,
+        norm_dict: Optional[str] = None,
         lazy_load: bool = True,
         n_sample_timesteps: int = 1,
         n_sample_vars: int = -1,
@@ -85,7 +86,8 @@ class RegularDataset(Dataset):
         Initialize the dataset and prepare file mappings and normalizers.
 
         :param data_dict: Dataset configuration including variables and file paths.
-        :param norm_dict: Path to the JSON normalization statistics file.
+        :param norm_dict: Optional path to the JSON normalization statistics file. If
+            omitted, data is left unchanged.
         :param lazy_load: Whether to lazily load xarray datasets.
         :param n_sample_timesteps: Number of timesteps per sequence sample.
         :param n_sample_vars: Number of variables to sample per item (-1 for all).
@@ -115,16 +117,22 @@ class RegularDataset(Dataset):
         self.climate_out_files: Dict[str, List[str]] = {}
         self.n_sample_vars: int = n_sample_vars
 
-        with open(norm_dict) as json_file:
-            norm_dict = json.load(json_file)
+        if norm_dict is None:
+            normalization_config = None
+        else:
+            with open(norm_dict) as json_file:
+                normalization_config = json.load(json_file)
 
         for var in self.variables_source:
             # create normalizers
-            norm_class = norm_dict[var]['normalizer']['class']
-            assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
-            self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
-                norm_dict[var]['stats'],
-                norm_dict[var]['normalizer'])
+            if normalization_config is None:
+                self.var_normalizers[var] = normalizers.IdentityNormalizer()
+            else:
+                norm_class = normalization_config[var]['normalizer']['class']
+                assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                self.var_normalizers[var] = normalizers.__getattribute__(norm_class)(
+                    normalization_config[var]['stats'],
+                    normalization_config[var]['normalizer'])
 
         # Map each source variable to its list of files (optionally shared across variables).
         for i, file in enumerate(data_dict["source"]["files"]):

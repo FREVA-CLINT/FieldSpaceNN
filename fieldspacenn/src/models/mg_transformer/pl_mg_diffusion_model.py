@@ -1,7 +1,7 @@
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 import torch
-from pytorch_lightning.utilities import rank_zero_only
+from lightning.pytorch.utilities import rank_zero_only
 
 from .pl_mg_probabilistic import LightningProbabilisticModel
 from ...modules.diffusion.mg_gaussian_diffusion import MGGaussianDiffusion
@@ -199,7 +199,9 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         :param batch_idx: Index of the current batch.
         :return: Validation loss tensor.
         """
-        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        dataset = self.trainer.val_dataloaders.dataset
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+        plot_combined = self._dataset_applies_diff(dataset)
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
@@ -272,9 +274,9 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 )
                 pred_xstart = pred_xstart_outputs[0][2] # (target, output, pred_xstart)
 
-                if self.decode_zooms:
+                if plot_combined and self.decode_zooms:
                     pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs_p, out_zoom=max_zoom)
-                else:
+                elif plot_combined:
                     pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
                 self.logger.log_tensor_plot(
@@ -288,16 +290,17 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                     plot_name=f"epoch_{self.current_epoch}_{t.item()}",
                 )
 
-                self.logger.log_tensor_plot(
-                    plot_types=["healpix_plot_zooms_var"],
-                    input=source_p,
-                    output=pred_xstart_comp,
-                    gt=target_p,
-                    mask={max_zoom: mask_p[max_zoom]} if mask_p is not None and max_zoom in mask_p else None,
-                    sample_configs=sample_configs_p,
-                    emb=emb_p,
-                    plot_name=f"epoch_{self.current_epoch}_combined_{t.item()}",
-                )
+                if plot_combined:
+                    self.logger.log_tensor_plot(
+                        plot_types=["healpix_plot_zooms_var"],
+                        input=source_p,
+                        output=pred_xstart_comp,
+                        gt=target_p,
+                        mask={max_zoom: mask_p[max_zoom]} if mask_p is not None and max_zoom in mask_p else None,
+                        sample_configs=sample_configs_p,
+                        emb=emb_p,
+                        plot_name=f"epoch_{self.current_epoch}_combined_{t.item()}",
+                    )
 
         return loss
 

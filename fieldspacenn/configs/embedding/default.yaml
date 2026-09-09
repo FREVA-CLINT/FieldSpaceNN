@@ -16,7 +16,7 @@ UncertaintyEmbedder:
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
-  shared: false
+  shared: true
 VariableEmbedder:
   in_channels: 5
   embed_dim: 64
@@ -39,8 +39,14 @@ MGEmbedder:
   shared: false
   in_channels: 2
   embed_dim: 64
-  n_variables: 5
+  n_variables: 1
   init_method: spherical_harmonics
 StaticVariableEmbedder:
   in_channels: 2
   embed_dim: 64
+ForcingEmbedder:
+  in_channels: null
+  embed_dim: 64
+  hidden_dim: 64
+  forcing_names: ${oc.select:data_variables.embedding_1D,[]}
+  shared: false

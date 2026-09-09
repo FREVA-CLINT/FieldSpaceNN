@@ -1,5 +1,7 @@
 import copy
 import json
+import math
+from numbers import Integral, Real
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -16,6 +18,13 @@ warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
+
+
+# Reuse fully loaded files between train/validation dataset instances in the
+# same process. This avoids holding duplicate copies when both splits point to
+# the same backing stores.
+_IN_MEMORY_DATASET_CACHE: Dict[str, xr.Dataset] = {}
+
 
 def skewed_random_p(
     size: Union[int, Sequence[int], torch.Size],
@@ -245,6 +254,46 @@ def _build_sample_configs_emb(
 
     return sample_configs_emb
 
+
+def _validate_probability(value: Any, parameter_name: str) -> float:
+    """Return a finite probability in the inclusive interval [0, 1]."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"`{parameter_name}` must be a numeric probability in [0, 1].")
+    probability = float(value)
+    if not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError(f"`{parameter_name}` must be finite and in [0, 1], got {value!r}.")
+    return probability
+
+
+def _validate_minimum_span(value: Any, parameter_name: str) -> int:
+    """Return a non-negative integer minimum retained span."""
+    if isinstance(value, bool) or not isinstance(value, Integral) or int(value) < 0:
+        raise ValueError(f"`{parameter_name}` must be a non-negative integer, got {value!r}.")
+    return int(value)
+
+
+def _validate_dropout_indices(
+    value: Any,
+    parameter_name: str,
+    expected_length: int,
+) -> torch.Tensor:
+    """Validate a fixed binary time-step dropout mask."""
+    if value is None:
+        return torch.zeros(expected_length, dtype=torch.bool)
+    if not isinstance(value, (list, tuple, ListConfig, np.ndarray, torch.Tensor)):
+        raise ValueError(
+            f"`{parameter_name}` must be a binary sequence of length {expected_length}."
+        )
+
+    values = torch.as_tensor(list(value) if isinstance(value, ListConfig) else value)
+    if values.ndim != 1 or values.numel() != expected_length:
+        raise ValueError(
+            f"`{parameter_name}` must have length {expected_length}, got shape {tuple(values.shape)}."
+        )
+    if values.dtype != torch.bool and not torch.all((values == 0) | (values == 1)):
+        raise ValueError(f"`{parameter_name}` values must be binary (0/1 or bool).")
+    return values.to(dtype=torch.bool)
+
 #def create_mask(random_p, drop_mask, ):
 
 class BaseDataset(Dataset):
@@ -253,6 +302,7 @@ class BaseDataset(Dataset):
         mapping_fcn: Optional[Callable[..., Any]] = None,
         norm_dict: Optional[str] = None,
         lazy_load: bool = True,
+        load_into_memory: bool = False,
         mask_zooms: Optional[Mapping[int, Any]] = None,
         p_dropout: float = 0,
         p_dropout_all: float = 0,
@@ -270,7 +320,6 @@ class BaseDataset(Dataset):
         mask_ts_mode: str = 'repeat',
         variables_as_features: bool = False,
         variable_group_zooms: Optional[Mapping[str, Any]] = None,
-        load_n_samples_time: int = 1,
         target_time_shift: int = 0,
         overwrite_depths: Optional[Sequence[float]] = None,
     ) -> None:
@@ -278,8 +327,12 @@ class BaseDataset(Dataset):
         Initialize the dataset with sampling, masking, and normalization settings.
 
         :param mapping_fcn: Callable to build mapping weights between grids.
-        :param norm_dict: Path to the JSON normalization statistics file.
+        :param norm_dict: Optional path to the JSON normalization statistics file. If
+            omitted, data is left unchanged.
         :param lazy_load: Whether to lazily load xarray datasets.
+        :param load_into_memory: Whether to load every unique source/target file once
+            and serve all samples from a process-wide in-memory cache. This takes
+            precedence over ``lazy_load``.
         :param mask_zooms: Optional mask configuration per zoom level.
         :param p_dropout: Base dropout probability for spatial masking.
         :param p_dropout_all: Probability to drop entire samples across zooms.
@@ -299,7 +352,6 @@ class BaseDataset(Dataset):
         :param variable_group_zooms: Optional mapping from variable-group name to the
             zoom levels where that group should be loaded. Omitted groups default to all
             sampling zooms.
-        :param load_n_samples_time: Number of time samples stacked as batch.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
         :param overwrite_depths: Optional replacement values for the vertical ``level``
             coordinate. Applied only when the loaded variables expose a ``level`` dimension.
@@ -334,6 +386,8 @@ class BaseDataset(Dataset):
 
         self.norm_dict: Optional[str] = norm_dict
         self.lazy_load: bool = lazy_load
+        self.load_into_memory: bool = bool(load_into_memory)
+        self._in_memory_datasets: Dict[str, xr.Dataset] = {}
         self.random_p: bool = random_p
         self.p_dropout: float = p_dropout
         self.skewness_exp: float = skewness_exp
@@ -348,7 +402,6 @@ class BaseDataset(Dataset):
         self.output_max_zoom_only: bool = output_max_zoom_only
         self.variables_as_features: bool = variables_as_features
 
-        self.load_n_samples_time: int = load_n_samples_time
         self.target_time_shift: int = target_time_shift
         self.overwrite_depths: Optional[torch.Tensor] = (
             torch.as_tensor(overwrite_depths, dtype=torch.float32)
@@ -360,11 +413,19 @@ class BaseDataset(Dataset):
         self.p_dropout_all_zooms: Dict[int, float] = dict(
             zip(self.zooms, [self.sampling_zooms[zoom].get("p_drop", 0) for zoom in self.zooms])
         )
+        self.p_drop_var_zooms: Dict[int, float] = {
+            zoom: _validate_probability(
+                self.sampling_zooms[zoom].get("p_drop_var", 0.0),
+                f"sampling_zooms[{zoom}].p_drop_var",
+            )
+            for zoom in self.zooms
+        }
         self.mask_n_last_ts_zooms: Dict[int, int] = dict(
             zip(self.zooms, [self.sampling_zooms[zoom].get("mask_n_last_ts", 0) for zoom in self.zooms])
         )
 
         self.p_dropout_all: float = p_dropout_all
+        self._configure_time_step_masking()
 
 
         if "files" in self.data_dict['source'].keys():
@@ -412,7 +473,7 @@ class BaseDataset(Dataset):
 
         # Build index map of (file, time window, region) per zoom.
         # Store index maps as compact numpy arrays to reduce Python object overhead.
-        # Each row is: [file_idx, region_idx, t0, t1, ..., t(load_n_samples_time-1)]
+        # Each row is one independent sample: [file_idx, region_idx, center_time].
         self.index_map: Dict[int, List[List[int]]] = dict(
             zip(self.zooms, [[] for _ in self.zooms])
         )
@@ -450,16 +511,10 @@ class BaseDataset(Dataset):
             else:
                 time_indices = [t for t in self.sample_timesteps if start_idx <= t <= end_idx]
 
-            # drop incomplete groups instead of raising when load_n_samples_time does not divide cleanly
-            n_complete = len(time_indices) // self.load_n_samples_time
-            time_indices = time_indices[: n_complete * self.load_n_samples_time]
-
             if len(time_indices) == 0:
                 continue
 
-            time_entries = np.array(time_indices).reshape(-1, self.load_n_samples_time)
-
-            for time_entry in time_entries:
+            for center_time in time_indices:
                 for zoom in self.zooms:
                     for region_idx_max in range(self.indices[max(self.zooms)].shape[0]):
                         if self.sampling_zooms[zoom]['zoom_patch_sample'] == -1:
@@ -467,12 +522,18 @@ class BaseDataset(Dataset):
                         else:
                             region_idx_zoom = region_idx_max//4**(self.sampling_zooms[max(self.zooms)]['zoom_patch_sample'] - self.sampling_zooms[zoom]['zoom_patch_sample'])
 
-                        row = [int(file_idx), int(region_idx_zoom)] + [int(t) for t in time_entry]
+                        row = [int(file_idx), int(region_idx_zoom), int(center_time)]
                         self.index_map[zoom].append(row)
                 
         self.index_map = {
             z: np.asarray(idx_map, dtype=np.int32) for z, idx_map in self.index_map.items()
         }
+
+        # One-dimensional forcings are time-dependent conditioning data. They are
+        # loaded directly and must not participate in spatial grid mappings.
+        self.forcing_variables: List[str] = list(
+            self.data_dict['variables'].get('embedding_1D', [])
+        )
 
         # Build variable group indices for embedding and masking.
         self.variables_by_group = normalized_variables_by_group
@@ -487,7 +548,9 @@ class BaseDataset(Dataset):
         self.embed_group_ids: Dict[str, int] = {}
         embed_group_id = 0
         for group_id, (group, vars) in enumerate(self.variables_by_group.items()):
-            all_variables += list(vars)
+            if group == 'embedding_1D':
+                continue
+            all_variables += vars
             self.group_ids[group] = (group_id)
             if group != 'embedding':
                 self.embed_group_ids[group] = embed_group_id
@@ -528,28 +591,255 @@ class BaseDataset(Dataset):
             unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
         )
 
-        with open(norm_dict) as json_file:
-            norm_dict = json.load(json_file)
+        if norm_dict is None:
+            normalization_config = None
+        else:
+            with open(norm_dict) as json_file:
+                normalization_config = json.load(json_file)
 
         self.var_normalizers: Dict[int, Dict[str, Any]] = {}
+        self.forcing_normalizers: Dict[int, Dict[str, Any]] = {}
         for zoom in self.zooms:
             self.var_normalizers[zoom] = {}
+            self.forcing_normalizers[zoom] = {}
             for var in all_variables:
-                if str(zoom) in norm_dict[var].keys():
+                if normalization_config is None:
+                    self.var_normalizers[zoom][var] = normalizers.IdentityNormalizer()
+                elif str(zoom) in normalization_config[var].keys():
                     # Zoom-specific stats override global stats when available.
-                    norm_class = norm_dict[var][str(zoom)]['normalizer']['class']
+                    norm_class = normalization_config[var][str(zoom)]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var][str(zoom)]['stats'],
-                        norm_dict[var][str(zoom)]['normalizer'])
+                        normalization_config[var][str(zoom)]['stats'],
+                        normalization_config[var][str(zoom)]['normalizer'])
                 else:
-                    norm_class = norm_dict[var]['normalizer']['class']
+                    norm_class = normalization_config[var]['normalizer']['class']
                     assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
                     self.var_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
-                        norm_dict[var]['stats'],
-                        norm_dict[var]['normalizer'])
+                        normalization_config[var]['stats'],
+                        normalization_config[var]['normalizer'])
+
+            # Forcings may use the normalizer configuration, but raw physical
+            # values remain valid when no statistics have been provided.
+            for var in self.forcing_variables:
+                if normalization_config is None or var not in normalization_config:
+                    continue
+                if str(zoom) in normalization_config[var].keys():
+                    norm_definition = normalization_config[var][str(zoom)]
+                else:
+                    norm_definition = normalization_config[var]
+                norm_class = norm_definition['normalizer']['class']
+                assert norm_class in normalizers.__dict__.keys(), f'normalizer class {norm_class} not defined'
+                self.forcing_normalizers[zoom][var] = normalizers.__getattribute__(norm_class)(
+                    norm_definition['stats'],
+                    norm_definition['normalizer'])
         self.normalize_data: bool = normalize_data
         self.len_dataset: int = len(list(self.index_map.values())[0])
+
+        if self.load_into_memory:
+            self._preload_datasets()
+
+
+    def _configure_time_step_masking(self) -> None:
+        """Validate temporal masking settings stored on each source zoom."""
+        self.p_drop_ts_zooms: Dict[int, float] = {}
+        self.min_unmasked_ts_zooms: Dict[int, int] = {}
+        self.dropout_indices_zooms: Dict[int, torch.Tensor] = {}
+        for zoom in self.zooms:
+            sampling = self.sampling_zooms[zoom]
+            probability = _validate_probability(
+                sampling.get("p_drop_ts", 0.0),
+                f"sampling_zooms[{zoom}].p_drop_ts",
+            )
+            minimum_span = _validate_minimum_span(
+                sampling.get("min_unmasked_ts", 0),
+                f"sampling_zooms[{zoom}].min_unmasked_ts",
+            )
+            window_length = (
+                1
+                + int(sampling["n_past_ts"])
+                + int(sampling["n_future_ts"])
+            )
+            if minimum_span > window_length:
+                raise ValueError(
+                    f"Minimum unmasked span {minimum_span} for zoom {zoom} exceeds "
+                    f"its source-window length {window_length}."
+                )
+            dropout_indices = _validate_dropout_indices(
+                sampling.get("dropout_indices"),
+                f"sampling_zooms[{zoom}].dropout_indices",
+                expected_length=window_length,
+            )
+            self.p_drop_ts_zooms[zoom] = probability
+            self.min_unmasked_ts_zooms[zoom] = minimum_span
+            self.dropout_indices_zooms[zoom] = dropout_indices
+
+    def _time_offsets(self, zoom: int) -> torch.Tensor:
+        """Return center-relative offsets for one zoom's source window."""
+        sampling = self.sampling_zooms[zoom]
+        return torch.arange(
+            -int(sampling["n_past_ts"]),
+            int(sampling["n_future_ts"]) + 1,
+            dtype=torch.long,
+        )
+
+    @staticmethod
+    def _mask_short_unmasked_runs(mask: torch.Tensor, minimum_span: int) -> torch.Tensor:
+        """Mask every retained run shorter than ``minimum_span``."""
+        if minimum_span <= 1 or mask.numel() == 0:
+            return mask.clone()
+
+        result = mask.clone()
+        run_start: Optional[int] = None
+        for index in range(mask.numel() + 1):
+            is_unmasked = index < mask.numel() and not bool(mask[index])
+            if is_unmasked and run_start is None:
+                run_start = index
+            elif not is_unmasked and run_start is not None:
+                if index - run_start < minimum_span:
+                    result[run_start:index] = True
+                run_start = None
+        return result
+
+    def _generate_time_step_masks(self) -> Dict[int, torch.Tensor]:
+        """Draw additional masks per zoom and inherit all lower-zoom masks."""
+        masks: Dict[int, torch.Tensor] = {}
+        masked_lower_offsets = set()
+        for zoom in self.zooms:
+            offsets = self._time_offsets(zoom)
+            probability = self.p_drop_ts_zooms[zoom]
+            if probability == 0:
+                mask = torch.zeros(offsets.numel(), dtype=torch.bool)
+            elif probability == 1:
+                mask = torch.ones(offsets.numel(), dtype=torch.bool)
+            else:
+                mask = torch.rand(offsets.numel()) < probability
+
+            mask = torch.logical_or(mask, self.dropout_indices_zooms[zoom])
+
+            if masked_lower_offsets:
+                inherited = torch.tensor(
+                    [int(offset) in masked_lower_offsets for offset in offsets],
+                    dtype=torch.bool,
+                )
+                mask = torch.logical_or(mask, inherited)
+            mask = self._mask_short_unmasked_runs(
+                mask,
+                self.min_unmasked_ts_zooms[zoom],
+            )
+            masks[zoom] = mask
+            masked_lower_offsets.update(
+                int(offset) for offset in offsets[mask].tolist()
+            )
+        return masks
+
+    @staticmethod
+    def _merge_time_step_mask(
+        existing_mask: Optional[torch.Tensor],
+        time_step_mask: torch.Tensor,
+        data: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast and merge a temporal mask into a field mask."""
+        if data.ndim != 5:
+            raise ValueError(f"Expected unbatched field data with 5 dims, got {tuple(data.shape)}.")
+        if time_step_mask.numel() != data.shape[1]:
+            raise ValueError(
+                f"Time-step mask length {time_step_mask.numel()} does not match "
+                f"field time length {data.shape[1]}."
+            )
+        temporal = time_step_mask.view(1, -1, 1, 1, 1).expand(
+            data.shape[0],
+            data.shape[1],
+            data.shape[2],
+            data.shape[3],
+            1,
+        )
+        if existing_mask is None:
+            return temporal.clone()
+        if existing_mask.dtype.is_floating_point:
+            merged = existing_mask.clone()
+            merged[temporal.expand_as(merged)] = 0
+            return merged
+        return torch.logical_or(existing_mask.to(torch.bool), temporal.expand_as(existing_mask))
+
+    def _generate_variable_masks(
+        self,
+        n_variables: int,
+        zooms: Optional[Sequence[int]] = None,
+    ) -> Dict[int, torch.Tensor]:
+        """Draw per-variable masks and inherit every mask from lower zooms."""
+        variable_masks: Dict[int, torch.Tensor] = {}
+        inherited = torch.zeros(n_variables, dtype=torch.bool)
+        active_zooms = self.zooms if zooms is None else sorted(zooms)
+        for zoom in active_zooms:
+            probability = self.p_drop_var_zooms[zoom]
+            if probability == 0:
+                mask = torch.zeros(n_variables, dtype=torch.bool)
+            elif probability == 1:
+                mask = torch.ones(n_variables, dtype=torch.bool)
+            else:
+                mask = torch.rand(n_variables) < probability
+            inherited = torch.logical_or(inherited, mask)
+            variable_masks[zoom] = inherited.clone()
+        return variable_masks
+
+    @staticmethod
+    def _merge_variable_mask(
+        existing_mask: Optional[torch.Tensor],
+        variable_mask: torch.Tensor,
+        data: torch.Tensor,
+    ) -> torch.Tensor:
+        """Broadcast and merge a per-variable mask into a field mask."""
+        if data.ndim != 5:
+            raise ValueError(f"Expected unbatched field data with 5 dims, got {tuple(data.shape)}.")
+        if variable_mask.numel() != data.shape[0]:
+            raise ValueError(
+                f"Variable mask length {variable_mask.numel()} does not match "
+                f"field variable count {data.shape[0]}."
+            )
+        per_variable = variable_mask.view(-1, 1, 1, 1, 1).expand(
+            data.shape[0],
+            data.shape[1],
+            data.shape[2],
+            data.shape[3],
+            1,
+        )
+        if existing_mask is None:
+            return per_variable.clone()
+        if existing_mask.dtype.is_floating_point:
+            merged = existing_mask.clone()
+            merged[per_variable.expand_as(merged)] = 0
+            return merged
+        return torch.logical_or(
+            existing_mask.to(torch.bool),
+            per_variable.expand_as(existing_mask),
+        )
+
+
+    def _dataset_file_paths(self) -> List[str]:
+        """Return unique source and target file paths in configuration order."""
+        paths: List[str] = []
+        for role in ("source", "target"):
+            role_config = self.data_dict.get(role)
+            if not role_config:
+                continue
+
+            entries = [role_config] if "files" in role_config else role_config.values()
+            for entry in entries:
+                files = entry["files"]
+                if isinstance(files, (list, tuple, ListConfig)):
+                    paths.extend(str(path) for path in files)
+                else:
+                    paths.append(str(files))
+
+        return list(dict.fromkeys(paths))
+
+    def _preload_datasets(self) -> None:
+        """Load all configured datasets and retain process-wide shared references."""
+        for path in self._dataset_file_paths():
+            if path not in _IN_MEMORY_DATASET_CACHE:
+                _IN_MEMORY_DATASET_CACHE[path] = xr.load_dataset(path, decode_times=False)
+            self._in_memory_datasets[path] = _IN_MEMORY_DATASET_CACHE[path]
 
 
     def get_indices_from_patch_idx(self, patch_idx: int) -> np.ndarray:
@@ -560,6 +850,33 @@ class BaseDataset(Dataset):
         :return: NumPy array of indices for the patch (shape ``(n,)`` or ``(n, 1)``).
         """
         raise NotImplementedError
+
+    def _get_file_path(self, role: str, zoom: int, file_index: int) -> str:
+        """Resolve a configured source or target path for one sample."""
+        file_zoom = max(self.zooms) if self.single_source else zoom
+        return str(self.data_dict[role][file_zoom]["files"][file_index])
+
+    def _translate_time_indices(
+        self,
+        file_path: str,
+        time_indices: Sequence[int],
+    ) -> np.ndarray:
+        """Translate file-relative indices into the active dataset's positions."""
+        del file_path
+        return np.asarray(time_indices, dtype=np.int64)
+
+    def _infer_mapping_zoom(self, ds: xr.Dataset, requested_zoom: int) -> int:
+        """Infer the mapping zoom from an already opened dataset."""
+        if "cell" in ds.sizes:
+            mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
+        elif "ncells" in ds.sizes:
+            mapping_zoom = get_zoom_from_npix(ds.sizes["ncells"])
+        else:
+            mapping_zoom = requested_zoom if requested_zoom in self.mapping else max(self.mapping.keys())
+
+        if mapping_zoom is None:
+            mapping_zoom = requested_zoom if requested_zoom in self.mapping else max(self.mapping.keys())
+        return int(mapping_zoom)
 
     def get_files(
         self,
@@ -575,7 +892,14 @@ class BaseDataset(Dataset):
         :param drop_source: Whether to skip loading target when sharing the source.
         :return: Tuple of (source dataset, target dataset or None).
         """
-        if self.lazy_load:
+        if self.load_into_memory:
+            try:
+                ds_source = self._in_memory_datasets[str(file_path_source)]
+            except KeyError as exc:
+                raise KeyError(
+                    f"Dataset file was not preloaded: {file_path_source}"
+                ) from exc
+        elif self.lazy_load:
             ds_source = xr.open_dataset(file_path_source, decode_times=False)
         else:
             ds_source = xr.load_dataset(file_path_source, decode_times=False)
@@ -587,7 +911,14 @@ class BaseDataset(Dataset):
             ds_target = None
             
         else:
-            if self.lazy_load:
+            if self.load_into_memory:
+                try:
+                    ds_target = self._in_memory_datasets[str(file_path_target)]
+                except KeyError as exc:
+                    raise KeyError(
+                        f"Dataset file was not preloaded: {file_path_target}"
+                    ) from exc
+            elif self.lazy_load:
                 ds_target = xr.open_dataset(file_path_target, decode_times=False)
             else:
                 ds_target = xr.load_dataset(file_path_target, decode_times=False)
@@ -626,7 +957,7 @@ class BaseDataset(Dataset):
             patch_indices = self.get_indices_from_patch_idx(zoom, patch_idx)
 
             # Resolve indices either on the target grid (post-map) or the source grid (pre-map).
-            post_map = mapping_zoom > zoom
+            post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
                 indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
                 if patch_dim:
@@ -661,7 +992,8 @@ class BaseDataset(Dataset):
         :param mapping: Mapping dictionary for grid transforms.
         :param mapping_zoom: Zoom level of the mapping source.
         :param zoom: Zoom level of the requested data.
-        :param drop_mask: Optional dropout mask tensor of shape ``(v, t, n)`` or ``(1, v, t, n)``.
+        :param drop_mask: Optional dropout mask tensor of shape ``(v, t, n)``. A legacy
+            leading singleton dimension is also accepted internally.
         :return: Tuple ``(data_g, drop_mask, depth_values)`` where ``data_g`` is a tensor of
             shape ``(v, t, n, d, f)`` (matching the ``(b, v, t, n, d, f)`` base shape with
             ``b`` handled by the caller), ``drop_mask`` is a tensor of shape
@@ -670,8 +1002,21 @@ class BaseDataset(Dataset):
         """
         # Fetch raw patch indices
         drop_mask_ = drop_mask.clone() if drop_mask is not None else None
-        if drop_mask_ is not None and drop_mask_.ndim == 2:
-            drop_mask_ = drop_mask_.unsqueeze(0)
+        if drop_mask_ is not None:
+            # Accept (t, n), (v, t, n), or (1, v, t, n), then normalize to (v, t, n).
+            if drop_mask_.ndim == 4:
+                if drop_mask_.shape[0] != 1:
+                    raise ValueError(
+                        f"Expected drop_mask leading batch dim to be 1, got shape {tuple(drop_mask_.shape)}"
+                    )
+                drop_mask_ = drop_mask_.squeeze(0)
+            if drop_mask_.ndim == 2:
+                drop_mask_ = drop_mask_.unsqueeze(0)
+            if drop_mask_.ndim != 3:
+                raise ValueError(
+                    f"Expected drop_mask to have 2, 3, or 4 dims, got shape {tuple(drop_mask_.shape)}"
+                )
+            drop_mask_ = drop_mask_.to(dtype=torch.bool)
 
         patch_dim_candidates = [d for d in ds.dims if "cell" in d or "ncells" in d]
         patch_dim = patch_dim_candidates[0] if patch_dim_candidates else None
@@ -690,7 +1035,7 @@ class BaseDataset(Dataset):
             mask = get_mapping_weights(mapping)[..., 0].view(1, 1, -1, 1, 1)
 
             # Map indices differently depending on whether we are projecting from a higher zoom.
-            post_map = mapping_zoom > zoom
+            post_map = mapping_zoom > zoom or (patch_dim is None and mapping_zoom >= zoom)
             if post_map:
                 indices = mapping['indices'][..., [0]].reshape(-1, 4 ** (mapping_zoom - zoom))
 
@@ -699,14 +1044,14 @@ class BaseDataset(Dataset):
                 mask = mask[:, :, patch_indices]
 
                 if drop_mask_ is not None:
-                    drop_mask_ = drop_mask_[:, :, patch_indices]
+                    drop_mask_ = drop_mask_[..., patch_indices]
 
             ds_variables = ds[variables]
             arr = ds_variables.to_array().to_numpy()
             if arr.dtype == np.float64:
                 arr = arr.astype(np.float32, copy=False)
+            # Normalize in raw array layout first.
             data_g = torch.from_numpy(arr).unsqueeze(dim=-1)
-
             if self.normalize_data:
                 for k, variable in enumerate(variables):
                     data_g[k] = self.var_normalizers[zoom][variable].normalize(data_g[k])
@@ -719,21 +1064,36 @@ class BaseDataset(Dataset):
             data_g = data_g.transpose(2,3)
 
             if not patch_dim and post_map:
-                data_g = data_g.reshape(data_g.shape[0], data_g.shape[1], -1)[:, :, indices.view(-1)]
+                data_g = data_g[:, :, indices.view(-1), :, :]
 
-        if drop_mask_ is not None and mask.dtype!=torch.bool:
-            mask = (1-1.*drop_mask_.unsqueeze(dim=-1)) * mask
+        if drop_mask_ is not None and mask.dtype != torch.bool:
+            drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1)
+            mask = (1 - drop_mask_expanded.to(mask.dtype)) * mask
             mask = mask.expand_as(data_g)
 
         elif drop_mask_ is not None:
-            mask = torch.logical_or(drop_mask, mask.expand_as(drop_mask))
+            mapping_mask = mask.expand_as(data_g)
+            drop_mask_expanded = drop_mask_.unsqueeze(dim=-1).unsqueeze(dim=-1).expand_as(mapping_mask)
+            mask = torch.logical_and(mapping_mask, torch.logical_not(drop_mask_expanded))
 
         else:
             mask = None
+
+        # Treat NaNs as masked values and zero them out before zoom transforms.
+        nan_mask = torch.isnan(data_g)
+        if nan_mask.any():
+            data_g = data_g.clone()
+            data_g[nan_mask] = 0
+
+            if mask is None:
+                mask = torch.logical_not(nan_mask)
+            elif mask.dtype == torch.bool:
+                mask = torch.logical_and(mask, torch.logical_not(nan_mask))
+            else:
+                mask = mask * torch.logical_not(nan_mask).to(mask.dtype)
         
         if mask is not None and not (mask == False).any():
             mask = mask.expand_as(data_g)
-
         data_g, mask = to_zoom(data_g, mapping_zoom, zoom, mask=mask, binarize_mask=self.output_binary_mask)
 
         if post_map:
@@ -774,7 +1134,7 @@ class BaseDataset(Dataset):
         The output stores only raw fractions, not precomputed sinusoidal features.
 
         :param ds: Zoom-sliced dataset for the current sample.
-        :return: Tensor of shape ``(b, t, 2)`` containing
+        :return: Tensor of shape ``(t, 2)`` containing
             ``[day_fraction, year_fraction]``.
         """
         decoded_times = self._decode_time_values(ds)
@@ -790,8 +1150,8 @@ class BaseDataset(Dataset):
             np.asarray(timestamps.dayofyear, dtype=np.int64).astype(np.float32) - 1.0 + utc_day_fraction
         ) / year_length
 
-        day_fraction = torch.from_numpy(utc_day_fraction).view(self.load_n_samples_time, -1)
-        year_fraction = torch.from_numpy(year_fraction).view(self.load_n_samples_time, -1)
+        day_fraction = torch.from_numpy(utc_day_fraction)
+        year_fraction = torch.from_numpy(year_fraction)
 
         return torch.stack((day_fraction, year_fraction), dim=-1).to(torch.float32)
 
@@ -807,6 +1167,57 @@ class BaseDataset(Dataset):
                 f"coordinate has length {depth_values.numel()}."
             )
         return overwrite_depths
+
+    def get_forcing_data(
+        self,
+        ds: xr.Dataset,
+        time_indices: Sequence[int],
+        variables: Sequence[str],
+        zoom: int,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Load time-dependent one-dimensional forcing profiles.
+
+        :param ds: Input dataset containing the forcing variables.
+        :param time_indices: Exact time indices used by the corresponding field sample.
+        :param variables: Forcing variable names to load.
+        :param zoom: Zoom whose optional normalization statistics should be used.
+        :return: Mapping of forcing name to tensors shaped ``(t, n)``.
+        """
+        forcing_data: Dict[str, torch.Tensor] = {}
+        for variable in variables:
+            if variable not in ds:
+                raise KeyError(f"Forcing variable '{variable}' is missing from the source dataset.")
+
+            dims = ds[variable].dims
+            if 'time' not in dims:
+                raise ValueError(
+                    f"Forcing variable '{variable}' must contain a time dimension, got {dims}."
+                )
+
+            profile_dims = [dim for dim in dims if dim != 'time']
+            if len(profile_dims) != 1:
+                raise ValueError(
+                    f"Forcing variable '{variable}' must have exactly one non-time dimension, "
+                    f"got {dims}."
+                )
+
+            values = (
+                ds[variable]
+                .isel(time=time_indices)
+                .transpose('time', profile_dims[0])
+                .to_numpy()
+            )
+            if values.dtype == np.float64:
+                values = values.astype(np.float32, copy=False)
+
+            forcing = torch.from_numpy(values)
+            if self.normalize_data and variable in self.forcing_normalizers[zoom]:
+                forcing = self.forcing_normalizers[zoom][variable].normalize(forcing)
+            forcing = torch.nan_to_num(forcing)
+            forcing_data[variable] = forcing
+
+        return forcing_data
 
    #def get_masks_zooms(self, grid_type):
 
@@ -876,12 +1287,11 @@ class BaseDataset(Dataset):
         :param data_source: Mapping from zoom to source tensor of shape ``(v, t, n, d, f)``.
         :param data_target: Mapping from zoom to target tensor of shape ``(v, t, n, d, f)``.
         :param mask_mapping_zooms: Mapping from zoom to mask tensor of shape ``(v, t, n, d, f)``.
-        :param patch_index_zooms: Mapping from zoom to patch index tensor of shape ``(1,)``.
+        :param patch_index_zooms: Mapping from zoom to scalar patch-index tensors.
         :param hr_dopout: Whether high-resolution dropout is active.
         :return: Tuple ``(data_source, data_target, sample_configs, mask_mapping_zooms)`` where
-            data tensors are reshaped to ``(b, v, t, n, d, f)`` (or ``(b, 1, t, n, 1, f)``
-            when ``variables_as_features`` is enabled), aligning with the base
-            ``(b, v, t, n, d, f)`` convention.
+            data tensors remain unbatched as ``(v, t, n, d, f)`` (or
+            ``(1, t, n, 1, f)`` when ``variables_as_features`` is enabled).
         """
         sample_configs_source = copy.deepcopy(self.sampling_zooms)
         sample_configs_target = copy.deepcopy(self.sampling_zooms_target)
@@ -908,23 +1318,24 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        if self.apply_diff:
+            data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
 
-        target_encode_zooms = set(target_return_zooms)
-        if target_encode_zooms == set(sample_configs_target.keys()):
-            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
-        else:
-            data_target_encode = {
-                zoom: data_target[zoom]
-                for zoom in sorted(data_target.keys())
-                if zoom in target_encode_zooms
-            }
-            sample_configs_target_encode = {
-                zoom: sample_configs_target[zoom]
-                for zoom in sorted(sample_configs_target.keys())
-                if zoom in target_encode_zooms
-            }
-            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
+            target_encode_zooms = set(target_return_zooms)
+            if target_encode_zooms == set(sample_configs_target.keys()):
+                data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
+            else:
+                data_target_encode = {
+                    zoom: data_target[zoom]
+                    for zoom in sorted(data_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                sample_configs_target_encode = {
+                    zoom: sample_configs_target[zoom]
+                    for zoom in sorted(sample_configs_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
 
         available_zooms = sorted(data_source.keys())
 
@@ -951,21 +1362,16 @@ class BaseDataset(Dataset):
                     data_source[zoom][mask_zoom.expand_as(data_source[zoom])] = 0
 
             if self.variables_as_features:
-                data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                data_source[zoom] = rearrange(data_source[zoom], 'v t n d f -> 1 t n 1 (v d f)')
+                data_target[zoom] = rearrange(data_target[zoom], 'v t n d f -> 1 t n 1 (v d f)')
 
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
                 else:
-                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b 1 t n 1 (v d f)', b=self.load_n_samples_time)
+                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v t n d f -> 1 t n 1 (v d f)')
             else:
-                data_source[zoom] = rearrange(data_source[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
-                data_target[zoom] = rearrange(data_target[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
-
                 if mask_mapping_zooms[zoom] is None:
                     mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
-                else:
-                    mask_mapping_zooms[zoom] = rearrange(mask_mapping_zooms[zoom], 'v (b t) n d f -> b v t n d f', b=self.load_n_samples_time)
 
         for key, value in patch_index_zooms.items():
             if key in sample_configs_source:
@@ -990,7 +1396,7 @@ class BaseDataset(Dataset):
                 sampling_zoom = self.sampling_zooms[zoom]
                 mask_n_last_ts = sampling_zoom.get('mask_n_last_ts', 0)
                 if mask_n_last_ts > 0:
-                    time_len = data_source[zoom].shape[2]
+                    time_len = data_source[zoom].shape[1]
                     n_mask = min(mask_n_last_ts, time_len)
                     if n_mask == 0:
                         continue
@@ -998,13 +1404,13 @@ class BaseDataset(Dataset):
                     if mask_mapping_zooms[zoom].numel()==1:
                         mask_mapping_zooms[zoom] = torch.zeros_like(data_source[zoom],dtype=bool)
 
-                    mask_mapping_zooms[zoom][:, :, -n_mask:] = True 
+                    mask_mapping_zooms[zoom][:, -n_mask:] = True
                    
                     if self.mask_ts_mode == 'repeat' and time_len > n_mask:
-                        repeat_source = data_source[zoom][:, :, -(n_mask + 1)].unsqueeze(2)
-                        data_source[zoom][:, :, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, :, -n_mask:])
+                        repeat_source = data_source[zoom][:, -(n_mask + 1)].unsqueeze(1)
+                        data_source[zoom][:, -n_mask:] = repeat_source.expand_as(data_source[zoom][:, -n_mask:])
                     else:
-                        data_source[zoom][:, :, -n_mask:] = 0.
+                        data_source[zoom][:, -n_mask:] = 0.
 
         if self.output_max_zoom_only:
             max_zoom = max(data_source.keys())
@@ -1026,12 +1432,12 @@ class BaseDataset(Dataset):
         :param index: Dataset index to retrieve.
         :return: Tuple ``(sources, targets, masks, embeddings, patch_index_zooms)`` where
             ``sources`` and ``targets`` are lists of per-group zoom mappings to tensors of
-            shape ``(b, v, t, n, d, f)`` (or ``(b, 1, t, n, 1, f)`` when variables are folded
+            shape ``(v, t, n, d, f)`` (or ``(1, t, n, 1, f)`` when variables are folded
             into features), ``masks`` follow the same shape, ``embeddings`` holds per-group
             tensors such as ``VariableEmbedder`` of shape ``(v,)``, ``GroupDepthEmbedder`` as
-            ``(group_id, depth_ids)``, ``TimeEmbedder`` of shape ``(b, t)``, and
-            ``TimeProgressEmbedder`` of shape ``(b, t, 2)``, and
-            ``patch_index_zooms`` maps zoom to index tensors of shape ``(1,)``.
+            ``(group_id, depth_ids)``, ``TimeEmbedder`` of shape ``(t,)``, and
+            ``TimeProgressEmbedder`` of shape ``(t, 2)``, and
+            ``patch_index_zooms`` maps zoom to scalar tensors.
         """
         selected_vars = {}
         selected_var_ids = {}
@@ -1043,7 +1449,10 @@ class BaseDataset(Dataset):
         running_var_offset = 0
         for group in group_keys:
             variables = self.variables_by_group[group]
-            sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
+            if group == 'embedding_1D':
+                sample_size = len(variables)
+            else:
+                sample_size = len(variables) if self.n_sample_variables == -1 else min(self.n_sample_variables, len(variables))
             var_indices[group] = np.arange(len(variables))
 
             if sample_size != len(variables):
@@ -1053,16 +1462,36 @@ class BaseDataset(Dataset):
             selected_var_ids[group] = np.array(
                 [self.all_variable_ids[var_name] for var_name in selected_vars[group]], dtype=np.int64
             )
-            selected_mask_indices[group] = np.arange(running_var_offset, running_var_offset + len(selected_vars[group]))
-            running_var_offset += len(selected_vars[group])
+            if group in ('embedding', 'embedding_1D'):
+                selected_mask_indices[group] = np.array([], dtype=np.int64)
+            else:
+                selected_mask_indices[group] = np.arange(
+                    running_var_offset,
+                    running_var_offset + len(selected_vars[group]),
+                )
+                running_var_offset += len(selected_vars[group])
             
 
         hr_dopout = self.p_dropout > 0 and torch.rand(1) > (self.p_dropout_all)
+        time_step_masks = self._generate_time_step_masks()
+        variable_masks_groups = []
+        for group in group_keys:
+            if group in ('embedding', 'embedding_1D'):
+                variable_masks_groups.append({})
+                continue
+            group_zooms = [zoom for zoom in self.zooms if zoom in self.group_zooms[group]]
+            variable_masks_groups.append(
+                self._generate_variable_masks(len(selected_vars[group]), group_zooms)
+            )
 
         # Only build a global dropout mask when a single source ensures shared indexing.
         if self.single_source and hr_dopout:
             nt = 1 + self.max_time_step_future + self.max_time_step_past
-            total_vars = sum(len(selected_vars[group]) for group in selected_vars.keys())
+            total_vars = sum(
+                len(selected_vars[group])
+                for group in selected_vars.keys()
+                if group not in ('embedding', 'embedding_1D')
+            )
             drop_mask_input = self.get_mask(
                 total_vars,
                 nt,
@@ -1093,20 +1522,13 @@ class BaseDataset(Dataset):
             file_index = int(row[0])
             patch_index = int(row[1])
             time_indices = row[2:].tolist()
-            if self.single_source:
-                source_file = self.data_dict['source'][max(self.zooms)]['files'][int(file_index)]
-                target_file = self.data_dict['target'][max(self.zooms)]['files'][int(file_index)]
-                
-            else:
-                source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
-                target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
-
-            with xr.open_dataset(source_file) as ds:
-                mapping_zoom = get_zoom_from_npix(ds.cell.size)
+            source_file = self._get_file_path("source", zoom, file_index)
+            target_file = self._get_file_path("target", zoom, file_index)
 
             if not loaded:
                 ds_source, ds_target = self.get_files(source_file, file_path_target=target_file, drop_source=self.p_dropout>0)
                 loaded = True if self.load_once else False
+            mapping_zoom = self._infer_mapping_zoom(ds_source, zoom)
 
             # Align the global dropout mask to this zoom's time window.
             if drop_mask_input is not None:
@@ -1121,15 +1543,24 @@ class BaseDataset(Dataset):
                 drop_mask_zoom_groups = [None for _ in group_keys]
             else:
                 for group in group_keys:
-                    drop_mask_zoom_groups.append(drop_mask_zoom[selected_mask_indices[group]].unsqueeze(0))
+                    if group in ('embedding', 'embedding_1D'):
+                        drop_mask_zoom_groups.append(None)
+                    else:
+                        drop_mask_zoom_groups.append(
+                            drop_mask_zoom[selected_mask_indices[group]].unsqueeze(0)
+                        )
     
             start_times_source = np.array(time_indices) - self.sampling_zooms[zoom]['n_past_ts'] 
             end_times_source = np.array(time_indices) + self.sampling_zooms[zoom]['n_future_ts']
 
-            time_indices_source = np.stack(
+            time_indices_source_original = np.stack(
                 [np.arange(s, e + 1) for s, e in zip(start_times_source, end_times_source)],
                 axis=0
             ).reshape(-1)
+            time_indices_source = self._translate_time_indices(
+                source_file,
+                time_indices_source_original,
+            )
 
             ds_source_zoom = self.select_ranges(ds_source,
                     time_indices_source,
@@ -1140,10 +1571,14 @@ class BaseDataset(Dataset):
 
             start_times_emb = np.array(time_indices) - self.sample_configs_emb[zoom]['n_past_ts']
             end_times_emb = np.array(time_indices) + self.sample_configs_emb[zoom]['n_future_ts']
-            time_indices_emb = np.stack(
+            time_indices_emb_original = np.stack(
                 [np.arange(s, e + 1) for s, e in zip(start_times_emb, end_times_emb)],
                 axis=0
             ).reshape(-1)
+            time_indices_emb = self._translate_time_indices(
+                source_file,
+                time_indices_emb_original,
+            )
 
             if (
                 self.sample_configs_emb[zoom]['n_past_ts'] == self.sampling_zooms[zoom]['n_past_ts']
@@ -1163,7 +1598,7 @@ class BaseDataset(Dataset):
             data_time_zooms_emb[zoom] = torch.as_tensor(
                 np.array(ds_emb_zoom.time.values, copy=True),
                 dtype=torch.float32,
-            ).view(self.load_n_samples_time, -1)
+            ).reshape(-1)
             time_progress_zooms_emb[zoom] = self._get_time_progress(ds_emb_zoom)
             
             target_window_differs = (
@@ -1177,10 +1612,14 @@ class BaseDataset(Dataset):
                 target_time_indices = np.array(time_indices) + self.target_time_shift
                 start_times_target = target_time_indices - self.sampling_zooms_target[zoom]['n_past_ts']
                 end_times_target = target_time_indices + self.sampling_zooms_target[zoom]['n_future_ts']
-                time_indices_target = np.stack(
+                time_indices_target_original = np.stack(
                     [np.arange(s, e + 1) for s, e in zip(start_times_target, end_times_target)],
                     axis=0
                 ).reshape(-1)
+                time_indices_target = self._translate_time_indices(
+                    target_file,
+                    time_indices_target_original,
+                )
                 ds_target_zoom = self.select_ranges(
                     ds_target,
                     time_indices_target,
@@ -1195,6 +1634,17 @@ class BaseDataset(Dataset):
             for group_idx, group in enumerate(group_keys):
                 if zoom not in self.group_zooms[group]:
                     continue
+      
+                if group == 'embedding_1D':
+                    source_zooms_groups[group_idx][zoom] = self.get_forcing_data(
+                        ds_source,
+                        time_indices_emb,
+                        selected_vars[group],
+                        zoom,
+                    )
+                    target_zooms_groups[group_idx][zoom] = None
+                    mask_mapping_zooms_groups[group_idx][zoom] = None
+                    continue
 
                 group_source_zoom = ds_emb_zoom if group == 'embedding' else ds_source_zoom
                 data_source, drop_mask_zoom_group, depth_values = self.get_data(
@@ -1206,8 +1656,21 @@ class BaseDataset(Dataset):
                     zoom,
                     drop_mask=None if group == 'embedding' else drop_mask_zoom_groups[group_idx],
                 )
+                if group != 'embedding':
+                    drop_mask_zoom_group = self._merge_time_step_mask(
+                        drop_mask_zoom_group,
+                        time_step_masks[zoom],
+                        data_source,
+                    )
+                    drop_mask_zoom_group = self._merge_variable_mask(
+                        drop_mask_zoom_group,
+                        variable_masks_groups[group_idx][zoom],
+                        data_source,
+                    )
 
-                if ds_target is not None:
+                # Static and one-dimensional embeddings are source-only and are
+                # not returned as target groups.
+                if ds_target is not None and group != 'embedding':
                     data_target, _, _ = self.get_data(
                         ds_target_zoom,
                         patch_index,
@@ -1228,9 +1691,10 @@ class BaseDataset(Dataset):
             patch_index_zooms[zoom] = torch.tensor(patch_index)
             
         
-        ds_source.close()
-        if ds_target is not None:
-            ds_target.close()
+        if not self.load_into_memory:
+            ds_source.close()
+            if ds_target is not None and ds_target is not ds_source:
+                ds_target.close()
 
         source_zooms_groups_out = []
         target_zooms_groups_out = []
@@ -1239,16 +1703,21 @@ class BaseDataset(Dataset):
 
         emb = {}
         StaticVariableEmbedder = None
+        ForcingEmbedder = None
         # emb['DensityEmbedder'] = torch.tensor([selected_var_ids[group] for group in group_keys])
         for group_idx, group in enumerate(group_keys):
             if group == 'embedding': 
                 # Extract static embeddings once so they can be attached to other groups.
                 StaticVariableEmbedder = source_zooms_groups[group_idx]
-                StaticVariableEmbedder = dict(zip(StaticVariableEmbedder.keys(), 
-                                                  [rearrange(t, 'v (b t) n f d-> b t n (v f d)', b=self.load_n_samples_time) for t in StaticVariableEmbedder.values()]))
+                StaticVariableEmbedder = {
+                    zoom: rearrange(tensor, 'v t n d f -> t n (v d f)')
+                    for zoom, tensor in StaticVariableEmbedder.items()
+                }
+            elif group == 'embedding_1D':
+                ForcingEmbedder = source_zooms_groups[group_idx]
 
         for group_idx, group in enumerate(group_keys):
-            if group != 'embedding': 
+            if group not in ('embedding', 'embedding_1D'):
                 source_zooms, target_zooms, sample_configs_source, sample_configs_target, mask_group = self._finalize_group(
                     source_zooms_groups[group_idx],
                     target_zooms_groups[group_idx],
@@ -1268,8 +1737,8 @@ class BaseDataset(Dataset):
                 group_id = torch.tensor(self.embed_group_ids[group], dtype=torch.long)
                 max_zoom = max(source_zooms.keys())
                 depth_ids = torch.arange(source_zooms[max_zoom].shape[-2], dtype=torch.long)
-                emb_group['variables_sampled'] = torch.tensor(list(var_indices[group])).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
-                emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group]).view(1,-1).repeat_interleave(self.load_n_samples_time,dim=0)
+                emb_group['variables_sampled'] = torch.tensor(list(var_indices[group]))
+                emb_group['VariableEmbedder'] = torch.tensor(selected_var_ids[group])
                 emb_group['variable_names_sampled'] = [str(var_name) for var_name in selected_vars[group]]
                 emb_group['GroupDepthEmbedder'] = (group_id, depth_ids)
                 emb_group['MGEmbedder'] = emb_group['VariableEmbedder']
@@ -1283,6 +1752,9 @@ class BaseDataset(Dataset):
 
                 if StaticVariableEmbedder is not None:
                     emb_group['StaticVariableEmbedder'] = StaticVariableEmbedder
+
+                if ForcingEmbedder is not None:
+                    emb_group['ForcingEmbedder'] = ForcingEmbedder
 
                     
                 emb_group['TimeEmbedder'] = {
@@ -1321,21 +1793,21 @@ class BaseDataset(Dataset):
                 mask_zooms_groups_[zoom] = torch.concat(mask_groups_zoom, dim=-1)
 
             reference_zoom = max(source_zooms_groups_out_.keys())
-            emb = {'StaticVariableEmbedder': emb_groups[0]['StaticVariableEmbedder'],
-                    'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
+            emb = {'TimeEmbedder': emb_groups[0]['TimeEmbedder'],
                     'TimeProgressEmbedder': emb_groups[0]['TimeProgressEmbedder'],
                     'PressureLevelEmbedder': emb_groups[0]['PressureLevelEmbedder'],
                     'TimeIndexEmbedder': emb_groups[0]['TimeIndexEmbedder'],
                     'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[-1], dtype=torch.long)}
+            if 'StaticVariableEmbedder' in emb_groups[0]:
+                emb['StaticVariableEmbedder'] = emb_groups[0]['StaticVariableEmbedder']
+            if 'ForcingEmbedder' in emb_groups[0]:
+                emb['ForcingEmbedder'] = emb_groups[0]['ForcingEmbedder']
 
             emb_groups = [emb]
             source_zooms_groups_out = [source_zooms_groups_out_]
             target_zooms_groups_out = [target_zooms_groups_out_]
             mask_zooms_groups = [mask_zooms_groups_]
         
-        for zoom, indices in patch_index_zooms.items():
-            patch_index_zooms[zoom] = indices.view(1).repeat_interleave(self.load_n_samples_time, dim=0)
-
         self.sample_configs_source = sample_configs_source if 'sample_configs_source' in locals() else copy.deepcopy(self.sampling_zooms)
         self.sample_configs_target = sample_configs_target if 'sample_configs_target' in locals() else copy.deepcopy(self.sampling_zooms_target)
         self.sample_configs_emb = _build_sample_configs_emb(self.sampling_zooms, self.sampling_times_emb)
