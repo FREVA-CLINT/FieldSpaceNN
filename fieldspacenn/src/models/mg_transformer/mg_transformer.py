@@ -65,6 +65,7 @@ class MG_Transformer(MG_base_model):
         block_configs: Optional[Mapping[str, Any]] = None,
         in_zooms: Sequence[int] = (),
         block_wrap_configs: Optional[Mapping[str, Any]] = None,
+        pre_block_configs: Optional[Mapping[str, Any]] = None,
         in_features: int = 1,
         n_groups_variables: Sequence[int] = [1],
         n_groups_depths: Optional[Sequence[int]] = None,
@@ -81,6 +82,7 @@ class MG_Transformer(MG_base_model):
         :param block_configs: Mapping of block configurations.
         :param in_zooms: Input zoom levels used by the model.
         :param block_wrap_configs: Optional mapping of wrap stages or global wrap operations.
+        :param pre_block_configs: Optional blocks executed before wrap operations begin.
         :param in_features: Number of input features per variable.
         :param n_groups_variables: Number of variable groups for attention layers.
         :param kwargs: Additional arguments forwarded to block factories.
@@ -112,7 +114,11 @@ class MG_Transformer(MG_base_model):
         self.use_global_embedder: bool = use_global_embedder
         self.block_build_kwargs: Dict[str, Any] = dict(kwargs)
         self.global_embedders: nn.ModuleDict = (
-            self._build_global_embedders(block_configs, block_wrap_configs)
+            self._build_global_embedders(
+                block_configs,
+                block_wrap_configs,
+                pre_block_configs,
+            )
             if self.use_global_embedder
             else nn.ModuleDict()
         )
@@ -122,10 +128,21 @@ class MG_Transformer(MG_base_model):
         self.block_stages: nn.ModuleDict = nn.ModuleDict()
         self.block_wrap_operations: nn.ModuleDict = nn.ModuleDict()
         self.Blocks: nn.ModuleDict = nn.ModuleDict()
+        self.pre_stage = BlockExecutionStage()
 
         current_in_zooms = list(in_zooms)
         current_in_features = [in_features] * len(in_zooms)
         block_configs = {} if block_configs is None else block_configs
+        pre_block_configs = {} if pre_block_configs is None else pre_block_configs
+
+        if pre_block_configs:
+            pre_blocks, current_in_zooms, current_in_features = self._build_blocks(
+                block_configs=pre_block_configs,
+                in_zooms=current_in_zooms,
+                in_features=current_in_features,
+                block_build_kwargs=dict(self.block_build_kwargs),
+            )
+            self.pre_stage = BlockExecutionStage(blocks=pre_blocks)
 
         has_stage_local_blocks = (
             block_wrap_configs is not None
@@ -223,7 +240,11 @@ class MG_Transformer(MG_base_model):
         self,
         block_configs: Optional[Mapping[str, Any]],
         block_wrap_configs: Optional[Mapping[str, Any]],
+        pre_block_configs: Optional[Mapping[str, Any]],
     ) -> Iterable[Any]:
+        if pre_block_configs is not None:
+            yield from pre_block_configs.values()
+
         if block_configs is not None:
             yield from block_configs.values()
 
@@ -259,6 +280,7 @@ class MG_Transformer(MG_base_model):
         self,
         block_configs: Optional[Mapping[str, Any]],
         block_wrap_configs: Optional[Mapping[str, Any]],
+        pre_block_configs: Optional[Mapping[str, Any]],
     ) -> nn.ModuleDict:
         global_embedders = nn.ModuleDict()
         global_embed_confs_by_zoom: Dict[str, Dict[str, Any]] = {}
@@ -266,6 +288,7 @@ class MG_Transformer(MG_base_model):
         for block_conf in self._iter_embedding_block_configs(
             block_configs,
             block_wrap_configs,
+            pre_block_configs,
         ):
             embed_confs = getattr(block_conf, "embed_confs", None)
             if not embed_confs or not embed_confs.get("embed_names"):
@@ -465,6 +488,9 @@ class MG_Transformer(MG_base_model):
         x_zooms_groups: Sequence[Dict[int, torch.Tensor]],
         context: BlockWrapContext,
     ) -> List[Dict[int, torch.Tensor]]:
+        if self.pre_stage.blocks:
+            x_zooms_groups = self.pre_stage(x_zooms_groups, context)
+
         if getattr(self, "block_stages", None):
             for stage in self.block_stages.values():
                 x_zooms_groups = stage(x_zooms_groups, context)

@@ -61,11 +61,16 @@ class ZoomLevelTransformConfig:
 class RefineZoomsLayerConfig(ZoomLevelTransformConfig):
     transform_kind = "refine"
 
-    def __init__(self, refine_zooms: Mapping[int, int]) -> None:
+    def __init__(
+        self,
+        refine_zooms: Mapping[int, int],
+        overwrite_existing: bool = False,
+    ) -> None:
         self.refine_zooms = {
             int(reference_zoom): int(out_zoom)
             for reference_zoom, out_zoom in refine_zooms.items()
         }
+        self.overwrite_existing = bool(overwrite_existing)
         super().__init__(self.refine_zooms)
 
 
@@ -397,6 +402,7 @@ class ZoomLevelTransformLayer(nn.Module):
         super().__init__()
         self.transform_kind = config.transform_kind
         self.zoom_mapping = dict(config.zoom_mapping)
+        self.overwrite_existing = bool(getattr(config, "overwrite_existing", False))
 
         feature_by_zoom = {
             int(zoom): int(feature)
@@ -408,7 +414,7 @@ class ZoomLevelTransformLayer(nn.Module):
                     f"{type(config).__name__} requires reference zoom {reference_zoom} before "
                     f"creating zoom {out_zoom}."
                 )
-            if out_zoom in feature_by_zoom:
+            if out_zoom in feature_by_zoom and not self.overwrite_existing:
                 raise ValueError(
                     f"{type(config).__name__} will not overwrite existing zoom {out_zoom}."
                 )
@@ -502,7 +508,7 @@ class ZoomLevelTransformLayer(nn.Module):
                         f"{type(self).__name__} requires reference zoom {reference_zoom} "
                         f"in group {group_idx}."
                     )
-                if out_zoom in x_zooms:
+                if out_zoom in x_zooms and not self.overwrite_existing:
                     raise ValueError(
                         f"{type(self).__name__} will not overwrite existing zoom {out_zoom} "
                         f"in group {group_idx}."
@@ -525,8 +531,8 @@ class ZoomLevelTransformLayer(nn.Module):
                     mask_zooms = mask_groups[group_idx]
                     if (
                         mask_zooms is not None
-                        and out_zoom not in mask_zooms
                         and reference_zoom in mask_zooms
+                        and (self.overwrite_existing or out_zoom not in mask_zooms)
                     ):
                         mask_zooms[out_zoom] = self._transform_mask(
                             mask_zooms[reference_zoom],

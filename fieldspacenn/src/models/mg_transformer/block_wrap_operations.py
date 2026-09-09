@@ -146,6 +146,7 @@ def apply_saved_residuals(
     mask_zooms_groups: MaskGroups,
     saved_mask_groups: Optional[Sequence[MaskGroup]],
     mode: str,
+    gamma: Optional[torch.Tensor] = None,
 ) -> ZoomGroups:
     if saved_residual_groups is None:
         raise ValueError("Residual block wrap operation requires a saved residual state.")
@@ -155,8 +156,10 @@ def apply_saved_residuals(
             "Residual block wrap operation requires the same number of groups in the saved and current states."
         )
 
-    if mode not in {"add", "masked"}:
+    if mode not in {"add", "add_residual", "masked"}:
         raise ValueError(f"Unsupported residual mode `{mode}`.")
+    if mode == "add_residual" and gamma is None:
+        raise ValueError("Residual mode `add_residual` requires a learnable gamma parameter.")
 
     x_zooms_groups_out = list(x_zooms_groups)
     for group_idx, (x_zooms, saved_zooms) in enumerate(zip(x_zooms_groups_out, saved_residual_groups)):
@@ -187,6 +190,10 @@ def apply_saved_residuals(
             if mode == "add":
                 x_zooms[zoom] = saved + current
                 continue
+            if mode == "add_residual":
+                assert gamma is not None
+                x_zooms[zoom] = saved + gamma * current
+                continue
 
             assert current_masks is not None
             assert saved_masks is not None
@@ -214,8 +221,16 @@ def apply_saved_residuals(
 class ResidualBlockWrapConfig(BlockWrapConfig):
     operation_kind = "residual"
 
-    def __init__(self, mode: str = "add", **kwargs: Any) -> None:
+    def __init__(
+        self,
+        mode: str = "add",
+        zooms: Optional[Sequence[int]] = None,
+        **kwargs: Any,
+    ) -> None:
         self.mode: str
+        self.zooms: Optional[List[int]]
+
+        zooms = None if zooms is None else [int(zoom) for zoom in zooms]
 
         inputs = copy.deepcopy(locals())
         for input_name, value in inputs.items():
@@ -231,15 +246,25 @@ class ResidualBlockWrapConfig(BlockWrapConfig):
         grid_layers: nn.ModuleDict,
     ) -> BlockWrapOperation:
         del grid_layers
-        return ResidualBlockWrapOperation(mode=self.mode)
+        return ResidualBlockWrapOperation(mode=self.mode, zooms=self.zooms)
 
 
 class ResidualBlockWrapOperation(BlockWrapOperation):
     operation_kind = "residual"
 
-    def __init__(self, mode: str = "add") -> None:
+    def __init__(
+        self,
+        mode: str = "add",
+        zooms: Optional[Sequence[int]] = None,
+    ) -> None:
         super().__init__()
         self.mode = mode
+        self.zooms = None if zooms is None else [int(zoom) for zoom in zooms]
+        self.gamma = (
+            nn.Parameter(torch.tensor(1.0e-12))
+            if mode == "add_residual"
+            else None
+        )
 
     def pre(
         self,
@@ -248,6 +273,25 @@ class ResidualBlockWrapOperation(BlockWrapOperation):
     ) -> Tuple[ZoomGroups, Tuple[ZoomGroups, Optional[List[MaskGroup]]]]:
         saved_residual_groups = clone_zoom_groups(x_zooms_groups)
         saved_mask_groups = clone_mask_groups(context.mask_groups)
+        if self.zooms is not None:
+            for group_idx, saved_zooms in enumerate(saved_residual_groups):
+                missing_zooms = [zoom for zoom in self.zooms if zoom not in saved_zooms]
+                if missing_zooms:
+                    raise ValueError(
+                        "Residual block wrap operation requires selected zooms "
+                        f"{missing_zooms} in group {group_idx}."
+                    )
+                saved_residual_groups[group_idx] = {
+                    zoom: saved_zooms[zoom] for zoom in self.zooms
+                }
+                if saved_mask_groups is not None:
+                    saved_masks = saved_mask_groups[group_idx]
+                    if saved_masks is not None:
+                        saved_mask_groups[group_idx] = {
+                            zoom: saved_masks[zoom]
+                            for zoom in self.zooms
+                            if zoom in saved_masks
+                        }
         return x_zooms_groups, (saved_residual_groups, saved_mask_groups)
 
     def post(
@@ -263,6 +307,7 @@ class ResidualBlockWrapOperation(BlockWrapOperation):
             mask_zooms_groups=context.mask_groups,
             saved_mask_groups=saved_mask_groups,
             mode=self.mode,
+            gamma=self.gamma,
         )
 
 
