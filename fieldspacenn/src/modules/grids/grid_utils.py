@@ -415,28 +415,6 @@ def get_zoom_x(x: torch.Tensor, zoom_patch_sample: Optional[int] = None, **kwarg
     return zoom_x
 
 
-def healpix_get_adjacent_cell_indices(zoom: int):
-    """
-    Get neighbor indices for a Healpix grid.
-
-    :param zoom: Healpix zoom level.
-    :return: Tuple of (adjacency, duplicates_mask), both shape ``(npix, 9)``.
-    """
-
-    nside = 2**zoom
-    npix = hp.nside2npix(nside)
-
-    adjc = torch.tensor(hp.get_all_neighbours(nside, np.arange(npix),nest=True)).transpose(0,1)
-
-    adjc = torch.concat((torch.arange(npix).view(-1,1),adjc),dim=-1)
-    duplicates = adjc == -1
-
-    c,n = torch.where(duplicates)
-    adjc[c,n] = adjc[c,0]
-
-    return adjc, duplicates
-
-
 def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
     """
     Get Healpix pixel coordinates (lon, lat) for a zoom level.
@@ -906,34 +884,24 @@ def healpix_get_adjacent_cell_indices(zoom: int):
     adjc[c,n] = adjc[c,0]
     return adjc, duplicates
 
-def healpix_pixel_lonlat_torch(zoom: int, return_numpy: bool = False):
+
+def icon_neighbor_cell_index_to_adjc(ds: xr.Dataset):
     """
-    Get Healpix pixel coordinates (lon, lat) for a zoom level.
+    Build a GridLayer-compatible adjacency tensor from an ICON grid file's
+    `neighbor_cell_index` variable.
 
-    :param zoom: Healpix zoom level.
-    :param return_numpy: Whether to return a NumPy array.
-    :return: Coordinate array of shape ``(npix, 2)``.
+    :param ds: Open xarray Dataset of an ICON grid file (has `neighbor_cell_index`,
+        shape ``(nv=3, cell)``, 1-based, no missing values on a global grid).
+    :return: Tuple ``(adjc, adjc_mask)``, both of shape ``(n_cells, 9)``.
     """
-    nside = 2**zoom
+    nbr = torch.from_numpy(ds["neighbor_cell_index"].values.astype(np.int64) - 1).T  # (cell, 3), 0-based
+    n_cells = nbr.shape[0]
+    self_idx = torch.arange(n_cells, dtype=torch.long).view(-1, 1)
 
-    npix = hp.nside2npix(nside)  # Total number of pixels
-
-    # Get pixel indices as a PyTorch tensor
-    pixel_indices = torch.arange(npix, dtype=torch.long)
-
-    # Get theta (colatitude) and phi (longitude) for each pixel using healpy
-    theta, phi = hp.pix2ang(nside, pixel_indices.numpy(), nest=True)
-
-    # Convert theta and phi to PyTorch tensors
-    theta_tensor = torch.tensor(theta, dtype=torch.float32) - 0.5 * torch.pi
-    phi_tensor = torch.tensor(phi, dtype=torch.float32) - torch.pi
-
-    coords = torch.stack([phi_tensor, theta_tensor], dim=-1).float()
-
-    if return_numpy:
-        return coords.numpy()
-    else:
-        return coords
+    tiled = nbr[:, [0, 1, 2, 0, 1, 2, 0, 1]]  # (cell, 8) -- tile 3 real neighbors to fill 8 slots
+    adjc = torch.cat([self_idx, tiled], dim=-1)  # (cell, 9)
+    adjc_mask = torch.zeros_like(adjc, dtype=torch.bool)  # all "valid" -> no HEALPix polar-fix triggered
+    return adjc, adjc_mask
 
 def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
     """
@@ -960,6 +928,54 @@ def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
         grids.append(grid_lvl)
 
     return grids
+
+
+def icon_grid_to_mgrid(grid_files: dict):
+    """
+    Build an ICON analog of `healpix_grid_to_mgrid`: a list of grid dicts (one
+    per refinement level, COARSEST FIRST -- `MG_base_model` uses list position,
+    not any label inside the dict, as the internal "zoom" index) usable
+    directly by `MG_Transformer`/`GridLayer`.
+
+    :param grid_files: ``{level: path_to_icon_grid_file}``, levels increasing
+        by 1 per refinement step (e.g. ``{0: "...R2B3...", 1: "...R2B4..."}``).
+        Each finer level must have exactly 4x the coarser level's cell count.
+    :return: List[dict] with keys "coords" (n,2), "adjc" (n,9), "adjc_mask" (n,9), "zoom".
+    """
+    grids = []
+    for level in sorted(grid_files):
+        ds = xr.open_dataset(grid_files[level])
+        lon_name = "clon" if "clon" in ds else "lon_cell_centre"
+        lat_name = "clat" if "clat" in ds else "lat_cell_centre"
+        coords = torch.stack([
+            torch.from_numpy(ds[lon_name].values), torch.from_numpy(ds[lat_name].values)
+        ], dim=-1).float()
+        adjc, adjc_mask = icon_neighbor_cell_index_to_adjc(ds)
+        grids.append({"coords": coords, "adjc": adjc, "adjc_mask": adjc_mask, "zoom": level})
+    return grids
+
+
+def validate_nested_ordering(coarse_grid_path, fine_grid_path):
+    """Quick sanity check (see docs/icon_native_grid_reshape_feasibility.md) that the
+    fine grid's cells really are contiguous groups of 4 matching the coarse grid,
+    before trusting reshape-based coarsening on a new grid source."""
+    coarse = xr.open_dataset(coarse_grid_path)
+    fine = xr.open_dataset(fine_grid_path)
+    assert fine.sizes["cell"] == 4 * coarse.sizes["cell"]
+
+    def gc_deg(lon1, lat1, lon2, lat2):
+        x1, y1, z1 = np.cos(lat1)*np.cos(lon1), np.cos(lat1)*np.sin(lon1), np.sin(lat1)
+        x2, y2, z2 = np.cos(lat2)*np.cos(lon2), np.cos(lat2)*np.sin(lon2), np.sin(lat2)
+        return np.rad2deg(np.arccos(np.clip(x1*x2+y1*y2+z1*z2, -1, 1)))
+
+    lon_c, lat_c = coarse["lon_cell_centre"].values, coarse["lat_cell_centre"].values
+    lon_f, lat_f = fine["lon_cell_centre"].values, fine["lat_cell_centre"].values
+    d0 = gc_deg(lon_f[::4], lat_f[::4], lon_c, lat_c)
+    spacing = gc_deg(lon_c, lat_c, np.roll(lon_c, 1), np.roll(lat_c, 1))
+    ok = d0.mean() < 0.2 * np.median(spacing)
+    print(f"[validate_nested_ordering] offset-0 mean dist={d0.mean():.3f} deg, "
+          f"cell spacing={np.median(spacing):.3f} deg -> {'OK' if ok else 'FAILED'}")
+    return ok
 
 def encode_zooms(
     x_zooms: Dict[int, torch.Tensor],
