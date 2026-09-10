@@ -729,7 +729,8 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         if first_target_group:
             max_zoom = max(first_target_group.keys())
         elif len(self.model.in_zooms) > 0:
-            max_zoom = max(self.model.in_zooms)
+            max_zooms = [max(target.keys()) for target in target_groups if target]
+max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         if max_zoom is None:
             return current_groups

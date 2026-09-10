@@ -209,7 +209,8 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         else:
             processed_source_groups = source_groups
 
-        max_zoom = max(self.model.in_zooms)
+        max_zooms = [max(target.keys()) for target in target_groups if target]
+max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         if self.mode == "encode_decode":
             # The self() call routes to the model's forward method, which does encode and decode.
