@@ -192,12 +192,14 @@ def _select_level_statistics(stats: Any, level_indices: Sequence[int]) -> Any:
 
 
 def _get_level_dimension(data_array: xr.DataArray) -> Optional[str]:
-    """Return the single vertical dimension of a variable, when present."""
-    level_dims = [dim for dim in data_array.dims if "level" in dim.lower()]
+    """Return the single non-time/non-cell dimension of a field variable."""
+    level_dims = [
+        dim for dim in data_array.dims if dim not in {"time", "cell", "ncells"}
+    ]
     if len(level_dims) > 1:
         raise ValueError(
-            f"Variable `{data_array.name}` has multiple level dimensions {level_dims}; "
-            "level-index selection requires exactly one."
+            f"Variable `{data_array.name}` has multiple non-spatial dimensions "
+            f"{level_dims}; field variables support at most one depth dimension."
         )
     return level_dims[0] if level_dims else None
 
@@ -501,7 +503,7 @@ class BaseDataset(Dataset):
             extra_entries = sorted(set(variable_files_cfg.keys()) - set(configured_variables))
             if missing_entries or extra_entries:
                 raise ValueError(
-                    "`variable_files` must contain exactly the configured 2-D variables; "
+                    "`variable_files` must contain exactly the configured field variables; "
                     f"missing={missing_entries}, extra={extra_entries}."
                 )
             for variable in configured_variables:
@@ -1064,11 +1066,11 @@ class BaseDataset(Dataset):
                     variable_depth_values = self._resolve_depth_values(data_array[level_dim].values)
                     if selected_depth_values is None:
                         selected_depth_values = variable_depth_values
-                    elif not torch.equal(selected_depth_values, variable_depth_values):
+                    elif selected_depth_values.numel() != variable_depth_values.numel():
                         raise ValueError(
-                            "Variables in one group must select identical level coordinates; "
-                            f"variable `{variable}` selected {variable_depth_values.tolist()}, "
-                            f"expected {selected_depth_values.tolist()}."
+                            "Variables in one group must select the same number of levels; "
+                            f"variable `{variable}` selected {variable_depth_values.numel()}, "
+                            f"expected {selected_depth_values.numel()}."
                         )
 
                 # Raw variables are (t, d, n, f) or (t, 1, n, f).

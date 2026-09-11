@@ -663,7 +663,11 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
                 side_info.append(None)
                 continue
             group_info: Dict[str, torch.Tensor] = {}
-            for key in ("VariableEmbedder", "MGEmbedder"):
+            # ``variables_sampled`` contains group-local indices used by indexed
+            # normalization/factorization layers. ``VariableEmbedder`` and
+            # ``MGEmbedder`` contain global variable IDs used by embeddings. Both
+            # index spaces are required when more than one variable group exists.
+            for key in ("variables_sampled", "VariableEmbedder", "MGEmbedder"):
                 value = emb_group.get(key)
                 if torch.is_tensor(value):
                     group_info[key] = value.detach().cpu()
@@ -676,17 +680,22 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
                 side_info.append(None)
         return side_info if has_any else None
 
-    @staticmethod
     def _rebuild_codec_embedding_groups(
+        self,
         side_info: Optional[Sequence[Optional[Mapping[str, torch.Tensor]]]],
         device: torch.device,
     ) -> Optional[List[Optional[Dict[str, torch.Tensor]]]]:
-        """Rebuild ``emb_groups`` from codec metadata."""
+        """Rebuild ``emb_groups`` from codec metadata.
+
+        Artifacts written before group-local ``variables_sampled`` was serialized
+        can be recovered when the record contains every variable in that group.
+        A subset cannot be reconstructed unambiguously and must be recompressed.
+        """
 
         if side_info is None:
             return None
         emb_groups: List[Optional[Dict[str, torch.Tensor]]] = []
-        for group_info in side_info:
+        for group_index, group_info in enumerate(side_info):
             if not group_info:
                 emb_groups.append(None)
                 continue
@@ -696,5 +705,28 @@ class MGHyperpriorFieldSpaceAutoEncoder(MG_base_model):
             }
             if "MGEmbedder" not in emb_group and "VariableEmbedder" in emb_group:
                 emb_group["MGEmbedder"] = emb_group["VariableEmbedder"]
+            if "variables_sampled" not in emb_group:
+                variable_ids = emb_group.get("VariableEmbedder", emb_group.get("MGEmbedder"))
+                if not torch.is_tensor(variable_ids) or variable_ids.ndim not in (1, 2):
+                    raise ValueError(
+                        "Legacy codec metadata is missing `variables_sampled` and does not "
+                        "contain usable variable IDs; rerun compression with the current code."
+                    )
+                runtime_variables = int(variable_ids.shape[-1])
+                expected_variables = (
+                    int(self.n_groups_variables[group_index])
+                    if group_index < len(self.n_groups_variables)
+                    else -1
+                )
+                if runtime_variables != expected_variables:
+                    raise ValueError(
+                        "Legacy codec metadata is missing `variables_sampled` for a sampled "
+                        f"variable subset in group {group_index}; rerun compression with the "
+                        "current code."
+                    )
+                batch_size = 1 if variable_ids.ndim == 1 else int(variable_ids.shape[0])
+                emb_group["variables_sampled"] = torch.arange(
+                    runtime_variables, device=device, dtype=torch.long
+                ).view(1, -1).expand(batch_size, -1)
             emb_groups.append(emb_group)
         return emb_groups
