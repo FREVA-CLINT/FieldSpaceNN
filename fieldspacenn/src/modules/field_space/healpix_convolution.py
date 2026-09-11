@@ -170,7 +170,7 @@ class MultiZoomHealpixConvConfig:
         residual: bool = True,
         num_groups: int = 8,
         eps: float = 1e-5,
-        n_groups_variables: List[int] = [1],
+        n_groups_variables: Optional[List[int]] = None,
         rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
         rank_depth: Optional[int] = None,
@@ -212,7 +212,7 @@ class MultiZoomHealpixConvConfig:
         self.residual: bool
         self.num_groups: int
         self.eps: float
-        self.n_groups_variables: List[int]
+        self.n_groups_variables: Optional[List[int]]
         self.rank_space: Optional[int]
         self.rank_time: Optional[int]
         self.rank_depth: Optional[int]

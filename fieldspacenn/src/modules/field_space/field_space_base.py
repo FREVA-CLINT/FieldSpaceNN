@@ -503,6 +503,32 @@ class EmbLayer(nn.Module):
         emb = self.get_emb(emb, sample_configs=sample_configs)
         emb_tokenized = self.field_tokenizer(emb, sample_configs=sample_configs)
         return emb_tokenized
+
+    def get_aligned_emb(
+        self,
+        x: torch.Tensor,
+        emb: Optional[Dict[str, Any]],
+        sample_configs: Dict[str, Any],
+    ) -> torch.Tensor:
+        """Build an embedding whose variable axis matches the current field layout."""
+        emb_out = self.get_emb_fcn(emb, sample_configs)
+        field_variables = int(x.shape[1])
+        embedding_variables = int(emb_out.shape[1])
+        if embedding_variables == field_variables:
+            return emb_out
+        if field_variables == 1:
+            return emb_out.mean(dim=1, keepdim=True)
+        if embedding_variables == 1:
+            return emb_out.expand(
+                emb_out.shape[0],
+                field_variables,
+                *emb_out.shape[2:],
+            )
+        raise ValueError(
+            "Embedding variable count must match the current field layout or "
+            "be broadcastable from/to one variable; got "
+            f"embedding={embedding_variables}, field={field_variables}."
+        )
     
     def forward_w_shift(self, x: torch.Tensor, emb: Optional[Dict[str, Any]] = None, sample_configs: Dict[str, Any] = {}) -> torch.Tensor:
         """
@@ -514,7 +540,7 @@ class EmbLayer(nn.Module):
         :return: Updated tensor of shape ``(b, v, t, n, d, f)``.
         """
         
-        emb_ = self.get_emb_fcn(emb, sample_configs)
+        emb_ = self.get_aligned_emb(x, emb, sample_configs)
         shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
         x = x + shift
 
@@ -530,7 +556,7 @@ class EmbLayer(nn.Module):
         :return: Updated tensor of shape ``(b, v, t, n, d, f)``.
         """
         
-        emb_ = self.get_emb_fcn(emb, sample_configs)
+        emb_ = self.get_aligned_emb(x, emb, sample_configs)
         scale = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
         x = x * (1 + scale)
 
@@ -546,7 +572,7 @@ class EmbLayer(nn.Module):
         :return: Concatenated tensor with expanded feature dimension.
         """
         
-        emb_ = self.get_emb_fcn(emb, sample_configs)
+        emb_ = self.get_aligned_emb(x, emb, sample_configs)
         e = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb)
         x = torch.concat((x, e), dim=-1)
 
@@ -562,7 +588,7 @@ class EmbLayer(nn.Module):
         :return: Updated tensor of shape ``(b, v, t, n, d, f)``.
         """
         
-        emb_ = self.get_emb_fcn(emb, sample_configs)
+        emb_ = self.get_aligned_emb(x, emb, sample_configs)
         scale, shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
 
         scale = scale.squeeze(dim=-1)
@@ -582,7 +608,7 @@ class EmbLayer(nn.Module):
         :return: Updated tensor of shape ``(b, v, t, n, d, f)``.
         """
         
-        emb_ = self.get_emb_fcn(emb, sample_configs)
+        emb_ = self.get_aligned_emb(x, emb, sample_configs)
         scale, shift = self.embedding_layer(emb_, sample_configs=sample_configs, emb=emb).chunk(2, dim=-1)
 
         scale = scale.squeeze(dim=-1)

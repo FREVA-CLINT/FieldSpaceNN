@@ -125,22 +125,22 @@ class MG_AutoEncoder(MG_base_model):
                 stage_n_groups_depths = list(
                     stage_build_kwargs.pop("n_groups_depths", n_groups_depths)
                 )
-                stage_shared_indexed_group_variables = list(
+                stage_initialize_indexed_variables_with_same_values = list(
                     stage_build_kwargs.pop(
-                        "shared_indexed_group_variables",
-                        [False] * len(stage_n_groups_variables),
+                        "initialize_indexed_variables_with_same_values",
+                        [True] * len(stage_n_groups_variables),
                     )
                 )
-                stage_shared_indexed_group_depths = list(
+                stage_initialize_indexed_depths_with_same_values = list(
                     stage_build_kwargs.pop(
-                        "shared_indexed_group_depths",
-                        [False] * len(stage_n_groups_variables),
+                        "initialize_indexed_depths_with_same_values",
+                        [True] * len(stage_n_groups_variables),
                     )
                 )
-                stage_shared_indexed_group_space = list(
+                stage_initialize_indexed_space_with_same_values = list(
                     stage_build_kwargs.pop(
-                        "shared_indexed_group_space",
-                        [False] * len(stage_n_groups_variables),
+                        "initialize_indexed_space_with_same_values",
+                        [True] * len(stage_n_groups_variables),
                     )
                 )
                 for stage_block_key, stage_block_conf in stage_block_configs.items():
@@ -151,9 +151,9 @@ class MG_AutoEncoder(MG_base_model):
                         stage_n_groups_variables,
                         self.grid_layers,
                         stage_n_groups_depths,
-                        stage_shared_indexed_group_variables,
-                        stage_shared_indexed_group_depths,
-                        stage_shared_indexed_group_space,
+                        stage_initialize_indexed_variables_with_same_values,
+                        stage_initialize_indexed_depths_with_same_values,
+                        stage_initialize_indexed_space_with_same_values,
                         **stage_build_kwargs,
                     )
                     stage_blocks[stage_block_key] = stage_block
@@ -163,7 +163,11 @@ class MG_AutoEncoder(MG_base_model):
                         getattr(
                             stage_block,
                             "n_groups_variables_out",
-                            stage_n_groups_variables,
+                            getattr(
+                                stage_block,
+                                "n_groups_variables",
+                                stage_n_groups_variables,
+                            ),
                         )
                     )
 
@@ -194,7 +198,11 @@ class MG_AutoEncoder(MG_base_model):
                 getattr(
                     block,
                     "n_groups_variables_out",
-                    current_n_groups_variables,
+                    getattr(
+                        block,
+                        "n_groups_variables",
+                        current_n_groups_variables,
+                    ),
                 )
             )
 

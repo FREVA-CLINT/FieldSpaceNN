@@ -206,6 +206,11 @@ class FieldSpaceAttentionConfig:
         use_indexed_mlp_gammas: bool = False,
         block_type: Literal["legacy", "ext"] = "legacy",
         in_zooms: Optional[List[int]] = None,
+        n_groups_variables: Optional[List[int]] = None,
+        n_groups_depths: Optional[List[int]] = None,
+        initialize_indexed_variables_with_same_values: Optional[List[bool]] = None,
+        initialize_indexed_depths_with_same_values: Optional[List[bool]] = None,
+        initialize_indexed_space_with_same_values: Optional[List[bool]] = None,
         **kwargs: Any
     ) -> None:
         """
@@ -218,6 +223,14 @@ class FieldSpaceAttentionConfig:
         :param kv_zooms: Key/value zoom levels or -1 to default to input zooms.
         :param in_zooms: Input zoom levels for this attention layer. When omitted,
             the model builder uses ``q_zooms``.
+        :param n_groups_variables: Optional layer-local variable-group layout.
+        :param n_groups_depths: Optional layer-local depth count per group.
+        :param initialize_indexed_variables_with_same_values: Optional layer-local flags
+            controlling identical initialization of variable-indexed parameter rows.
+        :param initialize_indexed_depths_with_same_values: Optional layer-local flags
+            controlling identical initialization of depth-indexed parameter rows.
+        :param initialize_indexed_space_with_same_values: Optional layer-local flags
+            controlling identical initialization of space-indexed parameter rows.
         :param att_dim: Attention feature dimension.
         :param target_zooms: Optional target zooms for updates.
         :param token_len_depth: Token length along depth.
@@ -301,6 +314,11 @@ class FieldSpaceAttentionConfig:
         self.use_indexed_att_gammas: bool
         self.use_indexed_mlp_gammas: bool
         self.block_type: Literal["legacy", "ext"]
+        self.n_groups_variables: Optional[List[int]]
+        self.n_groups_depths: Optional[List[int]]
+        self.initialize_indexed_variables_with_same_values: Optional[List[bool]]
+        self.initialize_indexed_depths_with_same_values: Optional[List[bool]]
+        self.initialize_indexed_space_with_same_values: Optional[List[bool]]
 
         n_depths_is_default = n_depths is None
         n_depths = 1 if n_depths is None else n_depths
@@ -354,9 +372,9 @@ class FieldSpaceAttentionModule(nn.Module):
         in_features: Union[List[int], int] = 1,
         n_groups_variables: List[int] = [1],
         n_groups_depths: Optional[List[int]] = None,
-        shared_indexed_group_variables: Union[List[bool], bool] = False,
-        shared_indexed_group_depths: Union[List[bool], bool] = False,
-        shared_indexed_group_space: Union[List[bool], bool] = False,
+        initialize_indexed_variables_with_same_values: Union[List[bool], bool] = True,
+        initialize_indexed_depths_with_same_values: Union[List[bool], bool] = True,
+        initialize_indexed_space_with_same_values: Union[List[bool], bool] = True,
         token_len_depth: Union[List[int], int] = 1,
         token_len_time: Union[List[int], int] = 1,
         token_overlap_space: Union[List[bool], bool] = False,
@@ -500,18 +518,18 @@ class FieldSpaceAttentionModule(nn.Module):
             n_groups,
             "n_groups_depths",
         )
-        shared_indexed_group_depths = _normalize_group_values(
-            shared_indexed_group_depths,
+        initialize_indexed_depths_with_same_values = _normalize_group_values(
+            initialize_indexed_depths_with_same_values,
             n_groups,
-            "shared_indexed_group_depths",
+            "initialize_indexed_depths_with_same_values",
         )
-        shared_indexed_group_variables = _collapse_shared_value(
-            shared_indexed_group_variables,
-            "shared_indexed_group_variables",
+        initialize_indexed_variables_with_same_values = _collapse_shared_value(
+            initialize_indexed_variables_with_same_values,
+            "initialize_indexed_variables_with_same_values",
         )
-        shared_indexed_group_space = _collapse_shared_value(
-            shared_indexed_group_space,
-            "shared_indexed_group_space",
+        initialize_indexed_space_with_same_values = _collapse_shared_value(
+            initialize_indexed_space_with_same_values,
+            "initialize_indexed_space_with_same_values",
         )
 
         token_len_depth = _normalize_group_values(token_len_depth, n_groups, "token_len_depth")
@@ -691,9 +709,9 @@ class FieldSpaceAttentionModule(nn.Module):
                         token_overlap_depth= token_overlap_depth[k],
                         token_overlap_mlp_time= token_overlap_mlp_time,
                         token_overlap_mlp_depth= token_overlap_mlp_depth[k],
-                        shared_indexed_variables=shared_indexed_group_variables,
-                        shared_indexed_depths=shared_indexed_group_depths[k],
-                        shared_indexed_space=shared_indexed_group_space,
+                        initialize_indexed_variables_with_same_values=initialize_indexed_variables_with_same_values,
+                        initialize_indexed_depths_with_same_values=initialize_indexed_depths_with_same_values[k],
+                        initialize_indexed_space_with_same_values=initialize_indexed_space_with_same_values,
                         rank_space = zoom_or_shared["rank_space"],
                         n_rank_space = zoom_or_shared["n_rank_space"],
                         rank_time = zoom_or_shared["rank_time"],
@@ -825,9 +843,9 @@ class FieldSpaceAttentionBlock(nn.Module):
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
         token_overlap_mlp_depth: bool = False,
-        shared_indexed_variables: bool = False,
-        shared_indexed_depths: bool = False,
-        shared_indexed_space: bool = False,
+        initialize_indexed_variables_with_same_values: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
         rank_space: Optional[int] = None,
         n_rank_space: Optional[int] = None,
         rank_time: Optional[int] = None,
@@ -1115,15 +1133,15 @@ class FieldSpaceAttentionBlock(nn.Module):
             return build_indexed_dims(
                 n_variables=int(n_variables_local),
                 rank_variables=rank_variables_local,
-                same_values_variables=shared_indexed_variables,
+                same_values_variables=initialize_indexed_variables_with_same_values,
                 n_times=int(n_times) if int(n_times) > 1 else 1,
                 rank_time=self.n_rank_time,
                 n_space=indexed_n_space,
                 rank_space=indexed_rank_space,
-                same_values_space=shared_indexed_space,
+                same_values_space=initialize_indexed_space_with_same_values,
                 n_depths=indexed_n_depths,
                 rank_depth=self.n_rank_depth,
-                same_values_depths=shared_indexed_depths,
+                same_values_depths=initialize_indexed_depths_with_same_values,
             )
 
         indexed_dims_emb = _build_branch_indexed_dims(
@@ -1837,9 +1855,9 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
         token_overlap_mlp_depth: bool = False,
-        shared_indexed_variables: bool = False,
-        shared_indexed_depths: bool = False,
-        shared_indexed_space: bool = False,
+        initialize_indexed_variables_with_same_values: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
         rank_space: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         n_rank_space: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_time: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
@@ -1990,9 +2008,9 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
         self.use_ranks_qkv = bool(use_ranks_qkv)
         self.use_ranks_mlp = bool(use_ranks_mlp)
-        self.shared_indexed_variables = bool(shared_indexed_variables)
-        self.shared_indexed_depths = bool(shared_indexed_depths)
-        self.shared_indexed_space = bool(shared_indexed_space)
+        self.initialize_indexed_variables_with_same_values = bool(initialize_indexed_variables_with_same_values)
+        self.initialize_indexed_depths_with_same_values = bool(initialize_indexed_depths_with_same_values)
+        self.initialize_indexed_space_with_same_values = bool(initialize_indexed_space_with_same_values)
         self.fac_mode = fac_mode
 
         self.grid_layer_field = (
@@ -2385,7 +2403,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         return build_indexed_dims(
             n_variables=int(n_variables_local),
             rank_variables=rank_variables_local,
-            same_values_variables=self.shared_indexed_variables,
+            same_values_variables=self.initialize_indexed_variables_with_same_values,
             n_times=(
                 self.n_times_by_zoom[zoom]
                 if self.n_times_by_zoom[zoom] > 1 else 1
@@ -2395,10 +2413,10 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             rank_space=(
                 int(n_rank_space) if indexed_n_space > 1 else None
             ),
-            same_values_space=self.shared_indexed_space,
+            same_values_space=self.initialize_indexed_space_with_same_values,
             n_depths=indexed_n_depths,
             rank_depth=self.n_rank_depth_by_zoom[zoom],
-            same_values_depths=self.shared_indexed_depths,
+            same_values_depths=self.initialize_indexed_depths_with_same_values,
         )
 
     def _build_ext_pre_layer(

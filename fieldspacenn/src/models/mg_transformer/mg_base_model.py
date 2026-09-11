@@ -176,9 +176,9 @@ def create_encoder_decoder_block(
     n_groups_variables: Sequence[int],
     grid_layers: nn.ModuleDict,
     n_groups_depths: Optional[Sequence[int]] = None,
-    shared_indexed_group_variables: Optional[Sequence[bool]] = None,
-    shared_indexed_group_depths: Optional[Sequence[bool]] = None,
-    shared_indexed_group_space: Optional[Sequence[bool]] = None,
+    initialize_indexed_variables_with_same_values: Optional[Sequence[bool]] = None,
+    initialize_indexed_depths_with_same_values: Optional[Sequence[bool]] = None,
+    initialize_indexed_space_with_same_values: Optional[Sequence[bool]] = None,
     **kwargs: Any,
 ) -> nn.Module:
     """
@@ -189,9 +189,39 @@ def create_encoder_decoder_block(
     :param in_features: Feature counts per zoom.
     :param n_groups_variables: Number of variable groups for attention layers.
     :param grid_layers: Grid layers used to map spatial neighborhoods.
+    :param initialize_indexed_variables_with_same_values: Per-group flags
+        controlling identical initialization of variable-indexed parameter rows.
+    :param initialize_indexed_depths_with_same_values: Per-group flags
+        controlling identical initialization of depth-indexed parameter rows.
+    :param initialize_indexed_space_with_same_values: Per-group flags
+        controlling identical initialization of space-indexed parameter rows.
     :param kwargs: Additional configuration overrides.
     :return: Instantiated block module with ``out_features`` set.
     """
+    # These layout settings are model-wide defaults, but a block can override
+    # any of them. They arrive as explicit factory arguments, unlike the shared
+    # keyword settings resolved below, so apply the same local-first precedence.
+    def block_override(name: str, inherited: Any) -> Any:
+        value = getattr(block_conf, name, None)
+        return inherited if value is None else value
+
+    n_groups_variables = list(
+        block_override("n_groups_variables", n_groups_variables)
+    )
+    n_groups_depths = block_override("n_groups_depths", n_groups_depths)
+    initialize_indexed_variables_with_same_values = block_override(
+        "initialize_indexed_variables_with_same_values",
+        initialize_indexed_variables_with_same_values,
+    )
+    initialize_indexed_depths_with_same_values = block_override(
+        "initialize_indexed_depths_with_same_values",
+        initialize_indexed_depths_with_same_values,
+    )
+    initialize_indexed_space_with_same_values = block_override(
+        "initialize_indexed_space_with_same_values",
+        initialize_indexed_space_with_same_values,
+    )
+
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
     fac_mode = check_get([block_conf, kwargs, defaults], "fac_mode")
     emb_modulation_mode = check_get(
@@ -207,12 +237,12 @@ def create_encoder_decoder_block(
     global_embedders = kwargs.get("global_embedders")
     if n_groups_depths is None:
         n_groups_depths = [1] * len(n_groups_variables)
-    if shared_indexed_group_variables is None:
-        shared_indexed_group_variables = [False] * len(n_groups_variables)
-    if shared_indexed_group_depths is None:
-        shared_indexed_group_depths = [False] * len(n_groups_variables)
-    if shared_indexed_group_space is None:
-        shared_indexed_group_space = [False] * len(n_groups_variables)
+    if initialize_indexed_variables_with_same_values is None:
+        initialize_indexed_variables_with_same_values = [True] * len(n_groups_variables)
+    if initialize_indexed_depths_with_same_values is None:
+        initialize_indexed_depths_with_same_values = [True] * len(n_groups_variables)
+    if initialize_indexed_space_with_same_values is None:
+        initialize_indexed_space_with_same_values = [True] * len(n_groups_variables)
 
     # Select the correct block implementation based on the config type.
     if isinstance(block_conf, ConservativeLayerConfig):
@@ -276,9 +306,9 @@ def create_encoder_decoder_block(
                 att_dim_mixed = att_dim_mixed,
                 n_groups_variables = n_groups_variables,
                 n_groups_depths = list(n_groups_depths),
-                shared_indexed_group_variables = list(shared_indexed_group_variables),
-                shared_indexed_group_depths = list(shared_indexed_group_depths),
-                shared_indexed_group_space = list(shared_indexed_group_space),
+                initialize_indexed_variables_with_same_values = list(initialize_indexed_variables_with_same_values),
+                initialize_indexed_depths_with_same_values = list(initialize_indexed_depths_with_same_values),
+                initialize_indexed_space_with_same_values = list(initialize_indexed_space_with_same_values),
                 token_len_time = block_conf.token_len_time,
                 token_len_depth = block_conf.token_len_depth,
                 token_overlap_space = block_conf.token_overlap_space,
@@ -358,9 +388,9 @@ def create_encoder_decoder_block(
                 n_groups_variables=list(n_groups_variables),
                 n_groups_variables_out=block_conf.n_groups_variables_out,
                 n_groups_depths=list(n_groups_depths),
-                shared_indexed_group_variables=list(shared_indexed_group_variables),
-                shared_indexed_group_depths=list(shared_indexed_group_depths),
-                shared_indexed_group_space=list(shared_indexed_group_space),
+                initialize_indexed_variables_with_same_values=list(initialize_indexed_variables_with_same_values),
+                initialize_indexed_depths_with_same_values=list(initialize_indexed_depths_with_same_values),
+                initialize_indexed_space_with_same_values=list(initialize_indexed_space_with_same_values),
                 in_features=in_features,
                 target_features=check_get([block_conf,{"target_features": in_features}], "target_features"),
                 mult = block_conf.mult,
@@ -397,6 +427,10 @@ def create_encoder_decoder_block(
                 use_ranks_emb_layer=block_conf.use_ranks_emb_layer,
                 block_type=block_conf.block_type,
                 fac_mode=fac_mode)
+
+    # Let stack builders propagate the resolved layout when a block does not
+    # explicitly transform it via n_groups_variables_out.
+    block.n_groups_variables = list(n_groups_variables)
     return block
 
 class MG_base_model(nn.Module):

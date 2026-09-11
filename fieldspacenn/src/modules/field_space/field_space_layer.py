@@ -180,7 +180,11 @@ class FieldSpaceLayerConfig:
         in_token_len_depth: int = 1,
         out_token_len_time: int = 1,
         out_token_len_depth: int = 1,
-        n_groups_variables: List[int] = [1],
+        n_groups_variables: Optional[List[int]] = None,
+        n_groups_depths: Optional[List[int]] = None,
+        initialize_indexed_variables_with_same_values: Optional[List[bool]] = None,
+        initialize_indexed_depths_with_same_values: Optional[List[bool]] = None,
+        initialize_indexed_space_with_same_values: Optional[List[bool]] = None,
         n_groups_variables_out: Optional[List[int]] = None,
         residual: bool = False,
         residual_gamma: bool = False,
@@ -220,7 +224,14 @@ class FieldSpaceLayerConfig:
         :param in_token_len_depth: Input token length along depth.
         :param out_token_len_time: Output token length along time.
         :param out_token_len_depth: Output token length along depth.
-        :param n_groups_variables: Number of variable groups.
+        :param n_groups_variables: Optional layer-local variable-group layout.
+        :param n_groups_depths: Optional layer-local depth count per group.
+        :param initialize_indexed_variables_with_same_values: Optional layer-local flags
+            controlling identical initialization of variable-indexed parameter rows.
+        :param initialize_indexed_depths_with_same_values: Optional layer-local flags
+            controlling identical initialization of depth-indexed parameter rows.
+        :param initialize_indexed_space_with_same_values: Optional layer-local flags
+            controlling identical initialization of space-indexed parameter rows.
         :param n_groups_variables_out: Optional number of output variables per group.
         :param residual: Whether to add a residual connection around the layer.
         :param residual_gamma: Whether to scale the learned layer-output branch with
@@ -264,7 +275,11 @@ class FieldSpaceLayerConfig:
         self.in_token_len_depth: int
         self.out_token_len_time: int
         self.out_token_len_depth: int
-        self.n_groups_variables: List[int]
+        self.n_groups_variables: Optional[List[int]]
+        self.n_groups_depths: Optional[List[int]]
+        self.initialize_indexed_variables_with_same_values: Optional[List[bool]]
+        self.initialize_indexed_depths_with_same_values: Optional[List[bool]]
+        self.initialize_indexed_space_with_same_values: Optional[List[bool]]
         self.n_groups_variables_out: Optional[List[int]]
         self.residual: bool
         self.residual_gamma: bool
@@ -370,9 +385,9 @@ class FieldSpaceLayerModule(nn.Module):
                  n_groups_variables: List[int] = [1],
                  n_groups_variables_out: Optional[List[int]] = None,
                  n_groups_depths: Optional[List[int]] = None,
-                 shared_indexed_group_variables: Union[List[bool], bool] = False,
-                 shared_indexed_group_depths: Union[List[bool], bool] = False,
-                 shared_indexed_group_space: Union[List[bool], bool] = False,
+                 initialize_indexed_variables_with_same_values: Union[List[bool], bool] = True,
+                 initialize_indexed_depths_with_same_values: Union[List[bool], bool] = True,
+                 initialize_indexed_space_with_same_values: Union[List[bool], bool] = True,
                  embed_confs: Optional[Dict[str, Any]] = None,
                  global_embedders: Optional[nn.ModuleDict] = None,
                  emb_modulation_mode: str = "shift_scale",
@@ -450,20 +465,20 @@ class FieldSpaceLayerModule(nn.Module):
             n_groups,
             "n_depths",
         )
-        shared_indexed_group_depths = _normalize_group_values(
-            shared_indexed_group_depths,
+        initialize_indexed_depths_with_same_values = _normalize_group_values(
+            initialize_indexed_depths_with_same_values,
             n_groups,
-            "shared_indexed_group_depths",
+            "initialize_indexed_depths_with_same_values",
         )
-        shared_indexed_group_variables = bool(_collapse_shared_value(
-            shared_indexed_group_variables,
+        initialize_indexed_variables_with_same_values = bool(_collapse_shared_value(
+            initialize_indexed_variables_with_same_values,
             n_groups,
-            "shared_indexed_group_variables",
+            "initialize_indexed_variables_with_same_values",
         ))
-        shared_indexed_group_space = bool(_collapse_shared_value(
-            shared_indexed_group_space,
+        initialize_indexed_space_with_same_values = bool(_collapse_shared_value(
+            initialize_indexed_space_with_same_values,
             n_groups,
-            "shared_indexed_group_space",
+            "initialize_indexed_space_with_same_values",
         ))
 
         input_zoom_field = int(embed_confs.get("input_zoom", min(in_zooms)))
@@ -675,8 +690,8 @@ class FieldSpaceLayerModule(nn.Module):
             "use_indexed_emb_layer": use_indexed_emb_layer,
             "use_indexed_layer_norm": use_indexed_layer_norm,
             "use_ranks_emb_layer": bool(use_ranks_emb_layer),
-            "shared_indexed_variables": shared_indexed_group_variables,
-            "shared_indexed_space": shared_indexed_group_space,
+            "initialize_indexed_variables_with_same_values": initialize_indexed_variables_with_same_values,
+            "initialize_indexed_space_with_same_values": initialize_indexed_space_with_same_values,
         }
         if shared_values["hidden_dim_mixed"] < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
@@ -722,8 +737,8 @@ class FieldSpaceLayerModule(nn.Module):
             block_kwargs["n_rank_time"] = n_rank_time
             block_kwargs["n_depths"] = n_depths[i]
             block_kwargs["n_rank_depth"] = n_rank_depth[i]
-            block_kwargs["shared_indexed_depths"] = bool(
-                shared_indexed_group_depths[i]
+            block_kwargs["initialize_indexed_depths_with_same_values"] = bool(
+                initialize_indexed_depths_with_same_values[i]
             )
             block_kwargs.update(shared_values)
 
@@ -810,9 +825,9 @@ class FieldSpaceLayerBlock(nn.Module):
         use_indexed_input: bool = False,
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
-        shared_indexed_variables: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
+        initialize_indexed_variables_with_same_values: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
         embed_confs: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
@@ -869,9 +884,9 @@ class FieldSpaceLayerBlock(nn.Module):
         self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
         self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
-        self.shared_indexed_variables = bool(shared_indexed_variables)
-        self.shared_indexed_depths = bool(shared_indexed_depths)
-        self.shared_indexed_space = bool(shared_indexed_space)
+        self.initialize_indexed_variables_with_same_values = bool(initialize_indexed_variables_with_same_values)
+        self.initialize_indexed_depths_with_same_values = bool(initialize_indexed_depths_with_same_values)
+        self.initialize_indexed_space_with_same_values = bool(initialize_indexed_space_with_same_values)
         self.hidden_dim_mixed = int(hidden_dim_mixed)
         if self.hidden_dim_mixed < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
@@ -881,10 +896,7 @@ class FieldSpaceLayerBlock(nn.Module):
         )
         if self.n_variables_out is not None and self.n_variables_out <= 0:
             raise ValueError("n_variables_out must be positive")
-        self.variable_projection = (
-            nn.Linear(self.n_variables, self.n_variables_out, bias=False)
-            if self.n_variables_out is not None else None
-        )
+        self.projects_variables = self.n_variables_out is not None
         self.use_indexed_input = bool(use_indexed_input)
         self.use_indexed_output = bool(use_indexed_output)
         self.use_indexed_mlp = bool(use_indexed_mlp)
@@ -927,6 +939,12 @@ class FieldSpaceLayerBlock(nn.Module):
                     "FieldSpaceLayerBlock requires a positive hidden_dim "
                     "when hidden_dim_mixed > 0"
                 )
+        if self.projects_variables and self.hidden_dim_mixed > 0:
+            raise ValueError(
+                "n_variables_out cannot be combined with hidden_dim_mixed; "
+                "the variable transition already mixes variables through "
+                "the feature dimension"
+            )
         self.latent_dim_total = (
             None
             if self.hidden_dim is None
@@ -1033,6 +1051,10 @@ class FieldSpaceLayerBlock(nn.Module):
             self.use_indexed_mlp,
             preserve_variable_default=False,
         )
+        if self.projects_variables:
+            indexed_dims_input = self._without_variable_index(indexed_dims_input)
+            indexed_dims_output = self._without_variable_index(indexed_dims_output)
+            indexed_dims_mlp = self._without_variable_index(indexed_dims_mlp)
         self.indexed_dims_input = indexed_dims_input
         self.indexed_dims_output = indexed_dims_output
         self.indexed_dims_mlp = indexed_dims_mlp
@@ -1073,18 +1095,18 @@ class FieldSpaceLayerBlock(nn.Module):
         indexed_dims_emb = self._build_indexed_dims(
             self.use_indexed_emb_layer,
             preserve_variable_default=False,
-            shared_indexed_variables=self.shared_indexed_variables,
+            initialize_indexed_variables_with_same_values=self.initialize_indexed_variables_with_same_values,
             shared_indexed_times=False,
-            shared_indexed_depths=self.shared_indexed_depths,
-            shared_indexed_space=self.shared_indexed_space,
+            initialize_indexed_depths_with_same_values=self.initialize_indexed_depths_with_same_values,
+            initialize_indexed_space_with_same_values=self.initialize_indexed_space_with_same_values,
         )
         indexed_dims_norm = self._build_indexed_dims(
             self.use_indexed_layer_norm,
             preserve_variable_default=False,
-            shared_indexed_variables=self.shared_indexed_variables,
+            initialize_indexed_variables_with_same_values=self.initialize_indexed_variables_with_same_values,
             shared_indexed_times=False,
-            shared_indexed_depths=self.shared_indexed_depths,
-            shared_indexed_space=self.shared_indexed_space,
+            initialize_indexed_depths_with_same_values=self.initialize_indexed_depths_with_same_values,
+            initialize_indexed_space_with_same_values=self.initialize_indexed_space_with_same_values,
         )
         self.pre_layer = LinEmbLayer(
             pre_shape,
@@ -1109,7 +1131,49 @@ class FieldSpaceLayerBlock(nn.Module):
             ),
         )
 
-        if self.hidden_dim_mixed > 0:
+        if self.projects_variables:
+            projected_in_features = list(in_features_full)
+            projected_out_features = list(out_features_full)
+            projected_in_features[-1] *= self.n_variables
+            projected_out_features[-1] *= self.n_variables_out
+            if type == 'linear':
+                self.layer = get_layer(
+                    projected_in_features,
+                    projected_out_features,
+                    ranks=ranks,
+                    n_variables=1,
+                    indexed_dims=self._without_variable_index(
+                        self._build_indexed_dims(
+                            self.use_indexed_input
+                            or self.use_indexed_output,
+                            preserve_variable_default=True,
+                        )
+                    ),
+                    fac_mode=fac_mode,
+                )
+            else:
+                self.layer = MLP_fac(
+                    projected_in_features,
+                    projected_out_features,
+                    mult=mult,
+                    hidden_dim=hidden_dim,
+                    ranks=ranks,
+                    n_variables=1,
+                    indexed_dims_layer1=self._without_variable_index(
+                        self._build_indexed_dims(
+                            self.use_indexed_input or self.use_indexed_mlp,
+                            preserve_variable_default=True,
+                        )
+                    ),
+                    indexed_dims_layer2=self._without_variable_index(
+                        self._build_indexed_dims(
+                            self.use_indexed_output or self.use_indexed_mlp,
+                            preserve_variable_default=True,
+                        )
+                    ),
+                    fac_mode=fac_mode,
+                )
+        elif self.hidden_dim_mixed > 0:
             latent_shape = [1, 1, 1, self.hidden_dim]
             mixed_latent_shape = [1, 1, 1, self.hidden_dim_mixed]
             total_latent_shape = [1, 1, 1, self.latent_dim_total]
@@ -1258,15 +1322,28 @@ class FieldSpaceLayerBlock(nn.Module):
 
         self.pattern_tokens_reverse: str = 'b v T N D t (n f) d 1 -> b v (T t) (N n) (D d) f'
 
+    @staticmethod
+    def _without_variable_index(
+        indexed_dims: Optional[Dict[str, Dict[str, Any]]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Remove variable-indexed weights after variables become features."""
+        if not indexed_dims:
+            return {}
+        return {
+            axis: spec
+            for axis, spec in indexed_dims.items()
+            if axis != "v"
+        }
+
     def _build_indexed_dims(
         self,
         enabled: bool,
         *,
         preserve_variable_default: bool,
-        shared_indexed_variables: bool = True,
+        initialize_indexed_variables_with_same_values: bool = True,
         shared_indexed_times: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
     ) -> Optional[Dict[str, Dict[str, Any]]]:
         if not enabled:
             if not preserve_variable_default:
@@ -1289,7 +1366,7 @@ class FieldSpaceLayerBlock(nn.Module):
         return build_indexed_dims(
             n_variables=self.n_variables,
             rank_variables=self.rank_variables,
-            same_values_variables=shared_indexed_variables,
+            same_values_variables=initialize_indexed_variables_with_same_values,
             n_times=self.n_times,
             rank_time=self.n_rank_time,
             same_values_times=shared_indexed_times,
@@ -1297,10 +1374,10 @@ class FieldSpaceLayerBlock(nn.Module):
             rank_space=(
                 self.n_rank_space if indexed_n_space > 1 else None
             ),
-            same_values_space=shared_indexed_space,
+            same_values_space=initialize_indexed_space_with_same_values,
             n_depths=indexed_n_depths,
             rank_depth=self.n_rank_depth,
-            same_values_depths=shared_indexed_depths,
+            same_values_depths=initialize_indexed_depths_with_same_values,
         )
 
 
@@ -1379,11 +1456,6 @@ class FieldSpaceLayerBlock(nn.Module):
             return x.reshape(b, v, t, n_src * factor, d, f_tgt)
 
         raise ValueError(f"Unsupported residual zoom mode `{mode}` for zoom {target_zoom}.")
-
-    def _convert_output_variables(self, x: torch.Tensor) -> torch.Tensor:
-        if self.variable_projection is None:
-            return x
-        return self.variable_projection(x.movedim(1, -1)).movedim(-1, 1)
 
     def _apply_output_gamma(
         self,
@@ -1466,7 +1538,23 @@ class FieldSpaceLayerBlock(nn.Module):
         x = self.get_time_depth_overlaps(x)
 
         layer_sample_config = sample_configs[self.field_zoom]
-        if self.hidden_dim_mixed > 0:
+        if self.projects_variables:
+            x = rearrange(
+                x,
+                "b v T N D t n d f -> b 1 T N D t n d (v f)",
+            )
+            x = self.layer(
+                x,
+                emb=emb_tokenized,
+                sample_configs=layer_sample_config,
+            )
+            x = rearrange(
+                x,
+                "b 1 T N D t n d (v f) -> b v T N D t n d f",
+                v=self.n_variables_out,
+            )
+            nv = self.n_variables_out
+        elif self.hidden_dim_mixed > 0:
             x_mixed = rearrange(x, self.mixed_pattern)
             latent = self.input_projection_layer(
                 x,
@@ -1514,11 +1602,7 @@ class FieldSpaceLayerBlock(nn.Module):
             if zoom in residual_inputs:
                 residual = self._apply_residual_projection(residual_inputs[zoom], zoom)
                 x_zoom_out = x_zoom_out + residual
-            x_zooms[zoom] = self._convert_output_variables(x_zoom_out)
-
-        if self.n_variables_out is not None:
-            for zoom in set(self.out_zooms or x_zooms) - set(self.target_features_dict):
-                x_zooms[zoom] = self._convert_output_variables(x_zooms[zoom])
+            x_zooms[zoom] = x_zoom_out
         
         if self.out_zooms is None:
             return x_zooms
@@ -1597,9 +1681,9 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         use_indexed_input: bool = False,
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
-        shared_indexed_variables: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
+        initialize_indexed_variables_with_same_values: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
         embed_confs: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
@@ -1631,6 +1715,12 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             )
         if n_variables_out is not None and int(n_variables_out) <= 0:
             raise ValueError("n_variables_out must be positive")
+        if n_variables_out is not None and int(hidden_dim_mixed) > 0:
+            raise ValueError(
+                "n_variables_out cannot be combined with hidden_dim_mixed; "
+                "the variable transition already mixes variables through "
+                "the feature dimension"
+            )
         if type not in {"linear", "mlp"}:
             raise ValueError("type must be either 'linear' or 'mlp'")
         if not in_zooms:
@@ -1750,9 +1840,9 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
         self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
         self.use_ranks_emb_layer = bool(use_ranks_emb_layer)
-        self.shared_indexed_variables = bool(shared_indexed_variables)
-        self.shared_indexed_depths = bool(shared_indexed_depths)
-        self.shared_indexed_space = bool(shared_indexed_space)
+        self.initialize_indexed_variables_with_same_values = bool(initialize_indexed_variables_with_same_values)
+        self.initialize_indexed_depths_with_same_values = bool(initialize_indexed_depths_with_same_values)
+        self.initialize_indexed_space_with_same_values = bool(initialize_indexed_space_with_same_values)
         if self.in_token_len_depth <= 0:
             raise ValueError("in_token_len_depth must be positive")
         if self.out_token_len_depth <= 0:
@@ -1811,10 +1901,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self.n_variables_out = (
             None if n_variables_out is None else int(n_variables_out)
         )
-        self.variable_projection = (
-            nn.Linear(self.n_variables, self.n_variables_out, bias=False)
-            if self.n_variables_out is not None else None
-        )
+        self.projects_variables = self.n_variables_out is not None
         self.fac_mode = fac_mode
         self.out_zooms = (
             None if out_zooms is None else [int(zoom) for zoom in out_zooms]
@@ -1865,6 +1952,15 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             )
             for zoom in self.target_zooms
         }
+        if self.projects_variables:
+            self.indexed_dims_input_by_zoom = {
+                zoom: self._without_variable_index(indexed_dims)
+                for zoom, indexed_dims in self.indexed_dims_input_by_zoom.items()
+            }
+            self.indexed_dims_output_by_zoom = {
+                zoom: self._without_variable_index(indexed_dims)
+                for zoom, indexed_dims in self.indexed_dims_output_by_zoom.items()
+            }
         self.indexed_dims_mlp: Optional[Dict[str, Dict[str, Any]]] = {}
         if self.type == "mlp":
             mlp_indexed_dims_by_zoom = [
@@ -1876,6 +1972,14 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 for zoom in self.in_zooms
             ]
             self.indexed_dims_mlp = mlp_indexed_dims_by_zoom[0]
+            if self.projects_variables:
+                self.indexed_dims_mlp = self._without_variable_index(
+                    self.indexed_dims_mlp
+                )
+                mlp_indexed_dims_by_zoom = [
+                    self._without_variable_index(indexed_dims)
+                    for indexed_dims in mlp_indexed_dims_by_zoom
+                ]
             if any(
                 indexed_dims != self.indexed_dims_mlp
                 for indexed_dims in mlp_indexed_dims_by_zoom[1:]
@@ -1930,10 +2034,10 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 preserve_variable_default=False,
                 n_variables_local=self.n_variables,
                 include_rank_variables=self.use_ranks_emb_layer,
-                shared_indexed_variables=self.shared_indexed_variables,
+                initialize_indexed_variables_with_same_values=self.initialize_indexed_variables_with_same_values,
                 shared_indexed_times=False,
-                shared_indexed_depths=self.shared_indexed_depths,
-                shared_indexed_space=self.shared_indexed_space,
+                initialize_indexed_depths_with_same_values=self.initialize_indexed_depths_with_same_values,
+                initialize_indexed_space_with_same_values=self.initialize_indexed_space_with_same_values,
             )
             indexed_dims_norm = self._build_indexed_dims_for_zoom(
                 zoom,
@@ -1941,10 +2045,10 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 preserve_variable_default=False,
                 n_variables_local=self.n_variables,
                 include_rank_variables=False,
-                shared_indexed_variables=self.shared_indexed_variables,
+                initialize_indexed_variables_with_same_values=self.initialize_indexed_variables_with_same_values,
                 shared_indexed_times=False,
-                shared_indexed_depths=self.shared_indexed_depths,
-                shared_indexed_space=self.shared_indexed_space,
+                initialize_indexed_depths_with_same_values=self.initialize_indexed_depths_with_same_values,
+                initialize_indexed_space_with_same_values=self.initialize_indexed_space_with_same_values,
             )
             emb_tokenizer = Tokenizer(
                 [input_zoom_field] if embedder and embedder.has_space() else [],
@@ -1989,11 +2093,16 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     else None
                 ),
             )
+            projection_input_shape = list(input_shape)
+            projection_n_variables = self.n_variables
+            if self.projects_variables:
+                projection_input_shape[-1] *= self.n_variables
+                projection_n_variables = 1
             self.input_projection_layers[key] = get_layer(
-                input_shape,
+                projection_input_shape,
                 [1, 1, 1, self.hidden_dim],
                 ranks=self._ranks_for_zoom(zoom),
-                n_variables=self.n_variables,
+                n_variables=projection_n_variables,
                 indexed_dims=self.indexed_dims_input_by_zoom[zoom],
                 fac_mode=self.fac_mode,
                 bias=False,
@@ -2032,11 +2141,16 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 1,
             ]
             self.output_shapes_by_zoom[zoom] = output_shape
+            projection_output_shape = list(output_shape)
+            projection_n_variables = self.n_variables
+            if self.projects_variables:
+                projection_output_shape[-1] *= self.n_variables_out
+                projection_n_variables = 1
             self.output_projection_layers[key] = get_layer(
                 [1, 1, 1, self.latent_dim_total],
-                output_shape,
+                projection_output_shape,
                 ranks=self._ranks_for_zoom(zoom),
-                n_variables=self.n_variables,
+                n_variables=projection_n_variables,
                 indexed_dims=self.indexed_dims_output_by_zoom[zoom],
                 fac_mode=self.fac_mode,
                 bias=True,
@@ -2044,11 +2158,12 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
 
         if self.type == "mlp":
             mlp_hidden_dim = self.mult * self.latent_dim_total
+            mlp_n_variables = 1 if self.projects_variables else self.n_variables
             self.mlp_layer1: Optional[nn.Module] = get_layer(
                 [1, 1, 1, self.latent_dim_total],
                 [1, 1, 1, mlp_hidden_dim],
                 ranks=[None] * 5,
-                n_variables=self.n_variables,
+                n_variables=mlp_n_variables,
                 indexed_dims=self.indexed_dims_mlp,
                 fac_mode=self.fac_mode,
                 bias=False,
@@ -2057,7 +2172,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 [1, 1, 1, mlp_hidden_dim],
                 [1, 1, 1, self.latent_dim_total],
                 ranks=[None] * 5,
-                n_variables=self.n_variables,
+                n_variables=mlp_n_variables,
                 indexed_dims=self.indexed_dims_mlp,
                 fac_mode=self.fac_mode,
                 bias=True,
@@ -2096,10 +2211,10 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         preserve_variable_default: bool,
         n_variables_local: Optional[int] = None,
         include_rank_variables: bool = True,
-        shared_indexed_variables: bool = True,
+        initialize_indexed_variables_with_same_values: bool = True,
         shared_indexed_times: bool = True,
-        shared_indexed_depths: bool = True,
-        shared_indexed_space: bool = True,
+        initialize_indexed_depths_with_same_values: bool = True,
+        initialize_indexed_space_with_same_values: bool = True,
     ) -> Optional[Dict[str, Dict[str, Any]]]:
         if not enabled:
             if not preserve_variable_default:
@@ -2131,7 +2246,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 if include_rank_variables
                 else None
             ),
-            same_values_variables=shared_indexed_variables,
+            same_values_variables=initialize_indexed_variables_with_same_values,
             n_times=self.n_times_by_zoom[zoom],
             rank_time=self.n_rank_time_by_zoom[zoom],
             same_values_times=shared_indexed_times,
@@ -2139,10 +2254,10 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             rank_space=(
                 n_rank_space if indexed_n_space > 1 else None
             ),
-            same_values_space=shared_indexed_space,
+            same_values_space=initialize_indexed_space_with_same_values,
             n_depths=indexed_n_depths,
             rank_depth=self.n_rank_depth_by_zoom[zoom],
-            same_values_depths=shared_indexed_depths,
+            same_values_depths=initialize_indexed_depths_with_same_values,
         )
 
     def _initialize_ext_residuals(self) -> None:
@@ -2301,9 +2416,15 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             )
             if zoom == self.in_zooms[0]:
                 latent_emb = emb_tokenized
+            x_projection = x
+            if self.projects_variables:
+                x_projection = rearrange(
+                    x,
+                    "b v T N D t n d f -> b 1 T N D t n d (v f)",
+                )
             projections.append(
                 self.input_projection_layers[str(zoom)](
-                    x,
+                    x_projection,
                     emb=emb_tokenized,
                     sample_configs=layer_sample_config,
                 )
@@ -2355,6 +2476,13 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 emb=latent_emb,
                 sample_configs=layer_sample_config,
             )
+            if self.projects_variables:
+                x_zoom_out = rearrange(
+                    x_zoom_out,
+                    "b 1 T N D t n d (v f) -> b v T N D t n d f",
+                    v=self.n_variables_out,
+                )
+                n_variables = self.n_variables_out
             x_zoom_out = rearrange(
                 x_zoom_out,
                 self.pattern_tokens_reverse,
@@ -2368,11 +2496,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     zoom,
                 )
                 x_zoom_out = x_zoom_out + residual
-            x_zooms[zoom] = self._convert_output_variables(x_zoom_out)
-
-        if self.n_variables_out is not None:
-            for zoom in set(self.out_zooms or x_zooms) - set(self.target_zooms):
-                x_zooms[zoom] = self._convert_output_variables(x_zooms[zoom])
+            x_zooms[zoom] = x_zoom_out
 
         if self.out_zooms is None:
             return x_zooms

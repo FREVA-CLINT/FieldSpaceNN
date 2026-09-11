@@ -69,9 +69,9 @@ class MG_Transformer(MG_base_model):
         in_features: int = 1,
         n_groups_variables: Sequence[int] = [1],
         n_groups_depths: Optional[Sequence[int]] = None,
-        shared_indexed_group_variables: Optional[Sequence[bool]] = None,
-        shared_indexed_group_depths: Optional[Sequence[bool]] = None,
-        shared_indexed_group_space: Optional[Sequence[bool]] = None,
+        initialize_indexed_variables_with_same_values: Optional[Sequence[bool]] = None,
+        initialize_indexed_depths_with_same_values: Optional[Sequence[bool]] = None,
+        initialize_indexed_space_with_same_values: Optional[Sequence[bool]] = None,
         use_global_embedder: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -85,6 +85,12 @@ class MG_Transformer(MG_base_model):
         :param pre_block_configs: Optional blocks executed before wrap operations begin.
         :param in_features: Number of input features per variable.
         :param n_groups_variables: Number of variable groups for attention layers.
+        :param initialize_indexed_variables_with_same_values: Per-group flags
+            controlling identical initialization of variable-indexed parameter rows.
+        :param initialize_indexed_depths_with_same_values: Per-group flags
+            controlling identical initialization of depth-indexed parameter rows.
+        :param initialize_indexed_space_with_same_values: Per-group flags
+            controlling identical initialization of space-indexed parameter rows.
         :param kwargs: Additional arguments forwarded to block factories.
         :return: None.
         """
@@ -96,20 +102,20 @@ class MG_Transformer(MG_base_model):
         self.n_groups_depths: Sequence[int] = (
             list(n_groups_depths) if n_groups_depths is not None else [1] * len(n_groups_variables)
         )
-        self.shared_indexed_group_variables: Sequence[bool] = (
-            list(shared_indexed_group_variables)
-            if shared_indexed_group_variables is not None
-            else [False] * len(n_groups_variables)
+        self.initialize_indexed_variables_with_same_values: Sequence[bool] = (
+            list(initialize_indexed_variables_with_same_values)
+            if initialize_indexed_variables_with_same_values is not None
+            else [True] * len(n_groups_variables)
         )
-        self.shared_indexed_group_depths: Sequence[bool] = (
-            list(shared_indexed_group_depths)
-            if shared_indexed_group_depths is not None
-            else [False] * len(n_groups_variables)
+        self.initialize_indexed_depths_with_same_values: Sequence[bool] = (
+            list(initialize_indexed_depths_with_same_values)
+            if initialize_indexed_depths_with_same_values is not None
+            else [True] * len(n_groups_variables)
         )
-        self.shared_indexed_group_space: Sequence[bool] = (
-            list(shared_indexed_group_space)
-            if shared_indexed_group_space is not None
-            else [False] * len(n_groups_variables)
+        self.initialize_indexed_space_with_same_values: Sequence[bool] = (
+            list(initialize_indexed_space_with_same_values)
+            if initialize_indexed_space_with_same_values is not None
+            else [True] * len(n_groups_variables)
         )
         self.use_global_embedder: bool = use_global_embedder
         self.block_build_kwargs: Dict[str, Any] = dict(kwargs)
@@ -378,14 +384,14 @@ class MG_Transformer(MG_base_model):
             current_block_build_kwargs = dict(block_build_kwargs)
             block_n_groups_variables = current_n_groups_variables
             block_n_groups_depths = list(current_block_build_kwargs.pop("n_groups_depths", self.n_groups_depths))
-            block_shared_indexed_group_variables = list(
-                current_block_build_kwargs.pop("shared_indexed_group_variables", self.shared_indexed_group_variables)
+            block_initialize_indexed_variables_with_same_values = list(
+                current_block_build_kwargs.pop("initialize_indexed_variables_with_same_values", self.initialize_indexed_variables_with_same_values)
             )
-            block_shared_indexed_group_depths = list(
-                current_block_build_kwargs.pop("shared_indexed_group_depths", self.shared_indexed_group_depths)
+            block_initialize_indexed_depths_with_same_values = list(
+                current_block_build_kwargs.pop("initialize_indexed_depths_with_same_values", self.initialize_indexed_depths_with_same_values)
             )
-            block_shared_indexed_group_space = list(
-                current_block_build_kwargs.pop("shared_indexed_group_space", self.shared_indexed_group_space)
+            block_initialize_indexed_space_with_same_values = list(
+                current_block_build_kwargs.pop("initialize_indexed_space_with_same_values", self.initialize_indexed_space_with_same_values)
             )
             block = create_encoder_decoder_block(
                 block_conf,
@@ -394,9 +400,9 @@ class MG_Transformer(MG_base_model):
                 block_n_groups_variables,
                 self.grid_layers,
                 block_n_groups_depths,
-                block_shared_indexed_group_variables,
-                block_shared_indexed_group_depths,
-                block_shared_indexed_group_space,
+                block_initialize_indexed_variables_with_same_values,
+                block_initialize_indexed_depths_with_same_values,
+                block_initialize_indexed_space_with_same_values,
                 **current_block_build_kwargs,
             )
 
@@ -407,7 +413,11 @@ class MG_Transformer(MG_base_model):
                 getattr(
                     block,
                     "n_groups_variables_out",
-                    block_n_groups_variables,
+                    getattr(
+                        block,
+                        "n_groups_variables",
+                        block_n_groups_variables,
+                    ),
                 )
             )
 

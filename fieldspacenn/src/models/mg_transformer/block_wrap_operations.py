@@ -488,28 +488,28 @@ class MergeGroupsBlockWrapConfig(BlockWrapConfig):
             variable_embedder_mode=self.variable_embedder_mode,
             depth_indices=self.depth_indices,
         )
-        shared_indexed_group_variables = list(
-            base_block_kwargs.get("shared_indexed_group_variables", [False] * len(n_groups_variables))
+        initialize_indexed_variables_with_same_values = list(
+            base_block_kwargs.get("initialize_indexed_variables_with_same_values", [True] * len(n_groups_variables))
         )
-        shared_indexed_group_depths = list(
-            base_block_kwargs.get("shared_indexed_group_depths", [False] * len(n_groups_variables))
+        initialize_indexed_depths_with_same_values = list(
+            base_block_kwargs.get("initialize_indexed_depths_with_same_values", [True] * len(n_groups_variables))
         )
-        shared_indexed_group_space = list(
-            base_block_kwargs.get("shared_indexed_group_space", [False] * len(n_groups_variables))
+        initialize_indexed_space_with_same_values = list(
+            base_block_kwargs.get("initialize_indexed_space_with_same_values", [True] * len(n_groups_variables))
         )
         overrides = {
             "n_groups_variables": merge_layout["n_groups_variables"],
             "n_groups_depths": merge_layout["n_groups_depths"],
-            "shared_indexed_group_variables": [
-                shared_indexed_group_variables[group_idx]
+            "initialize_indexed_variables_with_same_values": [
+                initialize_indexed_variables_with_same_values[group_idx]
                 for group_idx in merge_layout["stage_group_original_indices"]
             ],
-            "shared_indexed_group_depths": [
-                shared_indexed_group_depths[group_idx]
+            "initialize_indexed_depths_with_same_values": [
+                initialize_indexed_depths_with_same_values[group_idx]
                 for group_idx in merge_layout["stage_group_original_indices"]
             ],
-            "shared_indexed_group_space": [
-                shared_indexed_group_space[group_idx]
+            "initialize_indexed_space_with_same_values": [
+                initialize_indexed_space_with_same_values[group_idx]
                 for group_idx in merge_layout["stage_group_original_indices"]
             ],
         }
