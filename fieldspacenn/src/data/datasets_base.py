@@ -1797,7 +1797,7 @@ class BaseDataset(Dataset):
                     'TimeProgressEmbedder': emb_groups[0]['TimeProgressEmbedder'],
                     'PressureLevelEmbedder': emb_groups[0]['PressureLevelEmbedder'],
                     'TimeIndexEmbedder': emb_groups[0]['TimeIndexEmbedder'],
-                    'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[-1], dtype=torch.long)}
+                    'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[0], dtype=torch.long)}
             if 'StaticVariableEmbedder' in emb_groups[0]:
                 emb['StaticVariableEmbedder'] = emb_groups[0]['StaticVariableEmbedder']
             if 'ForcingEmbedder' in emb_groups[0]:

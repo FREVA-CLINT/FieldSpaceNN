@@ -356,6 +356,7 @@ def create_encoder_decoder_block(
                 block_conf.field_zoom,
                 out_zooms=block_conf.out_zooms,
                 n_groups_variables=list(n_groups_variables),
+                n_groups_variables_out=block_conf.n_groups_variables_out,
                 n_groups_depths=list(n_groups_depths),
                 shared_indexed_group_variables=list(shared_indexed_group_variables),
                 shared_indexed_group_depths=list(shared_indexed_group_depths),

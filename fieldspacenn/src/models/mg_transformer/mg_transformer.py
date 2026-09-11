@@ -366,11 +366,17 @@ class MG_Transformer(MG_base_model):
         blocks = nn.ModuleDict()
         current_in_zooms = list(in_zooms)
         current_in_features = list(in_features)
+        block_build_kwargs = dict(block_build_kwargs)
+        current_n_groups_variables = list(
+            block_build_kwargs.pop(
+                "n_groups_variables", self.n_groups_variables
+            )
+        )
 
         for block_key, block_conf in block_configs.items():
             assert isinstance(block_key, str), "block keys should be strings"
             current_block_build_kwargs = dict(block_build_kwargs)
-            block_n_groups_variables = list(current_block_build_kwargs.pop("n_groups_variables", self.n_groups_variables))
+            block_n_groups_variables = current_n_groups_variables
             block_n_groups_depths = list(current_block_build_kwargs.pop("n_groups_depths", self.n_groups_depths))
             block_shared_indexed_group_variables = list(
                 current_block_build_kwargs.pop("shared_indexed_group_variables", self.shared_indexed_group_variables)
@@ -397,6 +403,15 @@ class MG_Transformer(MG_base_model):
             blocks[block_key] = block
             current_in_features = list(block.out_features)
             current_in_zooms = list(block.out_zooms)
+            current_n_groups_variables = list(
+                getattr(
+                    block,
+                    "n_groups_variables_out",
+                    block_n_groups_variables,
+                )
+            )
+
+        self.n_groups_variables = current_n_groups_variables
 
         return blocks, current_in_zooms, current_in_features
 

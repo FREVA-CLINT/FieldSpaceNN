@@ -181,6 +181,7 @@ class FieldSpaceLayerConfig:
         out_token_len_time: int = 1,
         out_token_len_depth: int = 1,
         n_groups_variables: List[int] = [1],
+        n_groups_variables_out: Optional[List[int]] = None,
         residual: bool = False,
         residual_gamma: bool = False,
         mult: int = 2,
@@ -220,6 +221,7 @@ class FieldSpaceLayerConfig:
         :param out_token_len_time: Output token length along time.
         :param out_token_len_depth: Output token length along depth.
         :param n_groups_variables: Number of variable groups.
+        :param n_groups_variables_out: Optional number of output variables per group.
         :param residual: Whether to add a residual connection around the layer.
         :param residual_gamma: Whether to scale the learned layer-output branch with
             a gamma initialized near zero before adding the residual skip.
@@ -263,6 +265,7 @@ class FieldSpaceLayerConfig:
         self.out_token_len_time: int
         self.out_token_len_depth: int
         self.n_groups_variables: List[int]
+        self.n_groups_variables_out: Optional[List[int]]
         self.residual: bool
         self.residual_gamma: bool
         self.mult: int
@@ -291,6 +294,12 @@ class FieldSpaceLayerConfig:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
         if hidden_dim_mixed < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
+        _validate_numeric_leaves(
+            n_groups_variables_out,
+            "n_groups_variables_out",
+            allow_none=True,
+            minimum=1,
+        )
         _validate_numeric_leaves(
             rank_variables,
             "rank_variables",
@@ -359,6 +368,7 @@ class FieldSpaceLayerModule(nn.Module):
                  target_zooms: List[int],
                  field_zoom: int,
                  n_groups_variables: List[int] = [1],
+                 n_groups_variables_out: Optional[List[int]] = None,
                  n_groups_depths: Optional[List[int]] = None,
                  shared_indexed_group_variables: Union[List[bool], bool] = False,
                  shared_indexed_group_depths: Union[List[bool], bool] = False,
@@ -380,12 +390,23 @@ class FieldSpaceLayerModule(nn.Module):
         :param target_zooms: Target zoom levels.
         :param field_zoom: Zoom level used for tokenization.
         :param n_groups_variables: Number of variable groups.
+        :param n_groups_variables_out: Optional number of output variables per group.
         :param kwargs: Additional keyword arguments for block construction.
         :return: None.
         """
         super().__init__()
         self.blocks: nn.ModuleList = nn.ModuleList()
         n_groups = len(n_groups_variables)
+        self.n_groups_variables_out = [
+            int(value) for value in _normalize_group_values(
+                n_groups_variables if n_groups_variables_out is None
+                else n_groups_variables_out,
+                n_groups,
+                "n_groups_variables_out",
+            )
+        ]
+        if any(value <= 0 for value in self.n_groups_variables_out):
+            raise ValueError("n_groups_variables_out must contain positive values")
         embed_confs = {} if embed_confs is None else embed_confs
         block_type = kwargs.get("block_type", "legacy")
         if block_type not in {"legacy", "ext"}:
@@ -680,6 +701,11 @@ class FieldSpaceLayerModule(nn.Module):
         for i in range(n_groups):
             block_kwargs = kwargs.copy()
             block_kwargs["n_variables"] = n_groups_variables[i]
+            block_kwargs["n_variables_out"] = (
+                None
+                if n_groups_variables_out is None
+                else self.n_groups_variables_out[i]
+            )
             block_kwargs['in_features'] = in_features
             block_kwargs['target_features'] = target_features
             block_kwargs["in_token_len_depth"] = in_token_len_depth[i]
@@ -798,6 +824,7 @@ class FieldSpaceLayerBlock(nn.Module):
         residual: bool = False,
         residual_gamma: bool = False,
         n_variables: int = 1,
+        n_variables_out: Optional[int] = None,
         fac_mode: str = "Tucker",
         block_type: Literal["legacy", "ext"] = "legacy",
     ) -> None:
@@ -849,6 +876,15 @@ class FieldSpaceLayerBlock(nn.Module):
         if self.hidden_dim_mixed < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
         self.n_variables = int(n_variables)
+        self.n_variables_out = (
+            None if n_variables_out is None else int(n_variables_out)
+        )
+        if self.n_variables_out is not None and self.n_variables_out <= 0:
+            raise ValueError("n_variables_out must be positive")
+        self.variable_projection = (
+            nn.Linear(self.n_variables, self.n_variables_out, bias=False)
+            if self.n_variables_out is not None else None
+        )
         self.use_indexed_input = bool(use_indexed_input)
         self.use_indexed_output = bool(use_indexed_output)
         self.use_indexed_mlp = bool(use_indexed_mlp)
@@ -1344,6 +1380,11 @@ class FieldSpaceLayerBlock(nn.Module):
 
         raise ValueError(f"Unsupported residual zoom mode `{mode}` for zoom {target_zoom}.")
 
+    def _convert_output_variables(self, x: torch.Tensor) -> torch.Tensor:
+        if self.variable_projection is None:
+            return x
+        return self.variable_projection(x.movedim(1, -1)).movedim(-1, 1)
+
     def _apply_output_gamma(
         self,
         x_out: torch.Tensor,
@@ -1377,7 +1418,7 @@ class FieldSpaceLayerBlock(nn.Module):
         :return: Updated zoom tensors shaped like ``(b, v, t, n, d, f)``.
         """
         nv = x_zooms[list(self.n_in_features_zooms.keys())[0]].shape[1]
-        if self.hidden_dim_mixed > 0:
+        if self.hidden_dim_mixed > 0 or self.n_variables_out is not None:
             runtime_variable_counts = {
                 zoom: int(x_zooms[zoom].shape[1])
                 for zoom in self.in_zooms
@@ -1389,7 +1430,7 @@ class FieldSpaceLayerBlock(nn.Module):
             }
             if invalid_runtime_counts:
                 raise ValueError(
-                    "hidden_dim_mixed requires the runtime variable count to "
+                    "variable mixing requires the runtime variable count to "
                     f"equal configured n_variables={self.n_variables} for "
                     f"every input zoom; got {invalid_runtime_counts}"
                 )
@@ -1473,7 +1514,11 @@ class FieldSpaceLayerBlock(nn.Module):
             if zoom in residual_inputs:
                 residual = self._apply_residual_projection(residual_inputs[zoom], zoom)
                 x_zoom_out = x_zoom_out + residual
-            x_zooms[zoom] = x_zoom_out
+            x_zooms[zoom] = self._convert_output_variables(x_zoom_out)
+
+        if self.n_variables_out is not None:
+            for zoom in set(self.out_zooms or x_zooms) - set(self.target_features_dict):
+                x_zooms[zoom] = self._convert_output_variables(x_zooms[zoom])
         
         if self.out_zooms is None:
             return x_zooms
@@ -1566,6 +1611,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         residual: bool = False,
         residual_gamma: bool = False,
         n_variables: int = 1,
+        n_variables_out: Optional[int] = None,
         fac_mode: str = "Tucker",
         block_type: Literal["legacy", "ext"] = "ext",
     ) -> None:
@@ -1583,6 +1629,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             raise ValueError(
                 "hidden_dim_mixed > 0 requires n_variables > 1"
             )
+        if n_variables_out is not None and int(n_variables_out) <= 0:
+            raise ValueError("n_variables_out must be positive")
         if type not in {"linear", "mlp"}:
             raise ValueError("type must be either 'linear' or 'mlp'")
         if not in_zooms:
@@ -1760,6 +1808,13 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         self.residual = bool(residual)
         self.residual_gamma = bool(residual_gamma)
         self.n_variables = int(n_variables)
+        self.n_variables_out = (
+            None if n_variables_out is None else int(n_variables_out)
+        )
+        self.variable_projection = (
+            nn.Linear(self.n_variables, self.n_variables_out, bias=False)
+            if self.n_variables_out is not None else None
+        )
         self.fac_mode = fac_mode
         self.out_zooms = (
             None if out_zooms is None else [int(zoom) for zoom in out_zooms]
@@ -2225,7 +2280,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             for zoom in self.in_zooms
         }
         runtime_n_variables = runtime_variable_counts[self.in_zooms[0]]
-        if self.hidden_dim_mixed > 0:
+        if self.hidden_dim_mixed > 0 or self.n_variables_out is not None:
             invalid_runtime_counts = {
                 zoom: count
                 for zoom, count in runtime_variable_counts.items()
@@ -2233,7 +2288,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             }
             if invalid_runtime_counts:
                 raise ValueError(
-                    "hidden_dim_mixed requires the runtime variable count to "
+                    "variable mixing requires the runtime variable count to "
                     f"equal configured n_variables={self.n_variables} for "
                     f"every input zoom; got {invalid_runtime_counts}"
                 )
@@ -2313,7 +2368,11 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     zoom,
                 )
                 x_zoom_out = x_zoom_out + residual
-            x_zooms[zoom] = x_zoom_out
+            x_zooms[zoom] = self._convert_output_variables(x_zoom_out)
+
+        if self.n_variables_out is not None:
+            for zoom in set(self.out_zooms or x_zooms) - set(self.target_zooms):
+                x_zooms[zoom] = self._convert_output_variables(x_zooms[zoom])
 
         if self.out_zooms is None:
             return x_zooms

@@ -49,13 +49,14 @@ class MG_AutoEncoder(MG_base_model):
 
 
         self.out_features: int = out_features
+        self.n_groups_variables = list(n_groups_variables)
 
         in_features = [in_features] * len(in_zooms)
         self.encoder_blocks, in_zooms, in_features = self._build_block_stack(
             encoder_block_configs,
             in_zooms,
             in_features,
-            n_groups_variables,
+            self.n_groups_variables,
             kwargs,
         )
 
@@ -65,7 +66,7 @@ class MG_AutoEncoder(MG_base_model):
             decoder_block_configs,
             in_zooms,
             in_features,
-            n_groups_variables,
+            self.n_groups_variables,
             kwargs,
         )
 
@@ -82,6 +83,7 @@ class MG_AutoEncoder(MG_base_model):
         modules = nn.ModuleDict()
         current_in_zooms = list(in_zooms)
         current_in_features = list(in_features)
+        current_n_groups_variables = list(n_groups_variables)
         n_groups_depths = list(
             block_build_kwargs.get(
                 "n_groups_depths",
@@ -102,7 +104,7 @@ class MG_AutoEncoder(MG_base_model):
                 stage_build_kwargs = dict(block_build_kwargs)
                 stage_build_kwargs.update(
                     block_conf.get_block_build_overrides(
-                        n_groups_variables=n_groups_variables,
+                        n_groups_variables=current_n_groups_variables,
                         n_groups_depths=n_groups_depths,
                         base_block_kwargs=stage_build_kwargs,
                     )
@@ -116,7 +118,9 @@ class MG_AutoEncoder(MG_base_model):
                 current_in_zooms = list(stage_in_zooms)
                 current_in_features = list(stage_in_features)
                 stage_n_groups_variables = list(
-                    stage_build_kwargs.pop("n_groups_variables", n_groups_variables)
+                    stage_build_kwargs.pop(
+                        "n_groups_variables", current_n_groups_variables
+                    )
                 )
                 stage_n_groups_depths = list(
                     stage_build_kwargs.pop("n_groups_depths", n_groups_depths)
@@ -155,6 +159,13 @@ class MG_AutoEncoder(MG_base_model):
                     stage_blocks[stage_block_key] = stage_block
                     current_in_zooms = list(stage_block.out_zooms)
                     current_in_features = list(stage_block.out_features)
+                    stage_n_groups_variables = list(
+                        getattr(
+                            stage_block,
+                            "n_groups_variables_out",
+                            stage_n_groups_variables,
+                        )
+                    )
 
                 modules[block_key] = BlockExecutionStage(
                     wrap_operations={
@@ -165,20 +176,29 @@ class MG_AutoEncoder(MG_base_model):
                     },
                     blocks=stage_blocks,
                 )
+                current_n_groups_variables = stage_n_groups_variables
                 continue
 
             block = create_encoder_decoder_block(
                 block_conf,
                 current_in_zooms,
                 current_in_features,
-                n_groups_variables,
+                current_n_groups_variables,
                 grid_layers=self.grid_layers,
                 **block_build_kwargs,
             )
             modules[block_key] = block
             current_in_zooms = list(block.out_zooms)
             current_in_features = list(block.out_features)
+            current_n_groups_variables = list(
+                getattr(
+                    block,
+                    "n_groups_variables_out",
+                    current_n_groups_variables,
+                )
+            )
 
+        self.n_groups_variables = current_n_groups_variables
         return modules, current_in_zooms, current_in_features
 
     @staticmethod
