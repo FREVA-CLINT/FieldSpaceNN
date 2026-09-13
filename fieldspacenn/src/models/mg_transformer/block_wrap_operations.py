@@ -122,19 +122,21 @@ def validate_block_wrap_operation_sequence(operations: Mapping[str, BlockWrapOpe
         seen_kinds[kind] = name
 
 
-def clone_zoom_groups(x_zooms_groups: Sequence[ZoomGroup]) -> ZoomGroups:
+def snapshot_zoom_groups(x_zooms_groups: Sequence[ZoomGroup]) -> ZoomGroups:
+    """Copy zoom mappings while retaining their immutable tensor values by reference."""
     return [
-        {zoom: tensor.clone() for zoom, tensor in x_zooms.items()}
+        dict(x_zooms)
         for x_zooms in x_zooms_groups
     ]
 
 
-def clone_mask_groups(mask_zooms_groups: MaskGroups) -> Optional[List[MaskGroup]]:
+def snapshot_mask_groups(mask_zooms_groups: MaskGroups) -> Optional[List[MaskGroup]]:
+    """Copy mask mappings without duplicating their tensor storage."""
     if mask_zooms_groups is None:
         return None
 
     return [
-        None if mask_zooms is None else {zoom: mask.clone() for zoom, mask in mask_zooms.items()}
+        None if mask_zooms is None else dict(mask_zooms)
         for mask_zooms in mask_zooms_groups
     ]
 
@@ -271,8 +273,16 @@ class ResidualBlockWrapOperation(BlockWrapOperation):
         x_zooms_groups: ZoomGroups,
         context: BlockWrapContext,
     ) -> Tuple[ZoomGroups, Tuple[ZoomGroups, Optional[List[MaskGroup]]]]:
-        saved_residual_groups = clone_zoom_groups(x_zooms_groups)
-        saved_mask_groups = clone_mask_groups(context.mask_groups)
+        # Wrapped blocks replace zoom-mapping entries rather than mutate their
+        # input tensors in place, so retaining the original tensor references is
+        # sufficient and avoids a full-field device clone. Masks are only needed
+        # by the masked residual mode.
+        saved_residual_groups = snapshot_zoom_groups(x_zooms_groups)
+        saved_mask_groups = (
+            snapshot_mask_groups(context.mask_groups)
+            if self.mode == "masked"
+            else None
+        )
         if self.zooms is not None:
             for group_idx, saved_zooms in enumerate(saved_residual_groups):
                 missing_zooms = [zoom for zoom in self.zooms if zoom not in saved_zooms]
