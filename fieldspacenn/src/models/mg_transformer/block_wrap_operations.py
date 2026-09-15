@@ -88,6 +88,21 @@ class BlockWrapConfig:
         del current_in_zooms
         return [int(feature) for feature in current_in_features]
 
+    def get_stage_output_layout(
+        self,
+        *,
+        stage_in_zooms: Sequence[int],
+        stage_in_features: Sequence[int],
+        stage_out_zooms: Sequence[int],
+        stage_out_features: Sequence[int],
+    ) -> Tuple[List[int], List[int]]:
+        del stage_in_zooms
+        del stage_in_features
+        return (
+            [int(zoom) for zoom in stage_out_zooms],
+            [int(feature) for feature in stage_out_features],
+        )
+
 
 def create_block_wrap_operation(
     wrap_conf: Any,
@@ -148,7 +163,7 @@ def apply_saved_residuals(
     mask_zooms_groups: MaskGroups,
     saved_mask_groups: Optional[Sequence[MaskGroup]],
     mode: str,
-    gamma: Optional[torch.Tensor] = None,
+    gamma: Optional[Union[torch.Tensor, nn.ParameterDict]] = None,
 ) -> ZoomGroups:
     if saved_residual_groups is None:
         raise ValueError("Residual block wrap operation requires a saved residual state.")
@@ -194,7 +209,17 @@ def apply_saved_residuals(
                 continue
             if mode == "add_residual":
                 assert gamma is not None
-                x_zooms[zoom] = saved + gamma * current
+                if isinstance(gamma, nn.ParameterDict):
+                    zoom_key = str(zoom)
+                    if zoom_key not in gamma:
+                        raise ValueError(
+                            "Residual mode `add_residual` has no gamma parameter "
+                            f"for zoom {zoom}."
+                        )
+                    zoom_gamma = gamma[zoom_key]
+                else:
+                    zoom_gamma = gamma
+                x_zooms[zoom] = saved + zoom_gamma * current
                 continue
 
             assert current_masks is not None
@@ -247,8 +272,16 @@ class ResidualBlockWrapConfig(BlockWrapConfig):
         *,
         grid_layers: nn.ModuleDict,
     ) -> BlockWrapOperation:
-        del grid_layers
-        return ResidualBlockWrapOperation(mode=self.mode, zooms=self.zooms)
+        gamma_zooms = (
+            self.zooms
+            if self.zooms is not None
+            else [int(zoom) for zoom in grid_layers.keys()]
+        )
+        return ResidualBlockWrapOperation(
+            mode=self.mode,
+            zooms=self.zooms,
+            gamma_zooms=gamma_zooms,
+        )
 
 
 class ResidualBlockWrapOperation(BlockWrapOperation):
@@ -258,12 +291,18 @@ class ResidualBlockWrapOperation(BlockWrapOperation):
         self,
         mode: str = "add",
         zooms: Optional[Sequence[int]] = None,
+        gamma_zooms: Optional[Sequence[int]] = None,
     ) -> None:
         super().__init__()
         self.mode = mode
         self.zooms = None if zooms is None else [int(zoom) for zoom in zooms]
         self.gamma = (
-            nn.Parameter(torch.tensor(1.0e-12))
+            nn.ParameterDict(
+                {
+                    str(int(zoom)): nn.Parameter(torch.tensor(1.0e-12))
+                    for zoom in (gamma_zooms or self.zooms or [])
+                }
+            )
             if mode == "add_residual"
             else None
         )
@@ -319,6 +358,112 @@ class ResidualBlockWrapOperation(BlockWrapOperation):
             mode=self.mode,
             gamma=self.gamma,
         )
+
+
+class AddZoomsBlockWrapConfig(BlockWrapConfig):
+    """Preserve selected input zooms across a wrapped block stage."""
+
+    operation_kind = "add_zooms"
+
+    def __init__(
+        self,
+        zooms: Sequence[int],
+        **kwargs: Any,
+    ) -> None:
+        self.zooms = [int(zoom) for zoom in zooms]
+        for name, value in kwargs.items():
+            setattr(self, name, value)
+
+    def build(
+        self,
+        *,
+        grid_layers: nn.ModuleDict,
+    ) -> BlockWrapOperation:
+        del grid_layers
+        return AddZoomsBlockWrapOperation(zooms=self.zooms)
+
+    def get_stage_output_layout(
+        self,
+        *,
+        stage_in_zooms: Sequence[int],
+        stage_in_features: Sequence[int],
+        stage_out_zooms: Sequence[int],
+        stage_out_features: Sequence[int],
+    ) -> Tuple[List[int], List[int]]:
+        input_features = {
+            int(zoom): int(feature)
+            for zoom, feature in zip(stage_in_zooms, stage_in_features)
+        }
+        missing_zooms = [zoom for zoom in self.zooms if zoom not in input_features]
+        if missing_zooms:
+            raise ValueError(
+                "Add-zooms block wrap requires selected zooms to be present in "
+                f"the stage input; missing {missing_zooms}."
+            )
+
+        output_zooms = list(self.zooms)
+        output_features = [input_features[zoom] for zoom in self.zooms]
+        for zoom, feature in zip(stage_out_zooms, stage_out_features):
+            zoom = int(zoom)
+            if zoom in output_zooms:
+                raise ValueError(
+                    "Add-zooms block wrap cannot restore a zoom that is also "
+                    f"emitted by the wrapped blocks: {zoom}."
+                )
+            output_zooms.append(zoom)
+            output_features.append(int(feature))
+        return output_zooms, output_features
+
+
+class AddZoomsBlockWrapOperation(BlockWrapOperation):
+    """Reinsert selected pre-stage zoom tensors into the post-stage mappings."""
+
+    operation_kind = "add_zooms"
+
+    def __init__(self, zooms: Sequence[int]) -> None:
+        super().__init__()
+        self.zooms = [int(zoom) for zoom in zooms]
+
+    def pre(
+        self,
+        x_zooms_groups: ZoomGroups,
+        context: BlockWrapContext,
+    ) -> Tuple[ZoomGroups, ZoomGroups]:
+        del context
+        saved_zoom_groups: ZoomGroups = []
+        for group_idx, x_zooms in enumerate(x_zooms_groups):
+            missing_zooms = [zoom for zoom in self.zooms if zoom not in x_zooms]
+            if missing_zooms:
+                raise ValueError(
+                    "Add-zooms block wrap requires selected zooms in every input "
+                    f"group; group {group_idx} is missing {missing_zooms}."
+                )
+            saved_zoom_groups.append({zoom: x_zooms[zoom] for zoom in self.zooms})
+        return x_zooms_groups, saved_zoom_groups
+
+    def post(
+        self,
+        x_zooms_groups: ZoomGroups,
+        state: ZoomGroups,
+        context: BlockWrapContext,
+    ) -> ZoomGroups:
+        del context
+        if len(x_zooms_groups) != len(state):
+            raise ValueError(
+                "Add-zooms block wrap requires the same number of groups before "
+                "and after the wrapped blocks."
+            )
+
+        output_groups: ZoomGroups = []
+        for group_idx, (x_zooms, saved_zooms) in enumerate(zip(x_zooms_groups, state)):
+            duplicate_zooms = set(x_zooms).intersection(saved_zooms)
+            if duplicate_zooms:
+                raise ValueError(
+                    "Add-zooms block wrap cannot restore zooms already emitted by "
+                    f"the wrapped blocks in group {group_idx}: {sorted(duplicate_zooms)}."
+                )
+            output_groups.append({**saved_zooms, **x_zooms})
+        return output_groups
 
 
 class ShiftGroupsBlockWrapConfig(BlockWrapConfig):

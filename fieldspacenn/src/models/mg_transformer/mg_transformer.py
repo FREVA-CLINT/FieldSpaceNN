@@ -193,6 +193,13 @@ class MG_Transformer(MG_base_model):
                     in_features=stage_in_features,
                     block_build_kwargs=stage_build_kwargs,
                 )
+                if isinstance(wrap_conf, BlockWrapConfig):
+                    current_in_zooms, current_in_features = wrap_conf.get_stage_output_layout(
+                        stage_in_zooms=stage_in_zooms,
+                        stage_in_features=stage_in_features,
+                        stage_out_zooms=current_in_zooms,
+                        stage_out_features=current_in_features,
+                    )
                 self.block_stages[wrap_key] = BlockExecutionStage(
                     wrap_operations=stage_wrap_operations,
                     blocks=stage_blocks,
