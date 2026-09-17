@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from .visualization import regular_plot, healpix_plot_zooms_var, healpix_plot_zooms_time
 from ..modules.grids.grid_utils import decode_zooms
+from .regular_multigrid import regular_multigrid_plot
 
 
 class CustomImageLogger(Logger):
@@ -47,6 +48,8 @@ class CustomImageLogger(Logger):
         self.plot_types: List[str] = plot_types or []
         self.logger_conf: Dict[str, Any] = kwargs
         self._internal_logger: Logger
+        mgrids_target = str(OmegaConf.select(cfg, "mgrids._target_", default=""))
+        self.grid_type: str = "regular" if "regular_grid" in mgrids_target else "healpix"
 
         OmegaConf.set_struct(cfg, False)
         if logger_type == 'wandb':
@@ -183,6 +186,18 @@ class CustomImageLogger(Logger):
         save_paths: List[str] = []
 
         for plot_type in requested_plot_types:
+            if self.grid_type == "regular" and "zooms" in plot_type:
+                save_paths.extend(
+                    regular_multigrid_plot(
+                        kwargs.get("input", {}),
+                        kwargs.get("output", {}),
+                        kwargs.get("gt", {}),
+                        save_dir,
+                        sample_configs=kwargs.get("sample_configs", {}),
+                        plot_name=kwargs.get("plot_name", "regular_multigrid"),
+                    )
+                )
+                continue
             if "regular" in plot_type:
                 save_paths.extend(
                     regular_plot(

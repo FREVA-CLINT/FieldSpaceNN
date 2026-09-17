@@ -98,7 +98,9 @@ def _concat_prediction_groups(
             expected_sizes_batch: List[int] = []
 
             for group_idx, group_pred in enumerate(pred_value):
-                if not group_pred:
+                if group_pred is None or (
+                    isinstance(group_pred, Mapping) and len(group_pred) == 0
+                ):
                     continue
 
                 if isinstance(group_pred, Mapping):
@@ -190,7 +192,11 @@ def test(cfg: DictConfig) -> None:
     if not os.path.exists(os.path.dirname(cfg.output_path)):
         os.makedirs(os.path.dirname(cfg.output_path))
 
-    test_dataset: BaseDataset = instantiate(cfg.dataloader.dataset, data_dict=cfg.data_split["test"])
+    dataset_target = str(cfg.dataloader.dataset.get("_target_", ""))
+    dataset_kwargs: Dict[str, Any] = {"data_dict": cfg.data_split["test"]}
+    if dataset_target.endswith("RegularMultigridDataset"):
+        dataset_kwargs["is_training"] = False
+    test_dataset: BaseDataset = instantiate(cfg.dataloader.dataset, **dataset_kwargs)
 
     model: Any = instantiate(cfg.model)
     trainer: Trainer = instantiate(cfg.trainer)
@@ -214,8 +220,9 @@ def test(cfg: DictConfig) -> None:
     for zoom in model.model.in_zooms:
         if zoom not in sampling.keys():
             sampling[zoom] = copy.deepcopy(sampling[ref_zoom_cfg])
+    is_regular_grid = getattr(test_dataset, "grid_type", "healpix") == "regular"
     sampling = sampling[max_zoom]["zoom_patch_sample"]
-    if sampling == -1:
+    if is_regular_grid or sampling == -1:
         n_patches = 1
     else:
         npix = hp.nside2npix(2 ** max_zoom)
@@ -225,9 +232,10 @@ def test(cfg: DictConfig) -> None:
     output_keys = list(variables_flat)
     expected_group_sizes = [len(v) for v in grouped_variables]
 
+    prediction_key = "grid_outputs" if is_regular_grid else "output"
     output, output_group_sizes, output_var_axis = _concat_prediction_groups(
         predictions,
-        "output",
+        prediction_key,
         max_zoom,
         expected_group_sizes=expected_group_sizes,
     )
@@ -238,7 +246,10 @@ def test(cfg: DictConfig) -> None:
             f"pred={output_group_sizes}, expected={expected_group_sizes}"
         )
 
-    output = _merge_patch_dimension(output, n_patches, output_var_axis)
+    if is_regular_grid:
+        output = output.movedim(output_var_axis, 1)
+    else:
+        output = _merge_patch_dimension(output, n_patches, output_var_axis)
 
     if output.shape[1] != len(output_keys):
         raise ValueError(
@@ -247,6 +258,7 @@ def test(cfg: DictConfig) -> None:
         )
 
     normalizer_zoom = max(test_dataset.var_normalizers.keys())
+    normalizers_at_zoom = test_dataset.var_normalizers[normalizer_zoom]
     if predictions[0].get("output_var") is not None:
         output_var, output_var_group_sizes, output_var_axis = _concat_prediction_groups(
             predictions,
@@ -254,7 +266,10 @@ def test(cfg: DictConfig) -> None:
             max_zoom,
             expected_group_sizes=expected_group_sizes,
         )
-        output_var = _merge_patch_dimension(output_var, n_patches, output_var_axis)
+        if is_regular_grid:
+            output_var = output_var.movedim(output_var_axis, 1)
+        else:
+            output_var = _merge_patch_dimension(output_var, n_patches, output_var_axis)
         if output_var_group_sizes != expected_group_sizes:
             raise ValueError(
                 "Output variance group sizes do not match dataset variable groups. "
@@ -266,15 +281,17 @@ def test(cfg: DictConfig) -> None:
                 f"output_var.shape={tuple(output_var.shape)}, expected_vars={len(output_keys)}"
             )
         for var_idx, var_name in enumerate(variables_flat[: output_var.shape[1]]):
-            output_var[:, var_idx] = test_dataset.var_normalizers[normalizer_zoom][var_name].denormalize_var(
-                output_var[:, var_idx],
-                data=output[:, var_idx],
-            )
+            if var_name in normalizers_at_zoom:
+                output_var[:, var_idx] = normalizers_at_zoom[var_name].denormalize_var(
+                    output_var[:, var_idx],
+                    data=output[:, var_idx],
+                )
         output_var_dict = dict(zip(output_keys, output_var.split(1, dim=1)))
         torch.save(output_var_dict, cfg.output_path.replace(".pt", "_var.pt"))
 
     for var_idx, var_name in enumerate(variables_flat[: output.shape[1]]):
-        output[:, var_idx] = test_dataset.var_normalizers[normalizer_zoom][var_name].denormalize(output[:, var_idx])
+        if var_name in normalizers_at_zoom:
+            output[:, var_idx] = normalizers_at_zoom[var_name].denormalize(output[:, var_idx])
 
     output_dict = dict(zip(output_keys, output.split(1, dim=1)))
     torch.save(output_dict, cfg.output_path)

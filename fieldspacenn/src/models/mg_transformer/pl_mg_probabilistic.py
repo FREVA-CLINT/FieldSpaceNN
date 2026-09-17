@@ -1,6 +1,8 @@
 from typing import Any, Dict, Tuple
 
 import torch
+from ...data.multigrid_batch import unpack_multigrid_batch
+from ...utils.regular_multigrid import package_regular_prediction
 
 import lightning.pytorch as pl
 
@@ -35,10 +37,18 @@ class LightningProbabilisticModel(pl.LightningModule):
         :param batch_index: Index of the current batch.
         :return: Dictionary with output groups and masks.
         """
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, _ = unpack_multigrid_batch(batch)
 
         first_valid_target = next((g for g in target_groups if g), None)
         if not first_valid_target:
+            dataset = self.trainer.predict_dataloaders.dataset
+            if getattr(dataset, "grid_type", "healpix") == "regular":
+                return package_regular_prediction(
+                    target_groups,
+                    dataset.sampling_zooms_collate or dataset.sampling_zooms,
+                    encode_only=getattr(self, "mode", None) == "encode",
+                    mask_groups=mask_groups,
+                )
             return {"output": target_groups, "mask": mask_groups}
 
         batch_size = first_valid_target[max(first_valid_target.keys())].shape[0]
@@ -113,4 +123,13 @@ class LightningProbabilisticModel(pl.LightningModule):
                 # Reshape to (batch_size, n_samples, ...)
                 output_groups[i] = {int(z): v.view(batch_size, self.n_samples, *v.shape[1:]) for z, v in concatenated_group.items()}
 
+        dataset = self.trainer.predict_dataloaders.dataset
+        if getattr(dataset, "grid_type", "healpix") == "regular":
+            sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+            return package_regular_prediction(
+                output_groups,
+                sample_configs,
+                encode_only=getattr(self, "mode", None) == "encode",
+                mask_groups=mask_groups,
+            )
         return {"output": output_groups, "mask": mask_groups}

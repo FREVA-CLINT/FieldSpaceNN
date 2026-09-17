@@ -12,6 +12,7 @@ from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, Fiel
 from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
 from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
 from ...modules.grids.grid_layer import GridLayer
+from ...modules.grids.regular_grid_layer import RegularGridLayer
 from ...utils.helpers import check_get
 
 defaults = {
@@ -361,10 +362,38 @@ class MG_base_model(nn.Module):
         zooms = []
         self.grid_layers: nn.ModuleDict = nn.ModuleDict()
         for zoom, mgrid in enumerate(mgrids):
-            self.grid_layers[str(int(zoom))] = GridLayer(zoom, mgrid['adjc'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar')
+            grid_type = str(mgrid.get("grid_type", "healpix")).lower()
+            if grid_type == "regular":
+                layer = RegularGridLayer(
+                    zoom,
+                    mgrid["adjc"],
+                    mgrid["adjc_mask"],
+                    mgrid["coords"],
+                    coord_system=str(mgrid.get("coord_system", "cartesian")),
+                )
+            elif grid_type == "healpix":
+                layer = GridLayer(
+                    zoom,
+                    mgrid['adjc'],
+                    mgrid['adjc_mask'],
+                    mgrid['coords'],
+                    coord_system='polar',
+                )
+                # Runtime-only metadata keeps old state dicts byte-for-byte compatible.
+                layer.grid_type = "healpix"
+                layer.root_cell_count = int(mgrid.get("root_cell_count", 12))
+            else:
+                raise ValueError(f"Unsupported multigrid type `{grid_type}` at zoom {zoom}.")
+            self.grid_layers[str(int(zoom))] = layer
             zooms.append(zoom)
 
         self.register_buffer('zooms', torch.tensor(zooms), persistent=False)
         self.zoom_max: int = int(self.zooms[-1])
 
         self.grid_layer_max: GridLayer = self.grid_layers[str(int(self.zooms[-1]))]
+        self.grid_type: str = str(getattr(self.grid_layer_max, "grid_type", "healpix"))
+        self.root_cell_count: int = int(getattr(self.grid_layer_max, "root_cell_count", 12))
+
+    def n_cells(self, zoom: int) -> int:
+        """Return the global cell count for a model grid level."""
+        return self.root_cell_count * 4 ** int(zoom)

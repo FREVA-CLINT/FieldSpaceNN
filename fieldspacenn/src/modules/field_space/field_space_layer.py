@@ -731,6 +731,9 @@ class FieldSpaceLayerBlock(nn.Module):
         self.out_zooms: Optional[List[int]] = out_zooms
         self.in_zooms: List[int] = in_zooms
         self.field_zoom: int = int(field_zoom)
+        self.root_cell_count: int = int(
+            getattr(grid_layers[str(max(self.field_zoom, 0))], "root_cell_count", 12)
+        )
         self.in_token_len_depth = int(in_token_len_depth)
         self.out_token_len_depth = int(out_token_len_depth)
         if self.in_token_len_depth <= 0:
@@ -979,7 +982,7 @@ class FieldSpaceLayerBlock(nn.Module):
             self.n_depths // self.in_token_len_depth,
         )
         indexed_n_space = (
-            12 * 4**self.field_zoom
+            self.root_cell_count * 4**self.field_zoom
             if self.n_rank_space is not None
             and self.n_rank_space > 0
             and self.field_zoom >= 0
@@ -1363,6 +1366,9 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         }
 
         self.field_zoom = int(field_zoom)
+        self.root_cell_count: int = int(
+            getattr(grid_layers[str(max(self.field_zoom, 0))], "root_cell_count", 12)
+        )
         self.in_token_len_depth = int(in_token_len_depth)
         self.out_token_len_depth = int(out_token_len_depth)
         self.n_depths = 1 if n_depths is None else int(n_depths)
@@ -1623,7 +1629,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         )
         n_rank_space = self.n_rank_space_by_zoom[zoom]
         indexed_n_space = (
-            12 * 4**self.field_zoom
+            self.root_cell_count * 4**self.field_zoom
             if n_rank_space is not None
             and n_rank_space > 0
             and self.field_zoom >= 0

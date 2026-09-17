@@ -9,6 +9,7 @@ from ...modules.diffusion.mg_sampler import DDPMSampler, DDIMSampler
 from ..mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms
 from ...utils.helpers import merge_sampling_dicts
+from ...data.multigrid_batch import unpack_multigrid_batch
 
 
 class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisticModel):
@@ -112,6 +113,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         pred_xstart: bool = False,
         mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb: Optional[Sequence[Dict[str, Any]]] = None,
+        loss_region_mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
     ):
         if mask_groups is None:
             mask_groups = mask_zooms
@@ -119,6 +121,8 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             emb_groups = emb
         if sample_configs_target is None:
             sample_configs_target = sample_configs
+        if loss_region_mask_groups is None:
+            loss_region_mask_groups = [None] * len(target_groups)
 
         source_groups_list = [source_groups] if isinstance(source_groups, dict) else list(source_groups)
 
@@ -147,6 +151,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix=prefix,
         )
 
@@ -167,7 +172,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         :return: Training loss tensor.
         """
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         # Inject patch indices into the sampling configuration.
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -178,6 +183,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             sample_configs,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='train',
         )
 
@@ -200,7 +206,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
         :return: Validation loss tensor.
         """
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
@@ -214,6 +220,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             sample_configs,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='val',
             pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0),
         )

@@ -11,6 +11,7 @@ from ...modules.flowmatching.mg_flow_matching import MGFlowMatching
 from ...modules.flowmatching.mg_sampler import EulerFlowSampler
 from ...modules.grids.grid_utils import decode_zooms
 from ...utils.helpers import merge_sampling_dicts
+from ...data.multigrid_batch import unpack_multigrid_batch
 
 
 class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel):
@@ -153,10 +154,12 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs: Mapping[int, Dict[str, Any]],
         mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
         emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]],
+        loss_region_mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
         prefix: str,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         mask_groups = list(mask_groups) if mask_groups is not None else [None] * len(source_groups)
         emb_groups = list(emb_groups) if emb_groups is not None else [None] * len(source_groups)
+        loss_region_mask_groups = list(loss_region_mask_groups) if loss_region_mask_groups is not None else [None] * len(source_groups)
 
         valid_indices = [
             idx
@@ -198,6 +201,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             target = target_groups[idx]
             mask = mask_groups[idx]
             emb = emb_groups[idx]
+            loss_region_mask = loss_region_mask_groups[idx]
             lambda_group = float(lambda_groups[idx])
             weight_group = group_weights[local_idx]
 
@@ -207,6 +211,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 output,
                 target,
                 mask=mask,
+                loss_region_mask=loss_region_mask,
                 sample_configs=sample_configs,
                 prefix=f"{prefix}/",
                 emb=emb,
@@ -224,6 +229,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                     target = target_groups[idx]
                     mask = mask_groups[idx]
                     emb = emb_groups[idx]
+                    loss_region_mask = loss_region_mask_groups[idx]
                     lambda_group = float(lambda_groups[idx])
                     weight_group = group_weights[local_idx]
 
@@ -237,6 +243,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                         output_comp,
                         target_comp,
                         mask=mask,
+                        loss_region_mask=(
+                            {max_zoom: loss_region_mask[max_zoom]}
+                            if loss_region_mask and max_zoom in loss_region_mask
+                            else None
+                        ),
                         sample_configs=sample_configs,
                         prefix=f"{prefix}/composed_",
                         emb=emb,
@@ -253,6 +264,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs: Mapping[int, Dict[str, Any]],
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
+        loss_region_mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]],
         prefix: str,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         batch_size, device = self._get_batch_size_and_device(input_groups)
@@ -278,6 +290,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             sample_configs=sample_configs,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix=f"{prefix}/block_{block_idx}",
         )
         return block_loss, block_loss_dict
@@ -299,7 +312,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         batch_idx: int,
     ) -> torch.Tensor:
         sample_configs = self._get_sample_configs(stage="train")
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
@@ -315,6 +328,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
+                loss_region_mask_groups=loss_region_mask_groups,
                 prefix="train",
             )
             block_losses.append(block_loss)
@@ -332,7 +346,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         batch_idx: int,
     ) -> torch.Tensor:
         sample_configs = self._get_sample_configs(stage="val")
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
@@ -348,6 +362,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
+                loss_region_mask_groups=loss_region_mask_groups,
                 prefix="val",
             )
             block_losses.append(block_loss)

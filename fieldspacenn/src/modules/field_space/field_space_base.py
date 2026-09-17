@@ -152,7 +152,8 @@ class Tokenizer(nn.Module):
         self.features_zoom: List[int] = []
         for input_zoom in input_zooms:
 
-            n_patch = 4**(input_zoom - self.token_zoom) if token_zoom > -1 else 12*4**(input_zoom)
+            root_cell_count = int(getattr(grid_layers[str(input_zoom)], "root_cell_count", 12))
+            n_patch = 4**(input_zoom - self.token_zoom) if token_zoom > -1 else root_cell_count*4**(input_zoom)
             if overlap_thickness > 0:
                 grid_layer = grid_layers[str(input_zoom + (overlap_thickness - 1))]
                 self.grid_layers_overlap[str(input_zoom)] = grid_layer

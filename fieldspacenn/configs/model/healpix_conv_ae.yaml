@@ -1,0 +1,264 @@
+_target_: fieldspacenn.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
+kl_weight: 1.0e-10
+lambda_loss_dict:
+  zooms:
+    6:
+      MSE_loss: 1
+weight_decay: 0
+lr_groups:
+  default:
+    lr: 0.0001
+    warmup: 0
+  attention:
+    matches:
+    - TransformerBlock
+    - GridSelfAttention
+    lr: 0.0001
+    warmup: 5000
+model:
+  _target_: fieldspacenn.src.models.mg_autoencoder.mg_autoencoder.MG_AutoEncoder
+  mgrids: ${mgrids}
+  in_zooms: [6]
+  in_features: 1
+  out_features: 1
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [2]
+  layer_confs_emb:
+    aggregation: 'shift_scale'
+  encoder_block_configs:
+    "conv_0_down":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [6]
+      target_zooms: [5]
+      out_zooms: [5]
+      target_features: [32]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [5]
+      target_zooms: [5]
+      out_zooms: [5]
+      target_features: [64]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1_down":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [5]
+      target_zooms: [4]
+      out_zooms: [4]
+      target_features: [64]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_2":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [4]
+      target_zooms: [4]
+      out_zooms: [4]
+      target_features: [128]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_2_down":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [4]
+      target_zooms: [3]
+      out_zooms: [3]
+      target_features: [128]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_3":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3]
+      target_zooms: [3]
+      out_zooms: [3]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_3_down":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3]
+      target_zooms: [2]
+      out_zooms: [2]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_4":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [2]
+      target_zooms: [2]
+      out_zooms: [2]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_5":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [2]
+      target_zooms: [2]
+      out_zooms: [2]
+      target_features: [4]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+  decoder_block_configs:
+    "conv_0":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [2]
+      target_zooms: [2]
+      out_zooms: [2]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [2]
+      target_zooms: [2]
+      out_zooms: [2]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_0_up":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [2]
+      target_zooms: [3]
+      out_zooms: [3]
+      target_features: [256]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_2":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3]
+      target_zooms: [3]
+      out_zooms: [3]
+      target_features: [128]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_1_up":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [3]
+      target_zooms: [4]
+      out_zooms: [4]
+      target_features: [128]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_3":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [4]
+      target_zooms: [4]
+      out_zooms: [4]
+      target_features: [64]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_2_up":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [4]
+      target_zooms: [5]
+      out_zooms: [5]
+      target_features: [64]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_4":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [5]
+      target_zooms: [5]
+      out_zooms: [5]
+      target_features: [32]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5
+    "conv_3_up":
+      _target_: fieldspacenn.src.modules.field_space.healpix_convolution.MultiZoomHealpixConvConfig
+      in_zooms: [5]
+      target_zooms: [6]
+      out_zooms: [6]
+      target_features: [1]
+      share_weights: false
+      use_neighborhood: true
+      norm: layer
+      act: silu
+      residual: true
+      num_groups: 8
+      eps: 1.0e-5

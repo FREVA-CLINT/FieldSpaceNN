@@ -7,9 +7,15 @@ import torch.nn.functional as F
 from ..modules.grids.grid_layer import GridLayer
 
 
-def _reduce_to_var_depth(values: torch.Tensor) -> torch.Tensor:
+def _reduce_to_var_depth(
+    values: torch.Tensor,
+    loss_region_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
     if values.ndim == 0:
         return values
+
+    if loss_region_mask is not None:
+        return _masked_reduce_to_var_depth(values, loss_region_mask)
 
     reduce_dims = tuple(dim for dim in range(values.ndim) if dim not in (1, values.ndim - 2))
     if not reduce_dims:
@@ -20,7 +26,8 @@ def _reduce_to_var_depth(values: torch.Tensor) -> torch.Tensor:
 
 def _expand_mask(mask: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
     while mask.ndim < values.ndim:
-        mask = mask.unsqueeze(dim=-1)
+        # Neighborhood losses add axes immediately after the spatial dimension.
+        mask = mask.unsqueeze(dim=4 if mask.ndim >= 4 else -1)
     return mask.expand_as(values)
 
 
@@ -133,6 +140,7 @@ class MGMultiLoss(nn.Module):
         output: Dict[int, torch.Tensor],
         target: Dict[int, torch.Tensor],
         mask: Optional[Dict[int, torch.Tensor]] = None,
+        loss_region_mask: Optional[Dict[int, torch.Tensor]] = None,
         sample_configs: Mapping[int, Dict[str, Any]] = {},
         prefix: str = "",
         emb: Mapping[str, Any] = {},
@@ -147,6 +155,9 @@ class MGMultiLoss(nn.Module):
         for zoom_level, out_zoom in output.items():
             tgt_zoom = target[zoom_level]
             mask_zoom = mask.get(zoom_level) if mask else None
+            loss_region_mask_zoom = (
+                loss_region_mask.get(zoom_level) if loss_region_mask else None
+            )
             sample_conf = sample_configs.get(zoom_level) if sample_configs else None
             loss_modules = self._loss_modules_for_zoom(zoom_level)
             if not loss_modules:
@@ -173,10 +184,22 @@ class MGMultiLoss(nn.Module):
 
             for loss_fcn in loss_modules:
                 if hasattr(loss_fcn, "loss_map"):
-                    loss_map = loss_fcn.loss_map(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
+                    loss_map = loss_fcn.loss_map(
+                        out_zoom,
+                        tgt_zoom,
+                        mask=mask_zoom,
+                        loss_region_mask=loss_region_mask_zoom,
+                        sample_configs=sample_conf,
+                    )
                 else:
                     loss_map = _constant_loss_map(
-                        loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf),
+                        loss_fcn(
+                            out_zoom,
+                            tgt_zoom,
+                            mask=mask_zoom,
+                            loss_region_mask=loss_region_mask_zoom,
+                            sample_configs=sample_conf,
+                        ),
                         out_zoom,
                     )
 
@@ -218,7 +241,10 @@ class L1_loss(nn.Module):
         super().__init__()
 
     def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return _reduce_to_var_depth(F.smooth_l1_loss(output, target.view(output.shape), reduction="none"))
+        return _reduce_to_var_depth(
+            F.smooth_l1_loss(output, target.view(output.shape), reduction="none"),
+            kwargs.get("loss_region_mask"),
+        )
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -229,7 +255,10 @@ class MSE_loss(nn.Module):
         super().__init__()
 
     def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return _reduce_to_var_depth((output - target.view(output.shape)) ** 2)
+        return _reduce_to_var_depth(
+            (output - target.view(output.shape)) ** 2,
+            kwargs.get("loss_region_mask"),
+        )
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -240,7 +269,14 @@ class MSE_masked_loss(nn.Module):
         super().__init__()
 
     def loss_map(self, output: torch.Tensor, target: torch.Tensor, mask: Optional[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, mask)
+        loss_region_mask = kwargs.get("loss_region_mask")
+        if mask is None:
+            combined_mask = loss_region_mask
+        elif loss_region_mask is None:
+            combined_mask = mask
+        else:
+            combined_mask = mask.to(torch.bool) & loss_region_mask.to(torch.bool)
+        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, combined_mask)
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, mask=mask, **kwargs).mean()
@@ -262,7 +298,7 @@ class NHInt_loss(nn.Module):
         output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
         target_nh, _ = self.grid_layer.get_nh(target, **sample_configs)
         loss = (output_nh.abs().sum(dim=-2) - target_nh.abs().sum(dim=-2)).abs()
-        return _reduce_to_var_depth(loss)
+        return _reduce_to_var_depth(loss, kwargs.get("loss_region_mask"))
 
     def forward(self, output: torch.Tensor, target: Optional[torch.Tensor] = None, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -286,7 +322,9 @@ class NHVar_loss(nn.Module):
         target_nh, _ = self.grid_layer.get_nh(target, **sample_configs)
         out_logstd = 0.5 * torch.log(output_nh.var(dim=-2) + self.eps)
         tgt_logstd = 0.5 * torch.log(target_nh.var(dim=-2) + self.eps)
-        return _reduce_to_var_depth((out_logstd - tgt_logstd).abs())
+        return _reduce_to_var_depth(
+            (out_logstd - tgt_logstd).abs(), kwargs.get("loss_region_mask")
+        )
 
     def forward(self, output: torch.Tensor, target: Optional[torch.Tensor] = None, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -299,7 +337,7 @@ class GNLL_loss(nn.Module):
     def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
         output_mean, output_var = output.chunk(2, dim=-1)
         loss = F.gaussian_nll_loss(output_mean, target.view(*output_mean.shape), output_var, reduction="none")
-        return _reduce_to_var_depth(loss)
+        return _reduce_to_var_depth(loss, kwargs.get("loss_region_mask"))
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -316,7 +354,14 @@ class MSE_Hole_loss(nn.Module):
         mask: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, mask)
+        loss_region_mask = kwargs.get("loss_region_mask")
+        if mask is None:
+            combined_mask = loss_region_mask
+        elif loss_region_mask is None:
+            combined_mask = mask
+        else:
+            combined_mask = mask.to(torch.bool) & loss_region_mask.to(torch.bool)
+        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, combined_mask)
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, mask: Optional[torch.Tensor] = None, **kwargs: Any):
         return self.loss_map(output, target, mask=mask, **kwargs).mean()
@@ -382,7 +427,7 @@ class Grad_loss(nn.Module):
         nh_diff_target = torch.log_softmax(nh_diff_target, dim=-1)
 
         kl = self.loss_fcn(nh_diff_output, nh_diff_target)
-        return _reduce_to_var_depth(kl)
+        return _reduce_to_var_depth(kl, kwargs.get("loss_region_mask"))
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -403,7 +448,7 @@ class NHTV_loss(nn.Module):
     ) -> torch.Tensor:
         output_nh, _ = self.grid_layer.get_nh(output, **sample_configs)
         loss = (output_nh[..., [0], :] - output_nh[..., 1:, :]) ** 2
-        return _reduce_to_var_depth(loss).sqrt()
+        return _reduce_to_var_depth(loss, kwargs.get("loss_region_mask")).sqrt()
 
     def forward(self, output: torch.Tensor, target: Optional[torch.Tensor] = None, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -431,7 +476,7 @@ class NHTV_decay_loss(nn.Module):
             target_nh[..., [0], :].abs() + 1e-6
         )
         loss = torch.exp(-target_diff / self.tau) * nh_diff
-        return _reduce_to_var_depth(loss).sqrt()
+        return _reduce_to_var_depth(loss, kwargs.get("loss_region_mask")).sqrt()
 
     def forward(self, output: torch.Tensor, target: Optional[torch.Tensor] = None, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()

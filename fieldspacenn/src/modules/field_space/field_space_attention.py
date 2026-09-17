@@ -1027,7 +1027,8 @@ class FieldSpaceAttentionBlock(nn.Module):
                 return {}
 
             indexed_n_depths = max(1, int(n_depths) // max(1, int(token_len_depth))) if int(n_depths) > 1 else 1
-            indexed_n_space = 12 * 4**int(token_zoom) if n_rank_space is not None and int(n_rank_space) > 0 and int(token_zoom) >= 0 else 1
+            root_cell_count = int(getattr(grid_layer_field, "root_cell_count", 12))
+            indexed_n_space = root_cell_count * 4**int(token_zoom) if n_rank_space is not None and int(n_rank_space) > 0 and int(token_zoom) >= 0 else 1
             indexed_rank_space = int(n_rank_space) if indexed_n_space > 1 else None
 
             return build_indexed_dims(
@@ -1258,7 +1259,8 @@ class FieldSpaceAttentionBlock(nn.Module):
         features = {}
         for zoom in zooms:
             if self.token_zoom == 0:
-                features[zoom] = max([12*4**(zoom - self.token_zoom),1])
+                root_cell_count = int(getattr(self.grid_layer_field, "root_cell_count", 12))
+                features[zoom] = max([root_cell_count*4**(zoom - self.token_zoom),1])
             else: 
                 features[zoom] = max([4**(zoom - self.token_zoom),1])
         return features
@@ -2276,7 +2278,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         )
         n_rank_space = self.n_rank_space_by_zoom[zoom]
         indexed_n_space = (
-            12 * 4**self.token_zoom
+            int(getattr(self.grid_layer_field, "root_cell_count", 12)) * 4**self.token_zoom
             if n_rank_space is not None
             and int(n_rank_space) > 0
             and self.token_zoom >= 0

@@ -1,5 +1,4 @@
 _target_: fieldspacenn.src.models.mg_autoencoder.pl_mg_model.LightningMGAutoEncoderModel
-coarse_to_fine_interp: nearest
 data_variables: ${data_variables}
 kl_weight: 1.0e-10
 lambda_loss_dict:
@@ -43,14 +42,14 @@ model:
       kv_zooms: [3,5,6]
       token_zoom: 3
       att_dim: 32
-      token_len_depth: [1,5]
+      token_len_depth: 1
       token_len_time: 1
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
       mlp_token_overlap_time: False
       mlp_token_overlap_depth: False
-      rank_depth: [null,4]
+      rank_depth: null
       seq_len_zoom: -1
       seq_len_time: -1
       seq_len_depth: -1
@@ -65,6 +64,7 @@ model:
       _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
       in_zooms: [5,6]
       target_zooms: [5]
+      target_features: 1
       field_zoom: 4
       out_zooms: [5,3]
       with_nh: true
@@ -76,14 +76,14 @@ model:
       kv_zooms: [3,5]
       token_zoom: 3
       att_dim: 32
-      token_len_depth: [1,5]
+      token_len_depth: 1
       token_len_time: 1
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
       mlp_token_overlap_time: False
       mlp_token_overlap_depth: False
-      rank_depth: [null,4]
+      rank_depth: null
       seq_len_zoom: -1
       seq_len_time: -1
       seq_len_depth: -1
@@ -102,14 +102,14 @@ model:
       kv_zooms: [3,5]
       token_zoom: 3
       att_dim: 32
-      token_len_depth: [1,5]
+      token_len_depth: 1
       token_len_time: 1
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
       mlp_token_overlap_time: False
       mlp_token_overlap_depth: False
-      rank_depth: [null,4]
+      rank_depth: null
       seq_len_zoom: -1
       seq_len_time: -1
       seq_len_depth: -1
@@ -124,6 +124,7 @@ model:
       _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
       in_zooms: [5]
       target_zooms: [6]
+      target_features: 1
       field_zoom: 3
       out_zooms: [3,5,6]
       with_nh: true
@@ -135,14 +136,14 @@ model:
       kv_zooms: [3,5,6]
       token_zoom: 3
       att_dim: 32
-      token_len_depth: [1,5]
+      token_len_depth: 1
       token_len_time: 1
       token_overlap_space: True
       token_overlap_time: False
       token_overlap_depth: False
       mlp_token_overlap_time: False
       mlp_token_overlap_depth: False
-      rank_depth: [null,4]
+      rank_depth: null
       seq_len_zoom: -1
       seq_len_time: -1
       seq_len_depth: -1

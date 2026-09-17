@@ -1,0 +1,56 @@
+dataset:
+  _target_: fieldspacenn.src.data.datasets_regular_multigrid.RegularMultigridDataset
+  spatial_dims: [y, x]
+  sample_dim: null
+  time_dim: null
+  channel_dim: null
+  pyramid_mode: derive
+  norm_dict: null
+  normalize_data: false
+  is_training: true
+  train_loss_patch_zoom: -1
+  deterministic: false
+  load_n_samples_time: 1
+  sampling_zooms:
+    3:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      mask_n_last_ts: 0
+    4:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      mask_n_last_ts: 0
+    5:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      mask_n_last_ts: 0
+    6:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      mask_n_last_ts: 0
+
+val_dataset:
+  _target_: fieldspacenn.src.data.datasets_regular_multigrid.RegularMultigridDataset
+  spatial_dims: ${dataloader.dataset.spatial_dims}
+  sample_dim: ${dataloader.dataset.sample_dim}
+  time_dim: ${dataloader.dataset.time_dim}
+  channel_dim: ${dataloader.dataset.channel_dim}
+  pyramid_mode: ${dataloader.dataset.pyramid_mode}
+  norm_dict: ${dataloader.dataset.norm_dict}
+  normalize_data: ${dataloader.dataset.normalize_data}
+  is_training: false
+  train_loss_patch_zoom: -1
+  deterministic: true
+  load_n_samples_time: 1
+  sampling_zooms: ${dataloader.dataset.sampling_zooms}
+
+datamodule:
+  _target_: fieldspacenn.src.data.pl_data_module.DataModule
+  batch_size: 1
+  num_workers: 0
+  use_costum_ddp_sampler: false
+  shuffle: true

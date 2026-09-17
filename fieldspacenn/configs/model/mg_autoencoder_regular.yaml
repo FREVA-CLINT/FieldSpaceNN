@@ -1,0 +1,21 @@
+defaults:
+  - mg_autoencoder
+  - _self_
+
+# The native regular dataset intentionally omits TimeEmbedder values when no
+# time dimension is configured.  Use the planar trainable MG embedding instead.
+model:
+  encoder_block_configs:
+    att_0:
+      embed_confs:
+        embed_names: [MGEmbedder]
+    att_1:
+      embed_confs:
+        embed_names: [MGEmbedder]
+  decoder_block_configs:
+    att_0:
+      embed_confs:
+        embed_names: [MGEmbedder]
+    att_1:
+      embed_confs:
+        embed_names: [MGEmbedder]

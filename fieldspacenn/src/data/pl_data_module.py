@@ -205,7 +205,8 @@ class BatchReshapeAllocator:
         target_groups: Any,
         mask_groups: Any,
         emb_groups: Any,
-        patch_index_zooms: Any
+        patch_index_zooms: Any,
+        loss_region_mask_groups: Any = None,
     ):
         """
         Merge the time-sample dimension into the batch dimension when present.
@@ -245,8 +246,9 @@ class BatchReshapeAllocator:
         mask_groups = [_merge_obj(group) for group in mask_groups]
         emb_groups = [_merge_obj(group) for group in emb_groups]
         patch_index_zooms = _merge_obj(patch_index_zooms)
+        loss_region_mask_groups = _merge_obj(loss_region_mask_groups)
 
-        return source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms
+        return source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups
 
     def __call__(self, batch: Sequence[Any]):
         """
@@ -260,13 +262,22 @@ class BatchReshapeAllocator:
         # Use the default collate function to create the initial batch.
         # This will stack the tensors from __getitem__ along a new dimension.
         # The shape will be (batch_size, n, C, H, W).
-        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = _default_collate_with_fallback(batch)
+        collated = _default_collate_with_fallback(batch)
+        if len(collated) == 5:
+            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = collated
+            loss_region_mask_groups = None
+        elif len(collated) == 6:
+            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = collated
+        else:
+            raise ValueError(f"Expected a five- or six-field dataset sample, got {len(collated)} fields.")
 
-        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms = self._merge_time_batch_groups(
-            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
+        source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = self._merge_time_batch_groups(
+            source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms, loss_region_mask_groups
         )
 
-        return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
+        if loss_region_mask_groups is None:
+            return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms
+        return source_zooms_groups_out, target_zooms_groups_out, mask_zooms_groups, emb_groups, patch_index_zooms, loss_region_mask_groups
 
 
 class DataModule(LightningDataModule):

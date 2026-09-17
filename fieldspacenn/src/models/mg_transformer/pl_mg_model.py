@@ -9,6 +9,8 @@ from ...modules.grids.grid_utils import decode_zooms
 from ...utils.losses import MGMultiLoss, ReluPressureLevelScaler
 from ...utils.schedulers import CosineWarmupScheduler
 from ...utils.helpers import merge_sampling_dicts
+from ...data.multigrid_batch import unpack_multigrid_batch
+from ...utils.regular_multigrid import package_regular_prediction
 
 
 class LightningMGModel(pl.LightningModule):
@@ -282,6 +284,7 @@ class LightningMGModel(pl.LightningModule):
         prefix: str = '',
         mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb: Optional[Sequence[Dict[str, Any]]] = None,
+        loss_region_mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
     ):
         """
         Compute losses for a batch.
@@ -303,6 +306,8 @@ class LightningMGModel(pl.LightningModule):
             emb_groups = emb
         if sample_configs_target is None:
             sample_configs_target = sample_configs
+        if loss_region_mask_groups is None:
+            loss_region_mask_groups = [None] * len(target_groups)
 
         if isinstance(source_groups, dict):
             source_groups_list = [source_groups]
@@ -324,6 +329,7 @@ class LightningMGModel(pl.LightningModule):
             sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix=prefix,
         )
 
@@ -336,6 +342,7 @@ class LightningMGModel(pl.LightningModule):
         sample_configs_target: Mapping[int, Dict[str, Any]],
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Dict[str, Any]],
+        loss_region_mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         prefix: str,
     ):
         loss_dict_total: Dict[str, float] = {}
@@ -345,8 +352,8 @@ class LightningMGModel(pl.LightningModule):
         lambda_groups = self.lambda_loss_groups if len(self.lambda_loss_groups) > 0 else [1.0] * len(source_groups)
         normalizer = self._loss_normalizer(target_groups)
 
-        for group_index, (source, output, target, mask, emb, lambda_group) in enumerate(
-            zip(source_groups, output_groups, target_groups, mask_groups, emb_groups, lambda_groups)
+        for group_index, (source, output, target, mask, emb, loss_region_mask, lambda_group) in enumerate(
+            zip(source_groups, output_groups, target_groups, mask_groups, emb_groups, loss_region_mask_groups, lambda_groups)
         ):
             variable_weight_map = self._build_group_variable_weight_map(group_index, target, emb)
             group_loss_inputs.append(
@@ -355,6 +362,7 @@ class LightningMGModel(pl.LightningModule):
                     "target": target,
                     "output": output,
                     "mask": mask,
+                    "loss_region_mask": loss_region_mask,
                     "emb": emb,
                     "group_index": group_index,
                     "lambda_group": float(lambda_group),
@@ -370,6 +378,7 @@ class LightningMGModel(pl.LightningModule):
                 group_input["output"],
                 group_input["target"],
                 mask=group_input["mask"],
+                loss_region_mask=group_input["loss_region_mask"],
                 sample_configs=sample_configs_target,
                 prefix=f"{prefix}/",
                 emb=group_input["emb"],
@@ -432,11 +441,17 @@ class LightningMGModel(pl.LightningModule):
                 if group_input["mask"] is not None
                 else None
             )
+            loss_region_mask_comp = None
+            if group_input["loss_region_mask"] and max_zoom in group_input["loss_region_mask"]:
+                loss_region_mask_comp = {
+                    max_zoom: group_input["loss_region_mask"][max_zoom]
+                }
 
             loss, loss_dict = self.loss_composed(
                 output_comp,
                 target_comp,
                 mask=mask_comp,
+                loss_region_mask=loss_region_mask_comp,
                 sample_configs=sample_configs_target,
                 prefix=f'{prefix}/composed_',
                 emb=group_input["emb"],
@@ -466,7 +481,7 @@ class LightningMGModel(pl.LightningModule):
         dataset = self.trainer.datamodule.dataset_train
         sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
         sample_configs_target = getattr(dataset, "sampling_zooms_target", sample_configs)
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         # Inject patch indices into the sampling configuration.
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -479,6 +494,7 @@ class LightningMGModel(pl.LightningModule):
             sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='train',
         )
       
@@ -503,7 +519,7 @@ class LightningMGModel(pl.LightningModule):
         dataset = self.trainer.datamodule.dataset_val
         sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
         sample_configs_target = getattr(dataset, "sampling_zooms_target", sample_configs)
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
@@ -520,6 +536,7 @@ class LightningMGModel(pl.LightningModule):
             sample_configs_target=sample_configs_target,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='val')
         
         self.log_dict({"validate/total_loss": loss.item()}, prog_bar=True)
@@ -580,7 +597,7 @@ class LightningMGModel(pl.LightningModule):
         :return: Dictionary with outputs and masks.
         """
         sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, _ = unpack_multigrid_batch(batch)
 
         max_zoom = max(self.model.in_zooms)
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -588,11 +605,14 @@ class LightningMGModel(pl.LightningModule):
         output = self([group.copy() for group in source_groups], sample_configs=sample_configs, mask_zooms=mask_groups, emb=emb_groups,
                            out_zoom=max_zoom)
 
-        output = {
-            'output': output,
-            'mask': mask_groups,
-        }
-        return output
+        dataset = self.trainer.predict_dataloaders.dataset
+        if getattr(dataset, "grid_type", "healpix") == "regular":
+            return package_regular_prediction(
+                output,
+                sample_configs,
+                mask_groups=mask_groups,
+            )
+        return {'output': output, 'mask': mask_groups}
 
     def prepare_missing_zooms(
         self,

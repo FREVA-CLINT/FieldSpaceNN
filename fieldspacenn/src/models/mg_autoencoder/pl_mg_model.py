@@ -6,6 +6,7 @@ from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
 from ...models.mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
 from ...modules.grids.grid_utils import decode_zooms
 from ...utils.helpers import merge_sampling_dicts
+from ...data.multigrid_batch import unpack_multigrid_batch
 
 
 class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel):
@@ -62,7 +63,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         :return: Training loss tensor.
         """
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         # Inject patch indices into the sampling configuration.
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
@@ -73,6 +74,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_zooms=mask_groups,
             emb=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='train'
         )
 
@@ -95,7 +97,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
         :return: Validation loss tensor.
         """
         sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
-        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms, loss_region_mask_groups = unpack_multigrid_batch(batch)
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
         max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
@@ -109,6 +111,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             sample_configs,
             mask_zooms=mask_groups,
             emb=emb_groups,
+            loss_region_mask_groups=loss_region_mask_groups,
             prefix='val'
         )
         output = output_groups[0] if isinstance(output_groups, list) else output_groups

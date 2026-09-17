@@ -964,7 +964,8 @@ def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
 def encode_zooms(
     x_zooms: Dict[int, torch.Tensor],
     sample_configs: Dict,
-    patch_index_zooms: Dict
+    patch_index_zooms: Dict,
+    root_cell_count: int = 12,
 ):
     """
     Encode zoom levels as residuals from their next-coarser zoom.
@@ -972,6 +973,7 @@ def encode_zooms(
     :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
     :param sample_configs: Sampling configuration per zoom.
     :param patch_index_zooms: Patch indices per zoom.
+    :param root_cell_count: Number of level-zero cells (12 for HEALPix, 4 for regular grids).
     :return: Updated dict with residualized tensors.
     """
 
@@ -993,7 +995,14 @@ def encode_zooms(
 
         # Align higher zoom to current zoom and compute residuals.
         bvt = x.shape[:-3]
-        x_h_patch = get_matching_time_patch(x_h, zoom_h, zoom, sample_configs, patch_index_zooms)
+        x_h_patch = get_matching_time_patch(
+            x_h,
+            zoom_h,
+            zoom,
+            sample_configs,
+            patch_index_zooms,
+            base=root_cell_count,
+        )
         x = x.view(*bvt, -1, 4**(zoom-zoom_h), *x.shape[-2:])
         x.sub_(x_h_patch.unsqueeze(dim=-3))
 
@@ -1004,13 +1013,19 @@ def encode_zooms(
 
     return x_zooms
     
-def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoom: int):
+def decode_zooms(
+    x_zooms: Dict[int, torch.Tensor],
+    sample_configs: Dict,
+    out_zoom: int,
+    root_cell_count: int = 12,
+):
     """
     Reconstruct a target zoom by summing contributions from multiple levels.
 
     :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
     :param sample_configs: Sampling configuration per zoom.
     :param out_zoom: Target zoom level to decode.
+    :param root_cell_count: Number of level-zero cells (12 for HEALPix, 4 for regular grids).
     :return: Dict containing the reconstructed tensor at out_zoom.
     """
     active_zooms = [zoom for zoom in sorted(x_zooms.keys()) if zoom <= out_zoom]
@@ -1027,7 +1042,9 @@ def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoo
         else:
             x_zoom = x_zooms[zoom]
 
-        x_zoom = get_matching_time_patch(x_zoom, zoom, zoom, sample_configs)
+        x_zoom = get_matching_time_patch(
+            x_zoom, zoom, zoom, sample_configs, base=root_cell_count
+        )
 
         if x is None:
             x = x_zoom
@@ -1035,7 +1052,9 @@ def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoo
             continue
 
         assert current_zoom is not None
-        x = get_matching_time_patch(x, current_zoom, zoom, sample_configs)
+        x = get_matching_time_patch(
+            x, current_zoom, zoom, sample_configs, base=root_cell_count
+        )
         up_factor = 4 ** (zoom - current_zoom)
         x = x.unsqueeze(-3).repeat_interleave(up_factor, dim=-3).reshape(*x.shape[:3], -1, *x.shape[-2:])
         x = x + x_zoom
@@ -1044,7 +1063,9 @@ def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoo
     assert x is not None
     assert current_zoom is not None
     if current_zoom < out_zoom:
-        x = get_matching_time_patch(x, current_zoom, out_zoom, sample_configs)
+        x = get_matching_time_patch(
+            x, current_zoom, out_zoom, sample_configs, base=root_cell_count
+        )
         up_factor = 4 ** (out_zoom - current_zoom)
         x = x.unsqueeze(-3).repeat_interleave(up_factor, dim=-3).reshape(*x.shape[:3], -1, *x.shape[-2:])
 

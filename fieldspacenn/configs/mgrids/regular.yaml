@@ -1,0 +1,3 @@
+_target_: fieldspacenn.src.modules.grids.regular_grid.regular_grid_to_mgrid
+zoom_max: 7
+nh: 1

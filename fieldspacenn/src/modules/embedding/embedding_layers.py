@@ -228,7 +228,11 @@ def get_mg_embeddings(mg_emb_confs: Dict[str, Any], grid_layers: Dict[str, GridL
         mg_emb_confs['init_methods'],
     ):
         
-        wavelength_min = estimate_healpix_cell_radius_rad(grid_layers[str(zoom)].adjc.shape[0])
+        grid_layer = grid_layers[str(zoom)]
+        if getattr(grid_layer, "grid_type", "healpix") == "regular":
+            wavelength_min = 2.0 / float(getattr(grid_layer, "side"))
+        else:
+            wavelength_min = estimate_healpix_cell_radius_rad(grid_layer.adjc.shape[0])
 
         mg_emeddings[str(zoom)] = get_mg_embedding(
             grid_layers[str(zoom)],
@@ -296,6 +300,22 @@ def get_mg_embedding(
 
         fourier_layer = RandomFourierLayer(in_features=3, n_neurons=features, wave_length=wavelength)
         embs = amplitude*fourier_layer(coords_3d)
+
+    elif "fourier_plane" == init_mode:
+        if getattr(grid_layer_emb, "grid_type", "healpix") != "regular":
+            raise ValueError("`fourier_plane` initialization requires a regular grid layer.")
+        # Generate exactly `features` planar Fourier channels for any embedding
+        # width, then store the resulting table as a trainable parameter below.
+        n_frequencies = max(1, math.ceil(features / 2))
+        pixel_spacing = (
+            float(wavelength_min)
+            if wavelength_min is not None
+            else 2.0 / float(getattr(grid_layer_emb, "side"))
+        )
+        frequencies = torch.randn(2, n_frequencies) / max(pixel_spacing, 1e-8)
+        phases = 2.0 * torch.pi * (coords.float() @ frequencies)
+        embs = torch.cat((torch.sin(phases), torch.cos(phases)), dim=-1)[..., :features]
+        embs = amplitude * math.sqrt(2.0 / max(features, 1)) * embs
     
     elif "spherical_harmonics" == init_mode:
 
