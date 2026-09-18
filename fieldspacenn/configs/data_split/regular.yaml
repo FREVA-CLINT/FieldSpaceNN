@@ -1,0 +1,41 @@
+train:
+  source:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  target:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  timesteps:
+  - "0-29702"
+val:
+  source:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  target:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  timesteps:
+  - 0
+  - 1
+test:
+  source:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  target:
+    variables:
+    - tas
+    files:
+    - - /home/joe/PycharmProjects/climategen/data/netcdf/mpi_ge/tas_Amon_MPI-ESM_historical_r100i1850p3_185001-200512.nc
+  timesteps:
+  - 0
+  - 1

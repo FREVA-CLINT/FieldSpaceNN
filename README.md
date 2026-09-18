@@ -32,27 +32,74 @@ python -m pip install -e .
 - `fieldspacenn/src/train.py` is the main training entry point.
 - `fieldspacenn/src/test.py` provides prediction and evaluation support.
 
-## Configuration
+## Configuration and training
 
-Experiments are configured with [Hydra](https://hydra.cc/). The top-level configurations in `fieldspacenn/configs/` cover temperature downscaling and six-hour prediction. Model configurations are grouped by the terminology used in the article:
+Experiments are configured with [Hydra](https://hydra.cc/). Top-level experiment files live directly in `fieldspacenn/configs/`; reusable model, data, trainer, and logger configurations live in their corresponding subdirectories. Hydra overrides can select a different model, logger, batch size, accelerator, or data configuration without editing the YAML files.
 
-- `SPA_single_*` and `SPA_multi_*`: single-scale and multiscale temperature-downscaling Transformers;
-- `CM_single_*` and `CM_multi_*`: channel-mixing prediction models;
-- `VA_single_*` and `VA_multi_*`: variable-attention prediction models;
-- `CNN_*` and `UNET_*`: convolutional reference models.
+Before starting a run, replace the example data and checkpoint paths in the selected configuration and adjust the trainer and logger for the local system. In particular, the HEALPix experiments require the configured zoom levels in the model, data loader, and input data to agree.
 
-Before training, point `fieldspacenn/configs/data_zooms/default.yaml` to the required preprocessed ERA5 Zarr data and adjust the trainer and logger settings for the local system.
+### Field-space models from the paper
 
-A run is launched with a top-level experiment configuration, for example:
+The paper experiments use the following model families:
+
+- `SPA_single_*` and `SPA_multi_*` are the single-scale and multiscale temperature-downscaling Transformers.
+- `CM_single_*` and `CM_multi_*` are the channel-mixing prediction models.
+- `VA_single_*` and `VA_multi_*` are the variable-attention prediction models.
+- `CNN_*` and `UNET_*` are the convolutional reference models.
+
+Use `era5_downscaling_7_train` or `era5_downscaling_357_train` for temperature downscaling, and `era5_prediction_7_train`, `era5_prediction_357_train`, or `era5_prediction_457_train` for six-hour ERA5 prediction. For example:
 
 ```bash
 python -m fieldspacenn.src.train \
   --config-name era5_downscaling_357_train \
   model=SPA_multi_3_4_4 \
   data_zooms=default
+
+python -m fieldspacenn.src.train \
+  --config-name era5_prediction_357_train \
+  model=VA_multi_2_16_16 \
+  data_zooms=default \
+  data_variables=default_2D
 ```
 
-Hydra overrides can be supplied on the command line to select another model, logger, batch size, accelerator, or data configuration.
+Swap the `model` override for another compatible member of the families above. The selected experiment configuration determines the task-specific data loader and trainer defaults.
+
+### Autoencoder models
+
+`mg_autoencoder_train` trains the Field-Space Autoencoder on HEALPix data. Its default model is `mg_autoencoder`; `mg_healpix_conv_ae` provides the convolutional multi-zoom alternative:
+
+```bash
+python -m fieldspacenn.src.train \
+  --config-name mg_autoencoder_train \
+  model=mg_autoencoder
+
+python -m fieldspacenn.src.train \
+  --config-name mg_autoencoder_train \
+  model=mg_healpix_conv_ae
+```
+
+Both supplied multi-grid autoencoder model configurations use zooms `3`, `5`, and `6`; point the data configuration and loader at those same levels.
+
+For regular latitude-longitude data, use the CNN variational autoencoder configuration. Update the NetCDF file lists in `fieldspacenn/configs/data_split/regular.yaml` first:
+
+```bash
+python -m fieldspacenn.src.train --config-name cnn_vae_train
+```
+
+The related deterministic CNN baseline can be trained with `--config-name cnn_train`.
+
+### Flow matching
+
+The multi-grid flow-matching model is defined by `model/mg_flowmatching.yaml`. It can be selected from the general multi-grid training configuration:
+
+```bash
+python -m fieldspacenn.src.train \
+  --config-name mg_transformer_train \
+  model=mg_flowmatching \
+  run_name=mg_flowmatching \
+  model.model.pretrained_block_ckpt_path=/path/to/checkpoint.ckpt
+```
+
 
 ## References
 

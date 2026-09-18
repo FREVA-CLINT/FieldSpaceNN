@@ -1,0 +1,14 @@
+defaults:
+  - trainer: trainer
+  - logger: wandb
+  - model: cnn
+  - dataloader: netcdf_regular
+  - data_split: regular
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+project_name: cnn
+run_name: default
+run_dir: ../..
