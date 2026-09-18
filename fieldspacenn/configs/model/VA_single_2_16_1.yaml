@@ -204,7 +204,7 @@ model:
       _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
       in_zooms: *latent_zooms
       target_zooms: *in_zooms
-      target_features: &output_features [1, 1, 1]
+      target_features: &output_features [1]
       field_zoom: *token_zoom
       out_zooms: *in_zooms
       token_overlap_space: false
