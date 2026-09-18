@@ -1,0 +1,155 @@
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_model.LightningMGModel
+
+data_variables: ${data_variables}
+
+lambda_loss_dict:
+  aggregation: mean
+  normalize_lambdas: false
+  composed:
+    MSE_loss: 1
+
+lr_groups:
+  attention_weight_decay:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+    module_name_matches: [q_projection_layer, kv_projection_layer, out_layer_att, mlp]
+  default:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+
+model:
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  in_zooms: &in_zooms [4, 5, 7]
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [5]
+  n_groups_depths: [1]
+  emb_modulation_mode: shift_scale_mlp
+  latent_dim: 512
+
+  block_wrap_configs:
+    "preserve_field":
+      _target_: fieldspacenn.src.models.mg_transformer.block_wrap_operations.ResidualBlockWrapConfig
+      mode: add_residual
+      block_configs:
+        "tokenize_0": &tokenize_first
+          _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+          in_zooms: *in_zooms
+          target_zooms: &latent_zooms [4]
+          n_groups_variables_out: [1]
+          target_features:
+          - ${model.model.latent_dim}
+          field_zoom: &token_zoom 4
+          out_zooms: &tokenize_out_zooms [4]
+          token_overlap_space: true
+          type: "linear"
+
+        "spatial_3_5_1": &spatial_block
+          _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+          separate_mlp_norm: true
+          q_zooms: *latent_zooms
+          kv_zooms: *latent_zooms
+          target_zooms: *latent_zooms
+          out_zooms: *tokenize_out_zooms
+          token_zoom: *token_zoom
+          token_overlap_space: false
+          use_indexed_mlp: false
+          use_indexed_qkv: false
+          use_indexed_layer_norm: false
+          use_indexed_emb_layer: false
+          att_dim: ${model.model.latent_dim}
+          seq_len_zoom: -1
+          seq_len_time: 1
+          seq_len_depth: 1
+          with_var_att: false
+          update: shift
+          embed_confs: &shared_embed_confs
+            embed_names: ["MGEmbedder"]
+            input_zoom: *token_zoom
+            embed_confs: ${embedding}
+            token_overlap_space: false
+
+
+        "spatial_3_5_2":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_3":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_4":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_5":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_6":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_7":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_8":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_9":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_10":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_11":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_12":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_13":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "spatial_3_5_14":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_15":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+
+        "spatial_3_5_16":
+          <<: *spatial_block
+          embed_confs: *shared_embed_confs
+
+        "detokenize_1": &detokenize_block
+          _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+          in_zooms: *latent_zooms
+          target_zooms: *in_zooms
+          target_features: &output_features [1, 1, 1]
+          n_groups_variables_out: [5]
+          field_zoom: *token_zoom
+          out_zooms: *in_zooms
+          token_overlap_space: false
+          type: "linear"

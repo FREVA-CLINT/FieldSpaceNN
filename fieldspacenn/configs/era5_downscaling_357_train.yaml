@@ -1,0 +1,20 @@
+defaults:
+  - trainer: trainer_downscaling
+  - logger: wandb
+  - model: fst_1v_357_4L
+  - mgrids: healpix
+  - data_zooms: healpix
+  - data_variables: temperature
+  - data_split: default
+  - dataloader: downscaling_357
+  - embedding: default
+  - hydra: default
+  - _self_
+
+
+ckpt_path: null
+
+run_name: mg_transformer
+config_name: default
+project_name: test
+run_dir: ../..

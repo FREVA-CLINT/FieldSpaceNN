@@ -1,0 +1,360 @@
+from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+
+import torch
+from lightning.pytorch.utilities import rank_zero_only
+
+from .pl_mg_probabilistic import LightningProbabilisticModel
+from ...modules.diffusion.mg_gaussian_diffusion import MGGaussianDiffusion
+from ...modules.diffusion.mg_sampler import DDPMSampler, DDIMSampler
+from ..mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
+from ...modules.grids.grid_utils import decode_zooms
+from ...utils.helpers import merge_sampling_dicts
+
+
+class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisticModel):
+    def __init__(
+        self,
+        model: Any,
+        gaussian_diffusion: MGGaussianDiffusion,
+        lr_groups: Mapping[str, Mapping[str, Any]],
+        lambda_loss_dict: Mapping[str, float],
+        data_variables: Optional[Mapping[str, Any]] = None,
+        weight_decay: float = 0.0,
+        sampler: str = "ddpm",
+        n_samples: int = 1,
+        max_batchsize: int = -1,
+        decode_zooms: bool = True,
+    ) -> None:
+        """
+        Initialize the Lightning wrapper for the multi-grid diffusion model.
+
+        :param model: Diffusion model instance.
+        :param gaussian_diffusion: Diffusion process helper.
+        :param lr_groups: Optimizer parameter-group configuration.
+        :param lambda_loss_dict: Loss weighting dictionary.
+        :param weight_decay: Weight decay applied in the optimizer.
+        :param sampler: Sampler name ("ddpm" or "ddim").
+        :param n_samples: Number of posterior samples for probabilistic inference.
+        :param max_batchsize: Optional cap on batch size during prediction.
+        :param decode_zooms: Whether to decode outputs to a single zoom for visualization.
+        :return: None.
+        """
+        super().__init__(
+            model,
+            lr_groups,
+            lambda_loss_dict,
+            data_variables,
+            weight_decay
+        )
+
+        self.gaussian_diffusion: MGGaussianDiffusion = gaussian_diffusion
+        if sampler == "ddpm":
+            self.sampler: DDPMSampler | DDIMSampler = DDPMSampler(self.gaussian_diffusion)
+        else:
+            self.sampler = DDIMSampler(self.gaussian_diffusion)
+        self.n_samples: int = n_samples
+        self.max_batchsize: int = max_batchsize
+        self.decode_zooms: bool = decode_zooms
+
+
+    def forward(
+        self,
+        x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        sample_configs: Mapping[int, Any] = {},
+        mask_zooms_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
+        out_zoom: Optional[int] = None,
+        pred_xstart: bool = False,
+        **kwargs: Any,
+    ):
+        """
+        Forward pass that computes diffusion training losses for a batch.
+
+        :param x_zooms_groups: Input zoom-group mappings with tensors of shape
+            ``(b, v, t, n, d, f)``.
+        :param sample_configs: Sampling configuration dictionary per zoom.
+        :param mask_zooms_groups: Optional mask groups aligned with inputs.
+        :param emb_groups: Optional embedding groups aligned with inputs.
+        :param out_zoom: Optional target zoom level for outputs.
+        :param pred_xstart: Whether to compute ``x_0`` predictions.
+        :param kwargs: Additional model kwargs passed to diffusion losses.
+        :return: Diffusion loss outputs from ``training_losses``.
+        """
+        # Determine batch size from the first valid group
+        first_valid_group = next((g for g in x_zooms_groups if g), None)
+        if not first_valid_group:
+            return [(None, None, None)] * len(x_zooms_groups)
+        
+        batch_size = first_valid_group[max(first_valid_group.keys())].shape[0]
+        device = first_valid_group[max(first_valid_group.keys())].device
+        
+        diffusion_steps, _ = self.gaussian_diffusion.get_diffusion_steps(batch_size, device)
+        
+        model_kwargs = {
+            'sample_configs': sample_configs,
+            'out_zoom': out_zoom,
+            **kwargs
+        }
+        
+        return self.gaussian_diffusion.training_losses(
+            self.model, x_zooms_groups, diffusion_steps, mask_zooms_groups, emb_groups, create_pred_xstart=pred_xstart, **model_kwargs
+        )
+
+    def get_losses(
+        self,
+        source_groups: Sequence[Dict[int, torch.Tensor]] | Dict[int, torch.Tensor],
+        target_groups: Sequence[Dict[int, torch.Tensor]],
+        sample_configs: Mapping[int, Dict[str, Any]] = {},
+        sample_configs_target: Optional[Mapping[int, Dict[str, Any]]] = None,
+        mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb_groups: Optional[Sequence[Dict[str, Any]]] = None,
+        prefix: str = '',
+        pred_xstart: bool = False,
+        mask_zooms: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
+        emb: Optional[Sequence[Dict[str, Any]]] = None,
+    ):
+        if mask_groups is None:
+            mask_groups = mask_zooms
+        if emb_groups is None:
+            emb_groups = emb
+        if sample_configs_target is None:
+            sample_configs_target = sample_configs
+
+        source_groups_list = [source_groups] if isinstance(source_groups, dict) else list(source_groups)
+
+        diffusion_outputs = self(
+            x_zooms_groups=[group.copy() for group in source_groups_list],
+            mask_zooms_groups=mask_groups,
+            emb_groups=emb_groups,
+            sample_configs=sample_configs,
+            pred_xstart=pred_xstart,
+        )
+
+        output_groups = []
+        target_groups_from_diffusion = []
+        pred_xstart_list = []
+        for group_output in diffusion_outputs:
+            if group_output is not None and len(group_output) >= 2:
+                target_groups_from_diffusion.append(group_output[0])
+                output_groups.append(group_output[1])
+                pred_xstart_list.append(group_output[2] if len(group_output) > 2 else None)
+
+        total_loss, loss_dict, output_groups = self._compute_losses_from_output_groups(
+            source_groups=source_groups_list,
+            output_groups=output_groups,
+            target_groups=target_groups_from_diffusion,
+            sample_configs=sample_configs,
+            sample_configs_target=sample_configs_target,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix=prefix,
+        )
+
+        pred_xstart_output = pred_xstart_list[0] if pred_xstart_list else None
+        return total_loss, loss_dict, output_groups, pred_xstart_output
+
+    def training_step(
+        self,
+        batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
+        batch_idx: int,
+    ) -> torch.Tensor:
+        """
+        Run one training step for the diffusion model.
+
+        :param batch: Tuple ``(source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms)``
+            where tensors follow the base shape ``(b, v, t, n, d, f)``.
+        :param batch_idx: Index of the current batch.
+        :return: Training loss tensor.
+        """
+        sample_configs = self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+
+        # Inject patch indices into the sampling configuration.
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+
+        loss, loss_dict, _, _ = self.get_losses(
+            target_groups.copy(),
+            target_groups,
+            sample_configs,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix='train',
+        )
+
+        self.log_dict({"train/total_loss": loss.item()}, prog_bar=True)
+        self.log_dict(loss_dict, logger=True)
+
+        return loss
+
+
+    def validation_step(
+        self,
+        batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
+        batch_idx: int,
+    ) -> torch.Tensor:
+        """
+        Run one validation step for the diffusion model.
+
+        :param batch: Tuple ``(source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms)``.
+        :param batch_idx: Index of the current batch.
+        :return: Validation loss tensor.
+        """
+        dataset = self.trainer.val_dataloaders.dataset
+        sample_configs = dataset.sampling_zooms_collate or dataset.sampling_zooms
+        plot_combined = self._dataset_applies_diff(dataset)
+        source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
+
+        max_zooms = [max(target.keys()) for target in target_groups if target]
+        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
+
+        # Inject patch indices into the sampling configuration.
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+
+        loss, loss_dict, _, pred_xstart = self.get_losses(
+            [g.copy() for g in target_groups],
+            target_groups,
+            sample_configs,
+            mask_groups=mask_groups,
+            emb_groups=emb_groups,
+            prefix='val',
+            pred_xstart=(batch_idx == 0 and rank_zero_only.rank==0),
+        )
+
+        self.log_dict({"val/total_loss": loss.item()}, prog_bar=True)
+        self.log_dict(loss_dict, logger=True)
+
+        if batch_idx == 0 and rank_zero_only.rank==0:
+            # Select the first group for visualization
+            source_p_group = source_groups[0]
+            target_p_group = target_groups[0]
+            mask_p_group = mask_groups[0] if mask_groups and mask_groups[0] else None
+            emb_p_group = emb_groups[0] if emb_groups and emb_groups[0] else None
+
+            device = source_p_group[max(source_p_group.keys())].device
+            ts = torch.tensor([(self.gaussian_diffusion.diffusion_steps // 4) * (x + 1) - 1 for x in range(4)]).to(device)
+
+            for t in ts:
+                # Create a single-item batch for visualization
+                source_p = {zoom: source_p_group[zoom][0:1] for zoom in source_p_group.keys()}
+                target_p = {zoom: target_p_group[zoom][0:1] for zoom in target_p_group.keys()}
+                mask_p = {zoom: mask_p_group[zoom][0:1] for zoom in mask_p_group.keys()} if mask_p_group else None
+                emb_p = {
+                    'VariableEmbedder': emb_p_group['VariableEmbedder'][0:1],
+                    'TimeEmbedder': {int(zoom): emb_p_group['TimeEmbedder'][zoom][0:1] for zoom in emb_p_group['TimeEmbedder'].keys()},
+                }
+                if 'TimeProgressEmbedder' in emb_p_group:
+                    emb_p['TimeProgressEmbedder'] = {
+                        int(zoom): emb_p_group['TimeProgressEmbedder'][zoom][0:1]
+                        for zoom in emb_p_group['TimeProgressEmbedder'].keys()
+                    }
+                if 'variables_sampled' in emb_p_group:
+                    emb_p['variables_sampled'] = emb_p_group['variables_sampled'][0:1]
+                if 'variable_names_sampled' in emb_p_group:
+                    emb_p['variable_names_sampled'] = emb_p_group['variable_names_sampled']
+                if 'PressureLevelEmbedder' in emb_p_group:
+                    emb_p['PressureLevelEmbedder'] = emb_p_group['PressureLevelEmbedder']
+                if 'GroupDepthEmbedder' in emb_p_group:
+                    emb_p['GroupDepthEmbedder'] = emb_p_group['GroupDepthEmbedder']
+                if 'MGEmbedder' in emb_p_group:
+                    emb_p['MGEmbedder'] = emb_p_group['MGEmbedder'][0:1]
+                if 'StaticVariableEmbedder' in emb_p_group:
+                    emb_p['StaticVariableEmbedder'] = emb_p_group['StaticVariableEmbedder']
+                patch_index_zooms_p = {zoom: patch_index_zooms[zoom][0:1] for zoom in patch_index_zooms.keys()}
+                sample_configs_p = merge_sampling_dicts(self.trainer.val_dataloaders.dataset.sampling_zooms_collate or self.trainer.val_dataloaders.dataset.sampling_zooms, patch_index_zooms_p)
+                model_kwargs = {'sample_configs': sample_configs_p}
+
+                pred_xstart_outputs = self.gaussian_diffusion.training_losses(
+                    self.model,
+                    [target_p.copy()],
+                    torch.stack([t]),
+                    [mask_p.copy()],
+                    [emb_p],
+                    create_pred_xstart=True,
+                    **model_kwargs,
+                )
+                pred_xstart = pred_xstart_outputs[0][2] # (target, output, pred_xstart)
+
+                if plot_combined and self.decode_zooms:
+                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs_p, out_zoom=max_zoom)
+                elif plot_combined:
+                    pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
+
+                self.logger.log_tensor_plot(
+                    plot_types=["healpix_plot_zooms_var"],
+                    input=source_p,
+                    output=pred_xstart,
+                    gt=target_p,
+                    mask=mask_p,
+                    sample_configs=sample_configs_p,
+                    emb=emb_p,
+                    plot_name=f"epoch_{self.current_epoch}_{t.item()}",
+                )
+
+                if plot_combined:
+                    self.logger.log_tensor_plot(
+                        plot_types=["healpix_plot_zooms_var"],
+                        input=source_p,
+                        output=pred_xstart_comp,
+                        gt=target_p,
+                        mask={max_zoom: mask_p[max_zoom]} if mask_p is not None and max_zoom in mask_p else None,
+                        sample_configs=sample_configs_p,
+                        emb=emb_p,
+                        plot_name=f"epoch_{self.current_epoch}_combined_{t.item()}",
+                    )
+
+        return loss
+
+    def predict_step(
+        self,
+        batch: Tuple[Any, Any, Any, Any, Dict[int, torch.Tensor]],
+        batch_idx: int,
+    ):
+        """
+        Run prediction using the probabilistic parent implementation.
+
+        :param batch: Prediction batch tuple.
+        :param batch_idx: Index of the current batch.
+        :return: Prediction output dictionary.
+        """
+        # Call the desired parent's method directly
+        # Note: Pass 'self' explicitly here
+        return LightningProbabilisticModel.predict_step(self, batch, batch_idx)
+
+    def _predict_step(
+        self,
+        source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        target_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        patch_index_zooms: Dict[int, torch.Tensor],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Dict[str, Any]],
+    ):
+        """
+        Internal prediction step that supports sampling and optional zoom decoding.
+
+        :param source_groups: Source zoom-group inputs.
+        :param target_groups: Target zoom-group inputs.
+        :param patch_index_zooms: Patch indices per zoom.
+        :param mask_groups: Mask groups aligned with inputs.
+        :param emb_groups: Embedding groups aligned with inputs.
+        :return: Output zoom-group mappings.
+        """
+        sample_configs = self.trainer.predict_dataloaders.dataset.sampling_zooms_collate or self.trainer.predict_dataloaders.dataset.sampling_zooms
+        sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        model_kwargs = {
+            'sample_configs': sample_configs,
+            'emb_groups': emb_groups
+        }
+        max_zoom = max(target_groups[0].keys()) if target_groups and target_groups[0] else None
+
+        outputs = self.sampler.sample_loop(self.model, source_groups, mask_groups=mask_groups, progress=True, **model_kwargs)
+
+        if self.decode_zooms:
+            # decode_zooms operates on a single group (dict), so we iterate
+            decoded_outputs = []
+            for group in outputs:
+                if group:
+                    decoded_outputs.append(decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom))
+                else:
+                    decoded_outputs.append(None)
+            return decoded_outputs
+        return outputs

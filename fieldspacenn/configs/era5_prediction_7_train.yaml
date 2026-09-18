@@ -1,0 +1,20 @@
+defaults:
+  - trainer: trainer
+  - logger: wandb
+  - model: fst_1v_357_4L
+  - mgrids: healpix
+  - data_zooms: healpix
+  - data_variables: groups_2D
+  - data_split: default
+  - dataloader: prediction_7
+  - embedding: default
+  - hydra: default
+  - _self_
+
+
+ckpt_path: null
+
+run_name: mg_transformer
+config_name: default
+project_name: test
+run_dir: ../..

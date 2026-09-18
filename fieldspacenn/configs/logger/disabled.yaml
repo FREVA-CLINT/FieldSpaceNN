@@ -1,0 +1,4 @@
+# @package _global_
+
+# Use for local smoke tests that should not initialize an external tracking backend.
+logger: null

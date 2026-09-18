@@ -1,0 +1,94 @@
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_model.LightningMGModel
+
+lambda_loss_dict:
+  aggregation: mean
+  normalize_lambdas: false
+  composed:
+    MSE_loss: 1
+
+lr_groups:
+  attention_weight_decay:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+    module_name_matches: [q_projection_layer, kv_projection_layer, out_layer_att, mlp]
+  default:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+
+model:
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  in_zooms: &in_zooms [3]
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [1]
+  n_groups_depths: [1]
+  emb_modulation_mode: shift_scale_mlp
+  latent_dim: 32
+
+  block_configs:
+
+    "tokenize_0": &tokenize_first
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      in_zooms: *in_zooms
+      target_zooms: &latent_zooms [3]
+      target_features:
+      - ${model.model.latent_dim}
+      field_zoom: &token_zoom 3
+      out_zooms: &tokenize_out_zooms [3]
+      token_overlap_space: true
+      type: "linear"
+
+    "spatial_3_5_1": &spatial_block
+      _target_: fieldspacenn.src.modules.field_space.field_space_attention.FieldSpaceAttentionConfig
+      separate_mlp_norm: true
+      q_zooms: *latent_zooms
+      kv_zooms: *latent_zooms
+      target_zooms: *latent_zooms
+      token_zoom: *token_zoom
+      token_overlap_space: false
+      att_dim: ${model.model.latent_dim}
+      seq_len_zoom: -1
+      seq_len_time: 1
+      seq_len_depth: 1
+      with_var_att: false
+      update: scale
+      embed_confs: &shared_embed_confs
+        embed_names: ["MGEmbedder"]
+        input_zoom: *token_zoom
+        embed_confs: ${embedding}
+        token_overlap_space: false
+
+    "spatial_3_5_2":
+      <<: *spatial_block
+      embed_confs: *shared_embed_confs
+
+    "spatial_3_5_3":
+      <<: *spatial_block
+      embed_confs: *shared_embed_confs
+
+    "spatial_3_5_4":
+      <<: *spatial_block
+      embed_confs: *shared_embed_confs
+
+    upsample_to_7:
+      _target_: fieldspacenn.src.modules.field_space.zoom_level_transform.RefineZoomsLayerConfig
+      refine_zooms:
+        3: 7
+
+    "detokenize_1": &detokenize_block
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      in_zooms: *latent_zooms
+      target_zooms: [7]
+      target_features: &output_features [1]
+      field_zoom: *token_zoom
+      out_zooms: [7]
+      token_overlap_space: false
+      type: "linear"
+      residual_gamma: true
+      residual: true

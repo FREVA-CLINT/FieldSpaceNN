@@ -1,0 +1,29 @@
+train:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+
+  timesteps: [29220-89119]
+  variables: ${data_variables}
+
+val:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+
+  timesteps: [93044-93544]
+  variables: ${data_variables}
+
+test:
+  source:
+    ${data_zooms}
+
+  target:
+    ${data_zooms}
+    
+  timesteps: [89120-93544]
+  variables: ${data_variables}

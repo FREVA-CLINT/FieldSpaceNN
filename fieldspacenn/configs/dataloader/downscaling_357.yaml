@@ -1,0 +1,48 @@
+dataset:
+  _target_: fieldspacenn.src.data.datasets_healpix.HealPixLoader
+  norm_dict: norm_dict.json
+  load_into_memory: false
+  p_dropout: 0
+  random_p: false
+  p_dropout_all: 1
+  n_sample_variables: -1
+  output_binary_mask: true
+  apply_diff: true
+  target_time_shift: 0
+  sampling_zooms:
+    3:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    5:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 1
+    7:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+      p_drop: 1
+
+  sampling_zooms_target:
+    3:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    5:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+    7:
+      n_past_ts: 0
+      n_future_ts: 0
+      zoom_patch_sample: -1
+  output_max_zoom_only: false
+
+datamodule:
+  _target_: fieldspacenn.src.data.pl_data_module.DataModule
+  batch_size: 16
+  num_workers: 32
+  shuffle: true
+  use_costum_ddp_sampler: false

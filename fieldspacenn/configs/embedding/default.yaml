@@ -1,0 +1,60 @@
+CoordinateEmbedder:
+  in_channels: 2
+  embed_dim: 64
+  shared: false
+DensityEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  shared: false
+  n_variables: 4
+UncertaintyEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  in_channels_var: ${embedding.VariableEmbedder.in_channels}
+  shared: false
+DiffusionStepEmbedder:
+  in_channels: 64
+  embed_dim: 64
+  shared: false
+VariableEmbedder:
+  in_channels: 5
+  embed_dim: 64
+  shared: false
+GroupDepthEmbedder:
+  in_features: [1,13]
+  embed_dim: 64
+  shared: false
+PressureLevelEmbedder:
+  in_channels: [1,13]
+  embed_dim: 64
+GridEmbedder:
+  in_channels: 11
+  embed_dim: 64
+  shared: false
+MaskEmbedder:
+  in_channels: 2
+  embed_dim: 64
+TimeEmbedder:
+  in_channels: 1
+  embed_dim: 64
+  time_scales: [24, 240, 720, 8760]
+  time_min: 1577923200
+  time_max: 2524608000
+  use_linear: false
+TimeIndexEmbedder:
+  in_channels: 4
+  embed_dim: 64
+  shared: false
+TimeProgressEmbedder:
+  in_channels: 2
+  embed_dim: 64
+  shared: false
+MGEmbedder:
+  shared: false
+  in_channels: 2
+  embed_dim: 64
+  n_variables: 1
+  init_method: spherical_harmonics
+StaticVariableEmbedder:
+  in_channels: 1
+  embed_dim: 64

@@ -1,0 +1,581 @@
+import os
+from typing import Any, Dict, List, Optional, Sequence
+
+import healpy as hp
+import cartopy
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import numpy as np
+import torch
+from scipy.interpolate import griddata
+
+from ..modules.grids.grid_utils import get_matching_time_patch
+
+def healpix_plot_local(
+    values: np.ndarray,
+    zoom: int,
+    ax=None,
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    title: str = "",
+    zoom_patch_sample: int = 1,
+    patch_index: int = 0,
+    **kwargs: Any
+):
+    """
+    Plot a local HEALPix patch by interpolating onto a lat/lon grid.
+
+    :param values: Values for the selected HEALPix patch of shape ``(n,)``.
+    :param zoom: Zoom level for the HEALPix grid.
+    :param ax: Optional Matplotlib axis for plotting.
+    :param vmin: Optional minimum value for color scaling.
+    :param vmax: Optional maximum value for color scaling.
+    :param title: Plot title.
+    :param zoom_patch_sample: Patch sampling zoom.
+    :param patch_index: Patch index to select.
+    :param kwargs: Additional keyword arguments (unused).
+    :return: None.
+    """
+    # Select pixel indices for the requested patch.
+    if isinstance(patch_index, (list, tuple, np.ndarray, torch.Tensor)):
+        patch_idx = int(patch_index[0])
+    else:
+        patch_idx = int(patch_index)
+
+    ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_idx]
+    lon, lat = hp.pix2ang(2**zoom, ipix, nest=True, lonlat=True)
+
+    n_p = max(100, int(np.sqrt(len(lon))))
+
+    # Create grid for interpolation.
+    lon_grid = np.linspace(np.min(lon), np.max(lon), n_p)
+    lat_grid = np.linspace(np.min(lat), np.max(lat), n_p)
+    lon_mesh, lat_mesh = np.meshgrid(lon_grid, lat_grid)
+
+    # Interpolate scattered data onto a regular lat/lon grid.
+    grid_values = griddata(
+        points=np.stack((lon, lat), axis=-1),
+        values=values,
+        xi=(lon_mesh, lat_mesh),
+        method='nearest',
+        fill_value=np.nan
+    )
+
+    # Plot using contourf.
+    ctf = ax.contourf(lon_mesh, lat_mesh, grid_values,
+                        levels=100,
+                        vmin=vmin,
+                        vmax=vmax,
+                        cmap='viridis')
+    ax.set_title(title)
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    cbar = plt.colorbar(ctf, ax=ax, orientation='horizontal', fraction=0.046, pad=0.04)
+
+    tick_locs = np.linspace(ctf.get_clim()[0], ctf.get_clim()[1], 5)
+    cbar.set_ticks(tick_locs)
+    cbar.ax.tick_params(labelsize=8)
+    cbar.ax.set_xticklabels([f"{x:.2f}" for x in tick_locs])
+
+
+def _plot_healpix_panel(
+    fig: plt.Figure,
+    values: Optional[np.ndarray],
+    zoom: int,
+    row_idx: int,
+    col_idx: int,
+    n_rows: int,
+    n_cols: int,
+    title: str,
+    sample_config: Dict[str, Any],
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+) -> None:
+    """
+    Plot a single HEALPix panel either as a full-sphere Mollweide view or a local patch.
+
+    :param fig: Matplotlib figure.
+    :param values: HEALPix values to plot.
+    :param zoom: Zoom level.
+    :param row_idx: Row index in the subplot grid.
+    :param col_idx: Column index in the subplot grid.
+    :param n_rows: Total number of rows in the grid.
+    :param n_cols: Total number of columns in the grid.
+    :param title: Plot title.
+    :param sample_config: Sampling configuration for the zoom level.
+    :param vmin: Optional minimum for color scaling.
+    :param vmax: Optional maximum for color scaling.
+    :return: None.
+    """
+    plot_idx = row_idx * n_cols + col_idx + 1
+    if values is None:
+        ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "Unavailable", ha="center", va="center")
+        ax.set_axis_off()
+        return
+
+    if sample_config.get("zoom_patch_sample", -1) == -1:
+        hp.mollview(
+            values,
+            title=title,
+            sub=(n_rows, n_cols, plot_idx),
+            nest=True,
+            min=vmin,
+            max=vmax,
+            fig=fig,
+        )
+        return
+
+    ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+    healpix_plot_local(
+        values,
+        zoom,
+        ax=ax,
+        vmin=vmin,
+        vmax=vmax,
+        title=title,
+        **sample_config,
+    )
+
+
+def _plot_healpix_grid(
+    rows: Sequence[Dict[str, Any]],
+    save_path: str,
+    sample_configs: Dict[int, Dict[str, Any]],
+) -> None:
+    """
+    Render a grid of HEALPix plots and save the figure.
+
+    Each row entry must define:
+    - ``zoom``: zoom level
+    - ``maps``: list of HEALPix maps for the row
+    - ``map_zooms``: optional per-map zoom levels (defaults to ``zoom``)
+    - ``titles``: list of per-column titles
+    - ``row_label``: optional suffix appended to each column title
+
+    :param rows: Row definitions for the plot grid.
+    :param save_path: Output path.
+    :param sample_configs: Sampling configuration per zoom.
+    :return: None.
+    """
+    if not rows:
+        return
+
+    n_rows = len(rows)
+    n_cols = len(rows[0]["maps"])
+    fig = plt.figure(figsize=(4 * n_cols, 3 * n_rows))
+
+    for row_idx, row in enumerate(rows):
+        zoom = row["zoom"]
+        row_label = row.get("row_label", "")
+        titles = row["titles"]
+        maps = row["maps"]
+        min_max = row["min_max"]
+        map_zooms = row.get("map_zooms", [zoom] * len(maps))
+
+        for col_idx, values in enumerate(maps):
+            panel_zoom = map_zooms[col_idx]
+            sample_config = sample_configs[panel_zoom]
+            title = titles[col_idx]
+            if row_label:
+                title = f"{title} {row_label}"
+
+            _plot_healpix_panel(
+                fig=fig,
+                values=values,
+                zoom=panel_zoom,
+                row_idx=row_idx,
+                col_idx=col_idx,
+                n_rows=n_rows,
+                n_cols=n_cols,
+                title=title,
+                sample_config=sample_config,
+                vmin=min_max[col_idx][0],
+                vmax=min_max[col_idx][1],
+            )
+
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_zooms(
+    input_maps: Dict[int, np.ndarray],
+    output_maps: Dict[int, np.ndarray],
+    gt_maps: Dict[int, np.ndarray],
+    mask_maps: Optional[Dict[int, np.ndarray]],
+    save_path: str,
+    sample_configs: Dict[int, Dict[str, Any]] = {}
+):
+    """
+    Plot HEALPix maps per zoom level for a specific variable and save the result.
+
+    :param input_maps: Input maps per zoom, each of shape ``(n,)``.
+    :param output_maps: Output maps per zoom, each of shape ``(n,)``.
+    :param gt_maps: Ground truth maps per zoom, each of shape ``(n,)``.
+    :param mask_maps: Optional mask maps per zoom, each of shape ``(n,)``.
+    :param save_path: Path to save the figure.
+    :param sample_configs: Sampling configuration per zoom.
+    :return: None.
+    """
+    # Output and ground truth define the target zooms that should be plotted.
+    zoom_levels = sorted(set(output_maps) & set(gt_maps))
+    single_input_zoom = next(iter(input_maps)) if len(input_maps) == 1 else None
+    rows = []
+
+    for zoom in zoom_levels:
+        input_zoom = zoom if zoom in input_maps else single_input_zoom
+        inp_map = input_maps.get(input_zoom) if input_zoom is not None else None
+        out_map = output_maps[zoom]
+        gt_map = gt_maps[zoom]
+        mask_map = mask_maps.get(zoom) if mask_maps is not None else None
+
+        error_map = (out_map - gt_map)  # * mask_map
+
+        maps = [inp_map, out_map, gt_map, error_map]
+        titles = ['Input', 'Output', 'Ground Truth', 'Error']
+        if input_zoom is not None and input_zoom != zoom:
+            titles[0] = f'Input (zoom {input_zoom})'
+        gt_min, gt_max = np.quantile(gt_map, [0.001, 0.999])
+        error_map_min, error_map_max = np.quantile(error_map, [0.001, 0.999])
+        min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
+
+        rows.append(
+            {
+                "zoom": zoom,
+                "maps": maps,
+                "map_zooms": [input_zoom if input_zoom is not None else zoom, zoom, zoom, zoom],
+                "titles": titles,
+                "min_max": min_max,
+                "row_label": f"(zoom {zoom})",
+            }
+        )
+
+    _plot_healpix_grid(rows, save_path, sample_configs)
+
+
+def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor], 
+                           output_zooms: Dict[int, torch.Tensor],
+                           gt_zooms: Dict[int, torch.Tensor],
+                           save_dir: str, 
+                           mask_zooms: Optional[Dict[int, torch.Tensor]] = None,
+                           sample_configs: Dict[int, Dict[str, Any]] = {}, 
+                           emb: Optional[Dict[str, Any]] = None,
+                           plot_name: str = "healpix_plot",
+                           sample: int = 0,
+                           plot_n_vars: int = -1,
+                           plot_n_ts: int = 1):
+    """
+    Create HEALPix plots for each variable across zoom levels and save them.
+
+    :param input_zooms: Input tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param output_zooms: Output tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param gt_zooms: Ground truth tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param save_dir: Directory to save plots.
+    :param mask_zooms: Optional mask tensor dict by zoom with shape ``(b, v, t, n, d, m)``.
+    :param sample_configs: Sampling configuration per zoom.
+    :param emb: Optional embedding dictionary for variable names.
+    :param plot_name: Base name for plot files.
+    :param sample: Sample index to plot.
+    :param plot_n_vars: Number of variables to plot (-1 for all).
+    :param plot_n_ts: Number of timesteps to plot.
+    :return: List of saved file paths.
+    """
+    def _is_plot_tensor(x: Any) -> bool:
+        return torch.is_tensor(x) and x.ndim >= 6
+
+    if output_zooms is None or gt_zooms is None:
+        return []
+
+    zoom_levels_input = sorted(
+        [zoom for zoom, tensor in input_zooms.items() if _is_plot_tensor(tensor)]
+    )
+    zoom_levels_output_gt = sorted(
+        [
+            zoom
+            for zoom in (set(output_zooms.keys()) & set(gt_zooms.keys()))
+            if _is_plot_tensor(output_zooms.get(zoom)) and _is_plot_tensor(gt_zooms.get(zoom))
+        ]
+    )
+    if len(zoom_levels_output_gt) == 0:
+        return []
+
+    save_paths = []
+
+    ref_zoom = zoom_levels_output_gt[-1]
+
+    def _align_to_reference(
+        tensors_by_zoom: Dict[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        return {
+            zoom: get_matching_time_patch(
+                tensor,
+                zoom_h=zoom,
+                zoom_target=ref_zoom,
+                sample_configs=sample_configs,
+            )
+            if (
+                _is_plot_tensor(tensor)
+                and zoom in sample_configs
+                and ref_zoom in sample_configs
+            )
+            else tensor
+            for zoom, tensor in tensors_by_zoom.items()
+        }
+
+    # Zooms can contain different amounts of temporal context. Align all rows to
+    # the reference zoom before choosing a shared timestep index so that each row
+    # depicts the same physical time.
+    input_zooms = _align_to_reference(input_zooms)
+    output_zooms = _align_to_reference(output_zooms)
+    gt_zooms = _align_to_reference(gt_zooms)
+    if mask_zooms is not None:
+        mask_zooms = _align_to_reference(mask_zooms)
+
+    _, v_out, t_out, _, _, _ = output_zooms[ref_zoom].shape
+    _, v_gt, t_gt, _, _, _ = gt_zooms[ref_zoom].shape
+    max_vars = min(v_out, v_gt)
+    max_ts = min(t_out, t_gt)
+
+    if max_vars <= 0 or max_ts <= 0:
+        return []
+
+    if plot_n_vars == -1:
+        n_plot_vars = max_vars
+    else:
+        n_plot_vars = min(plot_n_vars, max_vars)
+
+    n_plot_ts = min(plot_n_ts, max_ts)
+    plot_ts = (max_ts - 1) - np.arange(n_plot_ts)
+
+    for ts in plot_ts:
+        for var in range(n_plot_vars):
+            input_maps = {}
+            output_maps = {}
+            gt_maps = {}
+            mask_maps = {}
+
+            for zoom in zoom_levels_input:
+                input_zoom = input_zooms[zoom]
+                if var < input_zoom.shape[1]:
+                    sample_in = min(sample, input_zoom.shape[0] - 1)
+                    var_in = var
+                    ts_in = min(int(ts), input_zoom.shape[2] - 1)
+                    input_maps[zoom] = input_zoom[sample_in, var_in, ts_in, :, 0, 0].float().cpu().numpy()
+
+            for zoom in zoom_levels_output_gt:
+                output_zoom = output_zooms[zoom]
+                gt_zoom = gt_zooms[zoom]
+                if var >= output_zoom.shape[1] or var >= gt_zoom.shape[1]:
+                    continue
+
+                sample_out = min(sample, output_zoom.shape[0] - 1)
+                sample_gt = min(sample, gt_zoom.shape[0] - 1)
+                var_out = var
+                var_gt = var
+                ts_out = min(int(ts), output_zoom.shape[2] - 1)
+                ts_gt = min(int(ts), gt_zoom.shape[2] - 1)
+
+                output_maps[zoom] = output_zoom[sample_out, var_out, ts_out, :, 0, 0].float().cpu().numpy()
+                gt_maps[zoom] = gt_zoom[sample_gt, var_gt, ts_gt, :, 0, 0].float().cpu().numpy()
+
+                if mask_zooms is not None and zoom in mask_zooms and _is_plot_tensor(mask_zooms.get(zoom)):
+                    mask_zoom = mask_zooms[zoom]
+                    sample_mask = min(sample, mask_zoom.shape[0] - 1)
+                    if var < mask_zoom.shape[1]:
+                        var_mask = var
+                        ts_mask = min(int(ts), mask_zoom.shape[2] - 1)
+                        mask_maps[zoom] = mask_zoom[sample_mask, var_mask, ts_mask, :, 0, 0].float().cpu().numpy()
+
+            # Use embedding index for variable name if available
+            if emb is not None and 'VariableEmbedder' in emb:
+                var_embedder = emb['VariableEmbedder']
+                if (
+                    torch.is_tensor(var_embedder)
+                    and var_embedder.ndim >= 2
+                    and sample < var_embedder.shape[0]
+                    and var < var_embedder.shape[1]
+                ):
+                    var_idx = var_embedder[sample, var].item()
+                else:
+                    var_idx = var
+            else:
+                var_idx = var
+
+            save_path = os.path.join(save_dir, f"{plot_name}_{ts}_{var_idx}.png")
+            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs=sample_configs)
+            save_paths.append(save_path)
+    
+    return save_paths
+
+
+def healpix_plot_zooms_time(
+    output_zooms: Dict[int, torch.Tensor],
+    gt_zooms: Dict[int, torch.Tensor],
+    save_dir: str,
+    mask_zooms: Optional[Dict[int, torch.Tensor]] = None,
+    sample_configs: Dict[int, Dict[str, Any]] = {},
+    emb: Optional[Dict[str, Any]] = None,
+    plot_name: str = "healpix_plot_time",
+    sample: int = 0,
+    plot_n_vars: int = -1,
+    plot_n_ts: int = -1,
+):
+    """
+    Create one HEALPix time-series figure per variable and zoom level.
+
+    Each figure uses timesteps as rows and ``Output``, ``Ground Truth``, and ``Error`` as columns.
+
+    :param input_zooms: Input tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param output_zooms: Output tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param gt_zooms: Ground truth tensor dict by zoom with shape ``(b, v, t, n, d, f)``.
+    :param save_dir: Directory to save plots.
+    :param mask_zooms: Optional mask tensor dict by zoom with shape ``(b, v, t, n, d, m)``.
+    :param sample_configs: Sampling configuration per zoom.
+    :param emb: Optional embedding dictionary for variable names.
+    :param plot_name: Base name for plot files.
+    :param sample: Sample index to plot.
+    :param plot_n_vars: Number of variables to plot (-1 for all).
+    :param plot_n_ts: Number of timesteps to plot (-1 for all).
+    :return: List of saved file paths.
+    """
+    del mask_zooms  # Unused for now; kept for interface parity with other plotting helpers.
+
+    zoom_levels = sorted(output_zooms.keys())
+    save_paths = []
+
+    V = output_zooms[zoom_levels[0]].shape[1]
+    if plot_n_vars == -1:
+        plot_n_vars = V
+
+    titles = ['Output', 'Ground Truth', 'Error']
+
+    for var in range(plot_n_vars):
+        if emb is not None and 'VariableEmbedder' in emb:
+            var_idx = emb['VariableEmbedder'][sample, var].item()
+        else:
+            var_idx = var
+
+        for zoom in zoom_levels:
+            rows = []
+            output_series = output_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            gt_series = gt_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            error_series = output_series - gt_series
+
+            gt_min, gt_max = np.quantile(gt_series, [0.001, 0.999])
+            error_min, error_max = np.quantile(error_series, [0.001, 0.999])
+            min_max = [(gt_min, gt_max), (gt_min, gt_max), (error_min, error_max)]
+
+            for row_idx in range(gt_series.shape[0]):
+                rows.append(
+                    {
+                        "zoom": zoom,
+                        "maps": [output_series[row_idx], gt_series[row_idx], error_series[row_idx]],
+                        "titles": titles,
+                        "min_max": min_max,
+                        "row_label": f"(t={row_idx}, zoom {zoom})",
+                    }
+                )
+
+            save_path = os.path.join(save_dir, f"{plot_name}_zoom_{zoom}_var_{var_idx}.png")
+            _plot_healpix_grid(rows, save_path, sample_configs)
+            save_paths.append(save_path)
+
+    return save_paths
+
+
+def regular_plot(
+    gt_data: torch.Tensor,
+    in_data: torch.Tensor,
+    out_data: torch.Tensor,
+    filename: str,
+    directory: str,
+    gt_coords: Optional[torch.Tensor] = None,
+    in_coords: Optional[torch.Tensor] = None
+):
+    """
+    Generate and save comparison plots between ground truth and generated images.
+
+    :param gt_data: Ground truth tensor of shape ``(b, v, t, h, w)``.
+    :param in_data: Input tensor of the same shape as ``gt_data``.
+    :param out_data: Generated tensor of the same shape as ``gt_data``.
+    :param filename: Base filename for saving the images.
+    :param directory: Directory where the images will be saved.
+    :param gt_coords: Optional coordinate tensor for ground truth data, used for geospatial plotting.
+    :param in_coords: Optional coordinate tensor for input data, used for geospatial plotting.
+    :return: List of saved file paths.
+    """
+    # Move data to CPU if necessary
+    gt_data, in_data, out_data = gt_data.cpu().float(), in_data.cpu().float(), out_data.cpu().float()
+    if gt_coords is not None and in_coords is not None:
+        gt_coords, in_coords = gt_coords.cpu(), in_coords.cpu()
+
+    # Set the projection for geospatial plots if coordinates are provided.
+    subplot_kw = {"projection": ccrs.Robinson()} if gt_coords is not None and in_coords is not None else {}
+
+    # Limit to a maximum of 12 timesteps and 16 samples for readability.
+    gt_data, in_data, out_data = gt_data[:16, :12], in_data[:16, :12], out_data[:16, :12]
+
+    # Define image size and calculate differences between ground truth and output.
+    img_size = 3
+    differences = gt_data - out_data
+
+    save_paths = []
+
+    # Iterate over each channel in the output data.
+    for v in range(out_data.shape[1]):  # Loop over channels
+
+        # Set up the figure layout.
+        fig, axes = plt.subplots(
+            nrows=gt_data.shape[0], ncols=gt_data.shape[1] * 4,
+            figsize=(2 * img_size * gt_data.shape[1] * 4, img_size * gt_data.shape[0]),
+            subplot_kw=subplot_kw
+        )
+        axes = np.atleast_2d(axes)
+
+        # Plot each sample and timestep.
+        for i in range(gt_data.shape[0]):  # Loop over samples
+            for t in range(gt_data.shape[2]):  # Loop over timesteps
+                gt_min = torch.min(gt_data[i, v, t, ..., :])
+                gt_max = torch.max(gt_data[i, v, t, ..., :])
+                for index, data, vmin, vmax, coords, title in [
+                    (t, in_data, None, None, in_coords, "Input"),
+                    (t + gt_data.shape[1], gt_data, gt_min, gt_max, gt_coords, "GT"),
+                    (t + 2 * gt_data.shape[1], out_data, gt_min, gt_max, gt_coords, "Output"),
+                    (t + 3 * gt_data.shape[1], differences, None, None, gt_coords, "Error")
+                ]:
+                    # Turn off axes for cleaner plots
+                    axes[i, index].set_axis_off()
+                    axes[i, index].set_title(title)
+                    if coords is not None:  # Geospatial plotting with coordinates
+                        # Add coastlines and borders.
+                        axes[i, index].add_feature(cartopy.feature.COASTLINE, edgecolor="black", linewidth=0.6)
+                        axes[i, index].add_feature(cartopy.feature.BORDERS, edgecolor="black", linestyle="--", linewidth=0.6)
+                        # Create a pcolormesh with geospatial coordinates.
+                        pcm = axes[i, index].pcolormesh(
+                            coords[0, v, t, 0, :, 1], coords[0, v, t, :, 0, 0],
+                            np.squeeze(data[i, v, t, ..., :].numpy()),
+                            transform=ccrs.PlateCarree(), shading='auto',
+                            cmap="RdBu_r", rasterized=True, vmin=vmin, vmax=vmax
+                        )
+                    else:  # Standard plot without coordinates
+                        pcm = axes[i, index].pcolormesh(
+                            np.squeeze(data[i, v, t, ..., :].numpy()),
+                            vmin=vmin, vmax=vmax, shading='auto', cmap="RdBu_r"
+                        )
+                    # Add color bar to each difference plot.
+                    cb = fig.colorbar(pcm, ax=axes[i, index])
+
+        # Adjust layout and save the figure for the current channel.
+        plt.subplots_adjust(wspace=0.1, hspace=0.1, left=0, right=1, bottom=0, top=1)
+        os.makedirs(directory, exist_ok=True)
+        save_path = os.path.join(directory, f'{filename}_{v}.png')
+        plt.savefig(save_path, bbox_inches='tight')
+        save_paths.append(save_path)
+        plt.clf()  # Clear the figure for the next iteration.
+
+    # Close all open figures to free memory.
+    plt.close('all')
+    return save_paths

@@ -1,0 +1,38 @@
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_model.LightningMGModel
+
+data_variables: ${data_variables}
+
+lambda_loss_dict:
+  aggregation: mean
+  normalize_lambdas: false
+  composed:
+    MSE_loss: 1
+
+lr_groups:
+  default:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+
+model:
+  _target_: fieldspacenn.src.models.healpix_unet.model.HealpixUNet
+  mgrids: ${mgrids}
+  input_zoom: 7
+  bottleneck_zoom: 2
+  features: [16, 32, 64, 128, 256, 512]
+  # The five 2D weather variables are folded into the feature axis.
+  in_features: 5
+  out_features: 5
+  n_groups_variables: [1]
+  use_neighborhood: true
+  norm: group
+  act: silu
+  residual: true
+  num_groups: [4, 8, 16, 32, 64, 128]
+  # Two convolution blocks at every encoder and decoder level.
+  blocks_per_level: 8
+  eps: 1.0e-5
+  add_refined_input:
+    _target_: fieldspacenn.src.models.mg_transformer.block_wrap_operations.ResidualBlockWrapConfig
+    mode: add_residual
+    zooms: [7]
