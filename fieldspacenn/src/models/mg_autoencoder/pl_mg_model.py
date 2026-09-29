@@ -3,7 +3,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 import torch
 from lightning.pytorch.utilities import rank_zero_only
 from ..mg_transformer.pl_mg_probabilistic import LightningProbabilisticModel
-from ...models.mg_transformer.pl_mg_model import LightningMGModel, merge_sampling_dicts
+from ...models.mg_transformer.pl_mg_model import LightningMGModel
 from ...modules.grids.grid_utils import decode_zooms
 from ...utils.helpers import merge_sampling_dicts
 
@@ -210,7 +210,7 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
             processed_source_groups = source_groups
 
         max_zooms = [max(target.keys()) for target in target_groups if target]
-max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
+        max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         if self.mode == "encode_decode":
             # The self() call routes to the model's forward method, which does encode and decode.
