@@ -335,9 +335,6 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
-        flow_target_groups = self.flow_matching.encode_temporal_differences(
-            target_groups, mask_groups, emb_groups
-        )
 
         block_losses: List[torch.Tensor] = []
         total_loss_dict: Dict[str, torch.Tensor] = {}
@@ -345,7 +342,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         for block_idx in range(self.model.n_blocks):
             block_loss, block_loss_dict = self._run_single_block_training_loss(
                 block_idx=block_idx,
-                input_groups=flow_target_groups,
+                input_groups=target_groups,
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
@@ -371,9 +368,6 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
-        flow_target_groups = self.flow_matching.encode_temporal_differences(
-            target_groups, mask_groups, emb_groups
-        )
 
         block_losses: List[torch.Tensor] = []
         total_loss_dict: Dict[str, torch.Tensor] = {}
@@ -381,7 +375,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         for block_idx in range(self.model.n_blocks):
             block_loss, block_loss_dict = self._run_single_block_training_loss(
                 block_idx=block_idx,
-                input_groups=flow_target_groups,
+                input_groups=target_groups,
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
@@ -518,16 +512,13 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             copy.deepcopy(self._get_sample_configs(stage="val")),
             patch_index_zooms_p,
         )
-        flow_target_groups_p = self.flow_matching.encode_temporal_differences(
-            target_groups_p, mask_groups_p, emb_groups_p
-        )
 
         noise_groups_p = [
             self.flow_matching.generate_noise(
                 group, self.flow_matching._variable_names(emb_group)
             )
             if group else None
-            for group, emb_group in zip(flow_target_groups_p, emb_groups_p)
+            for group, emb_group in zip(target_groups_p, emb_groups_p)
         ]
         time_dtype = next(iter(target_p.values())).dtype
 
@@ -538,7 +529,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
 
             pred_x1_outputs = self.flow_matching.training_losses(
                 self.model.get_block(block_idx),
-                flow_target_groups_p,
+                target_groups_p,
                 time_tensor,
                 mask_groups=mask_groups_p,
                 emb_groups=emb_groups_p,
@@ -548,9 +539,6 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             )
 
             _, _, pred_x1_groups = self._extract_training_losses(pred_x1_outputs)
-            pred_x1_groups = self.flow_matching.decode_temporal_differences(
-                pred_x1_groups, mask_groups_p, emb_groups_p
-            )
             pred_x1_group = (
                 pred_x1_groups[group_idx]
                 if group_idx < len(pred_x1_groups)
@@ -679,10 +667,6 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 initialize_from_noise=(block_idx == 0),
             )
 
-        current_groups = self.flow_matching.decode_temporal_differences(
-            current_groups, mask_groups, emb_groups
-        )
-
         if self.restore_unmasked_source_after_prediction:
             current_groups = self._restore_unmasked_source_values(
                 current_groups,
@@ -699,7 +683,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             max_zoom = max(first_target_group.keys())
         elif len(self.model.in_zooms) > 0:
             max_zooms = [max(target.keys()) for target in target_groups if target]
-            max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
+max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         if max_zoom is None:
             return current_groups
