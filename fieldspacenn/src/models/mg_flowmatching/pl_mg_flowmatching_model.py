@@ -539,6 +539,10 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             )
 
             _, _, pred_x1_groups = self._extract_training_losses(pred_x1_outputs)
+            if self.flow_matching.temporal_difference:
+                pred_x1_groups = self.flow_matching.decode_temporal_differences(
+                    pred_x1_groups, mask_groups_p, emb_groups_p
+                )
             pred_x1_group = (
                 pred_x1_groups[group_idx]
                 if group_idx < len(pred_x1_groups)
@@ -674,6 +678,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 mask_groups,
             )
 
+        if self.flow_matching.temporal_difference:
+            current_groups = self.flow_matching.decode_temporal_differences(
+                current_groups, mask_groups, emb_groups
+            )
+
         if not self.decode_zooms:
             return current_groups
 
@@ -683,7 +692,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             max_zoom = max(first_target_group.keys())
         elif len(self.model.in_zooms) > 0:
             max_zooms = [max(target.keys()) for target in target_groups if target]
-max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
+            max_zoom = max(max_zooms) if max_zooms else max(self.model.in_zooms)
 
         if max_zoom is None:
             return current_groups

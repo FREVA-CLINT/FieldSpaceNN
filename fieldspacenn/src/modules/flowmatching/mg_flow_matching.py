@@ -22,6 +22,10 @@ class MGFlowMatching:
         norm_dict: Optional[
             Union[Mapping[Any, Any], str, os.PathLike[str]]
         ] = None,
+        temporal_difference: bool = False,
+        difference_norm_dict: Optional[
+            Union[Mapping[Any, Any], str, os.PathLike[str]]
+        ] = None,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -34,18 +38,29 @@ class MGFlowMatching:
             mode for numerical stability near ``t=1``.
         :param norm_dict: Optional per-variable, per-zoom data standard deviations,
             either as a mapping or a path to a JSON file.
+        :param temporal_difference: Whether masked targets use normalized one-step
+            differences.
+        :param difference_norm_dict: Mean/std statistics for temporal differences.
         :return: None.
         """
         self.time_embed_key: str = time_embed_key
         self.separate_noise_on_zoom: bool = separate_noise_on_zoom
-        if isinstance(norm_dict, (str, os.PathLike)):
-            with open(os.path.expanduser(norm_dict), "r", encoding="utf-8") as handle:
-                loaded_norm_dict = json.load(handle)
-            if not isinstance(loaded_norm_dict, Mapping):
-                raise ValueError("`norm_dict` JSON must contain an object at its root.")
-            self.norm_dict: Optional[Mapping[Any, Any]] = loaded_norm_dict
-        else:
-            self.norm_dict = norm_dict
+        self.norm_dict = self._load_norm_dict(norm_dict, "norm_dict")
+        self.temporal_difference: bool = bool(temporal_difference)
+        self.difference_norm_dict = self._load_norm_dict(
+            difference_norm_dict, "difference_norm_dict"
+        )
+        if self.temporal_difference:
+            if self.difference_norm_dict is None:
+                raise ValueError(
+                    "`difference_norm_dict` is required when `temporal_difference=true`."
+                )
+            if not self.separate_noise_on_zoom or self.norm_dict is not None:
+                raise ValueError(
+                    "Temporal differences require independent, unscaled noise "
+                    "(`separate_noise_on_zoom=true`, `norm_dict=null`)."
+                )
+            self._validate_difference_norm_dict(self.difference_norm_dict)
         mode_normalized = str(interpolation_mode).strip().lower()
         if mode_normalized == "recitified":
             mode_normalized = "rectified"
@@ -58,6 +73,19 @@ class MGFlowMatching:
         self.rectified_time_epsilon: float = float(rectified_time_epsilon)
         if self.rectified_time_epsilon <= 0.0:
             raise ValueError("`rectified_time_epsilon` must be > 0.")
+
+    @staticmethod
+    def _load_norm_dict(
+        value: Optional[Union[Mapping[Any, Any], str, os.PathLike[str]]],
+        name: str,
+    ) -> Optional[Mapping[Any, Any]]:
+        if not isinstance(value, (str, os.PathLike)):
+            return value
+        with open(os.path.expanduser(value), "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if not isinstance(loaded, Mapping):
+            raise ValueError(f"`{name}` JSON must contain an object at its root.")
+        return loaded
 
     @staticmethod
     def _expand_time_like(times: torch.Tensor, tensor: torch.Tensor) -> torch.Tensor:
@@ -105,15 +133,48 @@ class MGFlowMatching:
         return start + (end - start) * torch.rand(batch_size, device=device)
 
     @staticmethod
-    def _std_from_definition(definition: Any) -> Optional[Any]:
+    def _stat_from_definition(definition: Any, statistic: str) -> Optional[Any]:
         if not isinstance(definition, Mapping):
             return definition
-        if "std" in definition:
-            return definition["std"]
+        if statistic in definition:
+            return definition[statistic]
         stats = definition.get("stats")
-        if isinstance(stats, Mapping) and "std" in stats:
-            return stats["std"]
+        if isinstance(stats, Mapping) and statistic in stats:
+            return stats[statistic]
         return None
+
+    @classmethod
+    def _validate_difference_norm_dict(cls, config: Mapping[Any, Any]) -> None:
+        found_stats = False
+
+        def validate(definition: Any) -> None:
+            nonlocal found_stats
+            mean = cls._stat_from_definition(definition, "mean")
+            std = cls._stat_from_definition(definition, "std")
+            if mean is not None or std is not None:
+                found_stats = True
+                if mean is None or std is None:
+                    raise ValueError(
+                        "Temporal difference statistics require both mean and std."
+                    )
+                mean_tensor, std_tensor = torch.as_tensor(mean), torch.as_tensor(std)
+                if (
+                    not torch.isfinite(mean_tensor).all()
+                    or not torch.isfinite(std_tensor).all()
+                    or (std_tensor <= 0).any()
+                ):
+                    raise ValueError(
+                        "Temporal difference means must be finite and standard "
+                        "deviations positive."
+                    )
+                return
+            if isinstance(definition, Mapping):
+                for nested in definition.values():
+                    validate(nested)
+
+        validate(config)
+        if not found_stats:
+            raise ValueError("`difference_norm_dict` contains no mean/std statistics.")
 
     @staticmethod
     def _variable_names(
@@ -136,9 +197,13 @@ class MGFlowMatching:
         zoom: int,
         tensor: torch.Tensor,
         variable_names: Optional[Sequence[Any]],
+        norm_dict: Optional[Mapping[Any, Any]] = None,
+        statistic: str = "std",
+        allow_global: bool = False,
     ) -> torch.Tensor:
-        """Return per-variable normalization values broadcast to a model tensor."""
-        assert self.norm_dict is not None
+        """Resolve a normalization statistic and broadcast it to a model tensor."""
+        norm_dict = self.norm_dict if norm_dict is None else norm_dict
+        assert norm_dict is not None
 
         # Default collation transposes per-sample name lists into one tuple per
         # variable position. Resolve those names separately for every batch item.
@@ -159,61 +224,161 @@ class MGFlowMatching:
                     zoom,
                     tensor[batch_index:batch_index + 1],
                     [names[batch_index] for names in name_columns],
+                    norm_dict,
+                    statistic,
+                    allow_global,
                 )
                 for batch_index in range(tensor.shape[0])
             ]
             if all(scale.ndim == 0 for scale in batch_scales):
+                if allow_global:
+                    return torch.stack(batch_scales).view(-1, 1, 1, 1, 1, 1)
                 return batch_scales[0]
             return torch.cat(batch_scales, dim=0)
 
-        zoom_key: Any = zoom if zoom in self.norm_dict else str(zoom)
-
-        if zoom_key in self.norm_dict:
-            zoom_definition = self.norm_dict[zoom_key]
-            std_values = self._std_from_definition(zoom_definition)
-            if std_values is None and isinstance(zoom_definition, Mapping):
-                names = list(variable_names) if variable_names is not None else list(zoom_definition)
-                std_values = [
-                    self._std_from_definition(zoom_definition[name]) for name in names
-                ]
-        else:
-            names = list(variable_names) if variable_names is not None else list(self.norm_dict)
-            std_values = []
+        zoom_key: Any = zoom if zoom in norm_dict else str(zoom)
+        definition = norm_dict.get(zoom_key, norm_dict)
+        stat_values = self._stat_from_definition(definition, statistic)
+        if stat_values is None:
+            names = list(variable_names) if variable_names is not None else list(definition)
+            stat_values = []
             for name in names:
-                variable_definition = self.norm_dict[name]
-                if not isinstance(variable_definition, Mapping):
-                    raise ValueError(f"Missing zoom {zoom} normalization for variable `{name}`.")
-                variable_zoom_key: Any = (
-                    zoom if zoom in variable_definition else str(zoom)
-                )
-                if variable_zoom_key not in variable_definition:
-                    raise ValueError(f"Missing zoom {zoom} normalization for variable `{name}`.")
-                std_values.append(
-                    self._std_from_definition(variable_definition[variable_zoom_key])
+                variable_definition = definition[name]
+                if isinstance(variable_definition, Mapping):
+                    variable_zoom_key: Any = (
+                        zoom if zoom in variable_definition else str(zoom)
+                    )
+                    if not allow_global and zoom_key not in norm_dict:
+                        if variable_zoom_key not in variable_definition:
+                            raise ValueError(
+                                f"Missing zoom {zoom} normalization for variable `{name}`."
+                            )
+                        variable_definition = variable_definition[variable_zoom_key]
+                    else:
+                        variable_definition = variable_definition.get(
+                            variable_zoom_key, variable_definition
+                        )
+                stat_values.append(
+                    self._stat_from_definition(variable_definition, statistic)
                 )
 
-        if std_values is None or (
-            isinstance(std_values, Sequence)
-            and not isinstance(std_values, (str, bytes))
-            and any(value is None for value in std_values)
+        if stat_values is None or (
+            isinstance(stat_values, Sequence)
+            and not isinstance(stat_values, (str, bytes))
+            and any(value is None for value in stat_values)
         ):
-            raise ValueError(f"Could not find standard deviations for zoom {zoom}.")
+            raise ValueError(f"Could not find normalization {statistic} for zoom {zoom}.")
 
-        std = torch.as_tensor(std_values, device=tensor.device, dtype=tensor.dtype)
+        value = torch.as_tensor(stat_values, device=tensor.device, dtype=tensor.dtype)
         n_variables, n_depths = tensor.shape[1], tensor.shape[-2]
-        if std.ndim == 0:
-            return std
-        if std.ndim == 1:
-            if std.shape[0] == n_variables:
-                return std.view(1, n_variables, 1, 1, 1, 1)
-            if n_variables == 1 and std.shape[0] == n_depths:
-                return std.view(1, 1, 1, 1, n_depths, 1)
-        if std.ndim == 2 and std.shape[0] == n_variables and std.shape[1] in {1, n_depths}:
-            return std.view(1, n_variables, 1, 1, std.shape[1], 1)
+        if value.ndim == 0:
+            return value
+        if value.ndim == 1:
+            if value.shape[0] == n_variables:
+                return value.view(1, n_variables, 1, 1, 1, 1)
+            if n_variables == 1 and value.shape[0] == n_depths:
+                return value.view(1, 1, 1, 1, n_depths, 1)
+        if (
+            value.ndim == 2
+            and value.shape[0] == n_variables
+            and value.shape[1] in {1, n_depths}
+        ):
+            return value.view(1, n_variables, 1, 1, value.shape[1], 1)
         raise ValueError(
-            f"Normalization std shape {tuple(std.shape)} cannot broadcast to "
+            f"Normalization {statistic} shape {tuple(value.shape)} cannot broadcast to "
             f"zoom {zoom} tensor shape {tuple(tensor.shape)}."
         )
+
+    def encode_temporal_differences(
+        self,
+        data_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Optional[Sequence[Optional[Mapping[int, torch.Tensor]]]],
+        emb_groups: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """Replace masked values after the first timestep with normalized differences."""
+        if not self.temporal_difference:
+            return [group.copy() if group else None for group in data_groups]
+        if mask_groups is None:
+            raise ValueError("Temporal differences require masks.")
+
+        emb_groups = emb_groups or [None] * len(data_groups)
+        encoded_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group, masks, embedding in zip(data_groups, mask_groups, emb_groups):
+            if not group:
+                encoded_groups.append(group)
+                continue
+            if not masks:
+                raise ValueError("Temporal differences require a mask for every data group.")
+
+            names = self._variable_names(embedding)
+            encoded_group: Dict[int, torch.Tensor] = {}
+            for zoom, tensor in group.items():
+                mean = self._normalization_scale(
+                    int(zoom), tensor, names, self.difference_norm_dict, "mean", True
+                )
+                std = self._normalization_scale(
+                    int(zoom), tensor, names, self.difference_norm_dict, "std", True
+                )
+                encoded = tensor.clone()
+                difference = (tensor[:, :, 1:] - tensor[:, :, :-1] - mean) / std
+                generated = ~self._known_mask(masks[zoom][:, :, 1:])
+                encoded[:, :, 1:] = torch.where(
+                    generated.expand_as(difference), difference, tensor[:, :, 1:]
+                )
+                encoded_group[int(zoom)] = encoded
+            encoded_groups.append(encoded_group)
+        return encoded_groups
+
+    def decode_temporal_differences(
+        self,
+        data_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Optional[Sequence[Optional[Mapping[int, torch.Tensor]]]],
+        emb_groups: Optional[Sequence[Optional[Mapping[str, Any]]]] = None,
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """Reconstruct absolute masked values from normalized one-step differences."""
+        if not self.temporal_difference:
+            return [group.copy() if group else None for group in data_groups]
+        if mask_groups is None:
+            raise ValueError("Temporal differences require masks.")
+
+        emb_groups = emb_groups or [None] * len(data_groups)
+        decoded_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group, masks, embedding in zip(data_groups, mask_groups, emb_groups):
+            if not group:
+                decoded_groups.append(group)
+                continue
+            if not masks:
+                raise ValueError("Temporal differences require a mask for every data group.")
+
+            names = self._variable_names(embedding)
+            decoded_group: Dict[int, torch.Tensor] = {}
+            for zoom, tensor in group.items():
+                mean = self._normalization_scale(
+                    int(zoom), tensor, names, self.difference_norm_dict, "mean", True
+                )
+                std = self._normalization_scale(
+                    int(zoom), tensor, names, self.difference_norm_dict, "std", True
+                )
+                steps = [tensor[:, :, :1]]
+                for time_index in range(1, tensor.shape[2]):
+                    generated = ~self._known_mask(
+                        masks[zoom][:, :, time_index:time_index + 1]
+                    )
+                    reconstructed = (
+                        steps[-1]
+                        + tensor[:, :, time_index:time_index + 1] * std
+                        + mean
+                    )
+                    steps.append(
+                        torch.where(
+                            generated.expand_as(reconstructed),
+                            reconstructed,
+                            tensor[:, :, time_index:time_index + 1],
+                        )
+                    )
+                decoded_group[int(zoom)] = torch.cat(steps, dim=2)
+            decoded_groups.append(decoded_group)
+        return decoded_groups
 
     def _generate_normalized_shared_noise(
         self,
@@ -550,6 +715,10 @@ class MGFlowMatching:
             mask_groups = [None] * len(gt_groups)
         if emb_groups is None:
             emb_groups = [{} for _ in gt_groups]
+        if self.temporal_difference:
+            gt_groups = self.encode_temporal_differences(
+                gt_groups, mask_groups, emb_groups
+            )
         if noise_groups is None:
             noise_groups = [
                 self.generate_noise(
