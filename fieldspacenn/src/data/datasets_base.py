@@ -1,5 +1,4 @@
 import copy
-import json
 import math
 from numbers import Integral, Real
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
@@ -18,6 +17,7 @@ warnings.filterwarnings("ignore", message="ZarrUserWarning.*")
 
 from ..modules.grids.grid_utils import get_coords_as_tensor,get_grid_type_from_var,get_mapping_weights,to_zoom, encode_zooms, decode_zooms, get_zoom_from_npix
 from . import normalizer as normalizers
+from ..utils.normalization import NormDictInput, load_norm_dict
 
 
 # Reuse fully loaded files between train/validation dataset instances in the
@@ -300,7 +300,7 @@ class BaseDataset(Dataset):
     def __init__(
         self,
         mapping_fcn: Optional[Callable[..., Any]] = None,
-        norm_dict: Optional[str] = None,
+        norm_dict: NormDictInput = None,
         lazy_load: bool = True,
         load_into_memory: bool = False,
         mask_zooms: Optional[Mapping[int, Any]] = None,
@@ -327,8 +327,8 @@ class BaseDataset(Dataset):
         Initialize the dataset with sampling, masking, and normalization settings.
 
         :param mapping_fcn: Callable to build mapping weights between grids.
-        :param norm_dict: Optional path to the JSON normalization statistics file. If
-            omitted, data is left unchanged.
+        :param norm_dict: Optional normalization-statistics mapping or legacy path to
+            a YAML/JSON file. If omitted, data is left unchanged.
         :param lazy_load: Whether to lazily load xarray datasets.
         :param load_into_memory: Whether to load every unique source/target file once
             and serve all samples from a process-wide in-memory cache. This takes
@@ -384,7 +384,7 @@ class BaseDataset(Dataset):
         self.zoom_time_steps_past_emb: List[int] = [self.sample_configs_emb[zoom]['n_past_ts'] for zoom in self.zooms]
         self.zoom_time_steps_future_emb: List[int] = [self.sample_configs_emb[zoom]['n_future_ts'] for zoom in self.zooms]
 
-        self.norm_dict: Optional[str] = norm_dict
+        self.norm_dict = load_norm_dict(norm_dict)
         self.lazy_load: bool = lazy_load
         self.load_into_memory: bool = bool(load_into_memory)
         self._in_memory_datasets: Dict[str, xr.Dataset] = {}
@@ -591,11 +591,7 @@ class BaseDataset(Dataset):
             unique_time_steps_past and unique_time_steps_future and unique_zoom_patch_sample and self.single_source
         )
 
-        if norm_dict is None:
-            normalization_config = None
-        else:
-            with open(norm_dict) as json_file:
-                normalization_config = json.load(json_file)
+        normalization_config = self.norm_dict
 
         self.var_normalizers: Dict[int, Dict[str, Any]] = {}
         self.forcing_normalizers: Dict[int, Dict[str, Any]] = {}

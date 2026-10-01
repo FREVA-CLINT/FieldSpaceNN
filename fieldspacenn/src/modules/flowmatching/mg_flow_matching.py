@@ -1,11 +1,10 @@
-import json
 import math
-import os
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 
 from ..grids.grid_utils import encode_zooms, to_zoom
+from ...utils.normalization import NormDictInput, load_norm_dict
 
 
 class MGFlowMatching:
@@ -19,13 +18,9 @@ class MGFlowMatching:
         separate_noise_on_zoom: bool = True,
         interpolation_mode: str = "linear",
         rectified_time_epsilon: float = 1e-5,
-        norm_dict: Optional[
-            Union[Mapping[Any, Any], str, os.PathLike[str]]
-        ] = None,
+        norm_dict: NormDictInput = None,
         temporal_difference: bool = False,
-        difference_norm_dict: Optional[
-            Union[Mapping[Any, Any], str, os.PathLike[str]]
-        ] = None,
+        difference_norm_dict: NormDictInput = None,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -37,10 +32,11 @@ class MGFlowMatching:
         :param rectified_time_epsilon: Lower bound for ``1 - t`` in rectified
             mode for numerical stability near ``t=1``.
         :param norm_dict: Optional per-variable, per-zoom data standard deviations,
-            either as a mapping or a path to a JSON file.
+            either as a mapping or a legacy path to a YAML/JSON file.
         :param temporal_difference: Whether masked targets use normalized one-step
             differences.
-        :param difference_norm_dict: Mean/std statistics for temporal differences.
+        :param difference_norm_dict: Mean/std statistics for temporal differences,
+            either as a mapping or a legacy path to a YAML/JSON file.
         :return: None.
         """
         self.time_embed_key: str = time_embed_key
@@ -76,16 +72,11 @@ class MGFlowMatching:
 
     @staticmethod
     def _load_norm_dict(
-        value: Optional[Union[Mapping[Any, Any], str, os.PathLike[str]]],
+        value: NormDictInput,
         name: str,
     ) -> Optional[Mapping[Any, Any]]:
-        if not isinstance(value, (str, os.PathLike)):
-            return value
-        with open(os.path.expanduser(value), "r", encoding="utf-8") as handle:
-            loaded = json.load(handle)
-        if not isinstance(loaded, Mapping):
-            raise ValueError(f"`{name}` JSON must contain an object at its root.")
-        return loaded
+        """Load an inline normalization mapping or legacy file path."""
+        return load_norm_dict(value, name)
 
     @staticmethod
     def _expand_time_like(times: torch.Tensor, tensor: torch.Tensor) -> torch.Tensor:
