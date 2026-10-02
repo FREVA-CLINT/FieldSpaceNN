@@ -9,6 +9,7 @@ import copy
 from ..base import get_layer, MLP_fac
 from ..factorization import build_indexed_dims
 from .field_space_base import (
+    EmbeddingFactor,
     GLOBAL_EMBEDDER_CACHE_KEY,
     LinEmbLayer,
     Tokenizer,
@@ -173,6 +174,7 @@ class FieldSpaceLayerConfig:
         rank_depth: Optional[int] = None,
         n_rank_depth: Optional[int] = None,
         rank_variables: Optional[int] = None,
+        rank_embedding: Optional[int] = None,
         n_times: int = 1,
         n_rank_space: Optional[int] = None,
         n_depths: Optional[int] = None,
@@ -186,8 +188,9 @@ class FieldSpaceLayerConfig:
         initialize_indexed_depths_with_same_values: Optional[List[bool]] = None,
         initialize_indexed_space_with_same_values: Optional[List[bool]] = None,
         n_groups_variables_out: Optional[List[int]] = None,
-        residual: bool = False,
-        residual_gamma: bool = False,
+        update: Optional[Literal["shift", "shift_scale"]] = None,
+        residual: Optional[bool] = None,
+        residual_gamma: Optional[bool] = None,
         mult: int = 2,
         hidden_dim: int = None,
         hidden_dim_mixed: int = 0,
@@ -195,6 +198,7 @@ class FieldSpaceLayerConfig:
         use_indexed_output: bool = False,
         use_indexed_mlp: bool = False,
         embed_confs: Optional[Dict[str, Any]] = None,
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
         use_indexed_emb_layer: bool = False,
@@ -219,6 +223,8 @@ class FieldSpaceLayerConfig:
         :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
         :param n_rank_depth: Optional indexed-tensor rank for depth.
+        :param rank_embedding: Optional dynamic embedding-factor rank for the
+            field-space linear or MLP layers.
         :param n_rank_space: Optional indexed-tensor rank for space.
         :param in_token_len_time: Input token length along time.
         :param in_token_len_depth: Input token length along depth.
@@ -233,9 +239,13 @@ class FieldSpaceLayerConfig:
         :param initialize_indexed_space_with_same_values: Optional layer-local flags
             controlling identical initialization of space-indexed parameter rows.
         :param n_groups_variables_out: Optional number of output variables per group.
-        :param residual: Whether to add a residual connection around the layer.
-        :param residual_gamma: Whether to scale the learned layer-output branch with
-            a gamma initialized near zero before adding the residual skip.
+        :param update: Attention-style update mode. ``"shift"`` applies a learned
+            residual shift and ``"shift_scale"`` applies learned scale and shift
+            updates. Both modes use near-zero output and residual gammas.
+        :param residual: Legacy alias enabling a residual connection when ``update``
+            is omitted.
+        :param residual_gamma: Legacy alias scaling the layer-output branch with a
+            near-zero gamma when ``update`` is omitted.
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param hidden_dim_mixed: Width of the shared cross-variable latent branch.
@@ -243,6 +253,8 @@ class FieldSpaceLayerConfig:
         :param use_indexed_output: Whether the output projection uses indexed parameters.
         :param use_indexed_mlp: Whether the optional MLP uses indexed parameters.
         :param embed_confs: Embedder configuration used to condition tokenized inputs.
+        :param embed_confs_factor: Embedder configuration used only by the
+            dynamic Tucker factor.
         :param emb_modulation_mode: How embeddings modulate tokenized inputs.
         :param layer_norm: Whether to normalize tokenized inputs before projection.
         :param use_indexed_emb_layer: Whether embedding projections use indexed
@@ -268,6 +280,7 @@ class FieldSpaceLayerConfig:
         self.rank_depth: Optional[int]
         self.n_rank_depth: Optional[int]
         self.rank_variables: Optional[int]
+        self.rank_embedding: Optional[int]
         self.n_times: int
         self.n_rank_space: Optional[int]
         self.n_depths: Optional[int]
@@ -281,8 +294,9 @@ class FieldSpaceLayerConfig:
         self.initialize_indexed_depths_with_same_values: Optional[List[bool]]
         self.initialize_indexed_space_with_same_values: Optional[List[bool]]
         self.n_groups_variables_out: Optional[List[int]]
-        self.residual: bool
-        self.residual_gamma: bool
+        self.update: Optional[Literal["shift", "shift_scale"]]
+        self.residual: Optional[bool]
+        self.residual_gamma: Optional[bool]
         self.mult: int
         self.hidden_dim: int
         self.hidden_dim_mixed: int
@@ -290,6 +304,7 @@ class FieldSpaceLayerConfig:
         self.use_indexed_output: bool
         self.use_indexed_mlp: bool
         self.embed_confs: Dict[str, Any]
+        self.embed_confs_factor: Dict[str, Any]
         self.emb_modulation_mode: str
         self.layer_norm: bool
         self.use_indexed_emb_layer: bool
@@ -300,6 +315,9 @@ class FieldSpaceLayerConfig:
 
         hidden_dim_mixed = int(hidden_dim_mixed)
         embed_confs = {} if embed_confs is None else embed_confs
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
         if "att_dim_mixed" in kwargs:
             raise TypeError(
                 "Field-space layers use hidden_dim_mixed; "
@@ -307,6 +325,10 @@ class FieldSpaceLayerConfig:
             )
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
+        if update not in {None, "shift", "shift_scale"}:
+            raise ValueError("update must be either 'shift' or 'shift_scale'")
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
         if hidden_dim_mixed < 0:
             raise ValueError("hidden_dim_mixed must be non-negative")
         _validate_numeric_leaves(
@@ -389,12 +411,14 @@ class FieldSpaceLayerModule(nn.Module):
                  initialize_indexed_depths_with_same_values: Union[List[bool], bool] = True,
                  initialize_indexed_space_with_same_values: Union[List[bool], bool] = True,
                  embed_confs: Optional[Dict[str, Any]] = None,
+                 embed_confs_factor: Optional[Dict[str, Any]] = None,
                  global_embedders: Optional[nn.ModuleDict] = None,
                  emb_modulation_mode: str = "shift_scale",
                  layer_norm: bool = False,
                  use_indexed_emb_layer: bool = False,
                  use_indexed_layer_norm: bool = False,
                  use_ranks_emb_layer: bool = True,
+                 rank_embedding: Optional[int] = None,
                  **kwargs: Any):
         """
         Initialize a field-space layer module with per-group blocks.
@@ -423,6 +447,9 @@ class FieldSpaceLayerModule(nn.Module):
         if any(value <= 0 for value in self.n_groups_variables_out):
             raise ValueError("n_groups_variables_out must contain positive values")
         embed_confs = {} if embed_confs is None else embed_confs
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
         block_type = kwargs.get("block_type", "legacy")
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
@@ -500,6 +527,23 @@ class FieldSpaceLayerModule(nn.Module):
             )
         else:
             shared_embedder = None
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(in_zooms))
+        )
+        factor_embedder = None
+        if rank_embedding is not None:
+            if not embed_confs_factor.get("embed_names"):
+                raise ValueError(
+                    "rank_embedding requires at least one embedder in "
+                    "embed_confs_factor"
+                )
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
         hidden_dim_shared = _collapse_shared_value(
             kwargs.get("hidden_dim"),
             n_groups,
@@ -630,6 +674,11 @@ class FieldSpaceLayerModule(nn.Module):
             ]
 
         shared_values = {
+            "update": _collapse_shared_value(
+                kwargs.get("update"),
+                n_groups,
+                "update",
+            ),
             "token_overlap_space": _collapse_shared_value(
                 kwargs.get("token_overlap_space", False),
                 n_groups,
@@ -641,12 +690,12 @@ class FieldSpaceLayerModule(nn.Module):
                 "token_overlap_time",
             ),
             "residual": _collapse_shared_value(
-                kwargs.get("residual", False),
+                kwargs.get("residual"),
                 n_groups,
                 "residual",
             ),
             "residual_gamma": _collapse_shared_value(
-                kwargs.get("residual_gamma", False),
+                kwargs.get("residual_gamma"),
                 n_groups,
                 "residual_gamma",
             ),
@@ -683,6 +732,7 @@ class FieldSpaceLayerModule(nn.Module):
                 "fac_mode",
             ),
             "embed_confs": embed_confs,
+            "embed_confs_factor": embed_confs_factor,
             "embedder": shared_embedder,
             "embedder_cache_key": embedder_cache_key,
             "emb_modulation_mode": emb_modulation_mode,
@@ -690,6 +740,8 @@ class FieldSpaceLayerModule(nn.Module):
             "use_indexed_emb_layer": use_indexed_emb_layer,
             "use_indexed_layer_norm": use_indexed_layer_norm,
             "use_ranks_emb_layer": bool(use_ranks_emb_layer),
+            "rank_embedding": rank_embedding,
+            "factor_embedder": factor_embedder,
             "initialize_indexed_variables_with_same_values": initialize_indexed_variables_with_same_values,
             "initialize_indexed_space_with_same_values": initialize_indexed_space_with_same_values,
         }
@@ -816,6 +868,7 @@ class FieldSpaceLayerBlock(nn.Module):
         rank_depth: Optional[int] = None,
         n_rank_depth: Optional[int] = None,
         rank_variables: Optional[int] = None,
+        rank_embedding: Optional[int] = None,
         n_times: int = 1,
         n_rank_space: Optional[int] = None,
         n_depths: Optional[int] = None,
@@ -829,15 +882,18 @@ class FieldSpaceLayerBlock(nn.Module):
         initialize_indexed_depths_with_same_values: bool = True,
         initialize_indexed_space_with_same_values: bool = True,
         embed_confs: Optional[Dict[str, Any]] = None,
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
+        factor_embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
         use_indexed_emb_layer: bool = False,
         use_indexed_layer_norm: bool = False,
         use_ranks_emb_layer: bool = True,
-        residual: bool = False,
-        residual_gamma: bool = False,
+        update: Optional[Literal["shift", "shift_scale"]] = None,
+        residual: Optional[bool] = None,
+        residual_gamma: Optional[bool] = None,
         n_variables: int = 1,
         n_variables_out: Optional[int] = None,
         fac_mode: str = "Tucker",
@@ -866,20 +922,28 @@ class FieldSpaceLayerBlock(nn.Module):
         :param rank_time: Optional rank for time.
         :param n_rank_time: Optional indexed-tensor rank for time.
         :param rank_depth: Optional rank for depth.
+        :param rank_embedding: Optional dynamic embedding-factor rank for the
+            field-space linear or MLP layers.
         :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param n_rank_space: Optional indexed-tensor rank for space.
         :param mult: MLP multiplier when using non-linear type.
         :param hidden_dim: Optional explicit hidden dimension for MLP.
         :param hidden_dim_mixed: Width of the shared cross-variable latent branch.
-        :param residual: Whether to add a residual connection around the layer.
-        :param residual_gamma: Whether to scale the learned layer-output branch with
-            a gamma initialized near zero before adding the residual skip.
+        :param update: Attention-style update mode (``"shift"`` or
+            ``"shift_scale"``). Explicit update modes use learned near-zero
+            gammas for both the projected and residual branches.
+        :param residual: Legacy residual flag used when ``update`` is omitted.
+        :param residual_gamma: Legacy projected-branch gamma flag used when
+            ``update`` is omitted.
         :param layer_confs: Layer configuration dictionary.
         :return: None.
         """
 
         super().__init__()
         embed_confs = {} if embed_confs is None else embed_confs
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
 
         self.use_indexed_emb_layer = bool(use_indexed_emb_layer)
         self.use_indexed_layer_norm = bool(use_indexed_layer_norm)
@@ -967,8 +1031,16 @@ class FieldSpaceLayerBlock(nn.Module):
         self.token_overlap_space: bool = token_overlap_space
         self.token_overlap_time: bool = token_overlap_time
         self.token_overlap_depth: bool = token_overlap_depth
-        self.residual: bool = residual
-        self.residual_gamma: bool = residual_gamma
+        if update not in {None, "shift", "shift_scale"}:
+            raise ValueError("update must be either 'shift' or 'shift_scale'")
+        self.update = update
+        self.scale_shift = update == "shift_scale"
+        self.update_multiplier = 2 if self.scale_shift else 1
+        self.legacy_residual_update = update is None
+        self.residual = bool(residual) if self.legacy_residual_update else True
+        self.residual_gamma = (
+            bool(residual_gamma) if self.legacy_residual_update else True
+        )
 
         self.out_zooms: Optional[List[int]] = out_zooms
         self.in_zooms: List[int] = in_zooms
@@ -1025,7 +1097,9 @@ class FieldSpaceLayerBlock(nn.Module):
             self.n_in_features_zooms[z] = f * self.in_features_dict[z]
         
         for z,f in self.n_out_features_zooms.items():
-            self.n_out_features_zooms[z] = f * self.target_features_dict[z]
+            self.n_out_features_zooms[z] = (
+                f * self.target_features_dict[z] * self.update_multiplier
+            )
 
         in_features_space = sum(self.n_in_features_zooms.values())
         out_features_space = sum(self.n_out_features_zooms.values())
@@ -1066,6 +1140,17 @@ class FieldSpaceLayerBlock(nn.Module):
                 grid_layers=grid_layers,
                 zoom=input_zoom_field,
             )
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(in_zooms))
+        )
+        if rank_embedding is not None and factor_embedder is None:
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
         emb_tokenizer = Tokenizer(
             [input_zoom_field] if embedder and embedder.has_space() else [],
             self.field_zoom,
@@ -1080,6 +1165,22 @@ class FieldSpaceLayerBlock(nn.Module):
                 embed_confs.get("token_overlap_space", False)
             ),
         )
+        layer_embedding_factor = None
+        if rank_embedding is not None:
+            if factor_embedder is None:
+                raise ValueError(
+                    "rank_embedding requires at least one embedder in "
+                    "embed_confs_factor"
+                )
+            layer_embedding_factor = EmbeddingFactor(
+                factor_embedder,
+                rank_embedding=int(rank_embedding),
+                output_zoom=max(self.in_zooms),
+                cache_key=(
+                    f"{embedder_cache_key or 'local'}:factor:"
+                    f"{id(factor_embedder)}:{max(self.in_zooms)}"
+                ),
+            )
         pre_shape = [
             self.in_token_len_time,
             in_features_space,
@@ -1150,6 +1251,8 @@ class FieldSpaceLayerBlock(nn.Module):
                         )
                     ),
                     fac_mode=fac_mode,
+                    rank_embedding=rank_embedding,
+                    embedding_factor=layer_embedding_factor,
                 )
             else:
                 self.layer = MLP_fac(
@@ -1172,6 +1275,8 @@ class FieldSpaceLayerBlock(nn.Module):
                         )
                     ),
                     fac_mode=fac_mode,
+                    rank_embedding=rank_embedding,
+                    embedding_factor=layer_embedding_factor,
                 )
         elif self.hidden_dim_mixed > 0:
             latent_shape = [1, 1, 1, self.hidden_dim]
@@ -1188,6 +1293,8 @@ class FieldSpaceLayerBlock(nn.Module):
                 n_variables=self.n_variables,
                 indexed_dims=indexed_dims_input,
                 fac_mode=fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=layer_embedding_factor,
                 bias=False,
             )
             self.input_projection_layer_mixed = get_layer(
@@ -1197,6 +1304,8 @@ class FieldSpaceLayerBlock(nn.Module):
                 n_variables=1,
                 indexed_dims={},
                 fac_mode=fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=layer_embedding_factor,
                 bias=False,
             )
             if self.type == "mlp":
@@ -1213,6 +1322,8 @@ class FieldSpaceLayerBlock(nn.Module):
                     n_variables=self.n_variables,
                     indexed_dims=indexed_dims_mlp,
                     fac_mode=fac_mode,
+                    rank_embedding=rank_embedding,
+                    embedding_factor=layer_embedding_factor,
                     bias=False,
                 )
                 self.mlp_layer2 = get_layer(
@@ -1222,6 +1333,8 @@ class FieldSpaceLayerBlock(nn.Module):
                     n_variables=self.n_variables,
                     indexed_dims=indexed_dims_mlp,
                     fac_mode=fac_mode,
+                    rank_embedding=rank_embedding,
+                    embedding_factor=layer_embedding_factor,
                     bias=True,
                 )
                 self.mlp_activation = nn.SiLU()
@@ -1232,6 +1345,8 @@ class FieldSpaceLayerBlock(nn.Module):
                 n_variables=self.n_variables,
                 indexed_dims=indexed_dims_output,
                 fac_mode=fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=layer_embedding_factor,
                 bias=False,
             )
             self.mixed_pattern = (
@@ -1249,6 +1364,8 @@ class FieldSpaceLayerBlock(nn.Module):
                     preserve_variable_default=True,
                 ),
                 fac_mode=fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=layer_embedding_factor,
             )
         else:
             self.layer = MLP_fac(
@@ -1267,11 +1384,14 @@ class FieldSpaceLayerBlock(nn.Module):
                     preserve_variable_default=True,
                 ),
                 fac_mode=fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=layer_embedding_factor,
             )
 
         # Residual is taken from input `x_zooms` at matching output zoom keys.
         self.skip_projection_by_zoom: nn.ModuleDict = nn.ModuleDict()
         self.output_gamma_by_zoom: nn.ParameterDict = nn.ParameterDict()
+        self.residual_gamma_by_zoom: nn.ParameterDict = nn.ParameterDict()
         self.residual_source_zoom_by_target: Dict[int, int] = {}
         self.residual_zoom_mode_by_target: Dict[int, str] = {}
         self.residual_zoom_factor_by_target: Dict[int, int] = {}
@@ -1316,6 +1436,11 @@ class FieldSpaceLayerBlock(nn.Module):
 
                 if self.residual_gamma:
                     self.output_gamma_by_zoom[str(target_zoom)] = nn.Parameter(
+                        torch.ones(out_features_zoom) * 1e-12,
+                        requires_grad=True,
+                    )
+                if not self.legacy_residual_update:
+                    self.residual_gamma_by_zoom[str(target_zoom)] = nn.Parameter(
                         torch.ones(out_features_zoom) * 1e-12,
                         requires_grad=True,
                     )
@@ -1473,6 +1598,29 @@ class FieldSpaceLayerBlock(nn.Module):
             return x_out
         return x_out * self.output_gamma_by_zoom[str(target_zoom)]
 
+    def _apply_update(
+        self,
+        projected: torch.Tensor,
+        residual: Optional[torch.Tensor],
+        target_zoom: int,
+    ) -> torch.Tensor:
+        """Apply either the legacy residual path or an attention-style update."""
+        if self.legacy_residual_update:
+            projected = self._apply_output_gamma(projected, target_zoom)
+            return projected if residual is None else projected + residual
+
+        if residual is None:
+            raise ValueError(
+                f"update={self.update!r} requires a residual input for zoom "
+                f"{target_zoom}"
+            )
+        gamma = self.output_gamma_by_zoom[str(target_zoom)]
+        gamma_res = self.residual_gamma_by_zoom[str(target_zoom)]
+        if self.scale_shift:
+            scale, shift = projected.chunk(2, dim=-1)
+            return residual * (1 + gamma_res * scale) + gamma * shift
+        return (1 + gamma_res) * residual + gamma * projected
+
     def forward(
         self,
         x_zooms: Dict[int, torch.Tensor],
@@ -1537,7 +1685,6 @@ class FieldSpaceLayerBlock(nn.Module):
 
         x = self.get_time_depth_overlaps(x)
 
-        layer_sample_config = sample_configs[self.field_zoom]
         if self.projects_variables:
             x = rearrange(
                 x,
@@ -1546,7 +1693,7 @@ class FieldSpaceLayerBlock(nn.Module):
             x = self.layer(
                 x,
                 emb=emb_tokenized,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
             x = rearrange(
                 x,
@@ -1559,12 +1706,12 @@ class FieldSpaceLayerBlock(nn.Module):
             latent = self.input_projection_layer(
                 x,
                 emb=emb_tokenized,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
             latent_mixed = self.input_projection_layer_mixed(
                 x_mixed,
                 emb=emb_tokenized,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
             expand_shape = (-1, nv, *([-1] * 7))
             latent = torch.cat(
@@ -1575,33 +1722,40 @@ class FieldSpaceLayerBlock(nn.Module):
                 latent = self.mlp_layer1(
                     latent,
                     emb=emb_tokenized,
-                    sample_configs=layer_sample_config,
+                    sample_configs=sample_configs,
                 )
                 latent = self.mlp_activation(latent)
                 latent = self.mlp_layer2(
                     latent,
                     emb=emb_tokenized,
-                    sample_configs=layer_sample_config,
+                    sample_configs=sample_configs,
                 )
             x = self.output_projection_layer(
                 latent,
                 emb=emb_tokenized,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
         else:
             x = self.layer(
                 x,
                 emb=emb_tokenized,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
         x = x.split(tuple(self.n_out_features_zooms.values()), dim=-3)
         
         for k, (zoom, n) in enumerate(self.n_out_features_zooms.items()):
-            x_zoom_out = rearrange(x[k], self.pattern_tokens_reverse, f=self.target_features_dict[zoom], v=nv)
-            x_zoom_out = self._apply_output_gamma(x_zoom_out, zoom)
+            x_zoom_out = rearrange(
+                x[k],
+                self.pattern_tokens_reverse,
+                f=self.target_features_dict[zoom] * self.update_multiplier,
+                v=nv,
+            )
+            residual = None
             if zoom in residual_inputs:
-                residual = self._apply_residual_projection(residual_inputs[zoom], zoom)
-                x_zoom_out = x_zoom_out + residual
+                residual = self._apply_residual_projection(
+                    residual_inputs[zoom], zoom
+                )
+            x_zoom_out = self._apply_update(x_zoom_out, residual, zoom)
             x_zooms[zoom] = x_zoom_out
         
         if self.out_zooms is None:
@@ -1664,6 +1818,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             Sequence[Optional[int]],
             Optional[int],
         ] = None,
+        rank_embedding: Optional[int] = None,
         n_times: Union[
             Mapping[int, int],
             Sequence[int],
@@ -1685,15 +1840,18 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         initialize_indexed_depths_with_same_values: bool = True,
         initialize_indexed_space_with_same_values: bool = True,
         embed_confs: Optional[Dict[str, Any]] = None,
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
+        factor_embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         layer_norm: bool = False,
         use_indexed_emb_layer: bool = False,
         use_indexed_layer_norm: bool = False,
         use_ranks_emb_layer: bool = True,
-        residual: bool = False,
-        residual_gamma: bool = False,
+        update: Optional[Literal["shift", "shift_scale"]] = None,
+        residual: Optional[bool] = None,
+        residual_gamma: Optional[bool] = None,
         n_variables: int = 1,
         n_variables_out: Optional[int] = None,
         fac_mode: str = "Tucker",
@@ -1702,6 +1860,9 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         nn.Module.__init__(self)
 
         embed_confs = {} if embed_confs is None else embed_confs
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
 
         if hidden_dim is None or int(hidden_dim) <= 0:
             raise ValueError(
@@ -1723,6 +1884,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             )
         if type not in {"linear", "mlp"}:
             raise ValueError("type must be either 'linear' or 'mlp'")
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
         if not in_zooms:
             raise ValueError("in_zooms must be non-empty")
         if not target_zooms:
@@ -1895,8 +2058,16 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         if self.mult <= 0:
             raise ValueError("mult must be positive")
         self.type = type
-        self.residual = bool(residual)
-        self.residual_gamma = bool(residual_gamma)
+        if update not in {None, "shift", "shift_scale"}:
+            raise ValueError("update must be either 'shift' or 'shift_scale'")
+        self.update = update
+        self.scale_shift = update == "shift_scale"
+        self.update_multiplier = 2 if self.scale_shift else 1
+        self.legacy_residual_update = update is None
+        self.residual = bool(residual) if self.legacy_residual_update else True
+        self.residual_gamma = (
+            bool(residual_gamma) if self.legacy_residual_update else True
+        )
         self.n_variables = int(n_variables)
         self.n_variables_out = (
             None if n_variables_out is None else int(n_variables_out)
@@ -1996,6 +2167,37 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 grid_layers=grid_layers,
                 zoom=input_zoom_field,
             )
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(self.in_zooms))
+        )
+        if rank_embedding is not None and factor_embedder is None:
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
+        if rank_embedding is not None and factor_embedder is None:
+            raise ValueError(
+                "rank_embedding requires at least one embedder in "
+                "embed_confs_factor"
+            )
+
+        embedding_factors_by_zoom: Dict[int, EmbeddingFactor] = {}
+        if rank_embedding is not None:
+            for factor_zoom in self.layer_zooms:
+                embedding_factors_by_zoom[factor_zoom] = (
+                    EmbeddingFactor(
+                        factor_embedder,
+                        rank_embedding=int(rank_embedding),
+                        output_zoom=factor_zoom,
+                        cache_key=(
+                            f"{embedder_cache_key or 'local'}:factor:"
+                            f"{id(factor_embedder)}:{factor_zoom}"
+                        ),
+                    )
+                )
 
         for zoom in self.in_zooms:
             key = str(zoom)
@@ -2105,6 +2307,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 n_variables=projection_n_variables,
                 indexed_dims=self.indexed_dims_input_by_zoom[zoom],
                 fac_mode=self.fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=embedding_factors_by_zoom.get(zoom),
                 bias=False,
             )
             if self.hidden_dim_mixed > 0:
@@ -2119,6 +2323,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     n_variables=1,
                     indexed_dims={},
                     fac_mode=self.fac_mode,
+                    rank_embedding=rank_embedding,
+                    embedding_factor=embedding_factors_by_zoom.get(zoom),
                     bias=False,
                 )
 
@@ -2136,7 +2342,9 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             n_space = tokenizer.get_features()[1][zoom]
             output_shape = [
                 self.out_token_len_time_by_zoom[zoom],
-                n_space * self.target_features_dict[zoom],
+                n_space
+                * self.target_features_dict[zoom]
+                * self.update_multiplier,
                 self.out_token_len_depth,
                 1,
             ]
@@ -2153,12 +2361,19 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 n_variables=projection_n_variables,
                 indexed_dims=self.indexed_dims_output_by_zoom[zoom],
                 fac_mode=self.fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=embedding_factors_by_zoom.get(zoom),
                 bias=True,
             )
 
         if self.type == "mlp":
             mlp_hidden_dim = self.mult * self.latent_dim_total
             mlp_n_variables = 1 if self.projects_variables else self.n_variables
+            mlp_embedding_factor = (
+                embedding_factors_by_zoom[self.in_zooms[0]]
+                if rank_embedding is not None
+                else None
+            )
             self.mlp_layer1: Optional[nn.Module] = get_layer(
                 [1, 1, 1, self.latent_dim_total],
                 [1, 1, 1, mlp_hidden_dim],
@@ -2166,6 +2381,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 n_variables=mlp_n_variables,
                 indexed_dims=self.indexed_dims_mlp,
                 fac_mode=self.fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=mlp_embedding_factor,
                 bias=False,
             )
             self.mlp_layer2: Optional[nn.Module] = get_layer(
@@ -2175,6 +2392,8 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 n_variables=mlp_n_variables,
                 indexed_dims=self.indexed_dims_mlp,
                 fac_mode=self.fac_mode,
+                rank_embedding=rank_embedding,
+                embedding_factor=mlp_embedding_factor,
                 bias=True,
             )
             self.mlp_activation: Optional[nn.Module] = nn.SiLU()
@@ -2185,6 +2404,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
 
         self.skip_projection_by_zoom = nn.ModuleDict()
         self.output_gamma_by_zoom = nn.ParameterDict()
+        self.residual_gamma_by_zoom = nn.ParameterDict()
         self.residual_source_zoom_by_target: Dict[int, int] = {}
         self.residual_zoom_mode_by_target: Dict[int, str] = {}
         self.residual_zoom_factor_by_target: Dict[int, int] = {}
@@ -2311,6 +2531,11 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     torch.ones(out_features_zoom) * 1e-12,
                     requires_grad=True,
                 )
+            if not self.legacy_residual_update:
+                self.residual_gamma_by_zoom[key] = nn.Parameter(
+                    torch.ones(out_features_zoom) * 1e-12,
+                    requires_grad=True,
+                )
 
     @staticmethod
     def _sum_latent_projections(
@@ -2389,7 +2614,6 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
         projections: List[torch.Tensor] = []
         mixed_projections: List[torch.Tensor] = []
         latent_emb = emb_for_layer
-        layer_sample_config = sample_configs.get(self.field_zoom, {})
         runtime_variable_counts = {
             zoom: int(x_zooms[zoom].shape[1])
             for zoom in self.in_zooms
@@ -2426,7 +2650,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                 self.input_projection_layers[str(zoom)](
                     x_projection,
                     emb=emb_tokenized,
-                    sample_configs=layer_sample_config,
+                    sample_configs=sample_configs,
                 )
             )
             if self.hidden_dim_mixed > 0:
@@ -2438,7 +2662,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
                     self.input_projection_layers_mixed[str(zoom)](
                         x_mixed,
                         emb=emb_tokenized,
-                        sample_configs=layer_sample_config,
+                        sample_configs=sample_configs,
                     )
                 )
 
@@ -2460,13 +2684,13 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             latent = self.mlp_layer1(
                 latent,
                 emb=latent_emb,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
             latent = self.mlp_activation(latent)
             latent = self.mlp_layer2(
                 latent,
                 emb=latent_emb,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
 
         n_variables = runtime_n_variables
@@ -2474,7 +2698,7 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             x_zoom_out = self.output_projection_layers[str(zoom)](
                 latent,
                 emb=latent_emb,
-                sample_configs=layer_sample_config,
+                sample_configs=sample_configs,
             )
             if self.projects_variables:
                 x_zoom_out = rearrange(
@@ -2486,16 +2710,16 @@ class ExtFieldSpaceLayerBlock(FieldSpaceLayerBlock):
             x_zoom_out = rearrange(
                 x_zoom_out,
                 self.pattern_tokens_reverse,
-                f=self.target_features_dict[zoom],
+                f=self.target_features_dict[zoom] * self.update_multiplier,
                 v=n_variables,
             )
-            x_zoom_out = self._apply_output_gamma(x_zoom_out, zoom)
+            residual = None
             if zoom in residual_inputs:
                 residual = self._apply_residual_projection(
                     residual_inputs[zoom],
                     zoom,
                 )
-                x_zoom_out = x_zoom_out + residual
+            x_zoom_out = self._apply_update(x_zoom_out, residual, zoom)
             x_zooms[zoom] = x_zoom_out
 
         if self.out_zooms is None:

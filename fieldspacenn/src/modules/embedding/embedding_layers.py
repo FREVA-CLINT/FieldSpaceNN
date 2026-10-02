@@ -171,23 +171,45 @@ class SinusoidalLayer(nn.Module):
     be used in models that benefit from positional information of diffusion steps.
 
     :param in_channels: Number of input features.
-    :param dim: Dimensionality of the output embeddings.
     :param max_period: Controls the minimum frequency of the embeddings.
                        Higher values lead to more gradual frequency changes.
+    :param timestep_scale: Scale applied internally to normalized diffusion
+        steps before computing the sinusoidal features.
     """
-    def __init__(self, in_channels: int, max_period: int = 10000) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        max_period: float = 10000,
+        timestep_scale: float = 1000.0,
+    ) -> None:
         """
         Initialize sinusoidal embeddings.
 
         :param in_channels: Number of input features.
         :param max_period: Controls the minimum frequency of the embeddings.
+        :param timestep_scale: Scale applied to inputs, which are expected to
+            be normalized diffusion steps in ``[0, 1]`` by default.
         :return: None.
         """
         super().__init__()
+        if max_period <= 0:
+            raise ValueError(f"max_period must be positive, got {max_period}")
+        if timestep_scale <= 0:
+            raise ValueError(
+                f"timestep_scale must be positive, got {timestep_scale}"
+            )
+
         self.in_channels: int = in_channels
+        self.max_period: float = float(max_period)
+        self.timestep_scale: float = float(timestep_scale)
         self.freqs: torch.Tensor = torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=in_channels // 2,
-                                                 dtype=torch.float32) / (in_channels // 2)
+            -math.log(self.max_period)
+            * torch.arange(
+                start=0,
+                end=in_channels // 2,
+                dtype=torch.float32,
+            )
+            / (in_channels // 2)
         )
 
     def forward(self, diffusion_steps: torch.Tensor) -> torch.Tensor:
@@ -196,8 +218,12 @@ class SinusoidalLayer(nn.Module):
         :return: Positional embeddings of shape ``(b, in_channels)``.
         """
 
-        # Calculate arguments for sine and cosine functions
-        args = diffusion_steps.unsqueeze(-1).float() @ self.freqs.unsqueeze(0).to(diffusion_steps.device)
+        # Convert normalized flow time to the conventional diffusion timestep
+        # range before calculating the sinusoidal phases.
+        scaled_steps = diffusion_steps.float() * self.timestep_scale
+        args = scaled_steps.unsqueeze(-1) * self.freqs.to(
+            device=diffusion_steps.device
+        )
         # Combine sine and cosine embeddings along the last dimension
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 

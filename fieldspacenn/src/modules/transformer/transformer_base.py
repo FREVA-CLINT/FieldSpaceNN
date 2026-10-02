@@ -23,7 +23,8 @@ def safe_scaled_dot_product_attention(
     v: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
     is_causal: bool = False,
-    chunk_size: int = 2**16
+    chunk_size: int = 2**16,
+    attn_bias: Optional[torch.Tensor] = None,
 ):
     """
     Apply scaled dot-product attention with batch chunking to avoid CUDA issues.
@@ -34,19 +35,63 @@ def safe_scaled_dot_product_attention(
     :param mask: Optional attention mask of shape ``(b, h, l_q, l_k)``.
     :param is_causal: Whether to apply causal masking.
     :param chunk_size: Chunk size for batch splitting.
+    :param attn_bias: Optional additive attention-logit bias broadcastable to
+        ``(b, h, l_q, l_k)``.
     :return: Attention output of shape ``(b, h, l_q, d)``.
     """
     B, H, _, _ = q.shape
 
     # Reduce chunk size per head to stay within kernel limits.
-    safe_chunk_size = chunk_size // H
+    safe_chunk_size = max(1, chunk_size // H)
 
-    if mask is not None:
-        mask = mask==False if mask.dtype==torch.bool else mask
+    def slice_batch(tensor: Optional[torch.Tensor], start: int, end: int):
+        if tensor is None:
+            return None
+        if tensor.dim() == 4 and tensor.shape[0] == B:
+            return tensor[start:end]
+        return tensor
+
+    def compose_mask(
+        mask_value: Optional[torch.Tensor],
+        bias_value: Optional[torch.Tensor],
+        reference: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
+        if bias_value is not None:
+            bias_value = bias_value.to(
+                device=reference.device,
+                dtype=reference.dtype,
+            )
+
+        if mask_value is None:
+            return bias_value
+        if mask_value.dtype == torch.bool:
+            invalid_mask = mask_value.to(device=reference.device)
+            if bias_value is None:
+                # Field-space masks mark invalid tokens with True, whereas SDPA
+                # boolean masks mark valid tokens with True.
+                return invalid_mask == False
+            additive_mask = torch.zeros_like(
+                invalid_mask,
+                device=reference.device,
+                dtype=reference.dtype,
+            ).masked_fill(invalid_mask, float("-inf"))
+            return additive_mask + bias_value
+
+        mask_value = mask_value.to(
+            device=reference.device,
+            dtype=reference.dtype,
+        )
+        return mask_value if bias_value is None else mask_value + bias_value
 
     if B <= safe_chunk_size:
+        attention_mask = compose_mask(mask, attn_bias, q)
         return scaled_dot_product_attention(
-            q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=is_causal
+            q,
+            k,
+            v,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=is_causal,
         )
 
     results = []
@@ -55,18 +100,15 @@ def safe_scaled_dot_product_attention(
         k_chunk = k[i:i + safe_chunk_size]
         v_chunk = v[i:i + safe_chunk_size]
 
-        mask_chunk = None
-        if mask is not None:
-            if mask.dim() == 4:
-                mask_chunk = mask[i:i + safe_chunk_size]
-            else:
-                mask_chunk = mask
-        
+        mask_chunk = slice_batch(mask, i, i + safe_chunk_size)
+        bias_chunk = slice_batch(attn_bias, i, i + safe_chunk_size)
+        attention_mask = compose_mask(mask_chunk, bias_chunk, q_chunk)
+
         chunk_result = scaled_dot_product_attention(
             q_chunk,
             k_chunk,
             v_chunk,
-            attn_mask=mask_chunk,
+            attn_mask=attention_mask,
             dropout_p=0.0,
             is_causal=is_causal,
         )

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Collection, Dict, List, Mapping, Optional, Tuple, Union
 
 import string
 
@@ -27,6 +27,7 @@ def align_time_embeddings_to_tokens(
     zoom: int,
     token_len_time: int,
     field_time_steps: int,
+    embedding_keys: Optional[Collection[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Select the final timestep of every temporal token for time-aware inputs."""
     if emb is None or token_len_time == 1:
@@ -42,7 +43,10 @@ def align_time_embeddings_to_tokens(
     aligned_emb = dict(emb)
     aligned_any = False
     for emb_key in _TIME_EMBEDDING_KEYS:
-        if emb_key not in emb:
+        if (
+            emb_key not in emb
+            or embedding_keys is not None and emb_key not in embedding_keys
+        ):
             continue
 
         zoom_values = emb[emb_key]
@@ -349,6 +353,108 @@ class Tokenizer(nn.Module):
 
         x = rearrange(x, self.pattern_tokens, t=self.token_size[0], n=self.token_size[1], d=self.token_size[2])
         return x
+
+
+class EmbeddingFactor(nn.Module):
+    """Adapt a field embedder into a compact dynamic Tucker factor.
+
+    The embedder output already represents Tucker batch axes. Its canonical
+    ``(b, v, t, s, d, c)`` layout is compacted directly, without tokenization,
+    pooling, or resampling. Batch and channel are always retained; the other
+    axes are retained only when declared by an embedder's ``keep_dims``.
+    """
+
+    def __init__(
+        self,
+        embedder: EmbedderSequential,
+        rank_embedding: int,
+        output_zoom: Optional[int] = None,
+        cache_key: Optional[str] = None,
+    ) -> None:
+        super().__init__()
+        if isinstance(embedder, IndependentEmbedderSequential):
+            raise ValueError(
+                "rank_embedding does not support embed_mode='independent'"
+            )
+
+        self.embedder = embedder
+        self.rank_embedding = int(rank_embedding)
+        self.output_zoom = output_zoom
+        self.cache_key = cache_key
+        active_dims = set(embedder.get_active_dims())
+        self.factor_dims = (
+            "b",
+            *(dim for dim in ("v", "t", "s", "d") if dim in active_dims),
+        )
+
+        out_channels = embedder.get_out_channels
+        if not isinstance(out_channels, int) or out_channels != self.rank_embedding:
+            raise ValueError(
+                "The factor embedder output size must equal rank_embedding="
+                f"{self.rank_embedding}, got {out_channels}. Use a sum/average "
+                "embedder mode when combining multiple factor embedders."
+            )
+
+    def _get_embedding(
+        self,
+        emb: Dict[str, Any],
+        sample_configs: Mapping[str, Any],
+    ) -> torch.Tensor:
+        cache = emb.get(GLOBAL_EMBEDDER_CACHE_KEY)
+        if self.cache_key is not None and isinstance(cache, Mapping):
+            cached = cache.get(self.cache_key)
+            if torch.is_tensor(cached):
+                return cached
+
+        factor = self.embedder(
+            emb,
+            sample_configs=sample_configs,
+            output_zoom=self.output_zoom,
+        )
+        if self.cache_key is not None:
+            if not isinstance(cache, dict):
+                cache = {}
+                emb[GLOBAL_EMBEDDER_CACHE_KEY] = cache
+            cache[self.cache_key] = factor
+        return factor
+
+    def forward(
+        self,
+        emb: Dict[str, Any],
+        sample_configs: Mapping[str, Any] = {},
+    ) -> torch.Tensor:
+        factor = self._get_embedding(emb, sample_configs)
+        if factor.ndim != 6:
+            raise ValueError(
+                "Embedding factor must use the canonical field layout "
+                f"(b, v, t, s, d, c), got {tuple(factor.shape)}"
+            )
+        if factor.shape[-1] != self.rank_embedding:
+            raise ValueError(
+                "Embedding factor channel dimension must equal rank_embedding="
+                f"{self.rank_embedding}, got {factor.shape[-1]}"
+            )
+
+        canonical_dims = ("b", "v", "t", "s", "d")
+        for dim_index in reversed(range(len(canonical_dims))):
+            dim = canonical_dims[dim_index]
+            if dim in self.factor_dims:
+                continue
+            if factor.shape[dim_index] != 1:
+                raise ValueError(
+                    f"Inactive embedding dimension {dim!r} "
+                    f"must be singleton, got shape {tuple(factor.shape)}"
+                )
+            factor = factor.squeeze(dim_index)
+
+        expected_ndim = len(self.factor_dims) + 1
+        if factor.ndim != expected_ndim:
+            raise ValueError(
+                "Embedding factor has incompatible rank: expected "
+                f"{expected_ndim} dimensions for {self.factor_dims} plus channel, "
+                f"got shape {tuple(factor.shape)}"
+            )
+        return factor
 
 
 class EmbLayer(nn.Module):

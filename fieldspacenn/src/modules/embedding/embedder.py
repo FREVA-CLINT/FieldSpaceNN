@@ -1094,13 +1094,23 @@ class DiffusionStepEmbedder(BaseEmbedder):
     and then processes these embeddings through a simple feedforward network.
     """
 
-    def __init__(self, name: str, in_channels: int, embed_dim: int, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        name: str,
+        in_channels: int,
+        embed_dim: int,
+        max_period: float = 10000,
+        timestep_scale: float = 1000.0,
+        **kwargs: Any,
+    ) -> None:
         """
         Initializes the DiffusionStepEmbedder module.
 
         :param name: Embedder name.
         :param in_channels: Number of input channels for the embedding.
         :param embed_dim: Number of output channels for the final embedding.
+        :param max_period: Minimum-frequency control for the sinusoidal layer.
+        :param timestep_scale: Internal scale for normalized flow times.
         :param kwargs: Additional keyword arguments (unused).
         :return: None.
         """
@@ -1110,10 +1120,14 @@ class DiffusionStepEmbedder(BaseEmbedder):
 
         # Define a feedforward network with SiLU activation
         self.embedding_fn: nn.Module = nn.Sequential(
-            SinusoidalLayer(in_channels),
-            nn.Linear(self.in_channels, self.embed_dim),
+            SinusoidalLayer(
+                in_channels,
+                max_period=max_period,
+                timestep_scale=timestep_scale,
+            ),
+            nn.Linear(self.in_channels, self.in_channels*2),
             nn.SiLU(),
-            nn.Linear(self.embed_dim, self.embed_dim),
+            nn.Linear(self.in_channels*2, self.embed_dim),
         )
 
 
@@ -1289,6 +1303,15 @@ class EmbedderSequential(nn.Module):
         for embedder in self.embedders.values():
             dims = dims + [dim for dim in embedder.keep_dims]
         return dims
+
+    def get_active_dims(self) -> List[str]:
+        """Return the ordered union of non-singleton embedding dimensions."""
+        configured_dims = set(self.get_embedding_dims())
+        return [
+            dim
+            for dim in ("b", "v", "t", "s", "d", "c")
+            if dim in configured_dims
+        ]
     
     def has_time(self) -> bool:
         """
@@ -1296,7 +1319,7 @@ class EmbedderSequential(nn.Module):
 
         :return: True if "t" appears in the embedding dims.
         """
-        return 't' in self.get_embedding_dims()
+        return 't' in self.get_active_dims()
 
     def has_space(self) -> bool:
         """
@@ -1304,7 +1327,7 @@ class EmbedderSequential(nn.Module):
 
         :return: True if "s" appears in the embedding dims.
         """
-        return 's' in self.get_embedding_dims()
+        return 's' in self.get_active_dims()
     
     def has_depth(self) -> bool:
         """
@@ -1312,7 +1335,7 @@ class EmbedderSequential(nn.Module):
 
         :return: True if "d" appears in the embedding dims.
         """
-        return 'd' in self.get_embedding_dims()
+        return 'd' in self.get_active_dims()
     
     def has_var(self) -> bool:
         """
@@ -1320,7 +1343,7 @@ class EmbedderSequential(nn.Module):
 
         :return: True if "v" appears in the embedding dims.
         """
-        return 'v' in self.get_embedding_dims()
+        return 'v' in self.get_active_dims()
     
     def forward(
         self,
@@ -1450,6 +1473,8 @@ def get_embedder(
     embed_names: Sequence[Union[str, Sequence[str]]] = [],
     embed_confs: Dict[str, Any] = {},
     embed_mode: str = 'sum',
+    embed_dim_override: Optional[int] = None,
+    expand_variable_dim: bool = True,
     **kwargs: Any
 ) -> Any:
     """
@@ -1459,6 +1484,12 @@ def get_embedder(
     :param embed_confs: Mapping from embedder name to constructor kwargs.
     :param embed_mode: Embedding mode ("average", "sum", "concat", or
         "independent").
+    :param embed_dim_override: Optional output size applied to every configured
+        embedder. This is used by dynamic factor layers whose embedding channels
+        must match their Tucker rank.
+    :param expand_variable_dim: Whether embedders without an active variable axis
+        should be broadcast to the runtime variable count when inputs include
+        variable indices.
     :param kwargs: Extra keyword arguments forwarded to each embedder.
     :return: Embedder instance(s) or None.
     """
@@ -1471,13 +1502,18 @@ def get_embedder(
         else:
             return_list = True
 
-        embed_confs.update(**kwargs)
-
         embedders = []
         for embed_names_ in embed_names:
             emb_dict = nn.ModuleDict()
             for embed_name in embed_names_:
-                emb = EmbedderManager().get_embedder(embed_name, **embed_confs[embed_name], **kwargs)
+                embedder_kwargs = dict(embed_confs[embed_name])
+                embedder_kwargs.update(kwargs)
+                if embed_dim_override is not None:
+                    embedder_kwargs["embed_dim"] = int(embed_dim_override)
+                emb = EmbedderManager().get_embedder(
+                    embed_name,
+                    **embedder_kwargs,
+                )
                 emb_dict[emb.name] = emb
             
             if embed_mode == "independent":
@@ -1490,6 +1526,7 @@ def get_embedder(
                     emb_dict,
                     mode=embed_mode,
                     spatial_dim_count=1,
+                    expand_variable_dim=expand_variable_dim,
                 )
             embedders.append(embedder_seq)
 

@@ -8,7 +8,9 @@ import torch.nn as nn
 
 from ..base import get_layer, MLP_fac
 from ..factorization import broadcast_indexed_tensor, build_indexed_dims
+from .conditioning import VariableRelativeBias
 from .field_space_base import (
+    EmbeddingFactor,
     GLOBAL_EMBEDDER_CACHE_KEY,
     Tokenizer,
     LinEmbLayer,
@@ -30,6 +32,7 @@ def _align_time_embeddings_to_tokens(
     zoom: int,
     token_len_time: int,
     field_time_steps: int,
+    embedding_keys: Optional[Sequence[str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Backward-compatible wrapper for the shared time-alignment helper."""
     return align_time_embeddings_to_tokens(
@@ -37,6 +40,7 @@ def _align_time_embeddings_to_tokens(
         zoom=zoom,
         token_len_time=token_len_time,
         field_time_steps=field_time_steps,
+        embedding_keys=embedding_keys,
     )
 
 
@@ -159,6 +163,27 @@ def _validate_numeric_leaves(
         raise ValueError(f"{name} must be {comparison}")
 
 
+def _normalize_relative_biases(
+    value: Optional[Sequence[str]],
+) -> List[Literal["variable"]]:
+    """Validate and normalize configured relative-attention bias names."""
+    if value is None:
+        return []
+    if not _is_sequence_value(value):
+        raise ValueError("relative_biases must be a list containing 'variable'")
+
+    values = list(value)
+    if len(values) != len(set(values)):
+        raise ValueError("relative_biases must not contain duplicates")
+
+    unsupported = [name for name in values if name != "variable"]
+    if unsupported:
+        raise ValueError(
+            f"Unsupported relative biases {unsupported}; supported values are ['variable']"
+        )
+    return values
+
+
 class FieldSpaceAttentionConfig:
     def __init__(
         self,
@@ -183,6 +208,7 @@ class FieldSpaceAttentionConfig:
         rank_depth: Union[List[int], int, None] = None,
         n_rank_depth: Union[List[int], int, None] = None,
         rank_features: Union[List[int], int, None] = None,
+        rank_embedding: Optional[int] = None,
         n_times: Union[List[int], int] = 1,
         n_depths: Union[List[int], int, None] = None,
         seq_len_zoom: int = -1,
@@ -192,6 +218,7 @@ class FieldSpaceAttentionConfig:
         seq_overlap_time: bool = False,
         seq_overlap_depth: bool = False,
         with_var_att: bool = False,
+        relative_biases: Optional[List[Literal["variable"]]] = None,
         update: str = 'shift',
         separate_mlp_norm: bool = True,
         mlp_residual_from_attention: bool = False,
@@ -204,6 +231,7 @@ class FieldSpaceAttentionConfig:
         use_ranks_mlp: bool = True,
         use_indexed_att_gammas: bool = False,
         use_indexed_mlp_gammas: bool = False,
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         block_type: Literal["legacy", "ext"] = "legacy",
         in_zooms: Optional[List[int]] = None,
         n_groups_variables: Optional[List[int]] = None,
@@ -247,6 +275,7 @@ class FieldSpaceAttentionConfig:
         :param rank_depth: Optional rank for depth.
         :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
+        :param rank_embedding: Optional dynamic embedding-factor rank for the MLP.
         :param rank_variables: Optional rank for features.
         :param seq_len_zoom: Sequence zoom for attention.
         :param seq_len_time: Sequence length along time.
@@ -255,6 +284,7 @@ class FieldSpaceAttentionConfig:
         :param seq_overlap_time: Overlap along time.
         :param seq_overlap_depth: Overlap along depth.
         :param with_var_att: Whether to include variable attention.
+        :param relative_biases: Optional learned relative-attention bias components.
         :param update: Update mode ("shift" or "shift_scale").
         :param separate_mlp_norm: Whether to separate MLP norm.
         :param mlp_residual_from_attention: Whether the MLP residual uses the
@@ -268,6 +298,8 @@ class FieldSpaceAttentionConfig:
         :param use_ranks_mlp: Whether the MLP branch uses the configured ranks.
         :param use_indexed_att_gammas: Whether attention residual gammas use indexed parameters.
         :param use_indexed_mlp_gammas: Whether MLP residual gammas use indexed parameters.
+        :param embed_confs_factor: Embedding configuration used only by the
+            dynamic Tucker factor.
         :param kwargs: Additional keyword arguments assigned as attributes.
         :return: None.
         """
@@ -291,6 +323,7 @@ class FieldSpaceAttentionConfig:
         self.rank_depth: Union[List[int], int, None]
         self.n_rank_depth: Union[List[int], int, None]
         self.rank_features: Union[List[int], int, None]
+        self.rank_embedding: Optional[int]
         self.rank_variables: Union[List[int], int, None]
         self.n_times: Union[List[int], int]
         self.n_depths: Union[List[int], int]
@@ -301,6 +334,7 @@ class FieldSpaceAttentionConfig:
         self.seq_overlap_time: bool
         self.seq_overlap_depth: bool
         self.with_var_att: bool
+        self.relative_biases: List[Literal["variable"]]
         self.update: str
         self.separate_mlp_norm: bool
         self.mlp_residual_from_attention: bool
@@ -313,6 +347,7 @@ class FieldSpaceAttentionConfig:
         self.use_ranks_mlp: bool
         self.use_indexed_att_gammas: bool
         self.use_indexed_mlp_gammas: bool
+        self.embed_confs_factor: Dict[str, Any]
         self.block_type: Literal["legacy", "ext"]
         self.n_groups_variables: Optional[List[int]]
         self.n_groups_depths: Optional[List[int]]
@@ -322,9 +357,17 @@ class FieldSpaceAttentionConfig:
 
         n_depths_is_default = n_depths is None
         n_depths = 1 if n_depths is None else n_depths
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
+        relative_biases = _normalize_relative_biases(relative_biases)
 
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
+        if relative_biases and not with_var_att:
+            raise ValueError("relative_biases require with_var_att=True")
 
         _validate_numeric_leaves(
             n_rank_time,
@@ -390,6 +433,7 @@ class FieldSpaceAttentionModule(nn.Module):
         rank_depth: Union[List[int], int, None] = None,
         n_rank_depth: Union[List[int], int, None] = None,
         rank_features: Union[List[int], int, None] = None,
+        rank_embedding: Optional[int] = None,
         n_times: Union[List[int], int] = 1,
         n_depths: Union[List[int], int, None] = None,
         seq_len_zoom: int = -1,
@@ -399,6 +443,7 @@ class FieldSpaceAttentionModule(nn.Module):
         seq_overlap_time: bool = False,
         seq_overlap_depth: bool = False,
         with_var_att: bool = False,
+        relative_biases: Optional[List[Literal["variable"]]] = None,
         use_mask: bool = False,
         att_dim: Optional[int] = None,
         att_dim_mixed: Optional[int] = 0,
@@ -417,6 +462,7 @@ class FieldSpaceAttentionModule(nn.Module):
         use_indexed_att_gammas: bool = False,
         use_indexed_mlp_gammas: bool = False,
         embed_confs: Dict[str, Any] = {},
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         global_embedders: Optional[nn.ModuleDict] = None,
         fac_mode: str = "Tucker",
         emb_modulation_mode: str = "shift_scale",
@@ -451,6 +497,7 @@ class FieldSpaceAttentionModule(nn.Module):
         :param rank_depth: Optional rank for depth.
         :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
+        :param rank_embedding: Optional dynamic embedding-factor rank for the MLP.
         :param rank_variables: Optional rank for variables.
         :param seq_len_zoom: Sequence zoom for attention.
         :param seq_len_time: Sequence length along time.
@@ -459,6 +506,7 @@ class FieldSpaceAttentionModule(nn.Module):
         :param seq_overlap_time: Overlap along time.
         :param seq_overlap_depth: Overlap along depth.
         :param with_var_att: Whether to include variable attention.
+        :param relative_biases: Optional learned relative-attention bias components.
         :param use_mask: Whether to apply attention masks.
         :param att_dim: Attention feature dimension.
         :param n_head_channels: Head channel size.
@@ -477,15 +525,25 @@ class FieldSpaceAttentionModule(nn.Module):
         :param use_indexed_att_gammas: Whether attention residual gammas use indexed parameters.
         :param use_indexed_mlp_gammas: Whether MLP residual gammas use indexed parameters.
         :param embed_confs: Embedding configuration dictionary.
+        :param embed_confs_factor: Embedding configuration used only by the
+            dynamic Tucker factor.
         :param emb_modulation_mode: How embeddings modulate field tensors.
         :param layer_confs: Layer configuration for attention blocks.
         :param layer_confs_emb: Layer configuration for embedding blocks.
         :return: None.
         """
         super().__init__()
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
+        relative_bias_names = _normalize_relative_biases(relative_biases)
         
         if block_type not in {"legacy", "ext"}:
             raise ValueError("block_type must be either 'legacy' or 'ext'")
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
+        if relative_bias_names and not with_var_att:
+            raise ValueError("relative_biases require with_var_att=True")
 
         for name, value in (
             ("n_rank_time", n_rank_time),
@@ -512,6 +570,37 @@ class FieldSpaceAttentionModule(nn.Module):
             active_groups = [True] * n_groups
         else:
             raise ValueError("groups must be -1 or a list of bools")
+
+        active_group_variable_counts = [
+            int(n_groups_variables[index])
+            for index, is_active in enumerate(active_groups)
+            if is_active
+        ]
+        self.relative_bias_names = tuple(relative_bias_names)
+        self.relative_biases = nn.ModuleDict()
+        if "variable" in relative_bias_names:
+            if not active_group_variable_counts:
+                raise ValueError(
+                    "Variable relative bias requires at least one active group"
+                )
+            if any(count <= 0 for count in active_group_variable_counts):
+                raise ValueError(
+                    "Variable relative bias requires positive variable counts"
+                )
+            if att_dim is None:
+                raise ValueError(
+                    "Variable relative bias requires an explicit attention dimension"
+                )
+            attention_dim = int(att_dim) + int(att_dim_mixed or 0)
+            if n_head_channels <= 0 or attention_dim % n_head_channels != 0:
+                raise ValueError(
+                    "att_dim + att_dim_mixed must be divisible by n_head_channels"
+                )
+            self.relative_biases["variable"] = VariableRelativeBias(
+                n_variables=sum(active_group_variable_counts),
+                n_heads=attention_dim // n_head_channels,
+            )
+        self.active_group_variable_counts = active_group_variable_counts
 
         n_groups_depths = _normalize_group_values(
             1 if n_groups_depths is None else n_groups_depths,
@@ -676,6 +765,23 @@ class FieldSpaceAttentionModule(nn.Module):
             embedder_cache_key = zoom_key
         else:
             shared_embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(q_zooms))
+        )
+        factor_embedder = None
+        if rank_embedding is not None:
+            if not embed_confs_factor.get("embed_names"):
+                raise ValueError(
+                    "rank_embedding requires at least one embedder in "
+                    "embed_confs_factor"
+                )
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
         block = None
         for k, is_active in enumerate(self.active_groups):
             if not is_active:
@@ -719,6 +825,7 @@ class FieldSpaceAttentionModule(nn.Module):
                         rank_depth = rank_depth_by_group[k],
                         n_rank_depth = n_rank_depth_by_group[k],
                         rank_features = zoom_or_shared["rank_features"],
+                        rank_embedding=rank_embedding,
                         rank_variables = zoom_or_shared["rank_variables"],
                         n_times = zoom_or_shared["n_times"],
                         n_depths = n_depths[k],
@@ -731,7 +838,9 @@ class FieldSpaceAttentionModule(nn.Module):
                         n_head_channels = n_head_channels,
                         dropout=dropout,
                         embed_confs=embed_confs,
+                        embed_confs_factor=embed_confs_factor,
                         embedder=shared_embedder,
+                        factor_embedder=factor_embedder,
                         embedder_cache_key=embedder_cache_key,
                         n_variables=n_groups_variables[k],
                         fac_mode=fac_mode,
@@ -752,8 +861,71 @@ class FieldSpaceAttentionModule(nn.Module):
             self.blocks.append(block)
 
         self.block: Optional[Union[FieldSpaceAttentionBlock, ExtFieldSpaceAttentionBlock]] = block
+        self.with_var_att = bool(with_var_att)
         self.concat_dim = -2 if with_var_att else 0
-    
+        self.mask_concat_dim = -1 if with_var_att else 0
+
+    def _build_variable_ids(
+        self,
+        tensors: Sequence[torch.Tensor],
+    ) -> torch.Tensor:
+        """Build global variable IDs aligned with packed attention sequences."""
+        if len(tensors) != len(self.active_group_variable_counts):
+            raise ValueError(
+                "Attention tensors must match the configured active variable groups"
+            )
+
+        variable_ids = []
+        variable_offset = 0
+        for tensor, n_variables in zip(
+            tensors, self.active_group_variable_counts
+        ):
+            sequence_length = int(tensor.shape[-2])
+            if sequence_length % n_variables != 0:
+                raise ValueError(
+                    "Packed attention length must be divisible by the group's "
+                    "variable count"
+                )
+            group_ids = torch.arange(
+                variable_offset,
+                variable_offset + n_variables,
+                device=tensor.device,
+                dtype=torch.long,
+            )
+            variable_ids.append(
+                group_ids.repeat_interleave(sequence_length // n_variables)
+            )
+            variable_offset += n_variables
+
+        return torch.cat(variable_ids)
+
+    def _get_relative_attention_bias(
+        self,
+        queries: Sequence[torch.Tensor],
+        keys: Sequence[torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        """Sum all enabled relative-attention bias components."""
+        if not self.relative_biases:
+            return None
+
+        bias_terms = []
+        if "variable" in self.relative_biases:
+            query_variable_ids = self._build_variable_ids(queries)
+            key_variable_ids = self._build_variable_ids(keys)
+            bias_terms.append(
+                self.relative_biases["variable"](
+                    query_variable_ids,
+                    key_variable_ids,
+                )
+            )
+
+        if not bias_terms:
+            return None
+        attention_bias = bias_terms[0]
+        for bias_term in bias_terms[1:]:
+            attention_bias = attention_bias + bias_term
+        return attention_bias
+
     def forward(
         self,
         x_zooms_groups: List[Dict[int, torch.Tensor]],
@@ -785,16 +957,31 @@ class FieldSpaceAttentionModule(nn.Module):
             masks.append(mask)
             shapes.append(shape)
             seq_lens.append(q.shape[self.concat_dim])
-        
+
         if qs:
+            attn_bias = self._get_relative_attention_bias(qs, Ks)
+
             # Concatenate across groups for a single attention call.
             q = torch.concat(qs, dim=self.concat_dim)
             K = torch.concat(Ks, dim=self.concat_dim)
             V = torch.concat(Vs, dim=self.concat_dim)
-            mask = torch.concat(masks, dim=self.concat_dim) if self.use_mask else None
+            if self.use_mask and all(mask is not None for mask in masks):
+                mask = torch.concat(masks, dim=self.mask_concat_dim)
+            elif self.use_mask and any(mask is not None for mask in masks):
+                raise ValueError(
+                    "Masks must be provided for either all active groups or none"
+                )
+            else:
+                mask = None
 
             # Shared attention across all groups.
-            att_out = safe_scaled_dot_product_attention(q, K, V, mask=mask)
+            att_out = safe_scaled_dot_product_attention(
+                q,
+                K,
+                V,
+                mask=mask,
+                attn_bias=attn_bias,
+            )
 
             # Split attention outputs back to per-group chunks.
             att_outs = att_out.split(seq_lens, dim=self.concat_dim)
@@ -853,13 +1040,16 @@ class FieldSpaceAttentionBlock(nn.Module):
         rank_depth: Optional[int] = None,
         n_rank_depth: Optional[int] = None,
         rank_features: Optional[int] = None,
+        rank_embedding: Optional[int] = None,
         rank_variables: Optional[int] = None,
         n_times: int = 1,
         n_depths: int = 1,
         dropout: float = 0.0,
         n_head_channels: int = 32,
         embed_confs: Dict[str, Any] = {},
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
+        factor_embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
         seq_len_time: int = -1,
         seq_len_depth: int = -1,
@@ -912,9 +1102,12 @@ class FieldSpaceAttentionBlock(nn.Module):
         :param rank_depth: Optional rank for depth.
         :param n_rank_depth: Optional indexed-tensor rank for depth.
         :param rank_features: Optional rank for features.
+        :param rank_embedding: Optional dynamic embedding-factor rank for the MLP.
         :param dropout: Dropout rate.
         :param n_head_channels: Head channel size.
         :param embed_confs: Embedding configuration dictionary.
+        :param embed_confs_factor: Embedding configuration used only by the
+            dynamic Tucker factor.
         :param emb_modulation_mode: How embeddings modulate field tensors.
         :param seq_len_time: Sequence length along time.
         :param seq_len_depth: Sequence length along depth.
@@ -942,6 +1135,9 @@ class FieldSpaceAttentionBlock(nn.Module):
         """
                
         super().__init__()
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
 
         for name, value in (
             ("n_rank_time", n_rank_time),
@@ -1102,6 +1298,29 @@ class FieldSpaceAttentionBlock(nn.Module):
         input_zoom_field = embed_confs.get("input_zoom", min(q_zooms))
         if embedder is None:
             embedder = get_embedder(**embed_confs, grid_layers=grid_layers, zoom=input_zoom_field)
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(q_zooms))
+        )
+        if rank_embedding is not None and factor_embedder is None:
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
+        self.embedding_keys = {
+            *(
+                embedder.embedders.keys()
+                if embedder is not None
+                else ()
+            ),
+            *(
+                factor_embedder.embedders.keys()
+                if factor_embedder is not None
+                else ()
+            ),
+        }
 
         emb_tokenizer = Tokenizer(
             input_zooms=[input_zoom_field] if embedder and embedder.has_space() else [],
@@ -1111,6 +1330,23 @@ class FieldSpaceAttentionBlock(nn.Module):
             overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
             grid_layers=grid_layers
         ) 
+
+        mlp_embedding_factor = None
+        if rank_embedding is not None:
+            if factor_embedder is None:
+                raise ValueError(
+                    "rank_embedding requires at least one embedder in "
+                    "embed_confs_factor"
+                )
+            mlp_embedding_factor = EmbeddingFactor(
+                factor_embedder,
+                rank_embedding=int(rank_embedding),
+                output_zoom=max(self.q_zooms),
+                cache_key=(
+                    f"{embedder_cache_key or 'local'}:factor:"
+                    f"{id(factor_embedder)}:{max(self.q_zooms)}"
+                ),
+            )
 
         emb_ranks = emb_ranks_default if use_ranks_emb_layer else shared_emb_ranks
 
@@ -1311,6 +1547,8 @@ class FieldSpaceAttentionBlock(nn.Module):
             n_variables=n_variables_mlp,
             indexed_dims=indexed_dims_mlp,
             fac_mode=fac_mode,
+            rank_embedding=rank_embedding,
+            embedding_factor=mlp_embedding_factor,
             gamma=False,
         )
         gamma_indexed_shape_mlp = [spec["n_features"] for spec in self.indexed_dims_mlp_gammas.values()]
@@ -1502,6 +1740,7 @@ class FieldSpaceAttentionBlock(nn.Module):
             zoom=max(self.q_zooms),
             token_len_time=self.token_len_time,
             field_time_steps=field_time_steps,
+            embedding_keys=self.embedding_keys,
         )
 
     def _get_att_gamma(
@@ -1774,7 +2013,11 @@ class FieldSpaceAttentionBlock(nn.Module):
             x = self.emb_layer_mlp(x, emb=emb_tokenized, sample_configs=sample_configs)
 
         # MLP update path operating on tokenized representation.
-        x = self.mlp(x, emb=emb_tokenized, sample_configs=sample_configs[int(zoom_field)])
+        x = self.mlp(
+            x,
+            emb=emb_tokenized,
+            sample_configs=sample_configs,
+        )
 
         # Split per-zoom outputs and fold them back into zoom tensors.
         x = x.split(tuple(self.n_out_features_update.values()), dim=-3)
@@ -1865,13 +2108,16 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         rank_depth: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         n_rank_depth: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         rank_features: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
+        rank_embedding: Optional[int] = None,
         rank_variables: Union[Mapping[int, Optional[int]], Sequence[Optional[int]], Optional[int]] = None,
         n_times: Union[Mapping[int, int], Sequence[int], int] = 1,
         n_depths: int = 1,
         dropout: float = 0.0,
         n_head_channels: int = 32,
         embed_confs: Dict[str, Any] = {},
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
+        factor_embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
         seq_len_time: int = -1,
         seq_len_depth: int = -1,
@@ -1898,6 +2144,9 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         in_zooms: Optional[List[int]] = None,
     ) -> None:
         nn.Module.__init__(self)
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
 
         if list(q_zooms) != list(kv_zooms):
             raise ValueError(
@@ -1905,6 +2154,8 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             )
         if update not in {"shift", "shift_scale"}:
             raise ValueError("update must be either 'shift' or 'shift_scale'")
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
 
         self.in_zooms = list(q_zooms if in_zooms is None else in_zooms)
         self.q_zooms = [int(zoom) for zoom in q_zooms]
@@ -2035,6 +2286,23 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                 zoom=input_zoom_field,
             )
         self.embedder = embedder
+        factor_input_zoom = int(
+            embed_confs_factor.get("input_zoom", min(self.q_zooms))
+        )
+        if rank_embedding is not None and factor_embedder is None:
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
+        self.factor_embedder = factor_embedder
+        if rank_embedding is not None and factor_embedder is None:
+            raise ValueError(
+                "rank_embedding requires at least one embedder in "
+                "embed_confs_factor"
+            )
 
         self.tokenizers = nn.ModuleDict()
         self.update_tokenizers = nn.ModuleDict()
@@ -2055,6 +2323,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         self.indexed_dims_mlp_gamma_by_zoom: Dict[int, Dict[str, Dict[str, Any]]] = {}
         self.token_shapes_by_zoom: Dict[int, List[int]] = {}
         self.update_shapes_by_zoom: Dict[int, List[int]] = {}
+        embedding_factors_by_zoom: Dict[int, EmbeddingFactor] = {}
 
         processing_zooms = list(dict.fromkeys([*self.q_zooms, *self.target_zooms]))
         for zoom in processing_zooms:
@@ -2095,6 +2364,17 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             ]
             self.token_shapes_by_zoom[zoom] = token_shape
             self.update_shapes_by_zoom[zoom] = update_shape
+
+            if rank_embedding is not None:
+                embedding_factors_by_zoom[zoom] = EmbeddingFactor(
+                    factor_embedder,
+                    rank_embedding=int(rank_embedding),
+                    output_zoom=zoom,
+                    cache_key=(
+                        f"{embedder_cache_key or 'local'}:factor:"
+                        f"{id(factor_embedder)}:{zoom}"
+                    ),
+                )
 
             indexed_emb = self._build_ext_indexed_dims(
                 zoom,
@@ -2245,6 +2525,8 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                         self.rank_variables_by_zoom[zoom]
                         if self.use_ranks_mlp else None
                     ),
+                    rank_embedding=rank_embedding,
+                    embedding_factor=embedding_factors_by_zoom.get(zoom),
                     bias=False,
                 )
 
@@ -2276,11 +2558,18 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
                         self.rank_variables_by_zoom[zoom]
                         if self.use_ranks_mlp else None
                     ),
+                    rank_embedding=rank_embedding,
+                    embedding_factor=embedding_factors_by_zoom.get(zoom),
                     bias=False,
                 )
                 self._register_ext_gammas(zoom, update_shape)
 
         shared_shape = [1, 1, 1, self.att_dim_total]
+        shared_embedding_factor = (
+            embedding_factors_by_zoom[self.target_zooms[0]]
+            if rank_embedding is not None
+            else None
+        )
         self.mlp_layer1 = get_layer(
             shared_shape,
             shared_shape,
@@ -2288,6 +2577,8 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             n_variables=1,
             indexed_dims={},
             fac_mode=fac_mode,
+            rank_embedding=rank_embedding,
+            embedding_factor=shared_embedding_factor,
             bias=False,
         )
         self.mlp_layer2 = get_layer(
@@ -2297,6 +2588,8 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             n_variables=1,
             indexed_dims={},
             fac_mode=fac_mode,
+            rank_embedding=rank_embedding,
+            embedding_factor=shared_embedding_factor,
             bias=False,
         )
 
@@ -2503,7 +2796,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         sample_configs: Dict[int, Dict[str, Any]],
         *,
         mlp: bool,
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, Optional[Dict[str, Any]]]:
         key = str(zoom)
         x = self.tokenizers[key]({zoom: x_zooms[zoom]}, sample_configs)
         pre_layer = (
@@ -2518,16 +2811,33 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             field_time_steps=int(
                 x.shape[2] * self.token_len_time_by_zoom[zoom]
             ),
+            embedding_keys={
+                *(
+                    self.embedder.embedders.keys()
+                    if self.embedder is not None
+                    else ()
+                ),
+                *(
+                    self.factor_embedder.embedders.keys()
+                    if self.factor_embedder is not None
+                    else ()
+                ),
+            },
         )
         x = pre_layer(x, emb=aligned_emb, sample_configs=sample_configs)
-        return self.get_time_depth_overlaps(
-            x,
-            overlap_time=(
-                self.token_overlap_mlp_time if mlp else self.token_overlap_time
+        return (
+            self.get_time_depth_overlaps(
+                x,
+                overlap_time=(
+                    self.token_overlap_mlp_time
+                    if mlp else self.token_overlap_time
+                ),
+                overlap_depth=(
+                    self.token_overlap_mlp_depth
+                    if mlp else self.token_overlap_depth
+                ),
             ),
-            overlap_depth=(
-                self.token_overlap_mlp_depth if mlp else self.token_overlap_depth
-            ),
+            aligned_emb,
         )
 
     @staticmethod
@@ -2699,7 +3009,7 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         preprocessed: Dict[int, torch.Tensor] = {}
         for zoom in self.q_zooms:
             key = str(zoom)
-            x = self._preprocess_ext_zoom(
+            x, _ = self._preprocess_ext_zoom(
                 zoom,
                 x_zooms,
                 emb,
@@ -2830,19 +3140,21 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
             x_zooms[zoom] = self._detokenize_ext(updated)
 
         mlp_projections: List[torch.Tensor] = []
+        mlp_embeddings: Dict[int, Optional[Dict[str, Any]]] = {}
         for zoom in self.target_zooms:
             key = str(zoom)
-            preprocessed = self._preprocess_ext_zoom(
+            preprocessed, aligned_emb = self._preprocess_ext_zoom(
                 zoom,
                 x_zooms,
                 emb,
                 sample_configs,
                 mlp=True,
             )
+            mlp_embeddings[zoom] = aligned_emb
             mlp_projections.append(
                 self.mlp_projection_layers[key](
                     preprocessed,
-                    emb=emb,
+                    emb=aligned_emb,
                     sample_configs=sample_configs,
                 )
             )
@@ -2850,20 +3162,23 @@ class ExtFieldSpaceAttentionBlock(FieldSpaceAttentionBlock):
         mlp_tokens = self._sum_ext_projections(
             mlp_projections, "MLP"
         )
+        shared_mlp_emb = mlp_embeddings[self.target_zooms[0]]
         mlp_tokens = self.mlp_layer1(
-            mlp_tokens, emb=emb, sample_configs=sample_configs
+            mlp_tokens, emb=shared_mlp_emb, sample_configs=sample_configs
         )
         mlp_tokens = self.mlp_activation(mlp_tokens)
         mlp_tokens = self.dropout_mlp(mlp_tokens)
         mlp_tokens = self.mlp_layer2(
-            mlp_tokens, emb=emb, sample_configs=sample_configs
+            mlp_tokens, emb=shared_mlp_emb, sample_configs=sample_configs
         )
 
         for zoom in self.target_zooms:
             key = str(zoom)
             projected = self.dropout_mlp(
                 self.out_layers_mlp[key](
-                    mlp_tokens, emb=emb, sample_configs=sample_configs
+                    mlp_tokens,
+                    emb=mlp_embeddings[zoom],
+                    sample_configs=sample_configs,
                 )
             )
             residual = (

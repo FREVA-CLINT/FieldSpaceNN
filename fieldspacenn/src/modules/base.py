@@ -163,6 +163,8 @@ class MLP_fac(nn.Module):
                  indexed_dims_layer1: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
                  indexed_dims_layer2: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
                  fac_mode: str = "Tucker",
+                 rank_embedding: Optional[int] = None,
+                 embedding_factor: Optional[nn.Module] = None,
                  gamma: bool = False
                 ) -> None: 
       
@@ -201,6 +203,8 @@ class MLP_fac(nn.Module):
             n_variables=n_variables,
             indexed_dims=indexed_dims_layer1,
             fac_mode=fac_mode,
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
             bias=True,
         )
         self.layer2 = get_layer(
@@ -210,6 +214,8 @@ class MLP_fac(nn.Module):
             n_variables=n_variables,
             indexed_dims=indexed_dims_layer2,
             fac_mode=fac_mode,
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
             bias=True,
         )
         self.dropout: nn.Module = nn.Dropout(p=dropout) if dropout>0 else nn.Identity()
@@ -266,6 +272,8 @@ def get_layer(
         indexed_dims: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
         fac_mode: str = "Tucker",
         rank_variables: Optional[int] = None,
+        rank_embedding: Optional[int] = None,
+        embedding_factor: Optional[nn.Module] = None,
         **kwargs: Any
         ):  
     """
@@ -288,6 +296,10 @@ def get_layer(
     fac_mode = layer_confs.get("fac_mode", fac_mode)
     if rank_variables is None:
         rank_variables = layer_confs.get("rank_variables", None)
+    if rank_embedding is None:
+        rank_embedding = layer_confs.get("rank_embedding", None)
+    if embedding_factor is None:
+        embedding_factor = layer_confs.get("embedding_factor", None)
     layer_kwargs = copy.deepcopy(kwargs)
     bias = check_get([layer_kwargs, {'bias': False}], 'bias')
     layer_kwargs.pop("bias", None)
@@ -300,7 +312,11 @@ def get_layer(
         rank_variables=rank_variables,
     )
 
-    if not any(ranks_not_none) and not indexed_dims_norm:
+    if (
+        not any(ranks_not_none)
+        and not indexed_dims_norm
+        and rank_embedding is None
+    ):
         # Use a standard linear layer when no factorization is requested.
         layer = LinearLayer(
                 in_features,
@@ -318,6 +334,8 @@ def get_layer(
             n_variables=n_variables,
             indexed_dims=indexed_dims_norm,
             rank_variables=rank_variables,
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
             **layer_kwargs,
         )
         

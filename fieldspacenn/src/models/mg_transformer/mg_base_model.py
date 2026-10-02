@@ -28,6 +28,7 @@ defaults = {
     "fac_mode": "Tucker",
     "emb_modulation_mode": "shift_scale",
     'embed_confs': {},
+    'embed_confs_factor': {},
     'dropout': 0,
     'with_residual': False,
     'use_mask': False
@@ -223,6 +224,10 @@ def create_encoder_decoder_block(
     )
 
     embed_confs = check_get([block_conf, kwargs, defaults], "embed_confs")
+    embed_confs_factor = check_get(
+        [block_conf, kwargs, defaults],
+        "embed_confs_factor",
+    )
     fac_mode = check_get([block_conf, kwargs, defaults], "fac_mode")
     emb_modulation_mode = check_get(
         [block_conf, kwargs, defaults],
@@ -324,6 +329,7 @@ def create_encoder_decoder_block(
                 rank_depth = block_conf.rank_depth,
                 n_rank_depth = block_conf.n_rank_depth,
                 rank_features = block_conf.rank_features,
+                rank_embedding = block_conf.rank_embedding,
                 n_times = block_conf.n_times,
                 n_depths = list(n_groups_depths) if getattr(block_conf, "n_depths_is_default", False) else block_conf.n_depths,
                 seq_len_zoom = block_conf.seq_len_zoom,
@@ -333,10 +339,12 @@ def create_encoder_decoder_block(
                 seq_overlap_time = block_conf.seq_overlap_time,
                 seq_overlap_depth = block_conf.seq_overlap_depth,
                 with_var_att= block_conf.with_var_att,
+                relative_biases=block_conf.relative_biases,
                 update = block_conf.update,
                 dropout = dropout,
                 n_head_channels = n_head_channels,
                 embed_confs = embed_confs,
+                embed_confs_factor=embed_confs_factor,
                 global_embedders = global_embedders,
                 separate_mlp_norm = block_conf.separate_mlp_norm,
                 mlp_residual_from_attention = block_conf.mlp_residual_from_attention,
@@ -406,19 +414,22 @@ def create_encoder_decoder_block(
                 rank_time = block_conf.rank_time,
                 rank_depth = block_conf.rank_depth,
                 rank_variables = block_conf.rank_variables,
+                rank_embedding = block_conf.rank_embedding,
                 n_times = block_conf.n_times,
                 n_rank_space = block_conf.n_rank_space,
                 n_rank_time = block_conf.n_rank_time,
                 n_depths = block_conf.n_depths,
                 n_rank_depth = block_conf.n_rank_depth,
-                residual = check_get([block_conf, {"residual": False}], "residual"),
-                residual_gamma = check_get([block_conf, {"residual_gamma": False}], "residual_gamma"),
+                update = check_get([block_conf, {"update": None}], "update"),
+                residual = check_get([block_conf, {"residual": None}], "residual"),
+                residual_gamma = check_get([block_conf, {"residual_gamma": None}], "residual_gamma"),
                 type= block_conf.type,
                 hidden_dim_mixed=block_conf.hidden_dim_mixed,
                 use_indexed_input=block_conf.use_indexed_input,
                 use_indexed_output=block_conf.use_indexed_output,
                 use_indexed_mlp=block_conf.use_indexed_mlp,
                 embed_confs=embed_confs,
+                embed_confs_factor=embed_confs_factor,
                 global_embedders=global_embedders,
                 emb_modulation_mode=emb_modulation_mode,
                 layer_norm=block_conf.layer_norm,

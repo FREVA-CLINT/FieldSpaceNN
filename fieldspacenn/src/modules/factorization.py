@@ -280,6 +280,10 @@ class TuckerFacLayer(nn.Module):
     :param indexed_dims: Optional indexed axis specification for ``(v, t, n, d)``.
     :param n_variables: Legacy alias for indexed variable dims.
     :param rank_variables: Legacy alias for indexed variable rank.
+    :param rank_embedding: Optional rank of a dynamic embedding factor.
+    :param embedding_factor: Module producing the dynamic embedding factor.
+        Its output is added to a normalized same-values factor through a
+        learnable per-rank gamma initialized to ``1e-12``.
     :param bias: Whether to include a bias term.
     """
 
@@ -291,6 +295,8 @@ class TuckerFacLayer(nn.Module):
         indexed_dims: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
         rank_variables: Optional[int] = None,
         n_variables: int = 1,
+        rank_embedding: Optional[int] = None,
+        embedding_factor: Optional[nn.Module] = None,
         bias: bool = False,
         **kwargs: Any,
     ):
@@ -313,6 +319,23 @@ class TuckerFacLayer(nn.Module):
         self.in_features: List[int] = list(in_features)
         self.out_features: List[int] = list(out_features)
         self.n_variables: int = int(n_variables)
+        self.rank_embedding = (
+            None if rank_embedding is None else int(rank_embedding)
+        )
+        if self.rank_embedding is not None and self.rank_embedding <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
+        if self.rank_embedding is not None and embedding_factor is None:
+            raise ValueError(
+                "rank_embedding requires an embedding_factor module"
+            )
+        self.embedding_factor = embedding_factor
+        self.embedding_factor_gamma: Optional[nn.Parameter]
+        if self.rank_embedding is None:
+            self.register_parameter("embedding_factor_gamma", None)
+        else:
+            self.embedding_factor_gamma = nn.Parameter(
+                torch.full((self.rank_embedding,), 1e-12)
+            )
         self.indexed_dims = normalize_indexed_dims(
             indexed_dims=indexed_dims,
             n_variables=n_variables,
@@ -357,6 +380,59 @@ class TuckerFacLayer(nn.Module):
             else:
                 self.core_dims.append(int(spec["n_features"]))
 
+        self.embedding_rank_subscript = ""
+        self.embedding_factor_subscripts = ""
+        self.embedding_factor_dims: tuple[str, ...] = ()
+        if self.rank_embedding is not None:
+            factor_dims = getattr(embedding_factor, "factor_dims", None)
+            if factor_dims is None and hasattr(embedding_factor, "get_active_dims"):
+                factor_dims = embedding_factor.get_active_dims()
+            if factor_dims is None:
+                raise TypeError(
+                    "embedding_factor must expose factor_dims or get_active_dims()"
+                )
+
+            dimension_to_subscript = {
+                "b": "b",
+                "v": "v",
+                "t": "t",
+                "s": "n",
+                "d": "d",
+            }
+            self.embedding_factor_dims = tuple(
+                dim for dim in factor_dims if dim != "c"
+            )
+            if "b" not in self.embedding_factor_dims:
+                raise ValueError(
+                    "Embedding factors must retain the batch dimension 'b'"
+                )
+            invalid_dims = [
+                dim
+                for dim in self.embedding_factor_dims
+                if dim not in dimension_to_subscript
+            ]
+            if invalid_dims:
+                raise ValueError(
+                    f"Unsupported embedding factor dimensions: {invalid_dims}"
+                )
+            if len(set(self.embedding_factor_dims)) != len(
+                self.embedding_factor_dims
+            ):
+                raise ValueError(
+                    "Embedding factor dimensions must be unique, got "
+                    f"{self.embedding_factor_dims}"
+                )
+
+            self.embedding_rank_subscript = next(self.core_letters)
+            self.embedding_factor_subscripts = (
+                "".join(
+                    dimension_to_subscript[dim]
+                    for dim in self.embedding_factor_dims
+                )
+                + self.embedding_rank_subscript
+            )
+            self.core_dims.append(self.rank_embedding)
+
         self.factors: nn.ParameterList = nn.ParameterList()
         in_dims: List[int] = []
         for rank, f_in in zip(ranks, self.in_features):
@@ -373,6 +449,7 @@ class TuckerFacLayer(nn.Module):
         self.core_subscripts: str = (
             self.prefix_subscripts
             + self.indexed_rank_subscripts
+            + self.embedding_rank_subscript
             + self.core_input_subscripts
             + self.core_output_subscripts
         )
@@ -461,6 +538,66 @@ class TuckerFacLayer(nn.Module):
 
         return factor_tensors
 
+    def _get_embedding_factor_tensor(
+        self,
+        emb: Optional[Dict[str, Any]],
+        sample_configs: Mapping[str, Any],
+    ) -> Optional[torch.Tensor]:
+        """Build and validate the optional dynamic Tucker factor."""
+        if self.embedding_factor is None:
+            return None
+        if emb is None:
+            raise ValueError(
+                "Embedding inputs are required when rank_embedding is configured"
+            )
+
+        factor = self.embedding_factor(
+            emb,
+            sample_configs=sample_configs,
+        )
+        if not torch.is_tensor(factor):
+            raise TypeError(
+                "embedding_factor must return a tensor, got "
+                f"{type(factor).__name__}"
+            )
+
+        # A plain EmbedderSequential returns the canonical field layout.  The
+        # field-space adapter returns the compact representation directly.
+        if factor.ndim == 6 and factor.ndim != len(self.embedding_factor_dims) + 1:
+            canonical_dims = ("b", "v", "t", "s", "d")
+            for dim_index in reversed(range(len(canonical_dims))):
+                if canonical_dims[dim_index] in self.embedding_factor_dims:
+                    continue
+                if factor.shape[dim_index] != 1:
+                    raise ValueError(
+                        f"Inactive embedding dimension {canonical_dims[dim_index]!r} "
+                        f"must be singleton, got shape {tuple(factor.shape)}"
+                    )
+                factor = factor.squeeze(dim_index)
+
+        expected_ndim = len(self.embedding_factor_dims) + 1
+        if factor.ndim != expected_ndim:
+            raise ValueError(
+                "Embedding factor has incompatible rank: expected "
+                f"{expected_ndim} dimensions for {self.embedding_factor_dims} plus "
+                f"channels, got shape {tuple(factor.shape)}"
+            )
+        if factor.shape[-1] != self.rank_embedding:
+            raise ValueError(
+                "Embedding factor channel dimension must equal rank_embedding="
+                f"{self.rank_embedding}, got {factor.shape[-1]}"
+            )
+
+        same_values_factor = F.normalize(torch.ones_like(factor), dim=-1)
+        assert self.embedding_factor_gamma is not None
+        gamma = self.embedding_factor_gamma.to(
+            device=factor.device,
+            dtype=factor.dtype,
+        )
+        factor = same_values_factor + gamma * factor
+
+        return factor
+
     def add_bias(self, x: torch.Tensor, bias: torch.Tensor):
         """
         Add shared or indexed bias with correct broadcasting over ``(v, t, n, d)``.
@@ -473,14 +610,15 @@ class TuckerFacLayer(nn.Module):
         self,
         x: torch.Tensor,
         emb: Optional[Dict[str, Any]] = None,
-        sample_configs: Dict[str, Any] = {},
+        sample_configs: Mapping[str, Any] = {},
     ):
         """
         Apply Tucker factorized transformation.
 
         :param x: Input tensor of shape ``(b, v, t, n, d, f_in...)``.
         :param emb: Optional embedding dictionary.
-        :param sample_configs: Optional sampling configuration (unused).
+        :param sample_configs: Sampling configuration forwarded to the dynamic
+            embedding factor.
         :return: Output tensor of shape ``(b, v, t, n, d, f_out...)``.
         """
 
@@ -489,10 +627,31 @@ class TuckerFacLayer(nn.Module):
 
         core = self._select_core(x, emb=emb)
         indexed_factors = self._get_indexed_factor_tensors(x, emb=emb)
+        embedding_factor = self._get_embedding_factor_tensor(
+            emb=emb,
+            sample_configs=sample_configs,
+        )
+        if embedding_factor is not None:
+            embedding_factor = embedding_factor.to(
+                device=x.device,
+                dtype=x.dtype,
+            )
 
         lhs = [self.input_subscripts, self.core_subscripts, *self.indexed_factor_subscripts, *self.feature_factor_subscripts]
+        operands: List[torch.Tensor] = [
+            x,
+            core,
+            *indexed_factors,
+            *self.factors,
+        ]
+        if embedding_factor is not None:
+            # Keep the operand order in sync with the equation: the embedding
+            # factor follows indexed factors and precedes static feature factors.
+            insert_at = 2 + len(indexed_factors)
+            lhs.insert(insert_at, self.embedding_factor_subscripts)
+            operands.insert(insert_at, embedding_factor)
         einsum_eq = f"{','.join(lhs)}->{self.output_subscripts}"
-        x = torch.einsum(einsum_eq, x, core, *indexed_factors, *self.factors)
+        x = torch.einsum(einsum_eq, *operands)
         x = x.reshape(*x_prefix, *self.out_features)
 
         if self.bias is not None:
