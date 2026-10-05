@@ -95,6 +95,14 @@ def _group_values(value: Any, count: int, name: str) -> List[Any]:
     return [value for _ in range(count)]
 
 
+def _contains_configured_value(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return any(_contains_configured_value(item) for item in value.values())
+    if _is_sequence(value):
+        return any(_contains_configured_value(item) for item in value)
+    return value is not None
+
+
 def _inverse_softplus(value: float) -> float:
     return math.log(math.expm1(value))
 
@@ -1366,11 +1374,18 @@ class FieldSpaceOperatorConfig:
         token_overlap_depth: Any = False,
         token_overlap_mlp_time: bool = False,
         token_overlap_mlp_depth: Any = False,
-        rank_time: Any = None,
-        rank_space: Any = None,
-        rank_depth: Any = None,
-        rank_features: Any = None,
-        rank_variables: Any = None,
+        operator_projection_rank_time: Any = None,
+        operator_projection_rank_space: Any = None,
+        operator_projection_rank_depth: Any = None,
+        operator_projection_rank_features: Any = None,
+        operator_projection_rank_variables: Any = None,
+        include_variable_dependency_operator_projection: bool = False,
+        mlp_projection_rank_time: Any = None,
+        mlp_projection_rank_space: Any = None,
+        mlp_projection_rank_depth: Any = None,
+        mlp_projection_rank_features: Any = None,
+        mlp_projection_rank_variables: Any = None,
+        include_variable_dependency_mlp: bool = False,
         update: Literal["shift", "shift_scale"] = "shift",
         layer_norm: bool = True,
         separate_mlp_norm: bool = True,
@@ -1393,6 +1408,9 @@ class FieldSpaceOperatorConfig:
                 f"{names} is internal to operator contraction and is no longer "
                 "a FieldSpaceOperatorConfig setting"
             )
+        if kwargs:
+            names = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected FieldSpaceOperatorConfig settings: {names}")
         operators = list(operators)
         if not operators:
             raise ValueError("operators must contain at least one atomic operator")
@@ -1460,6 +1478,22 @@ class FieldSpaceOperatorConfig:
             raise ValueError("n_times must be positive")
         if operator_dim is not None and int(operator_dim) <= 0:
             raise ValueError("operator_dim must be positive when configured")
+        if (
+            not include_variable_dependency_operator_projection
+            and _contains_configured_value(operator_projection_rank_variables)
+        ):
+            raise ValueError(
+                "operator_projection_rank_variables requires "
+                "include_variable_dependency_operator_projection=True"
+            )
+        if (
+            not include_variable_dependency_mlp
+            and _contains_configured_value(mlp_projection_rank_variables)
+        ):
+            raise ValueError(
+                "mlp_projection_rank_variables requires "
+                "include_variable_dependency_mlp=True"
+            )
 
         dependency_flags = {
             "variable": include_variable_dependency,
@@ -1588,11 +1622,26 @@ class FieldSpaceOperatorConfig:
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
         self.token_overlap_mlp_depth = token_overlap_mlp_depth
-        self.rank_time = rank_time
-        self.rank_space = rank_space
-        self.rank_depth = rank_depth
-        self.rank_features = rank_features
-        self.rank_variables = rank_variables
+        self.operator_projection_rank_time = operator_projection_rank_time
+        self.operator_projection_rank_space = operator_projection_rank_space
+        self.operator_projection_rank_depth = operator_projection_rank_depth
+        self.operator_projection_rank_features = (
+            operator_projection_rank_features
+        )
+        self.operator_projection_rank_variables = (
+            operator_projection_rank_variables
+        )
+        self.include_variable_dependency_operator_projection = bool(
+            include_variable_dependency_operator_projection
+        )
+        self.mlp_projection_rank_time = mlp_projection_rank_time
+        self.mlp_projection_rank_space = mlp_projection_rank_space
+        self.mlp_projection_rank_depth = mlp_projection_rank_depth
+        self.mlp_projection_rank_features = mlp_projection_rank_features
+        self.mlp_projection_rank_variables = mlp_projection_rank_variables
+        self.include_variable_dependency_mlp = bool(
+            include_variable_dependency_mlp
+        )
         self.update = update
         self.layer_norm = bool(layer_norm)
         self.separate_mlp_norm = bool(separate_mlp_norm)
@@ -1605,8 +1654,6 @@ class FieldSpaceOperatorConfig:
         self.fac_mode = fac_mode
         self.n_groups_variables = n_groups_variables
         self.n_groups_depths = n_groups_depths
-        for name, value in kwargs.items():
-            setattr(self, name, value)
 
 
 class _FieldSpaceOperatorBranch(nn.Module):
@@ -1639,8 +1686,13 @@ class _FieldSpaceOperatorBranch(nn.Module):
         constraint: ConstraintName,
         initialization: str,
         share_factors_across_heads: bool,
-        ranks_by_zoom: Mapping[int, Sequence[Optional[int]]],
-        rank_variables_by_zoom: Mapping[int, Optional[int]],
+        operator_projection_ranks_by_zoom: Mapping[
+            int, Sequence[Optional[int]]
+        ],
+        operator_projection_rank_variables_by_zoom: Mapping[
+            int, Optional[int]
+        ],
+        include_variable_dependency_operator_projection: bool,
         update: str,
         dropout: float,
         layer_norm: bool,
@@ -1734,12 +1786,18 @@ class _FieldSpaceOperatorBranch(nn.Module):
                 if embedder is not None and embedder.has_space()
                 else 1
             )
-            rank_variables = rank_variables_by_zoom[zoom]
-            projection_n_variables = n_variables if rank_variables is not None else 1
+            operator_projection_rank_variables = (
+                operator_projection_rank_variables_by_zoom[zoom]
+            )
+            projection_n_variables = (
+                n_variables
+                if include_variable_dependency_operator_projection
+                else 1
+            )
             self.pre_layers[key] = LinEmbLayer(
                 emb_shape,
                 emb_shape,
-                ranks=list(ranks_by_zoom[zoom]),
+                ranks=list(operator_projection_ranks_by_zoom[zoom]),
                 n_variables=1,
                 fac_mode=fac_mode,
                 identity_if_equal=True,
@@ -1760,9 +1818,9 @@ class _FieldSpaceOperatorBranch(nn.Module):
                 self.value_layers[key] = get_layer(
                     input_shape,
                     [1, 1, 1, self.operator_dim],
-                    ranks=list(ranks_by_zoom[zoom]),
+                    ranks=list(operator_projection_ranks_by_zoom[zoom]),
                     n_variables=projection_n_variables,
-                    rank_variables=rank_variables,
+                    rank_variables=operator_projection_rank_variables,
                     fac_mode=fac_mode,
                     bias=False,
                 )
@@ -1774,9 +1832,9 @@ class _FieldSpaceOperatorBranch(nn.Module):
                 self.output_layers[key] = get_layer(
                     [1, 1, 1, self.operator_dim],
                     output_shape,
-                    ranks=list(ranks_by_zoom[zoom]),
+                    ranks=list(operator_projection_ranks_by_zoom[zoom]),
                     n_variables=projection_n_variables,
-                    rank_variables=rank_variables,
+                    rank_variables=operator_projection_rank_variables,
                     fac_mode=fac_mode,
                     bias=False,
                 )
@@ -1944,11 +2002,18 @@ class FieldSpaceOperatorBlock(nn.Module):
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
         token_overlap_mlp_depth: bool = False,
-        rank_time: Any = None,
-        rank_space: Any = None,
-        rank_depth: Any = None,
-        rank_features: Any = None,
-        rank_variables: Any = None,
+        operator_projection_rank_time: Any = None,
+        operator_projection_rank_space: Any = None,
+        operator_projection_rank_depth: Any = None,
+        operator_projection_rank_features: Any = None,
+        operator_projection_rank_variables: Any = None,
+        include_variable_dependency_operator_projection: bool = False,
+        mlp_projection_rank_time: Any = None,
+        mlp_projection_rank_space: Any = None,
+        mlp_projection_rank_depth: Any = None,
+        mlp_projection_rank_features: Any = None,
+        mlp_projection_rank_variables: Any = None,
+        include_variable_dependency_mlp: bool = False,
         update: str = "shift",
         dropout: float = 0.0,
         layer_norm: bool = True,
@@ -1959,8 +2024,12 @@ class FieldSpaceOperatorBlock(nn.Module):
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         fac_mode: str = "Tucker",
+        **kwargs: Any,
     ) -> None:
         super().__init__()
+        if kwargs:
+            names = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unexpected FieldSpaceOperatorBlock settings: {names}")
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
@@ -2012,21 +2081,94 @@ class FieldSpaceOperatorBlock(nn.Module):
             embedder.embedders.keys() if embedder is not None else ()
         )
 
-        rank_time_by_zoom = _axis_values(rank_time, all_zooms, "rank_time")
-        rank_space_by_zoom = _axis_values(rank_space, all_zooms, "rank_space")
-        rank_depth_by_zoom = _axis_values(rank_depth, all_zooms, "rank_depth")
-        rank_features_by_zoom = _axis_values(
-            rank_features, all_zooms, "rank_features"
+        operator_projection_rank_time_by_zoom = _axis_values(
+            operator_projection_rank_time,
+            all_zooms,
+            "operator_projection_rank_time",
         )
-        rank_variables_by_zoom = _axis_values(
-            rank_variables, all_zooms, "rank_variables"
+        operator_projection_rank_space_by_zoom = _axis_values(
+            operator_projection_rank_space,
+            all_zooms,
+            "operator_projection_rank_space",
         )
-        ranks_by_zoom = {
+        operator_projection_rank_depth_by_zoom = _axis_values(
+            operator_projection_rank_depth,
+            all_zooms,
+            "operator_projection_rank_depth",
+        )
+        operator_projection_rank_features_by_zoom = _axis_values(
+            operator_projection_rank_features,
+            all_zooms,
+            "operator_projection_rank_features",
+        )
+        operator_projection_rank_variables_by_zoom = _axis_values(
+            operator_projection_rank_variables,
+            all_zooms,
+            "operator_projection_rank_variables",
+        )
+        if (
+            not include_variable_dependency_operator_projection
+            and any(
+                rank is not None
+                for rank in operator_projection_rank_variables_by_zoom.values()
+            )
+        ):
+            raise ValueError(
+                "operator_projection_rank_variables requires "
+                "include_variable_dependency_operator_projection=True"
+            )
+        operator_projection_ranks_by_zoom = {
             zoom: [
-                rank_time_by_zoom[zoom],
-                rank_space_by_zoom[zoom],
-                rank_depth_by_zoom[zoom],
-                rank_features_by_zoom[zoom],
+                operator_projection_rank_time_by_zoom[zoom],
+                operator_projection_rank_space_by_zoom[zoom],
+                operator_projection_rank_depth_by_zoom[zoom],
+                operator_projection_rank_features_by_zoom[zoom],
+            ]
+            for zoom in all_zooms
+        }
+
+        mlp_projection_rank_time_by_zoom = _axis_values(
+            mlp_projection_rank_time,
+            all_zooms,
+            "mlp_projection_rank_time",
+        )
+        mlp_projection_rank_space_by_zoom = _axis_values(
+            mlp_projection_rank_space,
+            all_zooms,
+            "mlp_projection_rank_space",
+        )
+        mlp_projection_rank_depth_by_zoom = _axis_values(
+            mlp_projection_rank_depth,
+            all_zooms,
+            "mlp_projection_rank_depth",
+        )
+        mlp_projection_rank_features_by_zoom = _axis_values(
+            mlp_projection_rank_features,
+            all_zooms,
+            "mlp_projection_rank_features",
+        )
+        mlp_projection_rank_variables_by_zoom = _axis_values(
+            mlp_projection_rank_variables,
+            all_zooms,
+            "mlp_projection_rank_variables",
+        )
+        if (
+            not include_variable_dependency_mlp
+            and any(
+                rank is not None
+                for rank in mlp_projection_rank_variables_by_zoom.values()
+            )
+        ):
+            raise ValueError(
+                "mlp_projection_rank_variables requires "
+                "include_variable_dependency_mlp=True"
+            )
+        mlp_projection_ranks_by_zoom = {
+            zoom: [
+                mlp_projection_rank_time_by_zoom[zoom],
+                mlp_projection_rank_space_by_zoom[zoom],
+                mlp_projection_rank_depth_by_zoom[zoom],
+                mlp_projection_rank_features_by_zoom[zoom],
             ]
             for zoom in all_zooms
         }
@@ -2069,8 +2211,15 @@ class FieldSpaceOperatorBlock(nn.Module):
                     share_factors_across_heads=bool(
                         share_factors_across_heads[index]
                     ),
-                    ranks_by_zoom=ranks_by_zoom,
-                    rank_variables_by_zoom=rank_variables_by_zoom,
+                    operator_projection_ranks_by_zoom=(
+                        operator_projection_ranks_by_zoom
+                    ),
+                    operator_projection_rank_variables_by_zoom=(
+                        operator_projection_rank_variables_by_zoom
+                    ),
+                    include_variable_dependency_operator_projection=bool(
+                        include_variable_dependency_operator_projection
+                    ),
                     update=update,
                     dropout=dropout,
                     layer_norm=layer_norm,
@@ -2142,14 +2291,18 @@ class FieldSpaceOperatorBlock(nn.Module):
                 if embedder is not None and embedder.has_space()
                 else 1
             )
-            rank_variables_zoom = rank_variables_by_zoom[zoom]
+            mlp_projection_rank_variables_zoom = (
+                mlp_projection_rank_variables_by_zoom[zoom]
+            )
             projection_n_variables = (
-                int(n_variables) if rank_variables_zoom is not None else 1
+                int(n_variables)
+                if include_variable_dependency_mlp
+                else 1
             )
             self.mlp_pre_layers[key] = LinEmbLayer(
                 emb_shape,
                 emb_shape,
-                ranks=list(ranks_by_zoom[zoom]),
+                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
                 n_variables=1,
                 fac_mode=fac_mode,
                 identity_if_equal=True,
@@ -2169,18 +2322,18 @@ class FieldSpaceOperatorBlock(nn.Module):
             self.mlp_projection_layers[key] = get_layer(
                 mlp_input_shape,
                 [1, 1, 1, self.operator_dim],
-                ranks=list(ranks_by_zoom[zoom]),
+                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
                 n_variables=projection_n_variables,
-                rank_variables=rank_variables_zoom,
+                rank_variables=mlp_projection_rank_variables_zoom,
                 fac_mode=fac_mode,
                 bias=False,
             )
             self.mlp_output_layers[key] = get_layer(
                 [1, 1, 1, self.operator_dim],
                 [*update_shape[:-1], update_shape[-1] * self.update_multiplier],
-                ranks=list(ranks_by_zoom[zoom]),
+                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
                 n_variables=projection_n_variables,
-                rank_variables=rank_variables_zoom,
+                rank_variables=mlp_projection_rank_variables_zoom,
                 fac_mode=fac_mode,
                 bias=False,
             )
@@ -2329,12 +2482,39 @@ class FieldSpaceOperatorModule(nn.Module):
         token_len_depth: Any = 1,
         token_overlap_depth: Any = False,
         token_overlap_mlp_depth: Any = False,
-        rank_depth: Any = None,
+        operator_projection_rank_time: Any = None,
+        operator_projection_rank_space: Any = None,
+        operator_projection_rank_depth: Any = None,
+        operator_projection_rank_features: Any = None,
+        operator_projection_rank_variables: Any = None,
+        include_variable_dependency_operator_projection: bool = False,
+        mlp_projection_rank_time: Any = None,
+        mlp_projection_rank_space: Any = None,
+        mlp_projection_rank_depth: Any = None,
+        mlp_projection_rank_features: Any = None,
+        mlp_projection_rank_variables: Any = None,
+        include_variable_dependency_mlp: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         global_embedders: Optional[nn.ModuleDict] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__()
+        if (
+            not include_variable_dependency_operator_projection
+            and _contains_configured_value(operator_projection_rank_variables)
+        ):
+            raise ValueError(
+                "operator_projection_rank_variables requires "
+                "include_variable_dependency_operator_projection=True"
+            )
+        if (
+            not include_variable_dependency_mlp
+            and _contains_configured_value(mlp_projection_rank_variables)
+        ):
+            raise ValueError(
+                "mlp_projection_rank_variables requires "
+                "include_variable_dependency_mlp=True"
+            )
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [
             int(zoom) for zoom in (
@@ -2392,7 +2572,16 @@ class FieldSpaceOperatorModule(nn.Module):
         token_overlap_mlp_depth = _group_values(
             token_overlap_mlp_depth, n_groups, "token_overlap_mlp_depth"
         )
-        rank_depth = _group_values(rank_depth, n_groups, "rank_depth")
+        operator_projection_rank_depth = _group_values(
+            operator_projection_rank_depth,
+            n_groups,
+            "operator_projection_rank_depth",
+        )
+        mlp_projection_rank_depth = _group_values(
+            mlp_projection_rank_depth,
+            n_groups,
+            "mlp_projection_rank_depth",
+        )
 
         embed_confs = {} if embed_confs is None else dict(embed_confs)
         input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
@@ -2422,7 +2611,28 @@ class FieldSpaceOperatorModule(nn.Module):
                 token_overlap_mlp_depth=bool(
                     token_overlap_mlp_depth[group_index]
                 ),
-                rank_depth=rank_depth[group_index],
+                operator_projection_rank_time=operator_projection_rank_time,
+                operator_projection_rank_space=operator_projection_rank_space,
+                operator_projection_rank_depth=(
+                    operator_projection_rank_depth[group_index]
+                ),
+                operator_projection_rank_features=(
+                    operator_projection_rank_features
+                ),
+                operator_projection_rank_variables=(
+                    operator_projection_rank_variables
+                ),
+                include_variable_dependency_operator_projection=(
+                    include_variable_dependency_operator_projection
+                ),
+                mlp_projection_rank_time=mlp_projection_rank_time,
+                mlp_projection_rank_space=mlp_projection_rank_space,
+                mlp_projection_rank_depth=(
+                    mlp_projection_rank_depth[group_index]
+                ),
+                mlp_projection_rank_features=mlp_projection_rank_features,
+                mlp_projection_rank_variables=mlp_projection_rank_variables,
+                include_variable_dependency_mlp=include_variable_dependency_mlp,
             )
             self.blocks.append(
                 FieldSpaceOperatorBlock(

@@ -368,11 +368,36 @@ def create_encoder_decoder_block(
             token_overlap_depth=block_conf.token_overlap_depth,
             token_overlap_mlp_time=block_conf.token_overlap_mlp_time,
             token_overlap_mlp_depth=block_conf.token_overlap_mlp_depth,
-            rank_time=block_conf.rank_time,
-            rank_space=block_conf.rank_space,
-            rank_depth=block_conf.rank_depth,
-            rank_features=block_conf.rank_features,
-            rank_variables=block_conf.rank_variables,
+            operator_projection_rank_time=(
+                block_conf.operator_projection_rank_time
+            ),
+            operator_projection_rank_space=(
+                block_conf.operator_projection_rank_space
+            ),
+            operator_projection_rank_depth=(
+                block_conf.operator_projection_rank_depth
+            ),
+            operator_projection_rank_features=(
+                block_conf.operator_projection_rank_features
+            ),
+            operator_projection_rank_variables=(
+                block_conf.operator_projection_rank_variables
+            ),
+            include_variable_dependency_operator_projection=(
+                block_conf.include_variable_dependency_operator_projection
+            ),
+            mlp_projection_rank_time=block_conf.mlp_projection_rank_time,
+            mlp_projection_rank_space=block_conf.mlp_projection_rank_space,
+            mlp_projection_rank_depth=block_conf.mlp_projection_rank_depth,
+            mlp_projection_rank_features=(
+                block_conf.mlp_projection_rank_features
+            ),
+            mlp_projection_rank_variables=(
+                block_conf.mlp_projection_rank_variables
+            ),
+            include_variable_dependency_mlp=(
+                block_conf.include_variable_dependency_mlp
+            ),
             update=block_conf.update,
             dropout=operator_dropout,
             layer_norm=block_conf.layer_norm,
