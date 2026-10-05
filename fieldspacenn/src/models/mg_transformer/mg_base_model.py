@@ -10,6 +10,10 @@ from ...modules.field_space.field_space_base import (
 )
 from ...modules.field_space.field_space_layer import FieldSpaceLayerModule, FieldSpaceLayerConfig
 from ...modules.field_space.field_space_attention import FieldSpaceAttentionModule,FieldSpaceAttentionConfig
+from ...modules.field_space.field_space_operator import (
+    FieldSpaceOperatorConfig,
+    FieldSpaceOperatorModule,
+)
 from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
 from ...modules.field_space.zoom_level_transform import (
     ReencodeZoomsLayer,
@@ -269,6 +273,115 @@ def create_encoder_decoder_block(
             config=block_conf,
             in_zooms=in_zooms,
             in_features=in_features,
+        )
+
+    elif isinstance(block_conf, FieldSpaceOperatorConfig):
+        stage_zooms = [int(zoom) for zoom in in_zooms]
+        operator_in_zooms = block_conf.in_zooms
+        if operator_in_zooms == -1:
+            operator_in_zooms = stage_zooms
+        else:
+            operator_in_zooms = [int(zoom) for zoom in operator_in_zooms]
+
+        feature_by_zoom = {
+            zoom: int(n_features)
+            for zoom, n_features in zip(stage_zooms, in_features)
+        }
+        missing_zooms = [
+            zoom for zoom in operator_in_zooms if zoom not in feature_by_zoom
+        ]
+        if missing_zooms:
+            raise ValueError(
+                f"Operator in_zooms {missing_zooms} are not present in stage in_zooms"
+            )
+        operator_in_features = [
+            feature_by_zoom[zoom] for zoom in operator_in_zooms
+        ]
+        operator_target_zooms = (
+            operator_in_zooms
+            if block_conf.target_zooms is None
+            else [int(zoom) for zoom in block_conf.target_zooms]
+        )
+        missing_targets = [
+            zoom for zoom in operator_target_zooms
+            if zoom not in operator_in_zooms
+        ]
+        if missing_targets:
+            raise ValueError(
+                f"Operator target_zooms {missing_targets} are not present in in_zooms"
+            )
+        operator_out_zooms = (
+            stage_zooms
+            if block_conf.out_zooms is None
+            else [int(zoom) for zoom in block_conf.out_zooms]
+        )
+        missing_outputs = [
+            zoom for zoom in operator_out_zooms if zoom not in feature_by_zoom
+        ]
+        if missing_outputs:
+            raise ValueError(
+                f"Operator out_zooms {missing_outputs} are not present in stage in_zooms"
+            )
+        operator_dim = (
+            int(att_dim)
+            if block_conf.operator_dim is None
+            else int(block_conf.operator_dim)
+        )
+        operator_dropout = (
+            float(getattr(block_conf, "dropout"))
+            if hasattr(block_conf, "dropout")
+            else float(kwargs.get("dropout", defaults["dropout"]))
+        )
+
+        block = FieldSpaceOperatorModule(
+            grid_layers=grid_layers,
+            in_zooms=operator_in_zooms,
+            out_zooms=operator_out_zooms,
+            target_zooms=operator_target_zooms,
+            in_features=operator_in_features,
+            output_features=[feature_by_zoom[zoom] for zoom in operator_out_zooms],
+            n_groups_variables=n_groups_variables,
+            n_groups_depths=n_groups_depths,
+            groups=block_conf.groups,
+            token_zoom=block_conf.token_zoom,
+            operators=block_conf.operators,
+            num_heads=block_conf.num_heads,
+            sequence_zooms=block_conf.sequence_zooms,
+            include_neighbors=block_conf.include_neighbors,
+            ranks_in=block_conf.ranks_in,
+            ranks_out=block_conf.ranks_out,
+            include_variable_dependency=block_conf.include_variable_dependency,
+            include_time_dependency=block_conf.include_time_dependency,
+            include_space_dependency=block_conf.include_space_dependency,
+            ranks_variable=block_conf.ranks_variable,
+            ranks_time=block_conf.ranks_time,
+            ranks_space=block_conf.ranks_space,
+            constraints=block_conf.constraints,
+            initializations=block_conf.initializations,
+            share_factors_across_heads=block_conf.share_factors_across_heads,
+            operator_dim=operator_dim,
+            n_times=block_conf.n_times,
+            token_len_time=block_conf.token_len_time,
+            token_len_depth=block_conf.token_len_depth,
+            token_overlap_space=block_conf.token_overlap_space,
+            token_overlap_time=block_conf.token_overlap_time,
+            token_overlap_depth=block_conf.token_overlap_depth,
+            token_overlap_mlp_time=block_conf.token_overlap_mlp_time,
+            token_overlap_mlp_depth=block_conf.token_overlap_mlp_depth,
+            rank_time=block_conf.rank_time,
+            rank_space=block_conf.rank_space,
+            rank_depth=block_conf.rank_depth,
+            rank_features=block_conf.rank_features,
+            rank_variables=block_conf.rank_variables,
+            update=block_conf.update,
+            dropout=operator_dropout,
+            layer_norm=block_conf.layer_norm,
+            separate_mlp_norm=block_conf.separate_mlp_norm,
+            mlp_residual_from_operators=block_conf.mlp_residual_from_operators,
+            embed_confs=embed_confs,
+            global_embedders=global_embedders,
+            emb_modulation_mode=emb_modulation_mode,
+            fac_mode=fac_mode,
         )
 
     elif isinstance(block_conf, FieldSpaceAttentionConfig):
