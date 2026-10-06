@@ -34,6 +34,11 @@ from .field_space_base import (
 
 OperatorName = Literal["variable", "time", "space"]
 ConstraintName = Literal["unconstrained", "softmax", "signed_softmax"]
+OperatorGroups = Union[
+    Sequence[OperatorName],
+    Sequence[Sequence[OperatorName]],
+]
+OperatorSetting = Union[Sequence[Any], Sequence[Sequence[Any]]]
 _DEPENDENCY_ORDER = ("variable", "time", "space")
 _FIELD_DIM_NAMES = ("batch", "variable", "time", "space", "depth")
 
@@ -43,25 +48,101 @@ def _is_sequence(value: Any) -> bool:
 
 
 def _aligned_values(
-    value: Optional[Sequence[Any]],
+    value: Optional[OperatorSetting],
     n_operators: int,
     name: str,
     default: Any,
+    operator_groups: Optional[Sequence[Sequence[OperatorName]]] = None,
 ) -> List[Any]:
-    """Return an exact-length operator setting without scalar broadcasting."""
+    """Return a flattened exact-length operator setting without broadcasting."""
     if value is None:
         return [copy.deepcopy(default) for _ in range(n_operators)]
     if not _is_sequence(value):
         raise ValueError(
-            f"{name} must be a list of length {n_operators}; scalar broadcasting "
-            "is not supported"
+            f"{name} must be a flat list of length {n_operators} or a list of "
+            "lists aligned with operators; scalar broadcasting is not supported"
         )
     values = list(value)
+    nested_entries = [_is_sequence(item) for item in values]
+    if any(nested_entries):
+        if not all(nested_entries):
+            raise ValueError(
+                f"{name} must be uniformly flat or uniformly nested"
+            )
+        if operator_groups is None:
+            raise ValueError(f"{name} does not support nested values here")
+        if len(values) != len(operator_groups):
+            raise ValueError(
+                f"{name} must have {len(operator_groups)} groups aligned with "
+                f"operators, got {len(values)}"
+            )
+        flattened: List[Any] = []
+        for group_index, (items, operators) in enumerate(
+            zip(values, operator_groups)
+        ):
+            group_values = list(items)
+            if len(group_values) != len(operators):
+                raise ValueError(
+                    f"{name}[{group_index}] must have length {len(operators)} "
+                    f"to align with operators[{group_index}], got "
+                    f"{len(group_values)}"
+                )
+            flattened.extend(group_values)
+        return flattened
     if len(values) != n_operators:
         raise ValueError(
             f"{name} must have length {n_operators}, got {len(values)}"
         )
     return values
+
+
+def _normalize_operator_groups(
+    operators: OperatorGroups,
+) -> Tuple[List[List[OperatorName]], List[OperatorName]]:
+    """Normalize flat operators to singleton groups and preserve nested groups."""
+    if not _is_sequence(operators):
+        raise ValueError(
+            "operators must be a flat list or a list of non-empty operator lists"
+        )
+    values = list(operators)
+    if not values:
+        raise ValueError("operators must contain at least one operator group")
+
+    flat_entries = [isinstance(value, str) for value in values]
+    nested_entries = [_is_sequence(value) for value in values]
+    if all(flat_entries):
+        groups = [[value] for value in values]
+    elif all(nested_entries):
+        groups = []
+        for group_index, value in enumerate(values):
+            group = list(value)
+            if not group:
+                raise ValueError(
+                    f"operators[{group_index}] must contain at least one operator"
+                )
+            if not all(isinstance(operator, str) for operator in group):
+                raise ValueError(
+                    f"operators[{group_index}] must contain only operator names"
+                )
+            groups.append(group)
+    else:
+        raise ValueError(
+            "operators must be uniformly flat or uniformly nested; mixed flat "
+            "and nested entries are not supported"
+        )
+
+    flattened: List[OperatorName] = []
+    for group_index, group in enumerate(groups):
+        for operator_index, operator in enumerate(group):
+            if operator not in _DEPENDENCY_ORDER:
+                raise ValueError(
+                    f"Unsupported operators[{group_index}]"
+                    f"[{operator_index}]={operator!r} at flattened index "
+                    f"{len(flattened)}; supported values are "
+                    f"{list(_DEPENDENCY_ORDER)}"
+                )
+            flattened.append(operator)
+    return groups, flattened
 
 
 def _axis_values(value: Any, keys: Sequence[int], name: str) -> Dict[int, Any]:
@@ -1395,34 +1476,34 @@ class FieldSpaceOperator(nn.Module):
 
 
 class FieldSpaceOperatorConfig:
-    """Configuration object consumed by the multigrid model builder."""
+    """Configuration for grouped projections around atomic field operators."""
 
     def __init__(
         self,
         token_zoom: int,
-        operators: Sequence[OperatorName],
-        num_heads: Optional[Sequence[int]] = None,
+        operators: OperatorGroups,
+        num_heads: Optional[OperatorSetting] = None,
         *,
         in_zooms: Union[Sequence[int], int] = -1,
         target_zooms: Optional[Sequence[int]] = None,
         out_zooms: Optional[Sequence[int]] = None,
         groups: Union[Sequence[bool], int] = -1,
-        sequence_zooms: Optional[Sequence[Optional[int]]] = None,
-        include_neighbors: Optional[Sequence[Optional[bool]]] = None,
-        ranks_in: Optional[Sequence[Optional[int]]] = None,
-        ranks_out: Optional[Sequence[Optional[int]]] = None,
-        include_variable_dependency: Optional[Sequence[bool]] = None,
-        include_space_dependency: Optional[Sequence[bool]] = None,
-        include_time_dependency: Optional[Sequence[bool]] = None,
-        constant_variable_dependency: Optional[Sequence[bool]] = None,
-        constant_time_dependency: Optional[Sequence[bool]] = None,
-        constant_space_dependency: Optional[Sequence[bool]] = None,
-        ranks_variable: Optional[Sequence[Optional[int]]] = None,
-        ranks_space: Optional[Sequence[Optional[int]]] = None,
-        ranks_time: Optional[Sequence[Optional[int]]] = None,
-        constraints: Optional[Sequence[ConstraintName]] = None,
-        initializations: Optional[Sequence[str]] = None,
-        share_factors_across_heads: Optional[Sequence[bool]] = None,
+        sequence_zooms: Optional[OperatorSetting] = None,
+        include_neighbors: Optional[OperatorSetting] = None,
+        ranks_in: Optional[OperatorSetting] = None,
+        ranks_out: Optional[OperatorSetting] = None,
+        include_variable_dependency: Optional[OperatorSetting] = None,
+        include_space_dependency: Optional[OperatorSetting] = None,
+        include_time_dependency: Optional[OperatorSetting] = None,
+        constant_variable_dependency: Optional[OperatorSetting] = None,
+        constant_time_dependency: Optional[OperatorSetting] = None,
+        constant_space_dependency: Optional[OperatorSetting] = None,
+        ranks_variable: Optional[OperatorSetting] = None,
+        ranks_space: Optional[OperatorSetting] = None,
+        ranks_time: Optional[OperatorSetting] = None,
+        constraints: Optional[OperatorSetting] = None,
+        initializations: Optional[OperatorSetting] = None,
+        share_factors_across_heads: Optional[OperatorSetting] = None,
         operator_dim: Optional[int] = None,
         n_times: int = 1,
         token_len_time: Any = 1,
@@ -1469,79 +1550,78 @@ class FieldSpaceOperatorConfig:
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorConfig settings: {names}")
-        operators = list(operators)
-        if not operators:
-            raise ValueError("operators must contain at least one atomic operator")
-        unsupported = [name for name in operators if name not in _DEPENDENCY_ORDER]
-        if unsupported:
-            raise ValueError(
-                f"Unsupported operators {unsupported}; supported values are "
-                f"{list(_DEPENDENCY_ORDER)}"
+        operator_groups, flattened_operators = _normalize_operator_groups(operators)
+        n_operators = len(flattened_operators)
+
+        def align_operator_values(
+            value: Optional[OperatorSetting], name: str, default: Any
+        ) -> List[Any]:
+            return _aligned_values(
+                value,
+                n_operators,
+                name,
+                default,
+                operator_groups=operator_groups,
             )
-        n_operators = len(operators)
-        num_heads = _aligned_values(num_heads, n_operators, "num_heads", 1)
-        sequence_defaults = [-1 if name == "space" else None for name in operators]
+
+        num_heads = align_operator_values(num_heads, "num_heads", 1)
+        sequence_defaults = [
+            -1 if name == "space" else None for name in flattened_operators
+        ]
         if sequence_zooms is None:
             sequence_zooms = sequence_defaults
         else:
-            sequence_zooms = _aligned_values(
-                sequence_zooms, n_operators, "sequence_zooms", None
+            sequence_zooms = align_operator_values(
+                sequence_zooms, "sequence_zooms", None
             )
-        include_neighbors = _aligned_values(
-            include_neighbors, n_operators, "include_neighbors", False
+        include_neighbors = align_operator_values(
+            include_neighbors, "include_neighbors", False
         )
-        ranks_in = _aligned_values(ranks_in, n_operators, "ranks_in", None)
-        ranks_out = _aligned_values(ranks_out, n_operators, "ranks_out", None)
-        include_variable_dependency = _aligned_values(
+        ranks_in = align_operator_values(ranks_in, "ranks_in", None)
+        ranks_out = align_operator_values(ranks_out, "ranks_out", None)
+        include_variable_dependency = align_operator_values(
             include_variable_dependency,
-            n_operators,
             "include_variable_dependency",
             False,
         )
-        include_time_dependency = _aligned_values(
+        include_time_dependency = align_operator_values(
             include_time_dependency,
-            n_operators,
             "include_time_dependency",
             False,
         )
-        include_space_dependency = _aligned_values(
+        include_space_dependency = align_operator_values(
             include_space_dependency,
-            n_operators,
             "include_space_dependency",
             False,
         )
-        constant_variable_dependency = _aligned_values(
+        constant_variable_dependency = align_operator_values(
             constant_variable_dependency,
-            n_operators,
             "constant_variable_dependency",
             True,
         )
-        constant_time_dependency = _aligned_values(
+        constant_time_dependency = align_operator_values(
             constant_time_dependency,
-            n_operators,
             "constant_time_dependency",
             True,
         )
-        constant_space_dependency = _aligned_values(
+        constant_space_dependency = align_operator_values(
             constant_space_dependency,
-            n_operators,
             "constant_space_dependency",
             True,
         )
-        ranks_variable = _aligned_values(
-            ranks_variable, n_operators, "ranks_variable", None
+        ranks_variable = align_operator_values(
+            ranks_variable, "ranks_variable", None
         )
-        ranks_time = _aligned_values(ranks_time, n_operators, "ranks_time", None)
-        ranks_space = _aligned_values(ranks_space, n_operators, "ranks_space", None)
-        constraints = _aligned_values(
-            constraints, n_operators, "constraints", "unconstrained"
+        ranks_time = align_operator_values(ranks_time, "ranks_time", None)
+        ranks_space = align_operator_values(ranks_space, "ranks_space", None)
+        constraints = align_operator_values(
+            constraints, "constraints", "unconstrained"
         )
-        initializations = _aligned_values(
-            initializations, n_operators, "initializations", "identity"
+        initializations = align_operator_values(
+            initializations, "initializations", "identity"
         )
-        share_factors_across_heads = _aligned_values(
+        share_factors_across_heads = align_operator_values(
             share_factors_across_heads,
-            n_operators,
             "share_factors_across_heads",
             False,
         )
@@ -1581,24 +1661,35 @@ class FieldSpaceOperatorConfig:
             "time": ranks_time,
             "space": ranks_space,
         }
-        for index, operator in enumerate(operators):
+        operator_locations = [
+            (group_index, operator_index)
+            for group_index, group in enumerate(operator_groups)
+            for operator_index in range(len(group))
+        ]
+        for index, operator in enumerate(flattened_operators):
+            group_index, operator_index = operator_locations[index]
+            location = f"operators[{group_index}][{operator_index}]"
             if int(num_heads[index]) <= 0:
-                raise ValueError(f"num_heads[{index}] must be positive")
+                raise ValueError(
+                    f"num_heads[{index}] must be positive for {location}"
+                )
             if operator_dim is not None and int(operator_dim) % int(num_heads[index]):
                 raise ValueError(
                     f"operator_dim ({operator_dim}) must be divisible by "
-                    f"num_heads[{index}] ({num_heads[index]})"
+                    f"num_heads[{index}] ({num_heads[index]}) for {location}"
                 )
             if constraints[index] not in {
                 "unconstrained", "softmax", "signed_softmax"
             }:
                 raise ValueError(
-                    f"Unsupported constraints[{index}]={constraints[index]!r}"
+                    f"Unsupported constraints[{index}]={constraints[index]!r} "
+                    f"for {location}"
                 )
             if initializations[index] not in {"identity", "random"}:
                 raise ValueError(
                     "Initialization must be 'identity' or 'random'; "
-                    f"got initializations[{index}]={initializations[index]!r}"
+                    f"got initializations[{index}]={initializations[index]!r} "
+                    f"for {location}"
                 )
             for rank_name, rank_values in {
                 "ranks_in": ranks_in,
@@ -1607,24 +1698,32 @@ class FieldSpaceOperatorConfig:
             }.items():
                 rank = rank_values[index]
                 if rank is not None and int(rank) <= 0:
-                    raise ValueError(f"{rank_name}[{index}] must be positive or None")
+                    raise ValueError(
+                        f"{rank_name}[{index}] must be positive or None for "
+                        f"{location}"
+                    )
 
             if operator == "space":
                 if int(token_zoom) < 0:
-                    raise ValueError("A spatial operator requires token_zoom >= 0")
+                    raise ValueError(
+                        f"A spatial operator at {location} requires token_zoom >= 0"
+                    )
                 sequence_zoom = sequence_zooms[index]
                 if sequence_zoom is None or int(sequence_zoom) < -1:
                     raise ValueError(
                         f"sequence_zooms[{index}] must be -1 or non-negative for space"
+                        f" at {location}"
                     )
                 sequence_zooms[index] = int(sequence_zoom)
                 if sequence_zooms[index] > int(token_zoom):
                     raise ValueError(
                         f"sequence_zooms[{index}] cannot exceed token_zoom"
+                        f" for {location}"
                     )
                 if include_neighbors[index] and sequence_zooms[index] < 0:
                     raise ValueError(
                         "include_neighbors is only valid for a local spatial operator"
+                        f" at {location}"
                     )
                 if (
                     include_space_dependency[index]
@@ -1632,26 +1731,35 @@ class FieldSpaceOperatorConfig:
                 ):
                     raise ValueError(
                         "A global spatial operator cannot also use space as a dependency"
+                        f" at {location}"
                     )
             else:
                 if sequence_zooms[index] is not None:
                     raise ValueError(
                         f"sequence_zooms[{index}] is only used by spatial operators"
+                        f" ({location})"
                     )
                 if include_neighbors[index] not in {False, None}:
                     raise ValueError(
                         f"include_neighbors[{index}] is only used by spatial operators"
+                        f" ({location})"
                     )
                 include_neighbors[index] = False
 
             if operator == "variable" and include_variable_dependency[index]:
                 raise ValueError(
                     "A variable operator cannot also use variable as a dependency"
+                    f" at {location}"
                 )
             if operator == "time" and include_time_dependency[index]:
-                raise ValueError("A time operator cannot also use time as a dependency")
+                raise ValueError(
+                    "A time operator cannot also use time as a dependency"
+                    f" at {location}"
+                )
             if include_space_dependency[index] and int(token_zoom) < 0:
-                raise ValueError("A spatial dependency requires token_zoom >= 0")
+                raise ValueError(
+                    f"A spatial dependency at {location} requires token_zoom >= 0"
+                )
 
             for dependency in _DEPENDENCY_ORDER:
                 if (
@@ -1660,11 +1768,12 @@ class FieldSpaceOperatorConfig:
                 ):
                     raise ValueError(
                         f"ranks_{dependency}[{index}] requires "
-                        f"include_{dependency}_dependency[{index}]=True"
+                        f"include_{dependency}_dependency[{index}]=True for "
+                        f"{location}"
                     )
 
         self.token_zoom = int(token_zoom)
-        self.operators = operators
+        self.operators = operator_groups
         self.num_heads = [int(value) for value in num_heads]
         self.in_zooms = in_zooms
         self.target_zooms = None if target_zooms is None else list(target_zooms)
@@ -1742,7 +1851,7 @@ class FieldSpaceOperatorConfig:
 
 
 class _FieldSpaceOperatorBranch(nn.Module):
-    """Projection, operator, projection, and physical update for one operator."""
+    """One projection/update boundary around an ordered atomic-operator group."""
 
     def __init__(
         self,
@@ -1758,20 +1867,20 @@ class _FieldSpaceOperatorBranch(nn.Module):
         token_overlap_time: bool,
         token_overlap_depth: bool,
         operator_dim: int,
-        operator: OperatorName,
-        num_heads: int,
+        operators: Sequence[OperatorName],
+        num_heads: Sequence[int],
         n_variables: int,
         n_times: int,
-        sequence_zoom: Optional[int],
-        include_neighbors: bool,
-        include_dependencies: Mapping[str, bool],
-        dependency_ranks: Mapping[str, Optional[int]],
-        constant_dependencies: Mapping[str, bool],
-        rank_in: Optional[int],
-        rank_out: Optional[int],
-        constraint: ConstraintName,
-        initialization: str,
-        share_factors_across_heads: bool,
+        sequence_zooms: Sequence[Optional[int]],
+        include_neighbors: Sequence[bool],
+        include_dependencies: Sequence[Mapping[str, bool]],
+        dependency_ranks: Sequence[Mapping[str, Optional[int]]],
+        constant_dependencies: Sequence[Mapping[str, bool]],
+        ranks_in: Sequence[Optional[int]],
+        ranks_out: Sequence[Optional[int]],
+        constraints: Sequence[ConstraintName],
+        initializations: Sequence[str],
+        share_factors_across_heads: Sequence[bool],
         operator_projection_ranks_by_zoom: Mapping[
             int, Sequence[Optional[int]]
         ],
@@ -1929,24 +2038,32 @@ class _FieldSpaceOperatorBranch(nn.Module):
                     torch.ones(update_shape) * 1e-12
                 )
 
-        self.operator = FieldSpaceOperator(
-            operator=operator,
-            operator_dim=self.operator_dim,
-            num_heads=num_heads,
-            n_variables=n_variables,
-            n_times=n_times,
-            token_zoom=token_zoom,
-            sequence_zoom=sequence_zoom,
-            include_neighbors=include_neighbors,
-            include_dependencies=include_dependencies,
-            dependency_ranks=dependency_ranks,
-            constant_dependencies=constant_dependencies,
-            rank_in=rank_in,
-            rank_out=rank_out,
-            constraint=constraint,
-            initialization=initialization,
-            share_factors_across_heads=share_factors_across_heads,
-            grid_layers=grid_layers,
+        self.operator_names = list(operators)
+        self.operators = nn.ModuleList(
+            [
+                FieldSpaceOperator(
+                    operator=operator,
+                    operator_dim=self.operator_dim,
+                    num_heads=int(num_heads[index]),
+                    n_variables=n_variables,
+                    n_times=n_times,
+                    token_zoom=token_zoom,
+                    sequence_zoom=sequence_zooms[index],
+                    include_neighbors=bool(include_neighbors[index]),
+                    include_dependencies=include_dependencies[index],
+                    dependency_ranks=dependency_ranks[index],
+                    constant_dependencies=constant_dependencies[index],
+                    rank_in=ranks_in[index],
+                    rank_out=ranks_out[index],
+                    constraint=constraints[index],
+                    initialization=initializations[index],
+                    share_factors_across_heads=bool(
+                        share_factors_across_heads[index]
+                    ),
+                    grid_layers=grid_layers,
+                )
+                for index, operator in enumerate(self.operator_names)
+            ]
         )
 
     def _aligned_embedding(
@@ -2015,9 +2132,8 @@ class _FieldSpaceOperatorBranch(nn.Module):
     ) -> Dict[int, torch.Tensor]:
         values = self._project_values(x_zooms, emb, sample_configs)
         sample_config = sample_configs.get(self.token_zoom, {})
-        values = self.operator(
-            values, emb=emb, sample_config=sample_config
-        )
+        for operator in self.operators:
+            values = operator(values, emb=emb, sample_config=sample_config)
         operator_tokens = values.view(*values.shape[:5], 1, 1, 1, self.operator_dim)
         for zoom in self.target_zooms:
             key = str(zoom)
@@ -2054,7 +2170,7 @@ class _FieldSpaceOperatorBranch(nn.Module):
 
 
 class FieldSpaceOperatorBlock(nn.Module):
-    """Run an ordered operator sequence followed by the existing FST MLP pattern."""
+    """Run ordered operator groups followed by the existing FST MLP pattern."""
 
     def __init__(
         self,
@@ -2064,24 +2180,24 @@ class FieldSpaceOperatorBlock(nn.Module):
         target_zooms: Sequence[int],
         in_features: Union[int, Sequence[int], Mapping[int, int]],
         token_zoom: int,
-        operators: Sequence[OperatorName],
-        num_heads: Sequence[int],
-        sequence_zooms: Sequence[Optional[int]],
-        include_neighbors: Sequence[bool],
-        ranks_in: Sequence[Optional[int]],
-        ranks_out: Sequence[Optional[int]],
-        include_variable_dependency: Sequence[bool],
-        include_time_dependency: Sequence[bool],
-        include_space_dependency: Sequence[bool],
-        constant_variable_dependency: Optional[Sequence[bool]] = None,
-        constant_time_dependency: Optional[Sequence[bool]] = None,
-        constant_space_dependency: Optional[Sequence[bool]] = None,
-        ranks_variable: Sequence[Optional[int]],
-        ranks_time: Sequence[Optional[int]],
-        ranks_space: Sequence[Optional[int]],
-        constraints: Sequence[ConstraintName],
-        initializations: Sequence[str],
-        share_factors_across_heads: Optional[Sequence[bool]] = None,
+        operators: OperatorGroups,
+        num_heads: OperatorSetting,
+        sequence_zooms: OperatorSetting,
+        include_neighbors: OperatorSetting,
+        ranks_in: OperatorSetting,
+        ranks_out: OperatorSetting,
+        include_variable_dependency: OperatorSetting,
+        include_time_dependency: OperatorSetting,
+        include_space_dependency: OperatorSetting,
+        constant_variable_dependency: Optional[OperatorSetting] = None,
+        constant_time_dependency: Optional[OperatorSetting] = None,
+        constant_space_dependency: Optional[OperatorSetting] = None,
+        ranks_variable: OperatorSetting,
+        ranks_time: OperatorSetting,
+        ranks_space: OperatorSetting,
+        constraints: OperatorSetting,
+        initializations: OperatorSetting,
+        share_factors_across_heads: Optional[OperatorSetting] = None,
         operator_dim: int,
         n_variables: int,
         n_times: int,
@@ -2120,6 +2236,55 @@ class FieldSpaceOperatorBlock(nn.Module):
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorBlock settings: {names}")
+        operator_groups, flattened_operators = _normalize_operator_groups(operators)
+        n_operators = len(flattened_operators)
+
+        def align_operator_values(
+            value: Optional[OperatorSetting], name: str, default: Any
+        ) -> List[Any]:
+            return _aligned_values(
+                value,
+                n_operators,
+                name,
+                default,
+                operator_groups=operator_groups,
+            )
+
+        num_heads = align_operator_values(num_heads, "num_heads", 1)
+        sequence_zooms = align_operator_values(
+            sequence_zooms, "sequence_zooms", None
+        )
+        include_neighbors = align_operator_values(
+            include_neighbors, "include_neighbors", False
+        )
+        ranks_in = align_operator_values(ranks_in, "ranks_in", None)
+        ranks_out = align_operator_values(ranks_out, "ranks_out", None)
+        include_variable_dependency = align_operator_values(
+            include_variable_dependency,
+            "include_variable_dependency",
+            False,
+        )
+        include_time_dependency = align_operator_values(
+            include_time_dependency,
+            "include_time_dependency",
+            False,
+        )
+        include_space_dependency = align_operator_values(
+            include_space_dependency,
+            "include_space_dependency",
+            False,
+        )
+        ranks_variable = align_operator_values(
+            ranks_variable, "ranks_variable", None
+        )
+        ranks_time = align_operator_values(ranks_time, "ranks_time", None)
+        ranks_space = align_operator_values(ranks_space, "ranks_space", None)
+        constraints = align_operator_values(
+            constraints, "constraints", "unconstrained"
+        )
+        initializations = align_operator_values(
+            initializations, "initializations", "identity"
+        )
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
@@ -2159,30 +2324,26 @@ class FieldSpaceOperatorBlock(nn.Module):
         self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
         self.dropout_mlp = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.mlp_activation = nn.SiLU()
-        constant_variable_dependency = _aligned_values(
+        constant_variable_dependency = align_operator_values(
             constant_variable_dependency,
-            len(operators),
             "constant_variable_dependency",
             True,
         )
-        constant_time_dependency = _aligned_values(
+        constant_time_dependency = align_operator_values(
             constant_time_dependency,
-            len(operators),
             "constant_time_dependency",
             True,
         )
-        constant_space_dependency = _aligned_values(
+        constant_space_dependency = align_operator_values(
             constant_space_dependency,
-            len(operators),
             "constant_space_dependency",
             True,
         )
-        if share_factors_across_heads is None:
-            share_factors_across_heads = [False] * len(operators)
-        elif len(share_factors_across_heads) != len(operators):
-            raise ValueError(
-                "share_factors_across_heads must align with operators"
-            )
+        share_factors_across_heads = align_operator_values(
+            share_factors_across_heads,
+            "share_factors_across_heads",
+            False,
+        )
         embed_confs = {} if embed_confs is None else dict(embed_confs)
         self.embedder = embedder
         self.embedding_keys = set(
@@ -2282,7 +2443,12 @@ class FieldSpaceOperatorBlock(nn.Module):
         }
 
         self.branches = nn.ModuleList()
-        for index, operator in enumerate(operators):
+        flat_index = 0
+        for operator_group in operator_groups:
+            group_indices = list(
+                range(flat_index, flat_index + len(operator_group))
+            )
+            flat_index += len(operator_group)
             self.branches.append(
                 _FieldSpaceOperatorBranch(
                     grid_layers=grid_layers,
@@ -2296,34 +2462,52 @@ class FieldSpaceOperatorBlock(nn.Module):
                     token_overlap_time=token_overlap_time,
                     token_overlap_depth=token_overlap_depth,
                     operator_dim=self.operator_dim,
-                    operator=operator,
-                    num_heads=int(num_heads[index]),
+                    operators=operator_group,
+                    num_heads=[num_heads[index] for index in group_indices],
                     n_variables=int(n_variables),
                     n_times=int(n_times),
-                    sequence_zoom=sequence_zooms[index],
-                    include_neighbors=bool(include_neighbors[index]),
-                    include_dependencies={
-                        "variable": bool(include_variable_dependency[index]),
-                        "time": bool(include_time_dependency[index]),
-                        "space": bool(include_space_dependency[index]),
-                    },
-                    dependency_ranks={
-                        "variable": ranks_variable[index],
-                        "time": ranks_time[index],
-                        "space": ranks_space[index],
-                    },
-                    constant_dependencies={
-                        "variable": bool(constant_variable_dependency[index]),
-                        "time": bool(constant_time_dependency[index]),
-                        "space": bool(constant_space_dependency[index]),
-                    },
-                    rank_in=ranks_in[index],
-                    rank_out=ranks_out[index],
-                    constraint=constraints[index],
-                    initialization=initializations[index],
-                    share_factors_across_heads=bool(
-                        share_factors_across_heads[index]
-                    ),
+                    sequence_zooms=[
+                        sequence_zooms[index] for index in group_indices
+                    ],
+                    include_neighbors=[
+                        bool(include_neighbors[index]) for index in group_indices
+                    ],
+                    include_dependencies=[
+                        {
+                            "variable": bool(include_variable_dependency[index]),
+                            "time": bool(include_time_dependency[index]),
+                            "space": bool(include_space_dependency[index]),
+                        }
+                        for index in group_indices
+                    ],
+                    dependency_ranks=[
+                        {
+                            "variable": ranks_variable[index],
+                            "time": ranks_time[index],
+                            "space": ranks_space[index],
+                        }
+                        for index in group_indices
+                    ],
+                    constant_dependencies=[
+                        {
+                            "variable": bool(
+                                constant_variable_dependency[index]
+                            ),
+                            "time": bool(constant_time_dependency[index]),
+                            "space": bool(constant_space_dependency[index]),
+                        }
+                        for index in group_indices
+                    ],
+                    ranks_in=[ranks_in[index] for index in group_indices],
+                    ranks_out=[ranks_out[index] for index in group_indices],
+                    constraints=[constraints[index] for index in group_indices],
+                    initializations=[
+                        initializations[index] for index in group_indices
+                    ],
+                    share_factors_across_heads=[
+                        bool(share_factors_across_heads[index])
+                        for index in group_indices
+                    ],
                     operator_projection_ranks_by_zoom=(
                         operator_projection_ranks_by_zoom
                     ),
@@ -2595,9 +2779,9 @@ class FieldSpaceOperatorModule(nn.Module):
         token_len_depth: Any = 1,
         token_overlap_depth: Any = False,
         token_overlap_mlp_depth: Any = False,
-        constant_variable_dependency: Optional[Sequence[bool]] = None,
-        constant_time_dependency: Optional[Sequence[bool]] = None,
-        constant_space_dependency: Optional[Sequence[bool]] = None,
+        constant_variable_dependency: Optional[OperatorSetting] = None,
+        constant_time_dependency: Optional[OperatorSetting] = None,
+        constant_space_dependency: Optional[OperatorSetting] = None,
         operator_projection_rank_time: Any = None,
         operator_projection_rank_space: Any = None,
         operator_projection_rank_depth: Any = None,
