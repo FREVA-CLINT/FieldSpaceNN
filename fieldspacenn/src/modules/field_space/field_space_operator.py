@@ -130,6 +130,17 @@ def _orthogonal_factor(
     return nn.Parameter(factor)
 
 
+def _constant_dependency_factor(
+    size: int,
+    rank: int,
+    num_heads: Optional[int] = None,
+) -> nn.Parameter:
+    """Create dependency factors with identical unit-norm rows."""
+    shape = (size, rank) if num_heads is None else (num_heads, size, rank)
+    factor = torch.full(shape, 1.0 / math.sqrt(rank))
+    return nn.Parameter(factor)
+
+
 class _TuckerOperatorParameters(nn.Module):
     """One Tucker parameterization, used once or twice by a constrained weight."""
 
@@ -175,7 +186,7 @@ class _TuckerOperatorParameters(nn.Module):
                     raise ValueError(
                         f"rank_{name} must be in [1, {size}], got {rank}"
                     )
-                self.dependency_factors[name] = _orthogonal_factor(
+                self.dependency_factors[name] = _constant_dependency_factor(
                     size,
                     rank,
                     None if self.share_factors_across_heads else self.num_heads,
@@ -213,14 +224,28 @@ class _TuckerOperatorParameters(nn.Module):
             )
             core_shape.append(self.rank_in)
 
-        core = torch.empty(core_shape)
+        core_initialization_shape = [
+            (
+                self.dependency_ranks[name]
+                if self.dependency_ranks[name] is not None
+                else 1
+            )
+            for name in self.dependency_names
+        ]
+        core_initialization_shape.extend(core_shape[self.n_dependencies :])
+        core_initialization = torch.empty(core_initialization_shape)
         if zero_core:
-            nn.init.zeros_(core)
+            nn.init.zeros_(core_initialization)
         elif logits:
-            nn.init.normal_(core, mean=0.0, std=1e-2)
+            nn.init.normal_(core_initialization, mean=0.0, std=1e-2)
         else:
             fan_in = self.rank_in if self.rank_in is not None else self.in_size
-            nn.init.uniform_(core, -1.0 / math.sqrt(fan_in), 1.0 / math.sqrt(fan_in))
+            nn.init.uniform_(
+                core_initialization,
+                -1.0 / math.sqrt(fan_in),
+                1.0 / math.sqrt(fan_in),
+            )
+        core = core_initialization.expand(core_shape).clone()
         self.core = nn.Parameter(core)
 
     @property
