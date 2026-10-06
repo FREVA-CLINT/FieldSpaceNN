@@ -153,6 +153,7 @@ class _TuckerOperatorParameters(nn.Module):
         rank_out: Optional[int],
         rank_in: Optional[int],
         dependency_ranks: Mapping[str, Optional[int]],
+        constant_dependencies: Mapping[str, bool],
         *,
         logits: bool,
         zero_core: bool,
@@ -174,6 +175,10 @@ class _TuckerOperatorParameters(nn.Module):
             else int(dependency_ranks[name])
             for name in self.dependency_names
         }
+        self.constant_dependencies = {
+            name: bool(constant_dependencies.get(name, True))
+            for name in self.dependency_names
+        }
 
         self.dependency_factors = nn.ParameterDict()
         core_shape: List[int] = []
@@ -186,11 +191,14 @@ class _TuckerOperatorParameters(nn.Module):
                     raise ValueError(
                         f"rank_{name} must be in [1, {size}], got {rank}"
                     )
-                self.dependency_factors[name] = _constant_dependency_factor(
-                    size,
-                    rank,
-                    None if self.share_factors_across_heads else self.num_heads,
+                factor_heads = (
+                    None if self.share_factors_across_heads else self.num_heads
                 )
+                if self.constant_dependencies[name]:
+                    factor = _constant_dependency_factor(size, rank, factor_heads)
+                else:
+                    factor = _orthogonal_factor(size, rank, factor_heads)
+                self.dependency_factors[name] = factor
                 core_shape.append(rank)
 
         core_shape.append(self.num_heads)
@@ -224,14 +232,15 @@ class _TuckerOperatorParameters(nn.Module):
             )
             core_shape.append(self.rank_in)
 
-        core_initialization_shape = [
-            (
-                self.dependency_ranks[name]
-                if self.dependency_ranks[name] is not None
-                else 1
-            )
-            for name in self.dependency_names
-        ]
+        core_initialization_shape = []
+        for name, size in self.dependency_sizes.items():
+            rank = self.dependency_ranks[name]
+            if rank is not None:
+                core_initialization_shape.append(rank)
+            elif self.constant_dependencies[name]:
+                core_initialization_shape.append(1)
+            else:
+                core_initialization_shape.append(size)
         core_initialization_shape.extend(core_shape[self.n_dependencies :])
         core_initialization = torch.empty(core_initialization_shape)
         if zero_core:
@@ -388,7 +397,9 @@ class TuckerOperatorWeight(nn.Module):
     softmax operators use the same zero correction in logit space together
     with a fixed self-logit bias.  Tucker factors are independent per head by
     default; ``share_factors_across_heads=True`` enables the compressed shared-
-    subspace variant.
+    subspace variant.  ``constant_dependencies`` controls initialization only:
+    enabled modes start identical across their physical dependency indices but
+    remain independently trainable.
     """
 
     _SOFTMAX_CHUNK_SIZE = 256
@@ -403,6 +414,7 @@ class TuckerOperatorWeight(nn.Module):
         rank_out: Optional[int] = None,
         rank_in: Optional[int] = None,
         dependency_ranks: Optional[Mapping[str, Optional[int]]] = None,
+        constant_dependencies: Optional[Mapping[str, bool]] = None,
         constraint: ConstraintName = "unconstrained",
         initialization: str = "identity",
         identity_probability: float = 0.99,
@@ -412,6 +424,9 @@ class TuckerOperatorWeight(nn.Module):
         super().__init__()
         dependency_sizes = {} if dependency_sizes is None else dependency_sizes
         dependency_ranks = {} if dependency_ranks is None else dependency_ranks
+        constant_dependencies = (
+            {} if constant_dependencies is None else constant_dependencies
+        )
         ordered_sizes = OrderedDict(
             (name, int(dependency_sizes[name]))
             for name in _DEPENDENCY_ORDER
@@ -420,6 +435,14 @@ class TuckerOperatorWeight(nn.Module):
         unknown = sorted(set(dependency_sizes).difference(_DEPENDENCY_ORDER))
         if unknown:
             raise ValueError(f"Unsupported operator dependencies: {unknown}")
+        unknown_constant = sorted(
+            set(constant_dependencies).difference(_DEPENDENCY_ORDER)
+        )
+        if unknown_constant:
+            raise ValueError(
+                "Unsupported constant operator dependencies: "
+                f"{unknown_constant}"
+            )
         if constraint not in {"unconstrained", "softmax", "signed_softmax"}:
             raise ValueError(f"Unsupported operator constraint {constraint!r}")
         if initialization not in {"identity", "random"}:
@@ -440,6 +463,10 @@ class TuckerOperatorWeight(nn.Module):
         self.initialization = initialization
         self.identity_probability = float(identity_probability)
         self.share_factors_across_heads = bool(share_factors_across_heads)
+        self.constant_dependencies = OrderedDict(
+            (name, bool(constant_dependencies.get(name, True)))
+            for name in self.dependency_names
+        )
         self._softmax_chunk_size = self._SOFTMAX_CHUNK_SIZE
 
         if self_indices is None:
@@ -474,6 +501,7 @@ class TuckerOperatorWeight(nn.Module):
             rank_out=rank_out,
             rank_in=rank_in,
             dependency_ranks=dependency_ranks,
+            constant_dependencies=self.constant_dependencies,
             zero_core=initialization == "identity",
             share_factors_across_heads=self.share_factors_across_heads,
         )
@@ -945,6 +973,7 @@ class FieldSpaceOperator(nn.Module):
         include_neighbors: bool,
         include_dependencies: Mapping[str, bool],
         dependency_ranks: Mapping[str, Optional[int]],
+        constant_dependencies: Optional[Mapping[str, bool]] = None,
         rank_in: Optional[int],
         rank_out: Optional[int],
         constraint: ConstraintName,
@@ -1076,6 +1105,7 @@ class FieldSpaceOperator(nn.Module):
             rank_out=rank_out,
             rank_in=rank_in,
             dependency_ranks=dependency_ranks,
+            constant_dependencies=constant_dependencies,
             constraint=constraint,
             initialization=initialization,
             self_indices=self_indices,
@@ -1384,6 +1414,9 @@ class FieldSpaceOperatorConfig:
         include_variable_dependency: Optional[Sequence[bool]] = None,
         include_space_dependency: Optional[Sequence[bool]] = None,
         include_time_dependency: Optional[Sequence[bool]] = None,
+        constant_variable_dependency: Optional[Sequence[bool]] = None,
+        constant_time_dependency: Optional[Sequence[bool]] = None,
+        constant_space_dependency: Optional[Sequence[bool]] = None,
         ranks_variable: Optional[Sequence[Optional[int]]] = None,
         ranks_space: Optional[Sequence[Optional[int]]] = None,
         ranks_time: Optional[Sequence[Optional[int]]] = None,
@@ -1476,6 +1509,24 @@ class FieldSpaceOperatorConfig:
             n_operators,
             "include_space_dependency",
             False,
+        )
+        constant_variable_dependency = _aligned_values(
+            constant_variable_dependency,
+            n_operators,
+            "constant_variable_dependency",
+            True,
+        )
+        constant_time_dependency = _aligned_values(
+            constant_time_dependency,
+            n_operators,
+            "constant_time_dependency",
+            True,
+        )
+        constant_space_dependency = _aligned_values(
+            constant_space_dependency,
+            n_operators,
+            "constant_space_dependency",
+            True,
         )
         ranks_variable = _aligned_values(
             ranks_variable, n_operators, "ranks_variable", None
@@ -1630,6 +1681,15 @@ class FieldSpaceOperatorConfig:
         self.include_space_dependency = [
             bool(value) for value in include_space_dependency
         ]
+        self.constant_variable_dependency = [
+            bool(value) for value in constant_variable_dependency
+        ]
+        self.constant_time_dependency = [
+            bool(value) for value in constant_time_dependency
+        ]
+        self.constant_space_dependency = [
+            bool(value) for value in constant_space_dependency
+        ]
         self.ranks_variable = ranks_variable
         self.ranks_time = ranks_time
         self.ranks_space = ranks_space
@@ -1706,6 +1766,7 @@ class _FieldSpaceOperatorBranch(nn.Module):
         include_neighbors: bool,
         include_dependencies: Mapping[str, bool],
         dependency_ranks: Mapping[str, Optional[int]],
+        constant_dependencies: Mapping[str, bool],
         rank_in: Optional[int],
         rank_out: Optional[int],
         constraint: ConstraintName,
@@ -1879,6 +1940,7 @@ class _FieldSpaceOperatorBranch(nn.Module):
             include_neighbors=include_neighbors,
             include_dependencies=include_dependencies,
             dependency_ranks=dependency_ranks,
+            constant_dependencies=constant_dependencies,
             rank_in=rank_in,
             rank_out=rank_out,
             constraint=constraint,
@@ -2011,6 +2073,9 @@ class FieldSpaceOperatorBlock(nn.Module):
         include_variable_dependency: Sequence[bool],
         include_time_dependency: Sequence[bool],
         include_space_dependency: Sequence[bool],
+        constant_variable_dependency: Optional[Sequence[bool]] = None,
+        constant_time_dependency: Optional[Sequence[bool]] = None,
+        constant_space_dependency: Optional[Sequence[bool]] = None,
         ranks_variable: Sequence[Optional[int]],
         ranks_time: Sequence[Optional[int]],
         ranks_space: Sequence[Optional[int]],
@@ -2094,6 +2159,24 @@ class FieldSpaceOperatorBlock(nn.Module):
         self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
         self.dropout_mlp = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.mlp_activation = nn.SiLU()
+        constant_variable_dependency = _aligned_values(
+            constant_variable_dependency,
+            len(operators),
+            "constant_variable_dependency",
+            True,
+        )
+        constant_time_dependency = _aligned_values(
+            constant_time_dependency,
+            len(operators),
+            "constant_time_dependency",
+            True,
+        )
+        constant_space_dependency = _aligned_values(
+            constant_space_dependency,
+            len(operators),
+            "constant_space_dependency",
+            True,
+        )
         if share_factors_across_heads is None:
             share_factors_across_heads = [False] * len(operators)
         elif len(share_factors_across_heads) != len(operators):
@@ -2228,6 +2311,11 @@ class FieldSpaceOperatorBlock(nn.Module):
                         "variable": ranks_variable[index],
                         "time": ranks_time[index],
                         "space": ranks_space[index],
+                    },
+                    constant_dependencies={
+                        "variable": bool(constant_variable_dependency[index]),
+                        "time": bool(constant_time_dependency[index]),
+                        "space": bool(constant_space_dependency[index]),
                     },
                     rank_in=ranks_in[index],
                     rank_out=ranks_out[index],
@@ -2507,6 +2595,9 @@ class FieldSpaceOperatorModule(nn.Module):
         token_len_depth: Any = 1,
         token_overlap_depth: Any = False,
         token_overlap_mlp_depth: Any = False,
+        constant_variable_dependency: Optional[Sequence[bool]] = None,
+        constant_time_dependency: Optional[Sequence[bool]] = None,
+        constant_space_dependency: Optional[Sequence[bool]] = None,
         operator_projection_rank_time: Any = None,
         operator_projection_rank_space: Any = None,
         operator_projection_rank_depth: Any = None,
@@ -2636,6 +2727,9 @@ class FieldSpaceOperatorModule(nn.Module):
                 token_overlap_mlp_depth=bool(
                     token_overlap_mlp_depth[group_index]
                 ),
+                constant_variable_dependency=constant_variable_dependency,
+                constant_time_dependency=constant_time_dependency,
+                constant_space_dependency=constant_space_dependency,
                 operator_projection_rank_time=operator_projection_rank_time,
                 operator_projection_rank_space=operator_projection_rank_space,
                 operator_projection_rank_depth=(

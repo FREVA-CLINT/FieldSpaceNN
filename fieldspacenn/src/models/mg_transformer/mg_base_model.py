@@ -353,6 +353,11 @@ def create_encoder_decoder_block(
             include_variable_dependency=block_conf.include_variable_dependency,
             include_time_dependency=block_conf.include_time_dependency,
             include_space_dependency=block_conf.include_space_dependency,
+            constant_variable_dependency=(
+                block_conf.constant_variable_dependency
+            ),
+            constant_time_dependency=block_conf.constant_time_dependency,
+            constant_space_dependency=block_conf.constant_space_dependency,
             ranks_variable=block_conf.ranks_variable,
             ranks_time=block_conf.ranks_time,
             ranks_space=block_conf.ranks_space,
