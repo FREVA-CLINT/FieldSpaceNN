@@ -361,7 +361,6 @@ def create_encoder_decoder_block(
             ranks_variable=block_conf.ranks_variable,
             ranks_time=block_conf.ranks_time,
             ranks_space=block_conf.ranks_space,
-            constraints=block_conf.constraints,
             initializations=block_conf.initializations,
             share_factors_across_heads=block_conf.share_factors_across_heads,
             operator_dim=operator_dim,

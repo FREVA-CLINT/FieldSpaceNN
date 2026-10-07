@@ -2,7 +2,7 @@
 
 This module deliberately lives next to, rather than inside, field-space
 attention.  Ordinary feature projections still use :func:`get_layer` and the
-existing ``TuckerFacLayer``; ``TuckerOperatorWeight`` only parameterizes the
+existing ``TuckerFacLayer``; ``TuckerOperator`` only parameterizes the
 operator acting on variable, outer-time, or outer-space positions.
 """
 
@@ -17,7 +17,6 @@ from einops import rearrange
 from omegaconf import ListConfig
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from ..base import get_layer
 from ..embedding.embedder import get_embedder
@@ -33,7 +32,6 @@ from .field_space_base import (
 
 
 OperatorName = Literal["variable", "time", "space"]
-ConstraintName = Literal["unconstrained", "softmax", "signed_softmax"]
 OperatorGroups = Union[
     Sequence[OperatorName],
     Sequence[Sequence[OperatorName]],
@@ -184,30 +182,22 @@ def _contains_configured_value(value: Any) -> bool:
     return value is not None
 
 
-def _inverse_softplus(value: float) -> float:
-    return math.log(math.expm1(value))
-
-
-def _mode_product(tensor: torch.Tensor, factor: torch.Tensor, mode: int) -> torch.Tensor:
-    """Replace ``tensor`` mode ``mode`` using a ``(full, rank)`` factor."""
-    result = torch.tensordot(factor, tensor, dims=([1], [mode]))
-    permutation = [*range(1, mode + 1), 0, *range(mode + 1, tensor.ndim)]
-    return result.permute(permutation)
-
-
 def _orthogonal_factor(
     size: int,
     rank: int,
     num_heads: Optional[int] = None,
 ) -> nn.Parameter:
+    factor_shape = (
+        (size, rank)
+        if num_heads is None
+        else (int(num_heads), size, rank)
+    )
+    factor = torch.empty(factor_shape)
     if num_heads is None:
-        factor = torch.empty(size, rank)
         nn.init.orthogonal_(factor)
-        return nn.Parameter(factor)
-
-    factor = torch.empty(num_heads, size, rank)
-    for head in range(num_heads):
-        nn.init.orthogonal_(factor[head])
+    else:
+        for head_factor in factor:
+            nn.init.orthogonal_(head_factor)
     return nn.Parameter(factor)
 
 
@@ -222,44 +212,90 @@ def _constant_dependency_factor(
     return nn.Parameter(factor)
 
 
-class _TuckerOperatorParameters(nn.Module):
-    """One Tucker parameterization, used once or twice by a constrained weight."""
+class TuckerOperator(nn.Module):
+    """Apply one Tucker-factorized operator with one generated einsum.
+
+    Values have shape ``(batch, *dependencies, heads, source, channels)``.
+    Dependency, source, and target factors are operands of the same einsum as
+    the core and values. The head and channel modes are never contracted.
+    Runtime index selection is vectorized and happens before the einsum.
+    """
+
+    _PHYSICAL_SYMBOLS = {
+        "variable": "v",
+        "time": "t",
+        "space": "s",
+    }
+    _RANK_SYMBOLS = {
+        "variable": "V",
+        "time": "T",
+        "space": "S",
+    }
 
     def __init__(
         self,
-        dependency_sizes: Mapping[str, int],
+        *,
+        dependency_sizes: Optional[Mapping[str, int]] = None,
         num_heads: int,
         out_size: int,
         in_size: int,
-        rank_out: Optional[int],
-        rank_in: Optional[int],
-        dependency_ranks: Mapping[str, Optional[int]],
-        constant_dependencies: Mapping[str, bool],
-        *,
-        logits: bool,
-        zero_core: bool,
+        rank_out: Optional[int] = None,
+        rank_in: Optional[int] = None,
+        dependency_ranks: Optional[Mapping[str, Optional[int]]] = None,
+        constant_dependencies: Optional[Mapping[str, bool]] = None,
+        initialization: str = "identity",
+        self_indices: Optional[torch.Tensor] = None,
         share_factors_across_heads: bool = False,
     ) -> None:
         super().__init__()
-        self.dependency_names = tuple(dependency_sizes)
-        self.dependency_sizes = OrderedDict(
-            (name, int(size)) for name, size in dependency_sizes.items()
+        dependency_sizes = {} if dependency_sizes is None else dependency_sizes
+        dependency_ranks = {} if dependency_ranks is None else dependency_ranks
+        constant_dependencies = (
+            {} if constant_dependencies is None else constant_dependencies
         )
+        ordered_sizes = OrderedDict(
+            (name, int(dependency_sizes[name]))
+            for name in _DEPENDENCY_ORDER
+            if name in dependency_sizes
+        )
+        for setting_name, setting in (
+            ("dependency_sizes", dependency_sizes),
+            ("dependency_ranks", dependency_ranks),
+            ("constant_dependencies", constant_dependencies),
+        ):
+            unknown = sorted(set(setting).difference(_DEPENDENCY_ORDER))
+            if unknown:
+                raise ValueError(
+                    f"Unsupported {setting_name} operator modes: {unknown}"
+                )
+        if initialization not in {"identity", "random"}:
+            raise ValueError(
+                "Operator initialization must be 'identity' or 'random'"
+            )
+        if int(num_heads) <= 0 or int(out_size) <= 0 or int(in_size) <= 0:
+            raise ValueError("num_heads, out_size, and in_size must be positive")
+
+        self.dependency_names = tuple(ordered_sizes)
+        self.dependency_sizes = ordered_sizes
         self.num_heads = int(num_heads)
         self.out_size = int(out_size)
         self.in_size = int(in_size)
         self.rank_out = None if rank_out is None else int(rank_out)
         self.rank_in = None if rank_in is None else int(rank_in)
+        self.initialization = initialization
         self.share_factors_across_heads = bool(share_factors_across_heads)
         self.dependency_ranks = {
-            name: None if dependency_ranks.get(name) is None
-            else int(dependency_ranks[name])
+            name: (
+                None
+                if dependency_ranks.get(name) is None
+                else int(dependency_ranks[name])
+            )
             for name in self.dependency_names
         }
-        self.constant_dependencies = {
-            name: bool(constant_dependencies.get(name, True))
+        self.constant_dependencies = OrderedDict(
+            (name, bool(constant_dependencies.get(name, True)))
             for name in self.dependency_names
-        }
+        )
 
         self.dependency_factors = nn.ParameterDict()
         core_shape: List[int] = []
@@ -267,20 +303,22 @@ class _TuckerOperatorParameters(nn.Module):
             rank = self.dependency_ranks[name]
             if rank is None:
                 core_shape.append(size)
-            else:
-                if rank <= 0 or rank > size:
-                    raise ValueError(
-                        f"rank_{name} must be in [1, {size}], got {rank}"
-                    )
-                factor_heads = (
-                    None if self.share_factors_across_heads else self.num_heads
+                continue
+            if rank <= 0 or rank > size:
+                raise ValueError(
+                    f"rank_{name} must be in [1, {size}], got {rank}"
                 )
-                if self.constant_dependencies[name]:
-                    factor = _constant_dependency_factor(size, rank, factor_heads)
-                else:
-                    factor = _orthogonal_factor(size, rank, factor_heads)
-                self.dependency_factors[name] = factor
-                core_shape.append(rank)
+            factor_heads = (
+                None if self.share_factors_across_heads else self.num_heads
+            )
+            if self.constant_dependencies[name]:
+                factor = _constant_dependency_factor(
+                    size, rank, factor_heads
+                )
+            else:
+                factor = _orthogonal_factor(size, rank, factor_heads)
+            self.dependency_factors[name] = factor
+            core_shape.append(rank)
 
         core_shape.append(self.num_heads)
         if self.rank_out is None:
@@ -289,7 +327,8 @@ class _TuckerOperatorParameters(nn.Module):
         else:
             if self.rank_out <= 0 or self.rank_out > self.out_size:
                 raise ValueError(
-                    f"rank_out must be in [1, {self.out_size}], got {self.rank_out}"
+                    f"rank_out must be in [1, {self.out_size}], "
+                    f"got {self.rank_out}"
                 )
             self.out_factor = _orthogonal_factor(
                 self.out_size,
@@ -313,21 +352,19 @@ class _TuckerOperatorParameters(nn.Module):
             )
             core_shape.append(self.rank_in)
 
-        core_initialization_shape = []
+        initialization_shape: List[int] = []
         for name, size in self.dependency_sizes.items():
             rank = self.dependency_ranks[name]
             if rank is not None:
-                core_initialization_shape.append(rank)
+                initialization_shape.append(rank)
             elif self.constant_dependencies[name]:
-                core_initialization_shape.append(1)
+                initialization_shape.append(1)
             else:
-                core_initialization_shape.append(size)
-        core_initialization_shape.extend(core_shape[self.n_dependencies :])
-        core_initialization = torch.empty(core_initialization_shape)
-        if zero_core:
+                initialization_shape.append(size)
+        initialization_shape.extend(core_shape[len(self.dependency_names) :])
+        core_initialization = torch.empty(initialization_shape)
+        if self.initialization == "identity":
             nn.init.zeros_(core_initialization)
-        elif logits:
-            nn.init.normal_(core_initialization, mean=0.0, std=1e-2)
         else:
             fan_in = self.rank_in if self.rank_in is not None else self.in_size
             nn.init.uniform_(
@@ -335,225 +372,49 @@ class _TuckerOperatorParameters(nn.Module):
                 -1.0 / math.sqrt(fan_in),
                 1.0 / math.sqrt(fan_in),
             )
-        core = core_initialization.expand(core_shape).clone()
-        self.core = nn.Parameter(core)
-
-    @property
-    def n_dependencies(self) -> int:
-        return len(self.dependency_names)
-
-    def _normalize_ids(
-        self,
-        indices: Optional[torch.Tensor],
-        size: int,
-        device: torch.device,
-        name: str,
-    ) -> torch.Tensor:
-        if indices is None:
-            return torch.arange(size, device=device, dtype=torch.long)
-        indices = indices.to(device=device, dtype=torch.long)
-        if indices.ndim != 1:
-            raise ValueError(f"Shared {name} indices must be one-dimensional")
-        if indices.numel() and (
-            int(indices.min().item()) < 0 or int(indices.max().item()) >= size
-        ):
-            raise ValueError(f"{name} indices must be in [0, {size - 1}]")
-        return indices
-
-    def _factor_for_head(
-        self,
-        factor: torch.Tensor,
-        head: int,
-    ) -> torch.Tensor:
-        return factor if self.share_factors_across_heads else factor[head]
-
-    def _selected_core_head(
-        self,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-        head: int,
-    ) -> torch.Tensor:
-        core = self.core.select(self.n_dependencies, head)
-        for mode, name in enumerate(self.dependency_names):
-            indices = dependency_indices[name]
-            rank = self.dependency_ranks[name]
-            if rank is None:
-                core = torch.index_select(core, mode, indices)
-            else:
-                factor = torch.index_select(
-                    self._factor_for_head(
-                        self.dependency_factors[name], head
-                    ),
-                    0,
-                    indices,
-                )
-                core = _mode_product(core, factor, mode)
-
-        out_mode = self.n_dependencies
-        in_mode = self.n_dependencies + 1
-        if self.rank_out is None:
-            core = torch.index_select(core, out_mode, output_indices)
-        if self.rank_in is None:
-            core = torch.index_select(core, in_mode, input_indices)
-        return core
-
-    def raw_tile(
-        self,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Materialize only the selected dependency/output/input tile."""
-        head_tiles: List[torch.Tensor] = []
-        out_mode = self.n_dependencies
-        in_mode = self.n_dependencies + 1
-        for head in range(self.num_heads):
-            core = self._selected_core_head(
-                dependency_indices, output_indices, input_indices, head
-            )
-            if self.rank_out is not None:
-                out_factor = torch.index_select(
-                    self._factor_for_head(self.out_factor, head),
-                    0,
-                    output_indices,
-                )
-                core = _mode_product(core, out_factor, out_mode)
-            if self.rank_in is not None:
-                in_factor = torch.index_select(
-                    self._factor_for_head(self.in_factor, head),
-                    0,
-                    input_indices,
-                )
-                core = _mode_product(core, in_factor, in_mode)
-            head_tiles.append(core)
-        return torch.stack(head_tiles, dim=-3)
-
-    def contract_unconstrained(
-        self,
-        values: torch.Tensor,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Contract without constructing the dense output-by-input operator."""
-        head_results: List[torch.Tensor] = []
-        for head in range(self.num_heads):
-            core = self._selected_core_head(
-                dependency_indices, output_indices, input_indices, head
-            )
-            head_values = values.select(-3, head)
-            if self.rank_in is not None:
-                in_factor = torch.index_select(
-                    self._factor_for_head(self.in_factor, head),
-                    0,
-                    input_indices,
-                )
-                head_values = torch.einsum(
-                    "b...ic,ir->b...rc", head_values, in_factor
-                )
-            result = torch.einsum(
-                "...oi,b...ic->b...oc", core, head_values
-            )
-            if self.rank_out is not None:
-                out_factor = torch.index_select(
-                    self._factor_for_head(self.out_factor, head),
-                    0,
-                    output_indices,
-                )
-                result = torch.einsum("b...rc,or->b...oc", result, out_factor)
-            head_results.append(result)
-        return torch.stack(head_results, dim=-3)
-
-
-class TuckerOperatorWeight(nn.Module):
-    """Tucker-capable learned operator over physical/token sequence axes.
-
-    Values passed to :meth:`contract` have shape
-    ``(batch, *dependencies, heads, source, head_channels)``.  The returned
-    tensor replaces ``source`` with ``target``.  Head channels are never mixed.
-
-    Identity initialization represents an unconstrained operator as a fixed
-    self-selection map plus a zero-initialized Tucker correction.  Constrained
-    softmax operators use the same zero correction in logit space together
-    with a fixed self-logit bias.  Tucker factors are independent per head by
-    default; ``share_factors_across_heads=True`` enables the compressed shared-
-    subspace variant.  ``constant_dependencies`` controls initialization only:
-    enabled modes start identical across their physical dependency indices but
-    remain independently trainable.
-    """
-
-    _SOFTMAX_CHUNK_SIZE = 256
-
-    def __init__(
-        self,
-        *,
-        dependency_sizes: Optional[Mapping[str, int]] = None,
-        num_heads: int,
-        out_size: int,
-        in_size: int,
-        rank_out: Optional[int] = None,
-        rank_in: Optional[int] = None,
-        dependency_ranks: Optional[Mapping[str, Optional[int]]] = None,
-        constant_dependencies: Optional[Mapping[str, bool]] = None,
-        constraint: ConstraintName = "unconstrained",
-        initialization: str = "identity",
-        identity_probability: float = 0.99,
-        self_indices: Optional[torch.Tensor] = None,
-        share_factors_across_heads: bool = False,
-    ) -> None:
-        super().__init__()
-        dependency_sizes = {} if dependency_sizes is None else dependency_sizes
-        dependency_ranks = {} if dependency_ranks is None else dependency_ranks
-        constant_dependencies = (
-            {} if constant_dependencies is None else constant_dependencies
+        self.core = nn.Parameter(
+            core_initialization.expand(core_shape).clone()
         )
-        ordered_sizes = OrderedDict(
-            (name, int(dependency_sizes[name]))
-            for name in _DEPENDENCY_ORDER
-            if name in dependency_sizes
-        )
-        unknown = sorted(set(dependency_sizes).difference(_DEPENDENCY_ORDER))
-        if unknown:
-            raise ValueError(f"Unsupported operator dependencies: {unknown}")
-        unknown_constant = sorted(
-            set(constant_dependencies).difference(_DEPENDENCY_ORDER)
-        )
-        if unknown_constant:
-            raise ValueError(
-                "Unsupported constant operator dependencies: "
-                f"{unknown_constant}"
-            )
-        if constraint not in {"unconstrained", "softmax", "signed_softmax"}:
-            raise ValueError(f"Unsupported operator constraint {constraint!r}")
-        if initialization not in {"identity", "random"}:
-            raise ValueError(
-                "Operator initialization must be 'identity' or 'random'"
-            )
-        if int(num_heads) <= 0 or int(out_size) <= 0 or int(in_size) <= 0:
-            raise ValueError("num_heads, out_size, and in_size must be positive")
-        if not 0.0 < float(identity_probability) < 1.0:
-            raise ValueError("identity_probability must be strictly between 0 and 1")
 
-        self.dependency_names = tuple(ordered_sizes)
-        self.dependency_sizes = ordered_sizes
-        self.num_heads = int(num_heads)
-        self.out_size = int(out_size)
-        self.in_size = int(in_size)
-        self.constraint = constraint
-        self.initialization = initialization
-        self.identity_probability = float(identity_probability)
-        self.share_factors_across_heads = bool(share_factors_across_heads)
-        self.constant_dependencies = OrderedDict(
-            (name, bool(constant_dependencies.get(name, True)))
-            for name in self.dependency_names
+        self._dependency_index_buffer_names: Dict[str, str] = {}
+        for name, size in self.dependency_sizes.items():
+            buffer_name = f"_full_dependency_indices_{name}"
+            self.register_buffer(
+                buffer_name,
+                torch.arange(size, dtype=torch.long),
+                persistent=False,
+            )
+            self._dependency_index_buffer_names[name] = buffer_name
+        self.register_buffer(
+            "_full_input_indices",
+            torch.arange(self.in_size, dtype=torch.long),
+            persistent=False,
         )
-        self._softmax_chunk_size = self._SOFTMAX_CHUNK_SIZE
+        self.register_buffer(
+            "_full_output_indices",
+            torch.arange(self.out_size, dtype=torch.long),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_full_source_positions",
+            torch.arange(self.in_size, dtype=torch.long),
+            persistent=False,
+        )
+        self._core_mode_index_buffer_names: List[str] = []
+        for mode, size in enumerate(core_shape):
+            buffer_name = f"_full_core_mode_indices_{mode}"
+            self.register_buffer(
+                buffer_name,
+                torch.arange(size, dtype=torch.long),
+                persistent=False,
+            )
+            self._core_mode_index_buffer_names.append(buffer_name)
 
         if self_indices is None:
             if self.out_size > self.in_size and initialization == "identity":
                 raise ValueError(
-                    "Identity initialization requires one self source for every target"
+                    "Identity initialization requires one self source for "
+                    "every target"
                 )
             self_indices = (
                 torch.arange(self.out_size, dtype=torch.long) % self.in_size
@@ -573,115 +434,11 @@ class TuckerOperatorWeight(nn.Module):
                 f"self_indices must be in [0, {self.in_size - 1}]"
             )
         self.register_buffer("self_indices", self_indices, persistent=True)
+        self._einsum_equations: Dict[Tuple[str, ...], str] = {}
 
-        parameter_kwargs = dict(
-            dependency_sizes=ordered_sizes,
-            num_heads=self.num_heads,
-            out_size=self.out_size,
-            in_size=self.in_size,
-            rank_out=rank_out,
-            rank_in=rank_in,
-            dependency_ranks=dependency_ranks,
-            constant_dependencies=self.constant_dependencies,
-            zero_core=initialization == "identity",
-            share_factors_across_heads=self.share_factors_across_heads,
-        )
-        if constraint == "signed_softmax":
-            self.positive = _TuckerOperatorParameters(**parameter_kwargs, logits=True)
-            self.negative = _TuckerOperatorParameters(**parameter_kwargs, logits=True)
-            positive_gain = 1.0 if initialization == "identity" else 0.1
-            negative_gain = 1e-4 if initialization == "identity" else 0.1
-            self.positive_gain_raw = nn.Parameter(
-                torch.full((self.num_heads,), _inverse_softplus(positive_gain))
-            )
-            self.negative_gain_raw = nn.Parameter(
-                torch.full((self.num_heads,), _inverse_softplus(negative_gain))
-            )
-            self.parameters_single = None
-        else:
-            self.parameters_single = _TuckerOperatorParameters(
-                **parameter_kwargs,
-                logits=constraint == "softmax",
-            )
-            self.positive = None
-            self.negative = None
-            self.register_parameter("positive_gain_raw", None)
-            self.register_parameter("negative_gain_raw", None)
-
-    def _self_selection_contract(
-        self,
-        values: torch.Tensor,
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        """Apply the fixed self-selection map without materializing a matrix."""
-        lookup = torch.full(
-            (self.in_size,),
-            -1,
-            device=values.device,
-            dtype=torch.long,
-        )
-        lookup.scatter_(
-            0,
-            input_indices,
-            torch.arange(input_indices.numel(), device=values.device),
-        )
-        source_positions = lookup[self.self_indices[output_indices]]
-        present = source_positions >= 0
-        selected = torch.index_select(
-            values,
-            -2,
-            source_positions.clamp_min(0),
-        )
-        present_shape = [1] * selected.ndim
-        present_shape[-2] = present.numel()
-        return selected * present.view(present_shape).to(selected.dtype)
-
-    def _self_logit_bias(
-        self,
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-        *,
-        dtype: torch.dtype,
-        device: torch.device,
-        n_runtime_sources: int,
-    ) -> torch.Tensor:
-        self_sources = self.self_indices[output_indices].to(device=device)
-        is_self = self_sources.unsqueeze(-1) == input_indices.unsqueeze(0)
-        n_sources = int(n_runtime_sources)
-        if n_sources <= 1:
-            bias_value = 0.0
-        else:
-            bias_value = math.log(
-                self.identity_probability
-                * (n_sources - 1)
-                / (1.0 - self.identity_probability)
-            )
-        shape = [1] * len(self.dependency_names) + [1, *is_self.shape]
-        return is_self.to(device=device, dtype=dtype).view(shape) * bias_value
-
-    def _raw_logit_tile(
-        self,
-        parameters: _TuckerOperatorParameters,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-        *,
-        with_identity_bias: bool,
-        n_runtime_sources: int,
-    ) -> torch.Tensor:
-        logits = parameters.raw_tile(
-            dependency_indices, output_indices, input_indices
-        )
-        if with_identity_bias and self.initialization == "identity":
-            logits = logits + self._self_logit_bias(
-                output_indices,
-                input_indices,
-                dtype=logits.dtype,
-                device=logits.device,
-                n_runtime_sources=n_runtime_sources,
-            )
-        return logits
+    @property
+    def n_dependencies(self) -> int:
+        return len(self.dependency_names)
 
     def _normalize_runtime_indices(
         self,
@@ -689,246 +446,350 @@ class TuckerOperatorWeight(nn.Module):
         dependency_indices: Optional[Mapping[str, torch.Tensor]],
         output_indices: Optional[torch.Tensor],
         input_indices: Optional[torch.Tensor],
-    ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        Dict[str, Optional[torch.Tensor]],
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
+    ]:
         dependency_indices = (
             {} if dependency_indices is None else dict(dependency_indices)
         )
-        unknown = sorted(set(dependency_indices).difference(self.dependency_names))
+        unknown = sorted(
+            set(dependency_indices).difference(self.dependency_names)
+        )
         if unknown:
-            raise ValueError(f"Indices supplied for inactive dependencies: {unknown}")
-        device = values.device
-        normalized: Dict[str, torch.Tensor] = {}
+            raise ValueError(
+                f"Indices supplied for inactive dependencies: {unknown}"
+            )
+        batch_size = int(values.shape[0])
+        normalized: Dict[str, Optional[torch.Tensor]] = {}
         for offset, name in enumerate(self.dependency_names):
+            runtime_size = int(values.shape[1 + offset])
             indices = dependency_indices.get(name)
             if indices is None:
-                indices = torch.arange(
-                    values.shape[1 + offset], device=device, dtype=torch.long
-                )
+                configured_size = self.dependency_sizes[name]
+                if runtime_size > configured_size:
+                    raise ValueError(
+                        f"Runtime {name} dependency size is {runtime_size}, "
+                        f"configured size is {configured_size}"
+                    )
+                if runtime_size == configured_size:
+                    normalized[name] = None
+                else:
+                    full_indices = getattr(
+                        self, self._dependency_index_buffer_names[name]
+                    )
+                    normalized[name] = full_indices[:runtime_size]
+                continue
             else:
-                indices = indices.to(device=device, dtype=torch.long)
+                indices = indices.to(device=values.device, dtype=torch.long)
             if indices.ndim not in {1, 2}:
                 raise ValueError(
-                    f"{name} dependency indices must be one- or two-dimensional"
+                    f"{name} dependency indices must be one- or "
+                    "two-dimensional"
                 )
-            if indices.shape[-1] != values.shape[1 + offset]:
+            if indices.shape[-1] != runtime_size:
                 raise ValueError(
-                    f"{name} dependency index length {indices.shape[-1]} does not "
-                    f"match runtime size {values.shape[1 + offset]}"
+                    f"{name} dependency index length {indices.shape[-1]} "
+                    f"does not match runtime size {runtime_size}"
                 )
-            if indices.ndim == 2 and indices.shape[0] != values.shape[0]:
+            if indices.ndim == 2 and indices.shape[0] != batch_size:
                 raise ValueError(
                     f"Batch-specific {name} indices must have batch size "
-                    f"{values.shape[0]}, got {indices.shape[0]}"
+                    f"{batch_size}, got {indices.shape[0]}"
                 )
-            size = self.dependency_sizes[name]
-            if indices.numel() and (
-                int(indices.min().item()) < 0 or int(indices.max().item()) >= size
-            ):
-                raise ValueError(f"{name} dependency indices must be in [0, {size - 1}]")
             normalized[name] = indices
 
         def normalize_sequence(
-            indices: Optional[torch.Tensor], size: int, runtime: int, name: str
-        ) -> torch.Tensor:
+            indices: Optional[torch.Tensor],
+            configured_size: int,
+            runtime_size: int,
+            name: str,
+            *,
+            require_runtime_match: bool,
+            full_indices: torch.Tensor,
+        ) -> Optional[torch.Tensor]:
             if indices is None:
-                if runtime != size:
+                if runtime_size > configured_size:
                     raise ValueError(
-                        f"Runtime {name} size is {runtime}, configured size is {size}; "
-                        f"explicit {name}_indices are required"
+                        f"Runtime {name} size is {runtime_size}, configured "
+                        f"size is {configured_size}"
                     )
-                return torch.arange(size, device=device, dtype=torch.long)
-            indices = indices.to(device=device, dtype=torch.long)
-            if indices.ndim not in {1, 2} or indices.shape[-1] != runtime:
+                if require_runtime_match and runtime_size < configured_size:
+                    return full_indices[:runtime_size]
+                return None
+            indices = indices.to(device=values.device, dtype=torch.long)
+            if indices.ndim not in {1, 2}:
                 raise ValueError(
-                    f"{name}_indices must end in runtime size {runtime}, got "
-                    f"{tuple(indices.shape)}"
+                    f"{name}_indices must be one- or two-dimensional"
                 )
-            if indices.ndim == 2 and indices.shape[0] != values.shape[0]:
+            if require_runtime_match and indices.shape[-1] != runtime_size:
                 raise ValueError(
-                    f"Batch-specific {name}_indices must have batch size {values.shape[0]}"
+                    f"{name}_indices must end in runtime size {runtime_size}, "
+                    f"got {tuple(indices.shape)}"
                 )
-            if indices.numel() and (
-                int(indices.min().item()) < 0 or int(indices.max().item()) >= size
-            ):
-                raise ValueError(f"{name}_indices must be in [0, {size - 1}]")
+            if indices.ndim == 2 and indices.shape[0] != batch_size:
+                raise ValueError(
+                    f"Batch-specific {name}_indices must have batch size "
+                    f"{batch_size}"
+                )
             return indices
 
         input_indices = normalize_sequence(
-            input_indices, self.in_size, int(values.shape[-2]), "input"
-        )
-        runtime_out = (
-            self.out_size if output_indices is None else int(output_indices.shape[-1])
+            input_indices,
+            self.in_size,
+            int(values.shape[-2]),
+            "input",
+            require_runtime_match=True,
+            full_indices=self._full_input_indices,
         )
         output_indices = normalize_sequence(
-            output_indices, self.out_size, runtime_out, "output"
+            output_indices,
+            self.out_size,
+            self.out_size,
+            "output",
+            require_runtime_match=False,
+            full_indices=self._full_output_indices,
         )
         return normalized, output_indices, input_indices
 
-    @staticmethod
-    def _has_batch_indices(
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-    ) -> bool:
-        return any(index.ndim == 2 for index in dependency_indices.values()) or (
-            output_indices.ndim == 2 or input_indices.ndim == 2
-        )
-
-    def _shared_indices(
-        self,
-        parameters: _TuckerOperatorParameters,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-    ) -> Tuple[Dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
-        deps = {
-            name: parameters._normalize_ids(
-                dependency_indices.get(name),
-                parameters.dependency_sizes[name],
-                parameters.core.device,
-                name,
+    def _core_symbols(self) -> List[str]:
+        symbols = [
+            (
+                self._PHYSICAL_SYMBOLS[name]
+                if self.dependency_ranks[name] is None
+                else self._RANK_SYMBOLS[name]
             )
-            for name in parameters.dependency_names
-        }
-        out_ids = parameters._normalize_ids(
-            output_indices,
-            parameters.out_size,
-            parameters.core.device,
-            "output",
-        )
-        in_ids = parameters._normalize_ids(
-            input_indices,
-            parameters.in_size,
-            parameters.core.device,
-            "input",
-        )
-        return deps, out_ids, in_ids
+            for name in self.dependency_names
+        ]
+        symbols.append("h")
+        symbols.append("o" if self.rank_out is None else "O")
+        symbols.append("i" if self.rank_in is None else "I")
+        return symbols
 
-    def _softmax_contract_shared(
+    def _select_core(
         self,
-        parameters: _TuckerOperatorParameters,
-        values: torch.Tensor,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
-        *,
-        with_identity_bias: bool,
-    ) -> torch.Tensor:
-        deps, out_ids, in_ids = self._shared_indices(
-            parameters, dependency_indices, output_indices, input_indices
+        dependency_indices: Mapping[str, Optional[torch.Tensor]],
+        output_indices: Optional[torch.Tensor],
+        input_indices: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, str]:
+        selections: List[Optional[torch.Tensor]] = []
+        for name in self.dependency_names:
+            selections.append(
+                dependency_indices[name]
+                if self.dependency_ranks[name] is None
+                else None
+            )
+        selections.append(None)
+        selections.append(
+            output_indices if self.rank_out is None else None
         )
-        output_chunks: List[torch.Tensor] = []
-        chunk_size = self._softmax_chunk_size
-        for output_start in range(0, out_ids.numel(), chunk_size):
-            out_chunk = out_ids[output_start : output_start + chunk_size]
-            running_max: Optional[torch.Tensor] = None
-            denominator: Optional[torch.Tensor] = None
-            for input_start in range(0, in_ids.numel(), chunk_size):
-                in_chunk = in_ids[input_start : input_start + chunk_size]
-                logits = self._raw_logit_tile(
-                    parameters,
-                    deps,
-                    out_chunk,
-                    in_chunk,
-                    with_identity_bias=with_identity_bias,
-                    n_runtime_sources=int(in_ids.numel()),
-                )
-                chunk_max = logits.amax(dim=-1)
-                if running_max is None:
-                    running_max = chunk_max
-                    denominator = torch.exp(
-                        logits - running_max.unsqueeze(-1)
-                    ).sum(dim=-1)
-                else:
-                    new_max = torch.maximum(running_max, chunk_max)
-                    assert denominator is not None
-                    denominator = (
-                        denominator * torch.exp(running_max - new_max)
-                        + torch.exp(logits - new_max.unsqueeze(-1)).sum(dim=-1)
+        selections.append(input_indices if self.rank_in is None else None)
+        symbols = self._core_symbols()
+
+        batch_indices = [
+            indices for indices in selections
+            if indices is not None and indices.ndim == 2
+        ]
+        if not batch_indices:
+            selected = self.core
+            for mode, indices in enumerate(selections):
+                if indices is not None:
+                    selected = torch.index_select(
+                        selected, mode, indices.to(device=selected.device)
                     )
-                    running_max = new_max
+            return selected, "".join(symbols)
 
-            assert running_max is not None and denominator is not None
-            numerator: Optional[torch.Tensor] = None
-            for input_start in range(0, in_ids.numel(), chunk_size):
-                in_chunk = in_ids[input_start : input_start + chunk_size]
-                logits = self._raw_logit_tile(
-                    parameters,
-                    deps,
-                    out_chunk,
-                    in_chunk,
-                    with_identity_bias=with_identity_bias,
-                    n_runtime_sources=int(in_ids.numel()),
+        batch_size = int(batch_indices[0].shape[0])
+        n_modes = self.core.ndim
+        index_tensors: List[torch.Tensor] = []
+        for mode, indices in enumerate(selections):
+            if indices is None:
+                mode_indices = getattr(
+                    self, self._core_mode_index_buffer_names[mode]
                 )
-                weights = torch.exp(logits - running_max.unsqueeze(-1))
-                value_chunk = values[..., input_start : input_start + in_chunk.numel(), :]
-                contribution = torch.einsum(
-                    "...hoi,b...hic->b...hoc", weights, value_chunk
-                )
-                numerator = (
-                    contribution if numerator is None else numerator + contribution
-                )
-            output_chunks.append(
-                numerator / denominator.unsqueeze(0).unsqueeze(-1)
+                shape = [1] * (n_modes + 1)
+                shape[mode + 1] = mode_indices.numel()
+                mode_indices = mode_indices.view(shape)
+            elif indices.ndim == 1:
+                mode_indices = indices.to(device=self.core.device)
+                shape = [1] * (n_modes + 1)
+                shape[mode + 1] = mode_indices.numel()
+                mode_indices = mode_indices.view(shape)
+            else:
+                if int(indices.shape[0]) != batch_size:
+                    raise ValueError(
+                        "All batch-specific operator indices must have the "
+                        "same batch size"
+                    )
+                mode_indices = indices.to(device=self.core.device)
+                shape = [batch_size, *([1] * n_modes)]
+                shape[mode + 1] = mode_indices.shape[1]
+                mode_indices = mode_indices.view(shape)
+            index_tensors.append(mode_indices)
+        return self.core[tuple(index_tensors)], "b" + "".join(symbols)
+
+    def _factor_operand(
+        self,
+        factor: torch.Tensor,
+        indices: Optional[torch.Tensor],
+        physical_symbol: str,
+        rank_symbol: str,
+    ) -> Tuple[torch.Tensor, str]:
+        if indices is None:
+            if self.share_factors_across_heads:
+                return factor, physical_symbol + rank_symbol
+            return factor, "h" + physical_symbol + rank_symbol
+
+        indices = indices.to(device=factor.device)
+        if self.share_factors_across_heads:
+            selected = factor[indices]
+            prefix = "b" if indices.ndim == 2 else ""
+            return selected, prefix + physical_symbol + rank_symbol
+
+        if indices.ndim == 1:
+            selected = torch.index_select(factor, 1, indices)
+            selected = selected.permute(1, 0, 2)
+            return selected, physical_symbol + "h" + rank_symbol
+
+        batch_size, runtime_size = indices.shape
+        expanded = factor.unsqueeze(0).expand(batch_size, -1, -1, -1)
+        gather_indices = indices[:, None, :, None].expand(
+            batch_size,
+            self.num_heads,
+            runtime_size,
+            factor.shape[-1],
+        )
+        selected = torch.gather(expanded, 2, gather_indices)
+        selected = selected.permute(0, 2, 1, 3)
+        return selected, "b" + physical_symbol + "h" + rank_symbol
+
+    def _parameter_operands(
+        self,
+        dependency_indices: Mapping[str, Optional[torch.Tensor]],
+        output_indices: Optional[torch.Tensor],
+        input_indices: Optional[torch.Tensor],
+    ) -> Tuple[List[torch.Tensor], List[str]]:
+        core, core_subscript = self._select_core(
+            dependency_indices, output_indices, input_indices
+        )
+        operands = [core]
+        subscripts = [core_subscript]
+
+        for name in self.dependency_names:
+            rank = self.dependency_ranks[name]
+            if rank is None:
+                continue
+            factor, subscript = self._factor_operand(
+                self.dependency_factors[name],
+                dependency_indices[name],
+                self._PHYSICAL_SYMBOLS[name],
+                self._RANK_SYMBOLS[name],
             )
-        return torch.cat(output_chunks, dim=-2)
+            operands.append(factor)
+            subscripts.append(subscript)
 
-    def _contract_shared(
+        if self.rank_out is not None:
+            assert self.out_factor is not None
+            factor, subscript = self._factor_operand(
+                self.out_factor,
+                output_indices,
+                "o",
+                "O",
+            )
+            operands.append(factor)
+            subscripts.append(subscript)
+        if self.rank_in is not None:
+            assert self.in_factor is not None
+            factor, subscript = self._factor_operand(
+                self.in_factor,
+                input_indices,
+                "i",
+                "I",
+            )
+            operands.append(factor)
+            subscripts.append(subscript)
+        return operands, subscripts
+
+    def _equation(
+        self,
+        input_subscripts: Sequence[str],
+        output_subscript: str,
+    ) -> str:
+        key = (*input_subscripts, output_subscript)
+        equation = self._einsum_equations.get(key)
+        if equation is None:
+            equation = (
+                f"{','.join(input_subscripts)}->{output_subscript}"
+            )
+            self._einsum_equations[key] = equation
+        return equation
+
+    def _self_selection_contract(
         self,
         values: torch.Tensor,
-        dependency_indices: Mapping[str, torch.Tensor],
-        output_indices: torch.Tensor,
-        input_indices: torch.Tensor,
+        output_indices: Optional[torch.Tensor],
+        input_indices: Optional[torch.Tensor],
     ) -> torch.Tensor:
-        if self.constraint == "unconstrained":
-            assert self.parameters_single is not None
-            deps, out_ids, in_ids = self._shared_indices(
-                self.parameters_single,
-                dependency_indices,
-                output_indices,
-                input_indices,
+        batch_size = int(values.shape[0])
+        runtime_sources = int(values.shape[-2])
+        if input_indices is None:
+            source_positions = (
+                self.self_indices
+                if output_indices is None
+                else self.self_indices[output_indices]
             )
-            delta = self.parameters_single.contract_unconstrained(
-                values, deps, out_ids, in_ids
+            if source_positions.ndim == 1:
+                source_positions = source_positions.unsqueeze(0).expand(
+                    batch_size, -1
+                )
+            present = None
+        else:
+            input_ids = (
+                input_indices.unsqueeze(0).expand(batch_size, -1)
+                if input_indices.ndim == 1
+                else input_indices
             )
-            if self.initialization != "identity":
-                return delta
-            return delta + self._self_selection_contract(
-                values, out_ids, in_ids
+            lookup = torch.full(
+                (batch_size, self.in_size),
+                -1,
+                device=values.device,
+                dtype=torch.long,
             )
-        if self.constraint == "softmax":
-            assert self.parameters_single is not None
-            return self._softmax_contract_shared(
-                self.parameters_single,
-                values,
-                dependency_indices,
-                output_indices,
-                input_indices,
-                with_identity_bias=True,
+            positions = self._full_source_positions[:runtime_sources]
+            positions = positions.view(1, -1).expand(batch_size, -1)
+            lookup.scatter_(1, input_ids, positions)
+            self_sources = (
+                self.self_indices.unsqueeze(0).expand(batch_size, -1)
+                if output_indices is None
+                else self.self_indices[output_indices]
             )
+            if self_sources.ndim == 1:
+                self_sources = self_sources.unsqueeze(0).expand(
+                    batch_size, -1
+                )
+            source_positions = torch.gather(lookup, 1, self_sources)
+            present = source_positions >= 0
 
-        assert self.positive is not None and self.negative is not None
-        positive = self._softmax_contract_shared(
-            self.positive,
-            values,
-            dependency_indices,
-            output_indices,
-            input_indices,
-            with_identity_bias=True,
+        runtime_targets = int(source_positions.shape[-1])
+        gather_shape = [
+            batch_size,
+            *([1] * self.n_dependencies),
+            1,
+            runtime_targets,
+            1,
+        ]
+        gather_indices = source_positions.clamp_min(0).view(gather_shape)
+        gather_indices = gather_indices.expand(
+            *values.shape[:-2],
+            runtime_targets,
+            values.shape[-1],
         )
-        negative = self._softmax_contract_shared(
-            self.negative,
-            values,
-            dependency_indices,
-            output_indices,
-            input_indices,
-            with_identity_bias=False,
-        )
-        gain_shape = [1] * positive.ndim
-        gain_shape[-3] = self.num_heads
-        positive_gain = F.softplus(self.positive_gain_raw).view(gain_shape)
-        negative_gain = F.softplus(self.negative_gain_raw).view(gain_shape)
-        return positive_gain * positive - negative_gain * negative
+        selected = torch.gather(values, -2, gather_indices)
+        if present is None:
+            return selected
+        present_mask = present.view(gather_shape).expand_as(selected)
+        return selected * present_mask.to(dtype=selected.dtype)
 
     def contract(
         self,
@@ -938,44 +799,70 @@ class TuckerOperatorWeight(nn.Module):
         output_indices: Optional[torch.Tensor] = None,
         input_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Apply the operator without mixing the final head-channel dimension."""
-        expected_ndim = 4 + len(self.dependency_names)
+        """Apply the learned correction using exactly one einsum."""
+        expected_ndim = 4 + self.n_dependencies
         if values.ndim != expected_ndim:
             raise ValueError(
                 f"Expected values with {expected_ndim} dimensions "
-                f"(batch, dependencies, heads, source, channels), got "
+                "(batch, dependencies, heads, source, channels), got "
                 f"shape {tuple(values.shape)}"
             )
         if values.shape[-3] != self.num_heads:
             raise ValueError(
                 f"Expected {self.num_heads} heads, got {values.shape[-3]}"
             )
-        deps, out_ids, in_ids = self._normalize_runtime_indices(
-            values, dependency_indices, output_indices, input_indices
-        )
-        if not self._has_batch_indices(deps, out_ids, in_ids):
-            return self._contract_shared(values, deps, out_ids, in_ids)
 
-        outputs = []
-        for batch_index in range(values.shape[0]):
-            batch_deps = {
-                name: index[batch_index] if index.ndim == 2 else index
-                for name, index in deps.items()
-            }
-            batch_out = out_ids[batch_index] if out_ids.ndim == 2 else out_ids
-            batch_in = in_ids[batch_index] if in_ids.ndim == 2 else in_ids
-            outputs.append(
-                self._contract_shared(
-                    values[batch_index : batch_index + 1],
-                    batch_deps,
-                    batch_out,
-                    batch_in,
-                )
+        dependencies, output_ids, input_ids = (
+            self._normalize_runtime_indices(
+                values,
+                dependency_indices,
+                output_indices,
+                input_indices,
             )
-        return torch.cat(outputs, dim=0)
+        )
+        parameter_operands, parameter_subscripts = (
+            self._parameter_operands(
+                dependencies, output_ids, input_ids
+            )
+        )
+        dependency_subscripts = "".join(
+            self._PHYSICAL_SYMBOLS[name]
+            for name in self.dependency_names
+        )
+        value_subscript = "b" + dependency_subscripts + "hic"
+        output_subscript = "b" + dependency_subscripts + "hoc"
+        operands = [values, *parameter_operands]
+        equation = self._equation(
+            [value_subscript, *parameter_subscripts],
+            output_subscript,
+        )
+        result = torch.einsum(equation, *operands)
+        if self.initialization == "identity":
+            result = result + self._self_selection_contract(
+                values, output_ids, input_ids
+            )
+        return result
 
-    def to_dense(self, max_elements: Optional[int] = 10_000_000) -> torch.Tensor:
-        """Materialize the effective operator for small diagnostics and tests."""
+    def forward(
+        self,
+        values: torch.Tensor,
+        *,
+        dependency_indices: Optional[Mapping[str, torch.Tensor]] = None,
+        output_indices: Optional[torch.Tensor] = None,
+        input_indices: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return self.contract(
+            values,
+            dependency_indices=dependency_indices,
+            output_indices=output_indices,
+            input_indices=input_indices,
+        )
+
+    def to_dense(
+        self,
+        max_elements: Optional[int] = 10_000_000,
+    ) -> torch.Tensor:
+        """Materialize the effective operator for bounded diagnostics."""
         element_count = (
             math.prod(self.dependency_sizes.values())
             * self.num_heads
@@ -987,56 +874,30 @@ class TuckerOperatorWeight(nn.Module):
                 f"Dense operator would contain {element_count} elements; "
                 f"limit is {max_elements}"
             )
-        device = next(self.parameters()).device
-        deps = {
-            name: torch.arange(size, device=device)
-            for name, size in self.dependency_sizes.items()
-        }
-        out_ids = torch.arange(self.out_size, device=device)
-        in_ids = torch.arange(self.in_size, device=device)
-
-        def constrained_dense(
-            parameters: _TuckerOperatorParameters,
-            *,
-            with_identity_bias: bool,
-        ) -> torch.Tensor:
-            logits = self._raw_logit_tile(
-                parameters,
-                deps,
-                out_ids,
-                in_ids,
-                with_identity_bias=with_identity_bias,
-                n_runtime_sources=int(in_ids.numel()),
-            )
-            return torch.softmax(logits, dim=-1)
-
-        if self.constraint == "unconstrained":
-            assert self.parameters_single is not None
-            dense = self.parameters_single.raw_tile(deps, out_ids, in_ids)
-            if self.initialization == "identity":
-                self_dense = (
-                    self.self_indices[out_ids].unsqueeze(-1)
-                    == in_ids.unsqueeze(0)
-                ).to(dtype=dense.dtype, device=dense.device)
-                shape = [1] * len(self.dependency_names) + [1, *self_dense.shape]
-                dense = dense + self_dense.view(shape)
-            return dense
-        if self.constraint == "softmax":
-            assert self.parameters_single is not None
-            return constrained_dense(
-                self.parameters_single,
-                with_identity_bias=True,
-            )
-        assert self.positive is not None and self.negative is not None
-        shape = [1] * (len(self.dependency_names) + 3)
-        shape[-3] = self.num_heads
-        return (
-            F.softplus(self.positive_gain_raw).view(shape)
-            * constrained_dense(self.positive, with_identity_bias=True)
-            - F.softplus(self.negative_gain_raw).view(shape)
-            * constrained_dense(self.negative, with_identity_bias=False)
+        device = self.core.device
+        dependencies = {name: None for name in self.dependency_names}
+        operands, subscripts = self._parameter_operands(
+            dependencies, None, None
         )
-
+        dependency_subscripts = "".join(
+            self._PHYSICAL_SYMBOLS[name]
+            for name in self.dependency_names
+        )
+        output_subscript = dependency_subscripts + "hoi"
+        equation = self._equation(subscripts, output_subscript)
+        dense = torch.einsum(equation, *operands)
+        if self.initialization == "identity":
+            self_dense = (
+                self.self_indices.unsqueeze(-1)
+                == self._full_input_indices.unsqueeze(0)
+            ).to(device=device, dtype=dense.dtype)
+            shape = [1] * self.n_dependencies + [
+                1,
+                self.out_size,
+                self.in_size,
+            ]
+            dense = dense + self_dense.view(shape)
+        return dense
 
 class FieldSpaceOperator(nn.Module):
     """Pack and apply one atomic operator to projected canonical values."""
@@ -1057,7 +918,6 @@ class FieldSpaceOperator(nn.Module):
         constant_dependencies: Optional[Mapping[str, bool]] = None,
         rank_in: Optional[int],
         rank_out: Optional[int],
-        constraint: ConstraintName,
         initialization: str = "identity",
         share_factors_across_heads: bool = False,
         grid_layers: Mapping[str, GridLayer],
@@ -1166,6 +1026,11 @@ class FieldSpaceOperator(nn.Module):
 
         self.register_buffer("global_space_ids", global_space_ids, persistent=False)
         self.register_buffer("region_space_ids", region_space_ids, persistent=False)
+        self.register_buffer(
+            "_full_variable_indices",
+            torch.arange(self.n_variables, dtype=torch.long),
+            persistent=False,
+        )
 
         dependency_sizes: "OrderedDict[str, int]" = OrderedDict()
         for name in self.dependency_names:
@@ -1178,7 +1043,7 @@ class FieldSpaceOperator(nn.Module):
             else:
                 dependency_sizes[name] = n_space
 
-        self.weight = TuckerOperatorWeight(
+        self.weight = TuckerOperator(
             dependency_sizes=dependency_sizes,
             num_heads=self.num_heads,
             out_size=out_size,
@@ -1187,7 +1052,6 @@ class FieldSpaceOperator(nn.Module):
             rank_in=rank_in,
             dependency_ranks=dependency_ranks,
             constant_dependencies=constant_dependencies,
-            constraint=constraint,
             initialization=initialization,
             self_indices=self_indices,
             share_factors_across_heads=share_factors_across_heads,
@@ -1212,15 +1076,23 @@ class FieldSpaceOperator(nn.Module):
         source = gathered.reshape(n_regions, -1).to(torch.long)
         return source, target
 
-    @staticmethod
     def _variable_ids(
-        values: torch.Tensor, emb: Optional[Mapping[str, Any]]
-    ) -> torch.Tensor:
+        self,
+        values: torch.Tensor,
+        emb: Optional[Mapping[str, Any]],
+    ) -> Optional[torch.Tensor]:
         ids = None
         if emb is not None:
             ids = emb.get("variables_sampled", emb.get("VariableEmbedder"))
         if ids is None:
-            return torch.arange(values.shape[1], device=values.device)
+            if values.shape[1] > self.n_variables:
+                raise ValueError(
+                    f"Runtime variable size is {values.shape[1]}, configured "
+                    f"size is {self.n_variables}"
+                )
+            if values.shape[1] == self.n_variables:
+                return None
+            return self._full_variable_indices[: values.shape[1]]
         ids = ids.to(device=values.device, dtype=torch.long)
         if ids.ndim == 1:
             if ids.numel() != values.shape[1]:
@@ -1251,15 +1123,15 @@ class FieldSpaceOperator(nn.Module):
         values: torch.Tensor,
         dim_names: Sequence[str],
         sequence_name: str,
-        variable_ids: torch.Tensor,
+        variable_ids: Optional[torch.Tensor],
         *,
         spatial_dependency_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[
         torch.Tensor,
         Dict[str, Any],
         Dict[str, torch.Tensor],
-        torch.Tensor,
-        torch.Tensor,
+        Optional[torch.Tensor],
+        Optional[torch.Tensor],
     ]:
         axis = {name: index for index, name in enumerate(dim_names)}
         passive = [
@@ -1298,23 +1170,21 @@ class FieldSpaceOperator(nn.Module):
 
         dependency_indices: Dict[str, torch.Tensor] = {}
         for name in self.dependency_names:
-            if name == "variable":
+            if name == "variable" and variable_ids is not None:
                 dependency_indices[name] = self._expand_batch_indices(
                     variable_ids, passive_shape
                 )
             elif name == "space" and spatial_dependency_ids is not None:
                 dependency_indices[name] = spatial_dependency_ids
-            else:
-                dependency_indices[name] = torch.arange(
-                    values.shape[axis[name]], device=values.device
-                )
 
         if sequence_name == "variable":
-            sequence_indices = self._expand_batch_indices(
-                variable_ids, passive_shape
+            sequence_indices = (
+                None
+                if variable_ids is None
+                else self._expand_batch_indices(variable_ids, passive_shape)
             )
         else:
-            sequence_indices = torch.arange(sequence_size, device=values.device)
+            sequence_indices = None
 
         metadata = {
             "dim_names": list(dim_names),
@@ -1437,8 +1307,6 @@ class FieldSpaceOperator(nn.Module):
             output = self.weight.contract(
                 packed,
                 dependency_indices=dep_ids,
-                input_indices=torch.arange(packed.shape[-2], device=values.device),
-                output_indices=torch.arange(self.weight.out_size, device=values.device),
             )
             output = self._unpack(output, metadata)
             output = output.permute(0, 1, 2, 3, 5, 4, 6, 7)
@@ -1501,7 +1369,6 @@ class FieldSpaceOperatorConfig:
         ranks_variable: Optional[OperatorSetting] = None,
         ranks_space: Optional[OperatorSetting] = None,
         ranks_time: Optional[OperatorSetting] = None,
-        constraints: Optional[OperatorSetting] = None,
         initializations: Optional[OperatorSetting] = None,
         share_factors_across_heads: Optional[OperatorSetting] = None,
         operator_dim: Optional[int] = None,
@@ -1537,16 +1404,6 @@ class FieldSpaceOperatorConfig:
         n_groups_depths: Optional[Sequence[int]] = None,
         **kwargs: Any,
     ) -> None:
-        removed_chunk_settings = {
-            name for name in ("contraction_chunk_size", "chunk_size")
-            if name in kwargs
-        }
-        if removed_chunk_settings:
-            names = ", ".join(sorted(removed_chunk_settings))
-            raise TypeError(
-                f"{names} is internal to operator contraction and is no longer "
-                "a FieldSpaceOperatorConfig setting"
-            )
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorConfig settings: {names}")
@@ -1614,9 +1471,6 @@ class FieldSpaceOperatorConfig:
         )
         ranks_time = align_operator_values(ranks_time, "ranks_time", None)
         ranks_space = align_operator_values(ranks_space, "ranks_space", None)
-        constraints = align_operator_values(
-            constraints, "constraints", "unconstrained"
-        )
         initializations = align_operator_values(
             initializations, "initializations", "identity"
         )
@@ -1677,13 +1531,6 @@ class FieldSpaceOperatorConfig:
                 raise ValueError(
                     f"operator_dim ({operator_dim}) must be divisible by "
                     f"num_heads[{index}] ({num_heads[index]}) for {location}"
-                )
-            if constraints[index] not in {
-                "unconstrained", "softmax", "signed_softmax"
-            }:
-                raise ValueError(
-                    f"Unsupported constraints[{index}]={constraints[index]!r} "
-                    f"for {location}"
                 )
             if initializations[index] not in {"identity", "random"}:
                 raise ValueError(
@@ -1802,7 +1649,6 @@ class FieldSpaceOperatorConfig:
         self.ranks_variable = ranks_variable
         self.ranks_time = ranks_time
         self.ranks_space = ranks_space
-        self.constraints = list(constraints)
         self.initializations = list(initializations)
         self.share_factors_across_heads = [
             bool(value) for value in share_factors_across_heads
@@ -1878,7 +1724,6 @@ class _FieldSpaceOperatorBranch(nn.Module):
         constant_dependencies: Sequence[Mapping[str, bool]],
         ranks_in: Sequence[Optional[int]],
         ranks_out: Sequence[Optional[int]],
-        constraints: Sequence[ConstraintName],
         initializations: Sequence[str],
         share_factors_across_heads: Sequence[bool],
         operator_projection_ranks_by_zoom: Mapping[
@@ -2055,7 +1900,6 @@ class _FieldSpaceOperatorBranch(nn.Module):
                     constant_dependencies=constant_dependencies[index],
                     rank_in=ranks_in[index],
                     rank_out=ranks_out[index],
-                    constraint=constraints[index],
                     initialization=initializations[index],
                     share_factors_across_heads=bool(
                         share_factors_across_heads[index]
@@ -2195,7 +2039,6 @@ class FieldSpaceOperatorBlock(nn.Module):
         ranks_variable: OperatorSetting,
         ranks_time: OperatorSetting,
         ranks_space: OperatorSetting,
-        constraints: OperatorSetting,
         initializations: OperatorSetting,
         share_factors_across_heads: Optional[OperatorSetting] = None,
         operator_dim: int,
@@ -2279,9 +2122,6 @@ class FieldSpaceOperatorBlock(nn.Module):
         )
         ranks_time = align_operator_values(ranks_time, "ranks_time", None)
         ranks_space = align_operator_values(ranks_space, "ranks_space", None)
-        constraints = align_operator_values(
-            constraints, "constraints", "unconstrained"
-        )
         initializations = align_operator_values(
             initializations, "initializations", "identity"
         )
@@ -2500,7 +2340,6 @@ class FieldSpaceOperatorBlock(nn.Module):
                     ],
                     ranks_in=[ranks_in[index] for index in group_indices],
                     ranks_out=[ranks_out[index] for index in group_indices],
-                    constraints=[constraints[index] for index in group_indices],
                     initializations=[
                         initializations[index] for index in group_indices
                     ],
