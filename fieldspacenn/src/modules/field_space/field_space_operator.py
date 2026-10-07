@@ -17,6 +17,7 @@ from einops import rearrange
 from omegaconf import ListConfig
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 from ..base import get_layer
 from ..embedding.embedder import get_embedder
@@ -231,6 +232,7 @@ class TuckerOperator(nn.Module):
         "time": "T",
         "space": "S",
     }
+    _BATCH_SYMBOLS = tuple("adefgjklmnpqruwxyz")
 
     def __init__(
         self,
@@ -443,6 +445,9 @@ class TuckerOperator(nn.Module):
     def _normalize_runtime_indices(
         self,
         values: torch.Tensor,
+        batch_shape: Sequence[int],
+        dependency_order: Sequence[str],
+        input_head_before_dependencies: bool,
         dependency_indices: Optional[Mapping[str, torch.Tensor]],
         output_indices: Optional[torch.Tensor],
         input_indices: Optional[torch.Tensor],
@@ -461,10 +466,20 @@ class TuckerOperator(nn.Module):
             raise ValueError(
                 f"Indices supplied for inactive dependencies: {unknown}"
             )
-        batch_size = int(values.shape[0])
+        batch_size = math.prod(batch_shape)
+        batch_ndim = len(batch_shape)
+        dependency_offset = (
+            batch_ndim + 1
+            if input_head_before_dependencies
+            else batch_ndim
+        )
+        dependency_axes = {
+            name: dependency_offset + offset
+            for offset, name in enumerate(dependency_order)
+        }
         normalized: Dict[str, Optional[torch.Tensor]] = {}
-        for offset, name in enumerate(self.dependency_names):
-            runtime_size = int(values.shape[1 + offset])
+        for name in self.dependency_names:
+            runtime_size = int(values.shape[dependency_axes[name]])
             indices = dependency_indices.get(name)
             if indices is None:
                 configured_size = self.dependency_sizes[name]
@@ -572,6 +587,7 @@ class TuckerOperator(nn.Module):
         dependency_indices: Mapping[str, Optional[torch.Tensor]],
         output_indices: Optional[torch.Tensor],
         input_indices: Optional[torch.Tensor],
+        batch_shape: Sequence[int],
     ) -> Tuple[torch.Tensor, str]:
         selections: List[Optional[torch.Tensor]] = []
         for name in self.dependency_names:
@@ -627,7 +643,9 @@ class TuckerOperator(nn.Module):
                 shape[mode + 1] = mode_indices.shape[1]
                 mode_indices = mode_indices.view(shape)
             index_tensors.append(mode_indices)
-        return self.core[tuple(index_tensors)], "b" + "".join(symbols)
+        selected = self.core[tuple(index_tensors)]
+        selected = selected.reshape(*batch_shape, *selected.shape[1:])
+        return selected, "..." + "".join(symbols)
 
     def _factor_operand(
         self,
@@ -635,6 +653,7 @@ class TuckerOperator(nn.Module):
         indices: Optional[torch.Tensor],
         physical_symbol: str,
         rank_symbol: str,
+        batch_shape: Sequence[int],
     ) -> Tuple[torch.Tensor, str]:
         if indices is None:
             if self.share_factors_across_heads:
@@ -644,7 +663,12 @@ class TuckerOperator(nn.Module):
         indices = indices.to(device=factor.device)
         if self.share_factors_across_heads:
             selected = factor[indices]
-            prefix = "b" if indices.ndim == 2 else ""
+            prefix = ""
+            if indices.ndim == 2:
+                selected = selected.reshape(
+                    *batch_shape, *selected.shape[1:]
+                )
+                prefix = "..."
             return selected, prefix + physical_symbol + rank_symbol
 
         if indices.ndim == 1:
@@ -662,16 +686,21 @@ class TuckerOperator(nn.Module):
         )
         selected = torch.gather(expanded, 2, gather_indices)
         selected = selected.permute(0, 2, 1, 3)
-        return selected, "b" + physical_symbol + "h" + rank_symbol
+        selected = selected.reshape(*batch_shape, *selected.shape[1:])
+        return selected, "..." + physical_symbol + "h" + rank_symbol
 
     def _parameter_operands(
         self,
         dependency_indices: Mapping[str, Optional[torch.Tensor]],
         output_indices: Optional[torch.Tensor],
         input_indices: Optional[torch.Tensor],
+        batch_shape: Sequence[int],
     ) -> Tuple[List[torch.Tensor], List[str]]:
         core, core_subscript = self._select_core(
-            dependency_indices, output_indices, input_indices
+            dependency_indices,
+            output_indices,
+            input_indices,
+            batch_shape,
         )
         operands = [core]
         subscripts = [core_subscript]
@@ -685,6 +714,7 @@ class TuckerOperator(nn.Module):
                 dependency_indices[name],
                 self._PHYSICAL_SYMBOLS[name],
                 self._RANK_SYMBOLS[name],
+                batch_shape,
             )
             operands.append(factor)
             subscripts.append(subscript)
@@ -696,6 +726,7 @@ class TuckerOperator(nn.Module):
                 output_indices,
                 "o",
                 "O",
+                batch_shape,
             )
             operands.append(factor)
             subscripts.append(subscript)
@@ -706,6 +737,7 @@ class TuckerOperator(nn.Module):
                 input_indices,
                 "i",
                 "I",
+                batch_shape,
             )
             operands.append(factor)
             subscripts.append(subscript)
@@ -730,8 +762,11 @@ class TuckerOperator(nn.Module):
         values: torch.Tensor,
         output_indices: Optional[torch.Tensor],
         input_indices: Optional[torch.Tensor],
+        batch_shape: Sequence[int],
+        output_sequence_before_head: bool,
+        input_head_before_dependencies: bool,
     ) -> torch.Tensor:
-        batch_size = int(values.shape[0])
+        batch_size = math.prod(batch_shape)
         runtime_sources = int(values.shape[-2])
         if input_indices is None:
             source_positions = (
@@ -772,13 +807,25 @@ class TuckerOperator(nn.Module):
             present = source_positions >= 0
 
         runtime_targets = int(source_positions.shape[-1])
-        gather_shape = [
-            batch_size,
-            *([1] * self.n_dependencies),
-            1,
-            runtime_targets,
-            1,
-        ]
+        source_positions = source_positions.reshape(
+            *batch_shape, runtime_targets
+        )
+        if input_head_before_dependencies:
+            gather_shape = [
+                *batch_shape,
+                1,
+                *([1] * self.n_dependencies),
+                runtime_targets,
+                1,
+            ]
+        else:
+            gather_shape = [
+                *batch_shape,
+                *([1] * self.n_dependencies),
+                1,
+                runtime_targets,
+                1,
+            ]
         gather_indices = source_positions.clamp_min(0).view(gather_shape)
         gather_indices = gather_indices.expand(
             *values.shape[:-2],
@@ -786,10 +833,178 @@ class TuckerOperator(nn.Module):
             values.shape[-1],
         )
         selected = torch.gather(values, -2, gather_indices)
-        if present is None:
-            return selected
-        present_mask = present.view(gather_shape).expand_as(selected)
-        return selected * present_mask.to(dtype=selected.dtype)
+        if present is not None:
+            present = present.reshape(*batch_shape, runtime_targets)
+            present_mask = present.view(gather_shape).expand_as(selected)
+            selected.mul_(present_mask.to(dtype=selected.dtype))
+        if input_head_before_dependencies:
+            selected = selected.movedim(len(batch_shape), -2)
+        elif output_sequence_before_head:
+            selected = selected.movedim(-2, -3)
+        return selected
+
+    def _contract(
+        self,
+        values: torch.Tensor,
+        *,
+        dependency_indices: Optional[Mapping[str, torch.Tensor]],
+        output_indices: Optional[torch.Tensor],
+        input_indices: Optional[torch.Tensor],
+        output_sequence_before_head: bool,
+        input_head_before_dependencies: bool = False,
+        dependency_order: Optional[Sequence[str]] = None,
+        dependency_factors_before_core: bool = False,
+    ) -> torch.Tensor:
+        structured_ndim = 3 + self.n_dependencies
+        batch_ndim = values.ndim - structured_ndim
+        if batch_ndim < 1:
+            raise ValueError(
+                "Operator values require at least one batch or passive axis; "
+                f"got shape {tuple(values.shape)}"
+            )
+        batch_shape = tuple(int(size) for size in values.shape[:batch_ndim])
+        if batch_ndim > len(self._BATCH_SYMBOLS):
+            raise ValueError(
+                f"At most {len(self._BATCH_SYMBOLS)} batch/passive axes are "
+                f"supported, got {batch_ndim}"
+            )
+        batch_subscripts = "".join(self._BATCH_SYMBOLS[:batch_ndim])
+        if dependency_order is None:
+            dependency_order = self.dependency_names
+        dependency_order = tuple(dependency_order)
+        if (
+            len(dependency_order) != self.n_dependencies
+            or set(dependency_order) != set(self.dependency_names)
+        ):
+            raise ValueError(
+                "dependency_order must contain every enabled dependency once"
+            )
+        head_axis = batch_ndim if input_head_before_dependencies else -3
+        if values.shape[head_axis] != self.num_heads:
+            raise ValueError(
+                f"Expected {self.num_heads} heads, "
+                f"got {values.shape[head_axis]}"
+            )
+
+        dependencies, output_ids, input_ids = (
+            self._normalize_runtime_indices(
+                values,
+                batch_shape,
+                dependency_order,
+                input_head_before_dependencies,
+                dependency_indices,
+                output_indices,
+                input_indices,
+            )
+        )
+        parameter_operands, parameter_subscripts = (
+            self._parameter_operands(
+                dependencies,
+                output_ids,
+                input_ids,
+                batch_shape,
+            )
+        )
+        parameter_subscripts = [
+            subscript.replace("...", batch_subscripts)
+            for subscript in parameter_subscripts
+        ]
+        dependency_subscripts = "".join(
+            self._PHYSICAL_SYMBOLS[name]
+            for name in dependency_order
+        )
+        if input_head_before_dependencies:
+            value_subscript = batch_subscripts + "h" + dependency_subscripts + "ic"
+        else:
+            value_subscript = batch_subscripts + dependency_subscripts + "hic"
+        if input_head_before_dependencies:
+            output_subscript = batch_subscripts + "h" + dependency_subscripts + "oc"
+        elif output_sequence_before_head:
+            output_subscript = batch_subscripts + dependency_subscripts + "ohc"
+        else:
+            output_subscript = batch_subscripts + dependency_subscripts + "hoc"
+        if dependency_factors_before_core:
+            # With independent-head dependency factors, placing the factors
+            # before the core makes einsum lower each expansion as
+            # (head, physical, rank) @ (head, rank, remaining modes).  The
+            # resulting dense operator is already laid out for the final BMM,
+            # avoiding a second dense-sized contiguous copy.
+            n_dependency_factors = sum(
+                self.dependency_ranks[name] is not None
+                for name in self.dependency_names
+            )
+            core = parameter_operands[:1]
+            dependency_factors = parameter_operands[
+                1 : 1 + n_dependency_factors
+            ]
+            remaining_factors = parameter_operands[
+                1 + n_dependency_factors :
+            ]
+            core_subscript = parameter_subscripts[:1]
+            dependency_factor_subscripts = parameter_subscripts[
+                1 : 1 + n_dependency_factors
+            ]
+            dependency_factor_names = [
+                name
+                for name in self.dependency_names
+                if self.dependency_ranks[name] is not None
+            ]
+            for index, name in enumerate(dependency_factor_names):
+                physical = self._PHYSICAL_SYMBOLS[name]
+                rank = self._RANK_SYMBOLS[name]
+                if dependency_factor_subscripts[index] == physical + "h" + rank:
+                    dependency_factors[index] = dependency_factors[
+                        index
+                    ].transpose(0, 1).contiguous()
+                    dependency_factor_subscripts[index] = (
+                        "h" + physical + rank
+                    )
+            remaining_factor_subscripts = parameter_subscripts[
+                1 + n_dependency_factors :
+            ]
+            parameter_operands = [
+                *dependency_factors,
+                *core,
+                *remaining_factors,
+            ]
+            parameter_subscripts = [
+                *dependency_factor_subscripts,
+                *core_subscript,
+                *remaining_factor_subscripts,
+            ]
+        operands = [values, *parameter_operands]
+        equation = self._equation(
+            [value_subscript, *parameter_subscripts],
+            output_subscript,
+        )
+        if (
+            dependency_factors_before_core
+            and torch.is_grad_enabled()
+            and any(operand.requires_grad for operand in operands)
+        ):
+            result = checkpoint(
+                lambda *checkpoint_operands: torch.einsum(
+                    equation, *checkpoint_operands
+                ),
+                *operands,
+                use_reentrant=False,
+                preserve_rng_state=False,
+            )
+        else:
+            result = torch.einsum(equation, *operands)
+        if input_head_before_dependencies:
+            result = result.movedim(batch_ndim, -2)
+        if self.initialization == "identity":
+            identity = self._self_selection_contract(
+                values,
+                output_ids,
+                input_ids,
+                batch_shape,
+                output_sequence_before_head,
+                input_head_before_dependencies,
+            )
+            result.add_(identity)
+        return result
 
     def contract(
         self,
@@ -800,48 +1015,16 @@ class TuckerOperator(nn.Module):
         input_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Apply the learned correction using exactly one einsum."""
-        expected_ndim = 4 + self.n_dependencies
-        if values.ndim != expected_ndim:
-            raise ValueError(
-                f"Expected values with {expected_ndim} dimensions "
-                "(batch, dependencies, heads, source, channels), got "
-                f"shape {tuple(values.shape)}"
-            )
-        if values.shape[-3] != self.num_heads:
-            raise ValueError(
-                f"Expected {self.num_heads} heads, got {values.shape[-3]}"
-            )
-
-        dependencies, output_ids, input_ids = (
-            self._normalize_runtime_indices(
-                values,
-                dependency_indices,
-                output_indices,
-                input_indices,
-            )
+        return self._contract(
+            values,
+            dependency_indices=dependency_indices,
+            output_indices=output_indices,
+            input_indices=input_indices,
+            output_sequence_before_head=False,
+            input_head_before_dependencies=False,
+            dependency_order=self.dependency_names,
+            dependency_factors_before_core=False,
         )
-        parameter_operands, parameter_subscripts = (
-            self._parameter_operands(
-                dependencies, output_ids, input_ids
-            )
-        )
-        dependency_subscripts = "".join(
-            self._PHYSICAL_SYMBOLS[name]
-            for name in self.dependency_names
-        )
-        value_subscript = "b" + dependency_subscripts + "hic"
-        output_subscript = "b" + dependency_subscripts + "hoc"
-        operands = [values, *parameter_operands]
-        equation = self._equation(
-            [value_subscript, *parameter_subscripts],
-            output_subscript,
-        )
-        result = torch.einsum(equation, *operands)
-        if self.initialization == "identity":
-            result = result + self._self_selection_contract(
-                values, output_ids, input_ids
-            )
-        return result
 
     def forward(
         self,
@@ -877,7 +1060,7 @@ class TuckerOperator(nn.Module):
         device = self.core.device
         dependencies = {name: None for name in self.dependency_names}
         operands, subscripts = self._parameter_operands(
-            dependencies, None, None
+            dependencies, None, None, ()
         )
         dependency_subscripts = "".join(
             self._PHYSICAL_SYMBOLS[name]
@@ -1056,6 +1239,32 @@ class FieldSpaceOperator(nn.Module):
             self_indices=self_indices,
             share_factors_across_heads=share_factors_across_heads,
         )
+        factorized_dependencies = tuple(
+            name
+            for name in self.dependency_names
+            if self.weight.dependency_ranks[name] is not None
+        )
+        memory_ordered_factorized_dependencies = tuple(
+            sorted(
+                factorized_dependencies,
+                key=lambda name: self.weight.dependency_sizes[name],
+                reverse=True,
+            )
+        )
+        self._memory_aligned_dependency_order = (
+            *memory_ordered_factorized_dependencies,
+            *(
+                name
+                for name in self.dependency_names
+                if name not in factorized_dependencies
+            ),
+        )
+        self._can_align_dependency_contraction = (
+            len(factorized_dependencies) >= 1
+            and self.weight.rank_in is None
+            and self.weight.rank_out is None
+            and not self.weight.share_factors_across_heads
+        )
 
     def _build_local_spatial_indices(
         self,
@@ -1139,34 +1348,8 @@ class FieldSpaceOperator(nn.Module):
             for name in dim_names
             if name not in {"batch", sequence_name, *self.dependency_names}
         ]
-        current_names = [
-            "batch",
-            *passive,
-            *self.dependency_names,
-            "head",
-            sequence_name,
-            "channel",
-        ]
-        full_axis = {
-            **axis,
-            "head": len(dim_names),
-            "channel": len(dim_names) + 1,
-        }
-        permutation = [full_axis[name] for name in current_names]
-        packed = values.permute(permutation)
         batch_size = int(values.shape[axis["batch"]])
         passive_shape = [int(values.shape[axis[name]]) for name in passive]
-        dependency_shape = [
-            int(values.shape[axis[name]]) for name in self.dependency_names
-        ]
-        sequence_size = int(values.shape[axis[sequence_name]])
-        packed = packed.reshape(
-            batch_size * math.prod(passive_shape),
-            *dependency_shape,
-            self.num_heads,
-            sequence_size,
-            self.head_dim,
-        )
 
         dependency_indices: Dict[str, torch.Tensor] = {}
         for name in self.dependency_names:
@@ -1186,13 +1369,86 @@ class FieldSpaceOperator(nn.Module):
         else:
             sequence_indices = None
 
+        dense_operator_elements = (
+            self.num_heads
+            * self.weight.out_size
+            * int(values.shape[axis[sequence_name]])
+            * math.prod(
+                int(values.shape[axis[name]])
+                for name in self.dependency_names
+            )
+        )
+        has_batch_specific_indices = (
+            variable_ids is not None and variable_ids.ndim == 2
+        )
+        projected_output_elements = (
+            values.numel()
+            // int(values.shape[axis[sequence_name]])
+            * self.weight.out_size
+        )
+        use_memory_aligned_layout = (
+            # The aligned path trades one activation-sized input/output copy
+            # for removal of a dependency-expanded dense-operator copy.  Use
+            # it only when that trade lowers the estimated live tensor size.
+            self._can_align_dependency_contraction
+            and not has_batch_specific_indices
+            and dense_operator_elements
+            > values.numel() + projected_output_elements
+        )
+        dependency_order = (
+            self._memory_aligned_dependency_order
+            if use_memory_aligned_layout
+            else self.dependency_names
+        )
+        if use_memory_aligned_layout:
+            current_names = [
+                "batch",
+                *passive,
+                "head",
+                *dependency_order,
+                sequence_name,
+                "channel",
+            ]
+        else:
+            current_names = [
+                "batch",
+                *passive,
+                *dependency_order,
+                "head",
+                sequence_name,
+                "channel",
+            ]
+        full_axis = {
+            **axis,
+            "head": len(dim_names),
+            "channel": len(dim_names) + 1,
+        }
+        permutation = [full_axis[name] for name in current_names]
+        packed = values.permute(permutation)
+        if use_memory_aligned_layout:
+            packed = packed.reshape(
+                batch_size * math.prod(passive_shape),
+                *packed.shape[1 + len(passive_shape) :],
+            )
+
         metadata = {
             "dim_names": list(dim_names),
             "sequence_name": sequence_name,
             "current_names": current_names,
+            "output_names": [
+                "batch",
+                *passive,
+                *dependency_order,
+                sequence_name,
+                "head",
+                "channel",
+            ],
             "batch_size": batch_size,
             "passive_shape": passive_shape,
-            "dependency_shape": dependency_shape,
+            "dependency_order": dependency_order,
+            "input_head_before_dependencies": use_memory_aligned_layout,
+            "dependency_factors_before_core": use_memory_aligned_layout,
+            "flattened_batch": use_memory_aligned_layout,
         }
         return (
             packed,
@@ -1203,17 +1459,15 @@ class FieldSpaceOperator(nn.Module):
         )
 
     def _unpack(self, values: torch.Tensor, metadata: Mapping[str, Any]) -> torch.Tensor:
-        current_names = list(metadata["current_names"])
+        current_names = list(metadata["output_names"])
         dim_names = list(metadata["dim_names"])
         sequence_name = str(metadata["sequence_name"])
-        values = values.reshape(
-            metadata["batch_size"],
-            *metadata["passive_shape"],
-            *metadata["dependency_shape"],
-            self.num_heads,
-            values.shape[-2],
-            self.head_dim,
-        )
+        if metadata["flattened_batch"]:
+            values = values.reshape(
+                metadata["batch_size"],
+                *metadata["passive_shape"],
+                *values.shape[1:],
+            )
         desired_names = [*dim_names, "head", "channel"]
         # The output target occupies the same named slot as the source sequence.
         if sequence_name not in desired_names:
@@ -1304,9 +1558,19 @@ class FieldSpaceOperator(nn.Module):
                 variable_ids,
                 spatial_dependency_ids=spatial_ids,
             )
-            output = self.weight.contract(
+            output = self.weight._contract(
                 packed,
                 dependency_indices=dep_ids,
+                output_indices=None,
+                input_indices=None,
+                output_sequence_before_head=True,
+                input_head_before_dependencies=metadata[
+                    "input_head_before_dependencies"
+                ],
+                dependency_order=metadata["dependency_order"],
+                dependency_factors_before_core=metadata[
+                    "dependency_factors_before_core"
+                ],
             )
             output = self._unpack(output, metadata)
             output = output.permute(0, 1, 2, 3, 5, 4, 6, 7)
@@ -1332,11 +1596,19 @@ class FieldSpaceOperator(nn.Module):
             if self.global_space:
                 output_ids = self.global_space_ids
                 input_ids = self.global_space_ids
-            output = self.weight.contract(
+            output = self.weight._contract(
                 packed,
                 dependency_indices=dep_ids,
                 output_indices=output_ids,
                 input_indices=input_ids,
+                output_sequence_before_head=True,
+                input_head_before_dependencies=metadata[
+                    "input_head_before_dependencies"
+                ],
+                dependency_order=metadata["dependency_order"],
+                dependency_factors_before_core=metadata[
+                    "dependency_factors_before_core"
+                ],
             )
             output = self._unpack(output, metadata)
 
