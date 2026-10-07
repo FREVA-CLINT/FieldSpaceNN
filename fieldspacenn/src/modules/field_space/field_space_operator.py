@@ -214,12 +214,13 @@ def _constant_dependency_factor(
 
 
 class TuckerOperator(nn.Module):
-    """Apply one Tucker-factorized operator with one generated einsum.
+    """Apply one Tucker-factorized operator with a hybrid contraction.
 
     Values have shape ``(batch, *dependencies, heads, source, channels)``.
-    Dependency, source, and target factors are operands of the same einsum as
-    the core and values. The head and channel modes are never contracted.
-    Runtime index selection is vectorized and happens before the einsum.
+    Low-rank source and target sequence modes are contracted before and after
+    the combined core/dependency contraction, respectively. Fully dense
+    sequence modes retain the single-einsum path. The head and channel modes
+    are never contracted, and runtime index selection remains vectorized.
     """
 
     _PHYSICAL_SYMBOLS = {
@@ -923,27 +924,27 @@ class TuckerOperator(nn.Module):
             output_subscript = batch_subscripts + dependency_subscripts + "ohc"
         else:
             output_subscript = batch_subscripts + dependency_subscripts + "hoc"
+        n_dependency_factors = sum(
+            self.dependency_ranks[name] is not None
+            for name in self.dependency_names
+        )
+        sequence_factor_offset = 1 + n_dependency_factors
+        core_operands = parameter_operands[:1]
+        dependency_factor_operands = parameter_operands[
+            1:sequence_factor_offset
+        ]
+        core_subscripts = parameter_subscripts[:1]
+        dependency_factor_subscripts = parameter_subscripts[
+            1:sequence_factor_offset
+        ]
+        sequence_factor_operands = parameter_operands[sequence_factor_offset:]
+        sequence_factor_subscripts = parameter_subscripts[sequence_factor_offset:]
         if dependency_factors_before_core:
             # With independent-head dependency factors, placing the factors
             # before the core makes einsum lower each expansion as
             # (head, physical, rank) @ (head, rank, remaining modes).  The
             # resulting dense operator is already laid out for the final BMM,
             # avoiding a second dense-sized contiguous copy.
-            n_dependency_factors = sum(
-                self.dependency_ranks[name] is not None
-                for name in self.dependency_names
-            )
-            core = parameter_operands[:1]
-            dependency_factors = parameter_operands[
-                1 : 1 + n_dependency_factors
-            ]
-            remaining_factors = parameter_operands[
-                1 + n_dependency_factors :
-            ]
-            core_subscript = parameter_subscripts[:1]
-            dependency_factor_subscripts = parameter_subscripts[
-                1 : 1 + n_dependency_factors
-            ]
             dependency_factor_names = [
                 name
                 for name in self.dependency_names
@@ -952,46 +953,125 @@ class TuckerOperator(nn.Module):
             for index, name in enumerate(dependency_factor_names):
                 physical = self._PHYSICAL_SYMBOLS[name]
                 rank = self._RANK_SYMBOLS[name]
-                if dependency_factor_subscripts[index] == physical + "h" + rank:
-                    dependency_factors[index] = dependency_factors[
-                        index
-                    ].transpose(0, 1).contiguous()
+                factor_subscript = dependency_factor_subscripts[index]
+                if factor_subscript == physical + "h" + rank:
+                    dependency_factor_operands[index] = (
+                        dependency_factor_operands[index]
+                        .transpose(0, 1)
+                        .contiguous()
+                    )
                     dependency_factor_subscripts[index] = (
                         "h" + physical + rank
                     )
-            remaining_factor_subscripts = parameter_subscripts[
-                1 + n_dependency_factors :
+            core_dependency_operands = [
+                *dependency_factor_operands,
+                *core_operands,
             ]
-            parameter_operands = [
-                *dependency_factors,
-                *core,
-                *remaining_factors,
-            ]
-            parameter_subscripts = [
+            core_dependency_subscripts = [
                 *dependency_factor_subscripts,
-                *core_subscript,
-                *remaining_factor_subscripts,
+                *core_subscripts,
             ]
-        operands = [values, *parameter_operands]
-        equation = self._equation(
-            [value_subscript, *parameter_subscripts],
-            output_subscript,
-        )
-        if (
-            dependency_factors_before_core
-            and torch.is_grad_enabled()
-            and any(operand.requires_grad for operand in operands)
-        ):
-            result = checkpoint(
-                lambda *checkpoint_operands: torch.einsum(
-                    equation, *checkpoint_operands
-                ),
-                *operands,
-                use_reentrant=False,
-                preserve_rng_state=False,
-            )
         else:
-            result = torch.einsum(equation, *operands)
+            core_dependency_operands = [
+                *core_operands,
+                *dependency_factor_operands,
+            ]
+            core_dependency_subscripts = [
+                *core_subscripts,
+                *dependency_factor_subscripts,
+            ]
+
+        if self.rank_in is None and self.rank_out is None:
+            operands = [
+                values,
+                *core_dependency_operands,
+                *sequence_factor_operands,
+            ]
+            equation = self._equation(
+                [
+                    value_subscript,
+                    *core_dependency_subscripts,
+                    *sequence_factor_subscripts,
+                ],
+                output_subscript,
+            )
+            if (
+                dependency_factors_before_core
+                and torch.is_grad_enabled()
+                and any(operand.requires_grad for operand in operands)
+            ):
+                result = checkpoint(
+                    lambda *checkpoint_operands: torch.einsum(
+                        equation, *checkpoint_operands
+                    ),
+                    *operands,
+                    use_reentrant=False,
+                    preserve_rng_state=False,
+                )
+            else:
+                result = torch.einsum(equation, *operands)
+        else:
+            factor_offset = 0
+            output_factor_operand = None
+            output_factor_subscript = None
+            if self.rank_out is not None:
+                output_factor_operand = sequence_factor_operands[
+                    factor_offset
+                ]
+                output_factor_subscript = sequence_factor_subscripts[
+                    factor_offset
+                ]
+                factor_offset += 1
+            input_factor_operand = None
+            input_factor_subscript = None
+            if self.rank_in is not None:
+                input_factor_operand = sequence_factor_operands[
+                    factor_offset
+                ]
+                input_factor_subscript = sequence_factor_subscripts[
+                    factor_offset
+                ]
+
+            result = values
+            result_subscript = value_subscript
+            if input_factor_operand is not None:
+                input_rank_subscript = value_subscript[:-2] + "Ic"
+                equation = self._equation(
+                    [result_subscript, input_factor_subscript],
+                    input_rank_subscript,
+                )
+                result = torch.einsum(
+                    equation,
+                    result,
+                    input_factor_operand,
+                )
+                result_subscript = input_rank_subscript
+
+            core_output_subscript = (
+                output_subscript
+                if output_factor_operand is None
+                else output_subscript.replace("o", "O")
+            )
+            equation = self._equation(
+                [result_subscript, *core_dependency_subscripts],
+                core_output_subscript,
+            )
+            result = torch.einsum(
+                equation,
+                result,
+                *core_dependency_operands,
+            )
+
+            if output_factor_operand is not None:
+                equation = self._equation(
+                    [core_output_subscript, output_factor_subscript],
+                    output_subscript,
+                )
+                result = torch.einsum(
+                    equation,
+                    result,
+                    output_factor_operand,
+                )
         if input_head_before_dependencies:
             result = result.movedim(batch_ndim, -2)
         if self.initialization == "identity":
@@ -1014,7 +1094,7 @@ class TuckerOperator(nn.Module):
         output_indices: Optional[torch.Tensor] = None,
         input_indices: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Apply the learned correction using exactly one einsum."""
+        """Apply the learned correction with the hybrid Tucker contraction."""
         return self._contract(
             values,
             dependency_indices=dependency_indices,
@@ -1668,6 +1748,7 @@ class FieldSpaceOperatorConfig:
         layer_norm: bool = True,
         separate_mlp_norm: bool = True,
         mlp_residual_from_operators: bool = False,
+        checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Dict[str, Any]] = None,
         emb_modulation_mode: str = "shift_scale",
         dropout: Optional[float] = None,
@@ -1958,6 +2039,7 @@ class FieldSpaceOperatorConfig:
         self.layer_norm = bool(layer_norm)
         self.separate_mlp_norm = bool(separate_mlp_norm)
         self.mlp_residual_from_operators = bool(mlp_residual_from_operators)
+        self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
         if embed_confs is not None:
             self.embed_confs = embed_confs
         self.emb_modulation_mode = emb_modulation_mode
@@ -1998,6 +2080,7 @@ class _FieldSpaceOperatorBranch(nn.Module):
         ranks_out: Sequence[Optional[int]],
         initializations: Sequence[str],
         share_factors_across_heads: Sequence[bool],
+        checkpoint_operator_groups: bool,
         operator_projection_ranks_by_zoom: Mapping[
             int, Sequence[Optional[int]]
         ],
@@ -2023,6 +2106,7 @@ class _FieldSpaceOperatorBranch(nn.Module):
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = bool(token_overlap_depth)
         self.operator_dim = int(operator_dim)
+        self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
         self.scale_shift = update == "shift_scale"
         self.update_multiplier = 2 if self.scale_shift else 1
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -2239,6 +2323,17 @@ class _FieldSpaceOperatorBranch(nn.Module):
             "b v T N D t n d f -> b v (T t) (N n) (D d) f",
         )
 
+    def _apply_operator_group(
+        self,
+        values: torch.Tensor,
+        emb: Optional[Dict[str, Any]],
+        sample_config: Mapping[str, Any],
+    ) -> torch.Tensor:
+        """Apply every atomic operator within this projection boundary."""
+        for operator in self.operators:
+            values = operator(values, emb=emb, sample_config=sample_config)
+        return values
+
     def forward(
         self,
         x_zooms: Dict[int, torch.Tensor],
@@ -2248,8 +2343,20 @@ class _FieldSpaceOperatorBranch(nn.Module):
     ) -> Dict[int, torch.Tensor]:
         values = self._project_values(x_zooms, emb, sample_configs)
         sample_config = sample_configs.get(self.token_zoom, {})
-        for operator in self.operators:
-            values = operator(values, emb=emb, sample_config=sample_config)
+        if (
+            self.checkpoint_operator_groups
+            and self.training
+            and torch.is_grad_enabled()
+        ):
+            values = checkpoint(
+                self._apply_operator_group,
+                values,
+                emb,
+                sample_config,
+                use_reentrant=False,
+            )
+        else:
+            values = self._apply_operator_group(values, emb, sample_config)
         operator_tokens = values.view(*values.shape[:5], 1, 1, 1, self.operator_dim)
         for zoom in self.target_zooms:
             key = str(zoom)
@@ -2340,6 +2447,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         layer_norm: bool = True,
         separate_mlp_norm: bool = True,
         mlp_residual_from_operators: bool = False,
+        checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
@@ -2619,6 +2727,7 @@ class FieldSpaceOperatorBlock(nn.Module):
                         bool(share_factors_across_heads[index])
                         for index in group_indices
                     ],
+                    checkpoint_operator_groups=checkpoint_operator_groups,
                     operator_projection_ranks_by_zoom=(
                         operator_projection_ranks_by_zoom
                     ),
@@ -2905,6 +3014,7 @@ class FieldSpaceOperatorModule(nn.Module):
         mlp_projection_rank_features: Any = None,
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
+        checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         global_embedders: Optional[nn.ModuleDict] = None,
         **kwargs: Any,
@@ -3047,6 +3157,7 @@ class FieldSpaceOperatorModule(nn.Module):
                 mlp_projection_rank_features=mlp_projection_rank_features,
                 mlp_projection_rank_variables=mlp_projection_rank_variables,
                 include_variable_dependency_mlp=include_variable_dependency_mlp,
+                checkpoint_operator_groups=checkpoint_operator_groups,
             )
             self.blocks.append(
                 FieldSpaceOperatorBlock(

@@ -407,6 +407,7 @@ def create_encoder_decoder_block(
             layer_norm=block_conf.layer_norm,
             separate_mlp_norm=block_conf.separate_mlp_norm,
             mlp_residual_from_operators=block_conf.mlp_residual_from_operators,
+            checkpoint_operator_groups=block_conf.checkpoint_operator_groups,
             embed_confs=embed_confs,
             global_embedders=global_embedders,
             emb_modulation_mode=emb_modulation_mode,
