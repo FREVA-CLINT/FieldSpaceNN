@@ -14,6 +14,7 @@ class MGFlowMatching:
         separate_noise_on_zoom: bool = True,
         interpolation_mode: str = "linear",
         rectified_time_epsilon: float = 1e-5,
+        prefix_conditioning: bool = False,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -26,6 +27,7 @@ class MGFlowMatching:
             mode for numerical stability near ``t=1``.
         :return: None.
         """
+        self.prefix_conditioning = bool(prefix_conditioning)
         self.time_embed_key: str = time_embed_key
         self.separate_noise_on_zoom: bool = separate_noise_on_zoom
         mode_normalized = str(interpolation_mode).strip().lower()
@@ -250,6 +252,28 @@ class MGFlowMatching:
         :return: Predicted velocity groups.
         """
         emb_groups_with_time = self._with_time_embedding(emb_groups, len(x_t_groups), times)
+        if self.prefix_conditioning:
+            masks = mask_groups if mask_groups is not None else [None] * len(x_t_groups)
+            if len(masks) != len(x_t_groups):
+                raise ValueError("One mask group is required per state group")
+            for states, mask, emb in zip(x_t_groups, masks, emb_groups_with_time):
+                if not states:
+                    continue
+                per_zoom = {}
+                reference = None
+                for zoom, state in states.items():
+                    generation = (torch.ones_like(state, dtype=torch.bool) if not mask
+                                  else (~self._known_mask(mask[zoom])).expand_as(state))
+                    time_mask = generation[:, 0, :, 0, 0, 0]
+                    if not torch.equal(generation, time_mask[:, None, :, None, None, None].expand_as(state)):
+                        raise ValueError("Prefix conditioning requires one mask value per timestep")
+                    if torch.any(time_mask[:, :-1] & ~time_mask[:, 1:]):
+                        raise ValueError("Known states must form a contiguous initial prefix")
+                    if reference is not None and not torch.equal(reference, time_mask):
+                        raise ValueError("All latent zooms must share the same prefix mask")
+                    reference = time_mask
+                    per_zoom[zoom] = time_mask.long()
+                emb["MaskEmbedder"] = per_zoom
         return model(
             x_t_groups,
             emb_groups=emb_groups_with_time,
@@ -304,6 +328,9 @@ class MGFlowMatching:
             adjusted_noise = self.apply_mask_to_noise(gt_zooms, noise_zooms, mask_zooms)
             adjusted_noise_groups.append(adjusted_noise)
             x_t_zooms = self.interpolate(gt_zooms, adjusted_noise, times)
+            if mask_zooms:
+                x_t_zooms = {z: torch.where(self._known_mask(mask_zooms[z]), gt_zooms[z], x)
+                             for z, x in x_t_zooms.items()}
             x_t_groups.append(x_t_zooms)
             target_groups.append(
                 self.target_velocity(gt_zooms, adjusted_noise, x_t_zooms=x_t_zooms, times=times)

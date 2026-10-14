@@ -119,6 +119,7 @@ class TimeEmbedder(ZoomBaseEmbedder):
         time_max: float,
         zoom: int,
         use_linear: bool = True,
+        encoding: str = "fourier",
         **kwargs: Any
     ) -> None:
         """
@@ -131,6 +132,7 @@ class TimeEmbedder(ZoomBaseEmbedder):
         :param time_min: Minimum time value for scaling.
         :param time_max: Maximum time value for scaling.
         :param zoom: Zoom level this embedder operates on.
+        :param encoding: Legacy Fourier seconds, or calendar_month inputs shaped (B,T,2).
         :param use_linear: Whether to include a linear component.
         :return: None.
         """
@@ -140,6 +142,20 @@ class TimeEmbedder(ZoomBaseEmbedder):
         self.keep_dims: List[str] = ["b", "t", "c"]
 
         self.zoom: int = zoom
+        if encoding not in {"fourier", "calendar_month"}:
+            raise ValueError("Unknown time encoding: " + encoding)
+        self.encoding = encoding
+        self.time_min = time_min
+        self.time_range = time_max - time_min
+        self.use_linear = use_linear
+        if encoding == "calendar_month" and self.time_range <= 0:
+            raise ValueError("time_max must exceed time_min")
+
+        if encoding == "calendar_month":
+            self.calendar_fn = nn.Sequential(
+                nn.Linear(3 if use_linear else 2, embed_dim), nn.GELU(), nn.Linear(embed_dim, embed_dim)
+            )
+            return
 
         # Mesh embedder consisting of a RandomFourierLayer followed by linear and GELU activation layers
         self.embedding_fn: nn.Module = torch.nn.Sequential(
@@ -148,6 +164,19 @@ class TimeEmbedder(ZoomBaseEmbedder):
             torch.nn.GELU(),
             torch.nn.Linear(self.embed_dim, self.embed_dim),
         )
+
+
+    def forward(self, emb, output_zoom=None, sample_configs=None, **kwargs):
+        times = emb[output_zoom] if output_zoom in emb else emb[self.zoom]
+        if self.encoding == "fourier":
+            return self.embedding_fn(times)
+        if times.ndim != 3 or times.shape[-1] != 2:
+            raise ValueError("calendar_month expects (B,T,2): Unix seconds and month 0..11")
+        phase = 2 * torch.pi * times[..., 1:2].float() / 12
+        features = [phase.sin(), phase.cos()]
+        if self.use_linear:
+            features.append((times[..., :1].float() - self.time_min) / self.time_range)
+        return self.calendar_fn(torch.cat(features, dim=-1))
 
 
 class TimeIndexEmbedder(ZoomBaseEmbedder):
@@ -951,12 +980,13 @@ class ForcingEmbedder(ZoomBaseEmbedder):
         :param sample_configs: Sampling configuration by zoom.
         :return: Embedded forcing tensor shaped ``(b, t, embed_dim)``.
         """
-        if self.zoom not in emb:
+        input_zoom = self.zoom if self.zoom in emb else output_zoom
+        if input_zoom not in emb:
             raise KeyError(
                 f"ForcingEmbedder zoom {self.zoom} is missing. Available zooms: {list(emb.keys())}."
             )
 
-        forcing_data = emb[self.zoom]
+        forcing_data = emb[input_zoom]
         expected_names = set(self.forcing_names)
         input_names = set(forcing_data.keys())
         if input_names != expected_names:
@@ -969,15 +999,15 @@ class ForcingEmbedder(ZoomBaseEmbedder):
 
         ts_start = 0
         ts_end = 0
-        if output_zoom is not None and output_zoom != self.zoom:
+        if output_zoom is not None and output_zoom != input_zoom:
             if sample_configs is None:
                 raise ValueError("sample_configs is required when aligning forcing time windows.")
             ts_start = (
-                sample_configs[self.zoom]['n_past_ts']
+                sample_configs[input_zoom]['n_past_ts']
                 - sample_configs[output_zoom]['n_past_ts']
             )
             ts_end = (
-                sample_configs[self.zoom]['n_future_ts']
+                sample_configs[input_zoom]['n_future_ts']
                 - sample_configs[output_zoom]['n_future_ts']
             )
             if ts_start < 0 or ts_end < 0:
@@ -1035,6 +1065,8 @@ class MaskEmbedder(BaseEmbedder):
         in_channels: int,
         embed_dim: int,
         init_value: Optional[float] = None,
+        per_timestep: bool = False,
+        zoom: Optional[int] = None,
         **kwargs: Any
     ) -> None:
         """
@@ -1049,12 +1081,23 @@ class MaskEmbedder(BaseEmbedder):
         """
         super().__init__(name, in_channels, embed_dim)
 
-        self.keep_dims: List[str] = ["b", "v", "t", "s", "c"]
+        self.per_timestep = per_timestep
+        self.zoom = zoom
+        self.keep_dims = ["b", "t", "c"] if per_timestep else ["b", "v", "t", "s", "c"]
 
         self.embedding_fn: nn.Module = nn.Embedding(2, self.embed_dim)
 
         if init_value is not None:
             self.embedding_fn.weight.data.fill_(init_value)
+
+    def forward(self, emb, output_zoom=None, **kwargs):
+        if not self.per_timestep:
+            return super().forward(emb, output_zoom=output_zoom, **kwargs)
+        mask = emb[output_zoom] if output_zoom in emb else emb[self.zoom]
+        if mask.ndim != 2 or not torch.all((mask == 0) | (mask == 1)):
+            raise ValueError("Per-timestep masks must have shape (B,T) and contain 0 or 1")
+        return self.embedding_fn(mask.long())
+
 
 class GridEmbedder(BaseEmbedder):
 

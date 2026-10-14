@@ -265,6 +265,43 @@ class MeanStdNormalizer(DataNormalizer):
         std = _match_stat_shape(self.std, data_var)
         return data_var * std**2
 
+
+class Log1pMeanStdNormalizer(DataNormalizer):
+    """Standardize log1p-scaled, nearly nonnegative data such as precipitation.
+
+    ``mean`` and ``std`` must be measured after applying ``log1p(data * scale)``.
+    For precipitation flux in kg m-2 s-1, ``scale=86400`` expresses the
+    water-equivalent amount in mm/day before taking the logarithm.
+    """
+
+    def __init__(self, stat_dict: Dict[str, Any], definition_dict: Dict[str, Any]):
+        super().__init__()
+        self.mean = _to_stat_tensor(stat_dict["mean"])
+        self.std = _to_stat_tensor(stat_dict["std"])
+        self.scale = float(definition_dict["scale"])
+        if self.scale <= 0 or torch.any(self.std <= 0):
+            raise ValueError("scale and std must be positive")
+
+    def normalize(self, data: torch.Tensor):
+        mean = _match_stat_shape(self.mean, data)
+        std = _match_stat_shape(self.std, data)
+        return (torch.log1p(data * self.scale) - mean) / std
+
+    def denormalize(self, data: torch.Tensor):
+        mean = _match_stat_shape(self.mean, data)
+        std = _match_stat_shape(self.std, data)
+        return torch.expm1(data * std + mean) / self.scale
+
+    def denormalize_var(self, data_var: torch.Tensor, data: Optional[torch.Tensor] = None):
+        """Approximate physical variance with the inverse-transform derivative."""
+        if data is None:
+            raise ValueError("Normalized mean data is required for log-scale variance")
+        mean = _match_stat_shape(self.mean, data)
+        std = _match_stat_shape(self.std, data)
+        derivative = std * torch.exp(data * std + mean) / self.scale
+        return data_var * derivative.square()
+
+
 class StdNormalizer(DataNormalizer):
     """
     Normalizer that standardizes data using mean and standard deviation from precomputed statistics.

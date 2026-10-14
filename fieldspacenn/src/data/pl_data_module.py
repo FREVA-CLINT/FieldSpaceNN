@@ -160,7 +160,10 @@ class DataModule(LightningDataModule):
         use_costum_ddp_sampler: bool = False,
         prefetch_factor: Optional[int] = None,
         persistent_workers: bool = False,
-        shuffle: bool = False
+        shuffle: bool = False,
+        batches_per_epoch: Optional[int] = None,
+        val_batches_per_epoch: Optional[int] = None,
+        seed: int = 42,
     ):
         """
         Initialize the data module and its datasets/collators.
@@ -195,6 +198,21 @@ class DataModule(LightningDataModule):
         self.prefetch_factor: Optional[int] = prefetch_factor
         self.persistent_workers: bool = persistent_workers
         self.shuffle: bool = shuffle
+        self.batches_per_epoch = batches_per_epoch
+        self.val_batches_per_epoch = val_batches_per_epoch
+        self.seed = seed
+
+    def _variable_loader(self, dataset, collator, train=False):
+        from .variable_length import VariableLengthBatchSampler
+        batch_sampler = VariableLengthBatchSampler(
+            dataset, self.batch_size, shuffle=train, seed=self.seed,
+            batches_per_epoch=self.batches_per_epoch if train else self.val_batches_per_epoch,
+        )
+        return DataLoader(
+            dataset, batch_sampler=batch_sampler, collate_fn=collator,
+            num_workers=self.num_workers if train else self.num_val_workers,
+            prefetch_factor=self.prefetch_factor, persistent_workers=self.persistent_workers,
+        )
 
     def train_dataloader(self):
         """
@@ -202,6 +220,8 @@ class DataModule(LightningDataModule):
 
         :return: Training DataLoader instance.
         """
+        if hasattr(self.dataset_train, "length_views"):
+            return self._variable_loader(self.dataset_train, self.train_collator, train=True)
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_train, shuffle=False)
         else:
@@ -216,6 +236,8 @@ class DataModule(LightningDataModule):
 
         :return: Validation DataLoader instance.
         """
+        if hasattr(self.dataset_val, "length_views"):
+            return self._variable_loader(self.dataset_val, self.val_collator, train=False)
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_val, shuffle=False)
         else:
@@ -231,6 +253,8 @@ class DataModule(LightningDataModule):
 
         :return: Test DataLoader instance.
         """
+        if hasattr(self.dataset_test, "length_views"):
+            return self._variable_loader(self.dataset_test, self.test_collator, train=False)
         if self.use_costum_ddp_sampler:
             sampler = DistributedSampler(dataset=self.dataset_test, shuffle=False)
         else:

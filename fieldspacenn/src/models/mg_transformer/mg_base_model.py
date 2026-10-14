@@ -273,6 +273,8 @@ def create_encoder_decoder_block(
                 use_variable_mlp_gammas = block_conf.use_variable_mlp_gammas,
                 use_indexed_att_gammas = block_conf.use_indexed_att_gammas,
                 use_indexed_mlp_gammas = block_conf.use_indexed_mlp_gammas,
+                temporal_position_encoding = getattr(block_conf, "temporal_position_encoding", None),
+                rope_base = getattr(block_conf, "rope_base", 10000.0),
                 block_type = block_conf.block_type,
                 fac_mode=fac_mode,
                 emb_aggregation=emb_aggregation)

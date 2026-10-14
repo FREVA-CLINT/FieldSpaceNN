@@ -109,11 +109,22 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         return int(tensor.shape[0]), tensor.device
 
     def _get_sample_configs(self, stage: str) -> Mapping[int, Any]:
-        if stage == "predict":
+        if stage == "train":
+            dataset = self.trainer.train_dataloader.dataset
+        elif stage == "predict":
             dataset = self.trainer.predict_dataloaders.dataset
         else:
             dataset = self.trainer.val_dataloaders.dataset
         return dataset.sampling_zooms_collate or dataset.sampling_zooms
+
+    def _align_sample_configs(self, configs, groups):
+        if not self.flow_matching.prefix_conditioning:
+            return configs
+        lengths = {tensor.shape[2] for group in groups if group for tensor in group.values()}
+        if len(lengths) != 1:
+            raise ValueError("Prefix batches require one common sequence length")
+        length = lengths.pop()
+        return {z: dict(c, n_past_ts=0, n_future_ts=length - 1) for z, c in configs.items()}
 
     def _sample_block_flow_times(
         self,
@@ -301,6 +312,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs = self._get_sample_configs(stage="train")
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs = self._align_sample_configs(sample_configs, source_groups)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
@@ -334,6 +346,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs = self._get_sample_configs(stage="val")
         source_groups, target_groups, mask_groups, emb_groups, patch_index_zooms = batch
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs = self._align_sample_configs(sample_configs, source_groups)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
@@ -448,6 +461,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             patch_index_zooms_p,
         )
 
+        sample_configs_p = self._align_sample_configs(sample_configs_p, [source_p])
         target_groups_p: List[Optional[Dict[int, torch.Tensor]]] = [target_p.copy()]
         mask_groups_p = [mask_p.copy()] if mask_p else [None]
         emb_groups_p = [emb_p] if emb_p else [None]
@@ -495,7 +509,18 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 self.current_epoch,
                 output_comp=pred_x1_comp,
                 plot_name=f"_flow_{t.item():.2f}",
+                compose_zooms=self.decode_zooms,
             )
+
+    def generate_joint(self, timestamps, forcings, future_length, initial_latents=None,
+                       seed=0, sampling_steps=None, initial_states=None, encode_initial_states=None):
+        """Sample normalized monthly latents without attaching a Lightning Trainer.
+
+        See modules.flowmatching.joint.generate_joint for the input contract.
+        """
+        from ...modules.flowmatching.joint import generate_joint
+        return generate_joint(self, timestamps, forcings, future_length, initial_latents,
+                              seed, sampling_steps, initial_states, encode_initial_states)
 
     def predict_step(
         self,
@@ -542,6 +567,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         sample_configs = self._get_sample_configs(stage="predict")
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
+        sample_configs = self._align_sample_configs(sample_configs, source_groups)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(source_groups)
         emb_groups = emb_groups if emb_groups is not None else [None] * len(source_groups)

@@ -273,6 +273,8 @@ class BaseDataset(Dataset):
         load_n_samples_time: int = 1,
         target_time_shift: int = 0,
         overwrite_depths: Optional[Sequence[float]] = None,
+        calendar_time: bool = False,
+        residualize_zooms: bool = True,
     ) -> None:
         """
         Initialize the dataset with sampling, masking, and normalization settings.
@@ -301,11 +303,15 @@ class BaseDataset(Dataset):
             sampling zooms.
         :param load_n_samples_time: Number of time samples stacked as batch.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
+        :param calendar_time: Emit calendar-month inputs and temporal positions for monthly flow models.
+        :param residualize_zooms: Subtract coarser zooms before returning fields; disable for native AE latents.
         :param overwrite_depths: Optional replacement values for the vertical ``level``
             coordinate. Applied only when the loaded variables expose a ``level`` dimension.
         :return: None.
         """
         super(BaseDataset, self).__init__()
+        self.calendar_time = bool(calendar_time)
+        self.residualize_zooms = bool(residualize_zooms)
 
         if not hasattr(self, "sampling_zooms_target") or self.sampling_zooms_target is None:
             self.sampling_zooms_target = copy.deepcopy(self.sampling_zooms)
@@ -400,7 +406,7 @@ class BaseDataset(Dataset):
 
         self.time_steps_files: List[int] = []
         for k, file in enumerate(self.data_dict['source'][self.zooms[0]]['files']):
-            with xr.open_dataset(file) as ds:
+            with xr.open_dataset(file, decode_times=False) as ds:
                 self.time_steps_files.append(len(ds.time))
 
         normalized_variables_by_group, explicit_variable_ids = _normalize_variables_config(self.data_dict['variables'])
@@ -527,7 +533,7 @@ class BaseDataset(Dataset):
                 # Multi-source: build a per-zoom mapping using that zoom's grid.
                 mapping_grid_type = {}
                 for grid_type in self.grid_types:
-                    with xr.open_dataset(self.data_dict['source'][zoom]['files'][0]) as ds:
+                    with xr.open_dataset(self.data_dict['source'][zoom]['files'][0], decode_times=False) as ds:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
                         mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
@@ -812,6 +818,19 @@ class BaseDataset(Dataset):
         time_coord = ds["time"]
         units = time_coord.attrs.get("units") or time_coord.encoding.get("units")
         calendar = time_coord.attrs.get("calendar") or time_coord.encoding.get("calendar")
+        if units == "day as %Y%m%d.%f":
+            # CDO's formatted-day values are calendar dates with a fractional
+            # day, not CF offsets and therefore have no "since" reference.
+            values = np.asarray(time_values, dtype=np.float64)
+            if not np.isfinite(values).all():
+                raise ValueError("Formatted-day time coordinate contains non-finite values.")
+            date_codes = np.floor(values).astype(np.int64)
+            fractions = values - date_codes
+            if (fractions < 0).any() or (fractions >= 1).any():
+                raise ValueError("Formatted-day fractions must be in [0, 1).")
+            dates = pd.to_datetime(date_codes.astype(str), format="%Y%m%d", errors="raise")
+            fraction_ns = np.rint(fractions * 86_400 * 1e9).astype("timedelta64[ns]")
+            return dates.to_numpy(dtype="datetime64[ns]") + fraction_ns
         if units is not None:
             return decode_cf_datetime(time_values, units=units, calendar=calendar)
 
@@ -889,18 +908,20 @@ class BaseDataset(Dataset):
                 )
 
             profile_dims = [dim for dim in dims if dim != 'time']
-            if len(profile_dims) != 1:
+            if len(profile_dims) > 1:
                 raise ValueError(
-                    f"Forcing variable '{variable}' must have exactly one non-time dimension, "
+                    f"Forcing variable '{variable}' must have at most one non-time dimension, "
                     f"got {dims}."
                 )
 
             values = (
                 ds[variable]
                 .isel(time=time_indices)
-                .transpose('time', profile_dims[0])
+                .transpose('time', *profile_dims)
                 .to_numpy()
             )
+            if not profile_dims:
+                values = values[:, None]
             if values.dtype == np.float64:
                 values = values.astype(np.float32, copy=False)
 
@@ -1016,23 +1037,24 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        if self.residualize_zooms:
+            data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
 
-        target_encode_zooms = set(target_return_zooms)
-        if target_encode_zooms == set(sample_configs_target.keys()):
-            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
-        else:
-            data_target_encode = {
-                zoom: data_target[zoom]
-                for zoom in sorted(data_target.keys())
-                if zoom in target_encode_zooms
-            }
-            sample_configs_target_encode = {
-                zoom: sample_configs_target[zoom]
-                for zoom in sorted(sample_configs_target.keys())
-                if zoom in target_encode_zooms
-            }
-            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
+            target_encode_zooms = set(target_return_zooms)
+            if target_encode_zooms == set(sample_configs_target.keys()):
+                data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
+            else:
+                data_target_encode = {
+                    zoom: data_target[zoom]
+                    for zoom in sorted(data_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                sample_configs_target_encode = {
+                    zoom: sample_configs_target[zoom]
+                    for zoom in sorted(sample_configs_target.keys())
+                    if zoom in target_encode_zooms
+                }
+                encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
 
         available_zooms = sorted(data_source.keys())
 
@@ -1202,6 +1224,7 @@ class BaseDataset(Dataset):
         target_zooms_groups = [{} for _ in group_keys]
         data_time_zooms_emb = {}
         time_progress_zooms_emb = {}
+        temporal_positions = {}
         mask_mapping_zooms_groups = [{} for _ in group_keys]
         depth_values_groups = [{} for _ in group_keys]
         patch_index_zooms = {}
@@ -1222,7 +1245,7 @@ class BaseDataset(Dataset):
                 source_file = self.data_dict['source'][zoom]['files'][int(file_index)]
                 target_file = self.data_dict['target'][zoom]['files'][int(file_index)]
 
-            with xr.open_dataset(source_file) as ds:
+            with xr.open_dataset(source_file, decode_times=False) as ds:
                 if "cell" in ds.sizes:
                     mapping_zoom = get_zoom_from_npix(ds.sizes["cell"])
                 elif "ncells" in ds.sizes:
@@ -1298,6 +1321,10 @@ class BaseDataset(Dataset):
                 np.array(ds_emb_zoom.time.values, copy=True),
                 dtype=torch.float32,
             ).view(self.load_n_samples_time, -1)
+            if self.calendar_time:
+                from ..modules.embedding.temporal import monthly_time_inputs
+                raw_times = np.asarray(ds_emb_zoom.time.values).reshape(self.load_n_samples_time, -1)
+                data_time_zooms_emb[zoom], temporal_positions[zoom] = monthly_time_inputs(raw_times)
             time_progress_zooms_emb[zoom] = self._get_time_progress(ds_emb_zoom)
             
             target_window_differs = (
@@ -1443,6 +1470,8 @@ class BaseDataset(Dataset):
                     zoom: time_progress_zooms_emb[zoom] for zoom in time_progress_zooms_emb.keys()
                 }
                 emb_group['TimeIndexEmbedder'] = emb_group['TimeProgressEmbedder']
+                if self.calendar_time:
+                    emb_group['TemporalPosition'] = temporal_positions
                 emb_groups.append(emb_group)
         
             source_zooms_groups_out_ = {}
@@ -1477,6 +1506,8 @@ class BaseDataset(Dataset):
                     'PressureLevelEmbedder': emb_groups[0]['PressureLevelEmbedder'],
                     'TimeIndexEmbedder': emb_groups[0]['TimeIndexEmbedder'],
                     'VariableEmbedder': torch.zeros(source_zooms_groups_out_[reference_zoom].shape[-1], dtype=torch.long)}
+            if self.calendar_time:
+                emb['TemporalPosition'] = emb_groups[0]['TemporalPosition']
             if 'StaticVariableEmbedder' in emb_groups[0]:
                 emb['StaticVariableEmbedder'] = emb_groups[0]['StaticVariableEmbedder']
             if 'ForcingEmbedder' in emb_groups[0]:

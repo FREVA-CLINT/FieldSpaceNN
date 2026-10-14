@@ -17,6 +17,7 @@ from .field_space_base import (
 
 from ..grids.grid_layer import GridLayer
 from ..transformer.transformer_base import safe_scaled_dot_product_attention
+from ..embedding.temporal import apply_rotary
 
 from ..embedding.embedder import get_embedder
 
@@ -156,6 +157,8 @@ class FieldSpaceAttentionConfig:
         use_variable_mlp_gammas: bool = False,
         use_indexed_att_gammas: Optional[bool] = None,
         use_indexed_mlp_gammas: Optional[bool] = None,
+        temporal_position_encoding: Optional[str] = None,
+        rope_base: float = 10000.0,
         block_type: Literal["legacy", "ext"] = "legacy",
         **kwargs: Any
     ) -> None:
@@ -348,6 +351,8 @@ class FieldSpaceAttentionModule(nn.Module):
         global_embedders: Optional[nn.ModuleDict] = None,
         fac_mode: str = "Tucker",
         emb_aggregation: str = "shift_scale",
+        temporal_position_encoding: Optional[str] = None,
+        rope_base: float = 10000.0,
         block_type: Literal["legacy", "ext"] = "legacy",
     ) -> None:
         """
@@ -485,6 +490,16 @@ class FieldSpaceAttentionModule(nn.Module):
         self.out_zooms: List[int] = copy.deepcopy(out_zooms)
         in_zooms = copy.deepcopy(in_zooms)
         in_zooms_base = copy.deepcopy(in_zooms)
+        self.temporal_position_encoding = temporal_position_encoding
+        self.rope_base = float(rope_base)
+        if temporal_position_encoding not in {None, "rope"}:
+            raise ValueError("temporal_position_encoding must be None or 'rope'")
+        if temporal_position_encoding == "rope":
+            if (seq_len_time != -1 or _collapse_shared_value(token_len_time, "token_len_time") != 1
+                    or seq_overlap_space or _collapse_shared_value(seq_overlap_depth, "seq_overlap_depth") or n_head_channels % 2 or rope_base <= 0):
+                raise ValueError("Temporal RoPE requires full-time attention, one-step tokens, even heads, and no KV sequence overlap")
+            if q_zooms != kv_zooms:
+                raise ValueError("Temporal RoPE currently requires aligned self-attention zooms")
         self.use_mask: bool = use_mask
 
         if isinstance(in_features, (List, ListConfig)):
@@ -690,6 +705,18 @@ class FieldSpaceAttentionModule(nn.Module):
         for block, k in zip(self.blocks, active_group_indices):
             # Build per-group Q/K/V tensors and tracking metadata.
             x_res, q, K, V, mask, shape = block.create_QKV(x_zooms_groups[k], emb=emb_groups[k], mask_zooms=mask_groups[k] if self.use_mask else {}, sample_configs=sample_configs)
+            if self.temporal_position_encoding == "rope":
+                positions = emb_groups[k]["TemporalPosition"][max(block.q_zooms)]
+                if positions.shape != (shape["b"], shape["t"]) or shape["T"] != 1:
+                    raise ValueError("Temporal positions do not match the attention time axis")
+                # Reuse the block's exact packing order, including variable attention.
+                pos = positions[:, None, None, None, None, :, None, None, None]
+                pos = pos.expand(*(shape[key] for key in ("b", "v", "T", "N", "D", "t", "n", "d")), 1)
+                pos = rearrange(pos, block.att_pattern, H=1).squeeze(-1)
+                if q.shape[-2] != K.shape[-2]:
+                    raise ValueError("Temporal RoPE requires aligned query/key sequences")
+                q = apply_rotary(q, pos, self.rope_base)
+                K = apply_rotary(K, pos, self.rope_base)
             x_ress.append(x_res)
             qs.append(q)
             Ks.append(K)

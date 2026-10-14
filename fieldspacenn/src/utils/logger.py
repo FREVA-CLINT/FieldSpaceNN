@@ -65,19 +65,25 @@ class CustomImageLogger(Logger):
 
         elif logger_type == 'mlflow':
             # Handle MLFlow setup and run starting
+            mlflow.set_tracking_uri(self.logger_conf.get("tracking_uri"))
+            workspace = self.logger_conf.pop("workspace", None)
+            if workspace:
+                if not hasattr(mlflow, "set_workspace"):
+                    raise RuntimeError("MLflow workspace selection requires mlflow >= 3.10.0")
+                mlflow.set_workspace(workspace)
             if rank_zero_only.rank == 0:
                 mlflow.enable_system_metrics_logging()
-                mlflow.set_tracking_uri(self.logger_conf.get("tracking_uri"))
-                mlflow.set_experiment(self.cfg.get("project_name"))
+                mlflow.set_experiment(self.logger_conf.get("experiment_name") or self.cfg.get("project_name"))
                 run_id = self.logger_conf.get("run_id")
                 mlflow.start_run(run_name=self.cfg.get("run_name"), run_id=run_id, tags={"user": getpass.getuser()})
                 if not run_id:
                     new_run_id = mlflow.active_run().info.run_id
                     # Save the new run id to the config for other processes
                     OmegaConf.update(self.cfg, f"logger.run_id", new_run_id, merge=True)
-                
-                # Log all parameters
-                mlflow.log_params(OmegaConf.to_container(self.cfg, resolve=True))
+
+                    # Existing MLflow parameters are immutable; only log the
+                    # full configuration when this run is first created.
+                    mlflow.log_params(OmegaConf.to_container(self.cfg, resolve=True))
             
             self._internal_logger = MLFlowLogger(**self.logger_conf)
         else:
@@ -113,6 +119,11 @@ class CustomImageLogger(Logger):
         :param kwargs: Additional keyword arguments.
         :return: None.
         """
+        if isinstance(self._internal_logger, MLFlowLogger) and self.logger_conf.get("run_id"):
+            # Lightning logs model hyperparameters again at fit startup. Some
+            # values include object addresses, which change on every resume.
+            return
+
         self._internal_logger.log_hyperparams(params, *args, **kwargs)
 
         # Also log model config to wandb if it's the backend
@@ -243,7 +254,8 @@ class CustomImageLogger(Logger):
         max_zoom: int,
         current_epoch: int,
         output_comp: Optional[Dict[int, torch.Tensor]] = None,
-        plot_name: str = ""
+        plot_name: str = "",
+        compose_zooms: bool = True,
     ):
         """
         Generates and logs plots of input, output, and ground truth tensors.
@@ -274,6 +286,9 @@ class CustomImageLogger(Logger):
                 emb=emb,
                 plot_name=f"epoch_{current_epoch}{plot_name}",
             )
+
+        if not compose_zooms:
+            return
 
         # Build one combined plot by decoding each tensor dict to a shared zoom.
         combined_zoom_candidates = []
