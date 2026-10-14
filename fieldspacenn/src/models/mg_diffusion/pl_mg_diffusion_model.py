@@ -299,8 +299,8 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
                     if not source or not output or not target:
                         continue
 
-                    output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-                    target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                    output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+                    target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
 
                     loss, loss_dict = self.loss_composed(
                         output_comp,
@@ -577,6 +577,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
                     pred_xstart_group.copy(),
                     sample_configs=sample_configs_p,
                     out_zoom=max_zoom,
+                    apply_diff=self._apply_diff(),
                 )
             else:
                 pred_xstart_comp = {max_zoom: pred_xstart_group[max_zoom]}
@@ -592,6 +593,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
                 self.current_epoch,
                 output_comp=pred_xstart_comp,
                 plot_name=f"_{t.item()}",
+                apply_diff=self._apply_diff(),
             )
 
     def predict_step(
@@ -732,7 +734,7 @@ class LightningMGDiffusionModel(LightningMGModel, LightningProbabilisticModel):
         for group in current_groups:
             if group:
                 decoded_outputs.append(
-                    decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                    decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
                 )
             else:
                 decoded_outputs.append(None)

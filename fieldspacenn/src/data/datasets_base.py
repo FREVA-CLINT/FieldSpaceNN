@@ -273,8 +273,7 @@ class BaseDataset(Dataset):
         load_n_samples_time: int = 1,
         target_time_shift: int = 0,
         overwrite_depths: Optional[Sequence[float]] = None,
-        calendar_time: bool = False,
-        residualize_zooms: bool = True,
+        calendar_time: bool = False
     ) -> None:
         """
         Initialize the dataset with sampling, masking, and normalization settings.
@@ -304,14 +303,12 @@ class BaseDataset(Dataset):
         :param load_n_samples_time: Number of time samples stacked as batch.
         :param target_time_shift: Shift applied to target sample centers relative to source centers.
         :param calendar_time: Emit calendar-month inputs and temporal positions for monthly flow models.
-        :param residualize_zooms: Subtract coarser zooms before returning fields; disable for native AE latents.
         :param overwrite_depths: Optional replacement values for the vertical ``level``
             coordinate. Applied only when the loaded variables expose a ``level`` dimension.
         :return: None.
         """
         super(BaseDataset, self).__init__()
         self.calendar_time = bool(calendar_time)
-        self.residualize_zooms = bool(residualize_zooms)
 
         if not hasattr(self, "sampling_zooms_target") or self.sampling_zooms_target is None:
             self.sampling_zooms_target = copy.deepcopy(self.sampling_zooms)
@@ -1037,24 +1034,23 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        if self.residualize_zooms:
-            data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms, apply_diff=self.apply_diff)
 
-            target_encode_zooms = set(target_return_zooms)
-            if target_encode_zooms == set(sample_configs_target.keys()):
-                data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
-            else:
-                data_target_encode = {
-                    zoom: data_target[zoom]
-                    for zoom in sorted(data_target.keys())
-                    if zoom in target_encode_zooms
-                }
-                sample_configs_target_encode = {
-                    zoom: sample_configs_target[zoom]
-                    for zoom in sorted(sample_configs_target.keys())
-                    if zoom in target_encode_zooms
-                }
-                encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
+        target_encode_zooms = set(target_return_zooms)
+        if target_encode_zooms == set(sample_configs_target.keys()):
+            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms, apply_diff=self.apply_diff)
+        else:
+            data_target_encode = {
+                zoom: data_target[zoom]
+                for zoom in sorted(data_target.keys())
+                if zoom in target_encode_zooms
+            }
+            sample_configs_target_encode = {
+                zoom: sample_configs_target[zoom]
+                for zoom in sorted(sample_configs_target.keys())
+                if zoom in target_encode_zooms
+            }
+            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms, apply_diff=self.apply_diff)
 
         available_zooms = sorted(data_source.keys())
 
@@ -1139,8 +1135,8 @@ class BaseDataset(Dataset):
         if self.output_max_zoom_only:
             max_zoom = max(data_source.keys())
             max_target_zoom = max(data_target.keys()) if data_target else max_zoom
-            data_source = decode_zooms(data_source, sample_configs_source, max_zoom)
-            data_target = decode_zooms(data_target, sample_configs_target, max_target_zoom)
+            data_source = decode_zooms(data_source, sample_configs_source, max_zoom, apply_diff=self.apply_diff)
+            data_target = decode_zooms(data_target, sample_configs_target, max_target_zoom, apply_diff=self.apply_diff)
             mask_mapping_zooms = {max_zoom: mask_mapping_zooms[max_zoom]}
 
         return data_source, data_target, sample_configs_source, sample_configs_target, mask_mapping_zooms

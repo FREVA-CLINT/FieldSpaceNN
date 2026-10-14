@@ -964,7 +964,8 @@ def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
 def encode_zooms(
     x_zooms: Dict[int, torch.Tensor],
     sample_configs: Dict,
-    patch_index_zooms: Dict
+    patch_index_zooms: Dict,
+    apply_diff: bool = True,
 ):
     """
     Encode zoom levels as residuals from their next-coarser zoom.
@@ -972,8 +973,12 @@ def encode_zooms(
     :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
     :param sample_configs: Sampling configuration per zoom.
     :param patch_index_zooms: Patch indices per zoom.
-    :return: Updated dict with residualized tensors.
+    :param apply_diff: Whether to subtract the next-coarser zoom.
+    :return: Residualized tensors when enabled, otherwise the input dict unchanged.
     """
+
+    if not apply_diff:
+        return x_zooms
 
     zooms = sorted(x_zooms.keys(),reverse=True)
 
@@ -1004,18 +1009,21 @@ def encode_zooms(
 
     return x_zooms
     
-def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoom: int):
+def decode_zooms(x_zooms: Dict[int, torch.Tensor], sample_configs: Dict, out_zoom: int, apply_diff: bool = True):
     """
     Reconstruct a target zoom by summing contributions from multiple levels.
 
     :param x_zooms: Dict mapping zoom level to tensor ``(b, v, t, n, d, f)``.
     :param sample_configs: Sampling configuration per zoom.
     :param out_zoom: Target zoom level to decode.
+    :param apply_diff: Whether the zooms contain residuals to sum.
     :return: Dict containing the reconstructed tensor at out_zoom.
     """
     active_zooms = [zoom for zoom in sorted(x_zooms.keys()) if zoom <= out_zoom]
     if not active_zooms:
         raise ValueError(f"decode_zooms requires at least one zoom <= out_zoom={out_zoom}.")
+    if not apply_diff:
+        active_zooms = [active_zooms[-1]]
 
     remove_batch_dim = False
     x: Optional[torch.Tensor] = None

@@ -141,9 +141,9 @@ class LightningMGAutoEncoderModel(LightningMGModel, LightningProbabilisticModel)
                 plot_name=f"epoch_{self.current_epoch}",
             )
 
-            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
-            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
             
             self.logger.log_tensor_plot(
                 plot_types=["healpix_plot_zooms_var"],

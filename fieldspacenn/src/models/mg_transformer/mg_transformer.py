@@ -397,7 +397,7 @@ class MG_Transformer(MG_base_model):
         :return: Decoded zoom mapping.
         """
         emb = emb or {}
-        return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom)
+        return self.decoder(x_zooms, emb=emb, sample_configs=sample_configs, out_zoom=out_zoom, apply_diff=getattr(self, "apply_diff", True))
 
     def forward(
         self,
@@ -428,6 +428,7 @@ class MG_Transformer(MG_base_model):
             mask_groups=mask_zooms_groups,
             emb_groups=emb_groups,
             sample_configs=sample_configs,
+            apply_diff=getattr(self, "apply_diff", True),
         )
 
         x_zooms_groups = self._run_execution_stages(x_zooms_groups, context)
@@ -435,7 +436,7 @@ class MG_Transformer(MG_base_model):
         if out_zoom is not None:
             for i, x_zooms in enumerate(x_zooms_groups):
                 x_zooms_groups[i] = (
-                    self.decoder(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom)
+                    self.decoder(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom, apply_diff=getattr(self, "apply_diff", True))
                     if x_zooms
                     else {}
                 )
