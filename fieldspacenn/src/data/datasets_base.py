@@ -1016,11 +1016,11 @@ class BaseDataset(Dataset):
                 if zoom not in data_target or data_target[zoom] is None:
                     data_target[zoom] = data_source[zoom].clone()
 
-        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms)
+        data_source = encode_zooms(data_source, sample_configs_source, patch_index_zooms, apply_diff=self.apply_diff)
 
         target_encode_zooms = set(target_return_zooms)
         if target_encode_zooms == set(sample_configs_target.keys()):
-            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms)
+            data_target = encode_zooms(data_target, sample_configs_target, patch_index_zooms, apply_diff=self.apply_diff)
         else:
             data_target_encode = {
                 zoom: data_target[zoom]
@@ -1032,7 +1032,7 @@ class BaseDataset(Dataset):
                 for zoom in sorted(sample_configs_target.keys())
                 if zoom in target_encode_zooms
             }
-            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms)
+            encode_zooms(data_target_encode, sample_configs_target_encode, patch_index_zooms, apply_diff=self.apply_diff)
 
         available_zooms = sorted(data_source.keys())
 
@@ -1117,8 +1117,8 @@ class BaseDataset(Dataset):
         if self.output_max_zoom_only:
             max_zoom = max(data_source.keys())
             max_target_zoom = max(data_target.keys()) if data_target else max_zoom
-            data_source = decode_zooms(data_source, sample_configs_source, max_zoom)
-            data_target = decode_zooms(data_target, sample_configs_target, max_target_zoom)
+            data_source = decode_zooms(data_source, sample_configs_source, max_zoom, apply_diff=self.apply_diff)
+            data_target = decode_zooms(data_target, sample_configs_target, max_target_zoom, apply_diff=self.apply_diff)
             mask_mapping_zooms = {max_zoom: mask_mapping_zooms[max_zoom]}
 
         return data_source, data_target, sample_configs_source, sample_configs_target, mask_mapping_zooms

@@ -12,6 +12,21 @@ from ...utils.helpers import merge_sampling_dicts
 
 
 class LightningMGModel(pl.LightningModule):
+    def _apply_diff(self) -> bool:
+        trainer = getattr(self, "_trainer", None)
+        if trainer is None:
+            return True
+        for name in ("train_dataloader", "val_dataloaders", "test_dataloaders", "predict_dataloaders"):
+            loader = getattr(trainer, name, None)
+            if isinstance(loader, (list, tuple)):
+                loader = loader[0] if loader else None
+            dataset = getattr(loader, "dataset", None)
+            while dataset is not None and not hasattr(dataset, "apply_diff"):
+                dataset = getattr(dataset, "dataset", None)
+            if dataset is not None:
+                return dataset.apply_diff
+        return True
+
     def __init__(
         self,
         model: Any,
@@ -264,6 +279,7 @@ class LightningMGModel(pl.LightningModule):
         if emb_groups is None:
             emb_groups = emb
 
+        self.model.apply_diff = self._apply_diff()
         return self.model( 
                 x_zooms_groups=x_zooms_groups,
                 mask_zooms_groups=mask_zooms_groups,
@@ -417,17 +433,20 @@ class LightningMGModel(pl.LightningModule):
                 group_input["output"].copy(),
                 sample_configs=sample_configs_target,
                 out_zoom=max_zoom,
+                apply_diff=self._apply_diff(),
             )
             target_comp = decode_zooms(
                 group_input["target"].copy(),
                 sample_configs=sample_configs_target,
                 out_zoom=max_zoom,
+                apply_diff=self._apply_diff(),
             )
             mask_comp = (
                 decode_zooms(
                     group_input["mask"],
                     sample_configs=sample_configs_target,
                     out_zoom=max_zoom,
+                    apply_diff=self._apply_diff(),
                 )
                 if group_input["mask"] is not None
                 else None
@@ -537,7 +556,7 @@ class LightningMGModel(pl.LightningModule):
             mask = mask_groups[group_idx]
             emb = emb_groups[group_idx]
 
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom)
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom, apply_diff=self._apply_diff())
 
             self.logger.log_tensor_plot(
                 plot_types=["healpix_plot_zooms_var"],
@@ -550,8 +569,8 @@ class LightningMGModel(pl.LightningModule):
                 plot_name=f"epoch_{self.current_epoch}",
             )
 
-            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom)
-            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom)
+            source_comp = decode_zooms(source, sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+            target_comp = decode_zooms(target, sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
             self.logger.log_tensor_plot(
                 plot_types=["healpix_plot_zooms_var"],
                 input=source_comp,

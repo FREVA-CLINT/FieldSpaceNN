@@ -25,6 +25,7 @@ class BlockWrapContext:
     mask_groups: MaskGroups
     emb_groups: EmbGroups
     sample_configs: Mapping[int, Dict[str, Any]]
+    apply_diff: bool = True
 
 
 class BlockWrapOperation(nn.Module):
@@ -718,6 +719,7 @@ class ReencodeZoomsBlockWrapOperation(BlockWrapOperation):
                     {int(zoom): tensor for zoom, tensor in reencoded_group.items()},
                     sample_configs=int_sample_configs,
                     out_zoom=reencoded_highest_zoom,
+                    apply_diff=context.apply_diff,
                 )
                 if reencoded_highest_zoom not in decoded_group:
                     raise ValueError(
@@ -743,6 +745,7 @@ class ReencodeZoomsBlockWrapOperation(BlockWrapOperation):
                             encoded_inputs,
                             sample_configs=int_sample_configs,
                             patch_index_zooms=patch_index_zooms,
+                            apply_diff=context.apply_diff,
                         )
                     )
 

@@ -685,7 +685,7 @@ class DiffDecoder(nn.Module):
         if out_zoom is None:
             return x_zooms
         
-        return decode_zooms(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom)
+        return decode_zooms(x_zooms, sample_configs=sample_configs, out_zoom=out_zoom, apply_diff=kwargs.get("apply_diff", True))
 
 
 class ConservativeLayer(nn.Module):

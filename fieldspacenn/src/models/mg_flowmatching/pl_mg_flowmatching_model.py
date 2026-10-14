@@ -230,8 +230,8 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                     if not source or not output or not target:
                         continue
 
-                    output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-                    target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                    output_comp = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+                    target_comp = decode_zooms(target.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
 
                     loss, loss_dict = self.loss_composed(
                         output_comp,
@@ -480,6 +480,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                     pred_x1_group.copy(),
                     sample_configs=sample_configs_p,
                     out_zoom=max_zoom,
+                    apply_diff=self._apply_diff(),
                 )
             else:
                 pred_x1_comp = {max_zoom: pred_x1_group[max_zoom]}
@@ -495,6 +496,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 self.current_epoch,
                 output_comp=pred_x1_comp,
                 plot_name=f"_flow_{t.item():.2f}",
+                apply_diff=self._apply_diff(),
             )
 
     def predict_step(
@@ -575,7 +577,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         for group in current_groups:
             if group:
                 decoded_outputs.append(
-                    decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
+                    decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
                 )
             else:
                 decoded_outputs.append(None)

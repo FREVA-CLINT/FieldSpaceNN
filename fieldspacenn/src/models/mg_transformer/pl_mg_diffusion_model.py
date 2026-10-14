@@ -273,7 +273,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
                 pred_xstart = pred_xstart_outputs[0][2] # (target, output, pred_xstart)
 
                 if self.decode_zooms:
-                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs_p, out_zoom=max_zoom)
+                    pred_xstart_comp = decode_zooms(pred_xstart.copy(), sample_configs=sample_configs_p, out_zoom=max_zoom, apply_diff=self._apply_diff())
                 else:
                     pred_xstart_comp = {max_zoom: pred_xstart[max_zoom]}
 
@@ -350,7 +350,7 @@ class Lightning_MG_diffusion_transformer(LightningMGModel, LightningProbabilisti
             decoded_outputs = []
             for group in outputs:
                 if group:
-                    decoded_outputs.append(decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom))
+                    decoded_outputs.append(decode_zooms(group.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff()))
                 else:
                     decoded_outputs.append(None)
             return decoded_outputs

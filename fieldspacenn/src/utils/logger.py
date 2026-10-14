@@ -243,7 +243,8 @@ class CustomImageLogger(Logger):
         max_zoom: int,
         current_epoch: int,
         output_comp: Optional[Dict[int, torch.Tensor]] = None,
-        plot_name: str = ""
+        plot_name: str = "",
+        apply_diff: bool = True,
     ):
         """
         Generates and logs plots of input, output, and ground truth tensors.
@@ -282,10 +283,10 @@ class CustomImageLogger(Logger):
                 combined_zoom_candidates.extend([int(z) for z in zoom_dict.keys()])
         combined_zoom = max(combined_zoom_candidates) if combined_zoom_candidates else max_zoom
 
-        source_p = decode_zooms(input_data.copy(), sample_configs=sample_configs, out_zoom=combined_zoom) if input_data else {}
-        target_p = decode_zooms(gt.copy(), sample_configs=sample_configs, out_zoom=combined_zoom) if gt else {}
+        source_p = decode_zooms(input_data.copy(), sample_configs=sample_configs, out_zoom=combined_zoom, apply_diff=apply_diff) if input_data else {}
+        target_p = decode_zooms(gt.copy(), sample_configs=sample_configs, out_zoom=combined_zoom, apply_diff=apply_diff) if gt else {}
         if output is not None:
-            output_p = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=combined_zoom)
+            output_p = decode_zooms(output.copy(), sample_configs=sample_configs, out_zoom=combined_zoom, apply_diff=apply_diff)
         else:
             output_p = output_comp
 

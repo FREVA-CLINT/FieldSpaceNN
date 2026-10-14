@@ -445,9 +445,9 @@ class LightningMGAutoregressiveModel(LightningMGModel):
             mask = mask_groups[group_idx]
             emb = emb_groups[group_idx]
 
-            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom)
-            source_comp = decode_zooms(source.copy(), sample_configs=sample_configs, out_zoom=max_zoom)
-            target_comp = decode_zooms(target, sample_configs=sample_configs_target, out_zoom=max_zoom)
+            output_comp = decode_zooms(output.copy(), sample_configs=sample_configs_target, out_zoom=max_zoom, apply_diff=self._apply_diff())
+            source_comp = decode_zooms(source.copy(), sample_configs=sample_configs, out_zoom=max_zoom, apply_diff=self._apply_diff())
+            target_comp = decode_zooms(target, sample_configs=sample_configs_target, out_zoom=max_zoom, apply_diff=self._apply_diff())
 
             self.logger.log_tensor_plot(
                 input=source_comp,
@@ -499,7 +499,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                 output_combined.append(None)
                 continue
             output_combined.append(
-                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom)
+                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom, apply_diff=self._apply_diff())
             )
 
         initial_input_combined = []
@@ -508,7 +508,7 @@ class LightningMGAutoregressiveModel(LightningMGModel):
                 initial_input_combined.append(None)
                 continue
             initial_input_combined.append(
-                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom)
+                decode_zooms(group.copy(), sample_configs=sample_configs_target, out_zoom=combined_zoom, apply_diff=self._apply_diff())
             )
 
         return {
