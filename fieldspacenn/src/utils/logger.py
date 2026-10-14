@@ -287,8 +287,6 @@ class CustomImageLogger(Logger):
                 plot_name=f"epoch_{current_epoch}{plot_name}",
             )
 
-        if not compose_zooms:
-            return
 
         # Build one combined plot by decoding each tensor dict to a shared zoom.
         combined_zoom_candidates = []
