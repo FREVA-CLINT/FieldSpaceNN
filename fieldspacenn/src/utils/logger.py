@@ -65,7 +65,7 @@ class CustomImageLogger(Logger):
                 # Generate the ID without accessing ``WandbLogger.experiment``.
                 # Accessing ``experiment`` starts the W&B background service, which
                 # is unsafe before Lightning launches ``ddp_fork`` workers.
-                from wandb.util import generate_id
+                from wandb.sdk.lib.runid import generate_id
 
                 run_id = generate_id()
                 fresh_logger_conf = dict(self.logger_conf)
