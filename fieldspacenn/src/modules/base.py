@@ -68,21 +68,8 @@ class LayerNorm(nn.Module):
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
 
-    def _effective_n_variables(self) -> int:
-        variable_spec = self.indexed_dims.get("v")
-        if variable_spec is not None:
-            return int(variable_spec["n_features"])
-        return int(self.n_variables)
-
     def _statistics_dims(self, x: torch.Tensor) -> tuple:
-        dims = list(range(-len(self.normalized_shape), 0))
-        if self._effective_n_variables() > 1:
-            if x.ndim < 2:
-                raise ValueError(
-                    "Variable-dependent LayerNorm requires a variable axis at dim 1"
-                )
-            dims.insert(0, 1)
-        return tuple(dims)
+        return tuple(range(-len(self.normalized_shape), 0))
 
     def apply_weight_bias(self, x_hat: torch.Tensor, emb: Optional[Dict[str, Any]]):
         """
@@ -170,13 +157,6 @@ class HeadWiseLayerNorm(LayerNorm):
         # while leaving the head axis itself independent.
         dims = list(range(-len(self.normalized_shape), -2))
         dims.append(-1)
-        if self._effective_n_variables() > 1:
-            if x.ndim < 2:
-                raise ValueError(
-                    "Variable-dependent HeadWiseLayerNorm requires a variable "
-                    "axis at dim 1"
-                )
-            dims.insert(0, 1)
         return tuple(dims)
 
     def _reshape_heads(self, x: torch.Tensor) -> torch.Tensor:
