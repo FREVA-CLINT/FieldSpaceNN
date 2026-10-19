@@ -1740,6 +1740,7 @@ class FieldSpaceOperatorConfig:
         token_overlap_space: bool = False,
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
+        direct_operator_mlp: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: Any = False,
         token_overlap_mlp_time: bool = False,
@@ -1772,6 +1773,10 @@ class FieldSpaceOperatorConfig:
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorConfig settings: {names}")
+        if latent_operator_mlp and direct_operator_mlp:
+            raise ValueError(
+                "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
         operator_groups, flattened_operators = _normalize_operator_groups(operators)
         n_operators = len(flattened_operators)
 
@@ -2023,6 +2028,7 @@ class FieldSpaceOperatorConfig:
         self.token_overlap_space = bool(token_overlap_space)
         self.operator_output_overlap_space = bool(operator_output_overlap_space)
         self.latent_operator_mlp = bool(latent_operator_mlp)
+        self.direct_operator_mlp = bool(direct_operator_mlp)
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
@@ -2318,6 +2324,7 @@ class _FieldSpaceOperatorPath(nn.Module):
         token_overlap_space: bool,
         operator_output_overlap_space: bool,
         latent_operator_mlp: bool,
+        direct_operator_mlp: bool,
         token_overlap_time: bool,
         token_overlap_depth: bool,
         token_overlap_mlp_time: bool,
@@ -2343,6 +2350,10 @@ class _FieldSpaceOperatorPath(nn.Module):
         operator_sequence: _FieldSpaceOperatorSequence,
     ) -> None:
         super().__init__()
+        if latent_operator_mlp and direct_operator_mlp:
+            raise ValueError(
+                "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
@@ -2353,8 +2364,12 @@ class _FieldSpaceOperatorPath(nn.Module):
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
         self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
         self.latent_operator_mlp = bool(latent_operator_mlp)
+        self.direct_operator_mlp = bool(direct_operator_mlp)
+        self.operator_latent_mlp = bool(
+            self.latent_operator_mlp or self.direct_operator_mlp
+        )
         self.operator_output_overlap_space = bool(
-            not self.latent_operator_mlp
+            not self.operator_latent_mlp
             and token_overlap_space
             and operator_output_overlap_space
         )
@@ -2427,7 +2442,7 @@ class _FieldSpaceOperatorPath(nn.Module):
             if self.operator_output_overlap_space
             else self.residual_shape
         )
-        if self.latent_operator_mlp:
+        if self.operator_latent_mlp:
             self.operator_output = None
             self.operator_residual = None
             self.mlp_input = None
@@ -2582,7 +2597,7 @@ class _FieldSpaceOperatorPath(nn.Module):
             emb=aligned_emb,
             sample_config=sample_configs.get(self.token_zoom, {}),
         )
-        if self.latent_operator_mlp:
+        if self.operator_latent_mlp:
             operator_latent = self.operator_dropout(
                 operator_update.view(
                     *operator_update.shape[:5], 1, 1, 1, self.operator_dim
@@ -2644,6 +2659,8 @@ class _FieldSpaceOperatorPath(nn.Module):
                 emb=aligned_emb,
                 sample_configs=sample_configs,
             )
+            residual_base = residual
+        elif self.direct_operator_mlp:
             residual_base = residual
         else:
             residual_base = residual if self.operator_output_overlap_space else x
@@ -2709,6 +2726,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         token_overlap_space: bool = False,
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
+        direct_operator_mlp: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
@@ -2742,6 +2760,10 @@ class FieldSpaceOperatorBlock(nn.Module):
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorBlock settings: {names}")
+        if latent_operator_mlp and direct_operator_mlp:
+            raise ValueError(
+                "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
 
         operator_groups, flattened_operators = _normalize_operator_groups(operators)
         n_operators = len(flattened_operators)
@@ -2922,6 +2944,7 @@ class FieldSpaceOperatorBlock(nn.Module):
             token_overlap_space=bool(token_overlap_space),
             operator_output_overlap_space=bool(operator_output_overlap_space),
             latent_operator_mlp=bool(latent_operator_mlp),
+            direct_operator_mlp=bool(direct_operator_mlp),
             token_overlap_time=bool(token_overlap_time),
             token_overlap_depth=bool(token_overlap_depth),
             token_overlap_mlp_time=bool(token_overlap_mlp_time),
@@ -3003,6 +3026,7 @@ class FieldSpaceOperatorModule(nn.Module):
         token_overlap_mlp_depth: Any = False,
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
+        direct_operator_mlp: bool = False,
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
@@ -3027,6 +3051,10 @@ class FieldSpaceOperatorModule(nn.Module):
         **kwargs: Any,
     ) -> None:
         super().__init__()
+        if latent_operator_mlp and direct_operator_mlp:
+            raise ValueError(
+                "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
         if (
             not include_variable_dependency_operator_projection
             and _contains_configured_value(operator_projection_rank_variables)
@@ -3149,6 +3177,7 @@ class FieldSpaceOperatorModule(nn.Module):
                     operator_output_overlap_space
                 ),
                 latent_operator_mlp=bool(latent_operator_mlp),
+                direct_operator_mlp=bool(direct_operator_mlp),
                 constant_variable_dependency=constant_variable_dependency,
                 constant_time_dependency=constant_time_dependency,
                 constant_space_dependency=constant_space_dependency,
