@@ -354,6 +354,91 @@ class Tokenizer(nn.Module):
         x = rearrange(x, self.pattern_tokens, t=self.token_size[0], n=self.token_size[1], d=self.token_size[2])
         return x
 
+    def forward_with_residual(
+        self,
+        x_zooms: Union[Dict[int, torch.Tensor], torch.Tensor],
+        sample_configs: Dict[str, Any],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Tokenize processing context and a direct non-overlapping residual.
+
+        The processing representation follows :meth:`forward` and can include
+        spatial neighbourhood context.  The residual representation is built
+        independently from the source fields with the same temporal matching,
+        but without spatial overlap.  In particular, it is not obtained by
+        slicing a projected or otherwise transformed processing tensor.
+
+        :return: ``(processing_tokens, residual_tokens)`` in canonical token
+            layout ``(b, v, T, N, D, t, n, d, f)``.
+        """
+        if not isinstance(x_zooms, dict):
+            if len(self.input_zooms) != 1:
+                raise ValueError(
+                    "Tensor tokenization requires exactly one configured input zoom"
+                )
+            zoom_fields = {self.input_zooms[0]: x_zooms}
+        else:
+            zoom_fields = x_zooms
+
+        max_zoom = max(self.input_zooms)
+        aligned_fields = {
+            zoom: get_matching_time_patch(
+                zoom_fields[zoom],
+                zoom,
+                max_zoom,
+                sample_configs,
+            )
+            for zoom in self.input_zooms
+        }
+
+        residual_parts = []
+        for zoom in self.input_zooms:
+            field = aligned_fields[zoom]
+            if zoom < self.token_zoom:
+                field = refine_zoom(field, zoom, self.token_zoom).unsqueeze(-3)
+            elif self.token_zoom == -1:
+                field = field.view(
+                    *field.shape[:3], 1, -1, *field.shape[-2:]
+                )
+            else:
+                field = field.view(
+                    *field.shape[:3],
+                    -1,
+                    4 ** (zoom - self.token_zoom),
+                    *field.shape[-2:],
+                )
+            residual_parts.append(field)
+        residual_source = torch.concat(residual_parts, dim=-3)
+        residual = rearrange(
+            residual_source,
+            self.pattern_tokens,
+            t=self.token_size[0],
+            n=sum(self.features_zoom),
+            d=self.token_size[2],
+        )
+
+        if self.overlap_thickness == 0:
+            return residual, residual
+
+        processing_parts = []
+        for zoom in self.input_zooms:
+            field, _ = self.grid_layers_overlap[str(zoom)].get_nh(
+                aligned_fields[zoom],
+                zoom,
+                **sample_configs[zoom],
+                mask=None,
+                zoom_patch_out=self.token_zoom,
+            )
+            processing_parts.append(field)
+        processing_source = torch.concat(processing_parts, dim=-3)
+        processing = rearrange(
+            processing_source,
+            self.pattern_tokens,
+            t=self.token_size[0],
+            n=sum(self.features_zoom_w_overlap),
+            d=self.token_size[2],
+        )
+        return processing, residual
+
 
 class EmbeddingFactor(nn.Module):
     """Adapt a field embedder into a compact dynamic Tucker factor.

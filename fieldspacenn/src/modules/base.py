@@ -54,8 +54,8 @@ class LayerNorm(nn.Module):
             n_variables=n_variables,
         )
 
-        self.weight: Optional[nn.Parameter] = None
-        self.bias: Optional[nn.Parameter] = None
+        self.weight: Optional[nn.Parameter]
+        self.bias: Optional[nn.Parameter]
         if elementwise_affine:
             indexed_shape = [spec["n_features"] for spec in self.indexed_dims.values()]
             if not indexed_shape:
@@ -67,6 +67,22 @@ class LayerNorm(nn.Module):
         else:
             self.register_parameter("weight", None)
             self.register_parameter("bias", None)
+
+    def _effective_n_variables(self) -> int:
+        variable_spec = self.indexed_dims.get("v")
+        if variable_spec is not None:
+            return int(variable_spec["n_features"])
+        return int(self.n_variables)
+
+    def _statistics_dims(self, x: torch.Tensor) -> tuple:
+        dims = list(range(-len(self.normalized_shape), 0))
+        if self._effective_n_variables() > 1:
+            if x.ndim < 2:
+                raise ValueError(
+                    "Variable-dependent LayerNorm requires a variable axis at dim 1"
+                )
+            dims.insert(0, 1)
+        return tuple(dims)
 
     def apply_weight_bias(self, x_hat: torch.Tensor, emb: Optional[Dict[str, Any]]):
         """
@@ -95,7 +111,7 @@ class LayerNorm(nn.Module):
         if x_stats is None:
             x_stats = x
 
-        dims = tuple(range(-len(self.normalized_shape), 0))
+        dims = self._statistics_dims(x_stats)
         mean = x_stats.mean(dim=dims, keepdim=True)
         var = x_stats.var(dim=dims, unbiased=False, keepdim=True)
 
@@ -105,6 +121,88 @@ class LayerNorm(nn.Module):
             return self.apply_weight_bias(x_hat, emb=emb)
         else:
             return x_hat
+
+
+class HeadWiseLayerNorm(LayerNorm):
+    """LayerNorm with independent statistics and affine values per head."""
+
+    def __init__(
+        self,
+        normalized_shape: Union[int, Sequence[int]],
+        num_heads: int,
+        n_variables: int = 1,
+        indexed_dims: Optional[Mapping[Union[str, int], Mapping[str, Any]]] = None,
+        eps: float = 1e-5,
+        elementwise_affine: bool = True,
+    ) -> None:
+        if isinstance(normalized_shape, int):
+            normalized_shape = (normalized_shape,)
+        input_normalized_shape = tuple(int(value) for value in normalized_shape)
+        if not input_normalized_shape:
+            raise ValueError("normalized_shape must not be empty")
+        if int(num_heads) <= 0:
+            raise ValueError("num_heads must be positive")
+        operator_dim = int(input_normalized_shape[-1])
+        if operator_dim % int(num_heads):
+            raise ValueError(
+                f"normalized feature size ({operator_dim}) must be divisible by "
+                f"num_heads ({num_heads})"
+            )
+
+        self.input_normalized_shape = input_normalized_shape
+        self.num_heads = int(num_heads)
+        self.head_dim = operator_dim // self.num_heads
+        head_normalized_shape = (
+            *input_normalized_shape[:-1],
+            self.num_heads,
+            self.head_dim,
+        )
+        super().__init__(
+            head_normalized_shape,
+            n_variables=n_variables,
+            indexed_dims=indexed_dims,
+            eps=eps,
+            elementwise_affine=elementwise_affine,
+        )
+
+    def _statistics_dims(self, x: torch.Tensor) -> tuple:
+        # Normalize the configured token axes and channels within each head,
+        # while leaving the head axis itself independent.
+        dims = list(range(-len(self.normalized_shape), -2))
+        dims.append(-1)
+        if self._effective_n_variables() > 1:
+            if x.ndim < 2:
+                raise ValueError(
+                    "Variable-dependent HeadWiseLayerNorm requires a variable "
+                    "axis at dim 1"
+                )
+            dims.insert(0, 1)
+        return tuple(dims)
+
+    def _reshape_heads(self, x: torch.Tensor) -> torch.Tensor:
+        if int(x.shape[-1]) != self.num_heads * self.head_dim:
+            raise ValueError(
+                f"Expected final feature size {self.num_heads * self.head_dim}, "
+                f"got {int(x.shape[-1])}"
+            )
+        return x.unflatten(-1, (self.num_heads, self.head_dim))
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        emb: Optional[Dict[str, Any]] = None,
+        x_stats: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        x_heads = self._reshape_heads(x)
+        stats_heads = (
+            None if x_stats is None else self._reshape_heads(x_stats)
+        )
+        normalized = super().forward(
+            x_heads,
+            emb=emb,
+            x_stats=stats_heads,
+        )
+        return normalized.flatten(-2)
 
 
 class IdentityLayer(nn.Module):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import math
 from collections import OrderedDict
+from numbers import Integral
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
 from einops import rearrange
@@ -19,11 +20,11 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from ..base import get_layer
+from ..base import HeadWiseLayerNorm, get_layer
 from ..embedding.embedder import get_embedder
 from ..grids.grid_layer import GridLayer
+from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch
 from .field_space_base import (
-    GLOBAL_EMBEDDER_CACHE_KEY,
     LinEmbLayer,
     Tokenizer,
     add_depth_overlap_from_neighbor_patches,
@@ -40,6 +41,15 @@ OperatorGroups = Union[
 OperatorSetting = Union[Sequence[Any], Sequence[Sequence[Any]]]
 _DEPENDENCY_ORDER = ("variable", "time", "space")
 _FIELD_DIM_NAMES = ("batch", "variable", "time", "space", "depth")
+
+
+def _positive_head_count(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise TypeError("num_heads must be one positive integer")
+    value = int(value)
+    if value <= 0:
+        raise ValueError("num_heads must be positive")
+    return value
 
 
 def _is_sequence(value: Any) -> bool:
@@ -1696,13 +1706,13 @@ class FieldSpaceOperator(nn.Module):
 
 
 class FieldSpaceOperatorConfig:
-    """Configuration for grouped projections around atomic field operators."""
+    """Configuration for matching-time field operators."""
 
     def __init__(
         self,
         token_zoom: int,
         operators: OperatorGroups,
-        num_heads: Optional[OperatorSetting] = None,
+        num_heads: int = 1,
         *,
         in_zooms: Union[Sequence[int], int] = -1,
         target_zooms: Optional[Sequence[int]] = None,
@@ -1728,6 +1738,7 @@ class FieldSpaceOperatorConfig:
         token_len_time: Any = 1,
         token_len_depth: Any = 1,
         token_overlap_space: bool = False,
+        operator_output_overlap_space: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: Any = False,
         token_overlap_mlp_time: bool = False,
@@ -1745,9 +1756,9 @@ class FieldSpaceOperatorConfig:
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
         update: Literal["shift", "shift_scale"] = "shift",
-        layer_norm: bool = True,
-        separate_mlp_norm: bool = True,
-        mlp_residual_from_operators: bool = False,
+        mlp_factor: int = 4,
+        head_wise_layer_norm: bool = False,
+        variable_dependent_layer_norm: bool = False,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Dict[str, Any]] = None,
         emb_modulation_mode: str = "shift_scale",
@@ -1774,7 +1785,7 @@ class FieldSpaceOperatorConfig:
                 operator_groups=operator_groups,
             )
 
-        num_heads = align_operator_values(num_heads, "num_heads", 1)
+        num_heads = _positive_head_count(num_heads)
         sequence_defaults = [
             -1 if name == "space" else None for name in flattened_operators
         ]
@@ -1835,12 +1846,19 @@ class FieldSpaceOperatorConfig:
 
         if update not in {"shift", "shift_scale"}:
             raise ValueError("update must be either 'shift' or 'shift_scale'")
+        if int(mlp_factor) <= 0:
+            raise ValueError("mlp_factor must be positive")
         if int(token_zoom) < -1:
             raise ValueError("token_zoom must be -1 or non-negative")
         if int(n_times) <= 0:
             raise ValueError("n_times must be positive")
         if operator_dim is not None and int(operator_dim) <= 0:
             raise ValueError("operator_dim must be positive when configured")
+        if operator_dim is not None and int(operator_dim) % num_heads:
+            raise ValueError(
+                f"operator_dim ({operator_dim}) must be divisible by "
+                f"num_heads ({num_heads})"
+            )
         if (
             not include_variable_dependency_operator_projection
             and _contains_configured_value(operator_projection_rank_variables)
@@ -1876,15 +1894,6 @@ class FieldSpaceOperatorConfig:
         for index, operator in enumerate(flattened_operators):
             group_index, operator_index = operator_locations[index]
             location = f"operators[{group_index}][{operator_index}]"
-            if int(num_heads[index]) <= 0:
-                raise ValueError(
-                    f"num_heads[{index}] must be positive for {location}"
-                )
-            if operator_dim is not None and int(operator_dim) % int(num_heads[index]):
-                raise ValueError(
-                    f"operator_dim ({operator_dim}) must be divisible by "
-                    f"num_heads[{index}] ({num_heads[index]}) for {location}"
-                )
             if initializations[index] not in {"identity", "random"}:
                 raise ValueError(
                     "Initialization must be 'identity' or 'random'; "
@@ -1974,7 +1983,7 @@ class FieldSpaceOperatorConfig:
 
         self.token_zoom = int(token_zoom)
         self.operators = operator_groups
-        self.num_heads = [int(value) for value in num_heads]
+        self.num_heads = num_heads
         self.in_zooms = in_zooms
         self.target_zooms = None if target_zooms is None else list(target_zooms)
         self.out_zooms = None if out_zooms is None else list(out_zooms)
@@ -2011,6 +2020,7 @@ class FieldSpaceOperatorConfig:
         self.token_len_time = token_len_time
         self.token_len_depth = token_len_depth
         self.token_overlap_space = bool(token_overlap_space)
+        self.operator_output_overlap_space = bool(operator_output_overlap_space)
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
@@ -2036,9 +2046,11 @@ class FieldSpaceOperatorConfig:
             include_variable_dependency_mlp
         )
         self.update = update
-        self.layer_norm = bool(layer_norm)
-        self.separate_mlp_norm = bool(separate_mlp_norm)
-        self.mlp_residual_from_operators = bool(mlp_residual_from_operators)
+        self.mlp_factor = int(mlp_factor)
+        self.head_wise_layer_norm = bool(head_wise_layer_norm)
+        self.variable_dependent_layer_norm = bool(
+            variable_dependent_layer_norm
+        )
         self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
         if embed_confs is not None:
             self.embed_confs = embed_confs
@@ -2050,8 +2062,246 @@ class FieldSpaceOperatorConfig:
         self.n_groups_depths = n_groups_depths
 
 
-class _FieldSpaceOperatorBranch(nn.Module):
-    """One projection/update boundary around an ordered atomic-operator group."""
+def _shared_zoom_value(
+    values: Mapping[int, Any],
+    zooms: Sequence[int],
+    name: str,
+) -> Any:
+    """Return one value shared by every matching-time zoom."""
+    first_zoom = int(zooms[0])
+    first = values[first_zoom]
+    conflicts = {
+        int(zoom): values[int(zoom)]
+        for zoom in zooms[1:]
+        if values[int(zoom)] != first
+    }
+    if conflicts:
+        raise ValueError(
+            f"Matching timesteps require one shared {name}; "
+            f"zoom {first_zoom} has {first!r}, conflicts={conflicts}"
+        )
+    return first
+
+
+class _GatedResidualUpdate(nn.Module):
+    """Validate and apply an attention-style learned residual update."""
+
+    def __init__(self, token_shape: Sequence[int], update: str) -> None:
+        super().__init__()
+        if update not in {"shift", "shift_scale"}:
+            raise ValueError("update must be either 'shift' or 'shift_scale'")
+        self.scale_shift = update == "shift_scale"
+        shape = [int(value) for value in token_shape]
+        self.gamma = nn.Parameter(torch.ones(shape) * 1e-12)
+        self.gamma_res = nn.Parameter(torch.ones(shape) * 1e-12)
+
+    def forward(
+        self,
+        base: torch.Tensor,
+        projected: torch.Tensor,
+        *,
+        branch: str,
+    ) -> torch.Tensor:
+        if self.scale_shift:
+            if projected.shape[-1] % 2:
+                raise ValueError(
+                    f"{branch} shift_scale update must have an even feature size"
+                )
+            scale, shift = projected.chunk(2, dim=-1)
+            if scale.shape != base.shape or shift.shape != base.shape:
+                raise ValueError(
+                    f"{branch} update has shape {tuple(projected.shape)}, expected "
+                    f"two copies of {tuple(base.shape)} along the feature axis"
+                )
+            return base * (1 + self.gamma_res * scale) + self.gamma * shift
+        if projected.shape != base.shape:
+            raise ValueError(
+                f"{branch} update has shape {tuple(projected.shape)}, expected "
+                f"{tuple(base.shape)}"
+            )
+        return (1 + self.gamma_res) * base + self.gamma * projected
+
+
+def _token_norm(
+    *,
+    token_shape: Sequence[int],
+    num_heads: int,
+    n_variables: int,
+    head_wise_layer_norm: bool,
+    grid_layers: Mapping[str, GridLayer],
+    token_zoom: int,
+    token_len_depth: int,
+    input_zoom_field: int,
+    output_zoom: int,
+    embed_confs: Mapping[str, Any],
+    embedder: Optional[nn.Module],
+    embedder_cache_key: Optional[str],
+    emb_modulation_mode: str,
+    fac_mode: str,
+) -> LinEmbLayer:
+    """Build a normalization/modulation layer with no value projection."""
+    shape = [int(value) for value in token_shape]
+    emb_tokenizer = Tokenizer(
+        [int(input_zoom_field)]
+        if embedder is not None and embedder.has_space()
+        else [],
+        int(token_zoom),
+        token_len_time=1,
+        token_len_depth=(
+            int(token_len_depth)
+            if embedder is not None and embedder.has_depth()
+            else 1
+        ),
+        overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
+        grid_layers=grid_layers,
+    )
+    norm = LinEmbLayer(
+        shape,
+        shape,
+        ranks=[None] * len(shape),
+        n_variables=1,
+        n_variable_norm=int(n_variables),
+        fac_mode=fac_mode,
+        identity_if_equal=True,
+        embedder=embedder,
+        field_tokenizer=emb_tokenizer,
+        output_zoom=int(output_zoom),
+        layer_norm=not head_wise_layer_norm,
+        emb_modulation_mode=emb_modulation_mode,
+        embedder_cache_key=embedder_cache_key,
+    )
+    if head_wise_layer_norm:
+        norm.layer_norm = HeadWiseLayerNorm(
+            shape,
+            num_heads=int(num_heads),
+            n_variables=int(n_variables),
+        )
+    return norm
+
+
+class _FieldSpaceOperatorSequence(nn.Module):
+    """Run atomic operators in order, using nesting only for checkpoints."""
+
+    def __init__(
+        self,
+        *,
+        grid_layers: Mapping[str, GridLayer],
+        operator_groups: Sequence[Sequence[OperatorName]],
+        operator_dim: int,
+        num_heads: int,
+        n_variables: int,
+        n_times: int,
+        token_zoom: int,
+        sequence_zooms: Sequence[Optional[int]],
+        include_neighbors: Sequence[bool],
+        include_variable_dependency: Sequence[bool],
+        include_time_dependency: Sequence[bool],
+        include_space_dependency: Sequence[bool],
+        constant_variable_dependency: Sequence[bool],
+        constant_time_dependency: Sequence[bool],
+        constant_space_dependency: Sequence[bool],
+        ranks_variable: Sequence[Optional[int]],
+        ranks_time: Sequence[Optional[int]],
+        ranks_space: Sequence[Optional[int]],
+        ranks_in: Sequence[Optional[int]],
+        ranks_out: Sequence[Optional[int]],
+        initializations: Sequence[str],
+        share_factors_across_heads: Sequence[bool],
+        checkpoint_operator_groups: bool,
+    ) -> None:
+        super().__init__()
+        self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
+        self.groups = nn.ModuleList()
+        flat_index = 0
+        for names in operator_groups:
+            modules = nn.ModuleList()
+            for name in names:
+                index = flat_index
+                modules.append(
+                    FieldSpaceOperator(
+                        operator=name,
+                        operator_dim=int(operator_dim),
+                        num_heads=int(num_heads),
+                        n_variables=int(n_variables),
+                        n_times=int(n_times),
+                        token_zoom=int(token_zoom),
+                        sequence_zoom=sequence_zooms[index],
+                        include_neighbors=bool(include_neighbors[index]),
+                        include_dependencies={
+                            "variable": bool(include_variable_dependency[index]),
+                            "time": bool(include_time_dependency[index]),
+                            "space": bool(include_space_dependency[index]),
+                        },
+                        dependency_ranks={
+                            "variable": ranks_variable[index],
+                            "time": ranks_time[index],
+                            "space": ranks_space[index],
+                        },
+                        constant_dependencies={
+                            "variable": bool(constant_variable_dependency[index]),
+                            "time": bool(constant_time_dependency[index]),
+                            "space": bool(constant_space_dependency[index]),
+                        },
+                        rank_in=ranks_in[index],
+                        rank_out=ranks_out[index],
+                        initialization=initializations[index],
+                        share_factors_across_heads=bool(
+                            share_factors_across_heads[index]
+                        ),
+                        grid_layers=grid_layers,
+                    )
+                )
+                flat_index += 1
+            self.groups.append(modules)
+
+    @property
+    def operators(self) -> List[FieldSpaceOperator]:
+        return [operator for group in self.groups for operator in group]
+
+    @staticmethod
+    def _run_group(
+        values: torch.Tensor,
+        group: nn.ModuleList,
+        emb: Optional[Mapping[str, Any]],
+        sample_config: Mapping[str, Any],
+    ) -> torch.Tensor:
+        for operator in group:
+            values = operator(values, emb=emb, sample_config=sample_config)
+        return values
+
+    def forward(
+        self,
+        values: torch.Tensor,
+        *,
+        emb: Optional[Mapping[str, Any]],
+        sample_config: Mapping[str, Any],
+    ) -> torch.Tensor:
+        for group in self.groups:
+            if (
+                self.checkpoint_operator_groups
+                and self.training
+                and torch.is_grad_enabled()
+            ):
+                def apply_group(
+                    tensor: torch.Tensor,
+                    current_group: nn.ModuleList = group,
+                ) -> torch.Tensor:
+                    return self._run_group(
+                        tensor, current_group, emb, sample_config
+                    )
+
+                values = checkpoint(
+                    apply_group,
+                    values,
+                    use_reentrant=False,
+                )
+            else:
+                values = self._run_group(values, group, emb, sample_config)
+        return values
+
+
+class _FieldSpaceOperatorPath(nn.Module):
+    """Run one matching-time token stream through operators and an MLP."""
 
     def __init__(
         self,
@@ -2059,280 +2309,215 @@ class _FieldSpaceOperatorBranch(nn.Module):
         grid_layers: Mapping[str, GridLayer],
         in_zooms: Sequence[int],
         target_zooms: Sequence[int],
-        in_features: Mapping[int, int],
+        in_features: int,
         token_zoom: int,
-        token_len_time: Mapping[int, int],
+        token_len_time: int,
         token_len_depth: int,
         token_overlap_space: bool,
+        operator_output_overlap_space: bool,
         token_overlap_time: bool,
         token_overlap_depth: bool,
+        token_overlap_mlp_time: bool,
+        token_overlap_mlp_depth: bool,
         operator_dim: int,
-        operators: Sequence[OperatorName],
-        num_heads: Sequence[int],
-        n_variables: int,
-        n_times: int,
-        sequence_zooms: Sequence[Optional[int]],
-        include_neighbors: Sequence[bool],
-        include_dependencies: Sequence[Mapping[str, bool]],
-        dependency_ranks: Sequence[Mapping[str, Optional[int]]],
-        constant_dependencies: Sequence[Mapping[str, bool]],
-        ranks_in: Sequence[Optional[int]],
-        ranks_out: Sequence[Optional[int]],
-        initializations: Sequence[str],
-        share_factors_across_heads: Sequence[bool],
-        checkpoint_operator_groups: bool,
-        operator_projection_ranks_by_zoom: Mapping[
-            int, Sequence[Optional[int]]
-        ],
-        operator_projection_rank_variables_by_zoom: Mapping[
-            int, Optional[int]
-        ],
-        include_variable_dependency_operator_projection: bool,
+        num_heads: int,
+        normalization_n_variables: int,
+        head_wise_layer_norm: bool,
+        mlp_factor: int,
+        projection_ranks: Sequence[Optional[int]],
+        mlp_ranks: Sequence[Optional[int]],
+        projection_n_variables: int,
+        projection_rank_variables: Optional[int],
+        mlp_n_variables: int,
+        mlp_rank_variables: Optional[int],
         update: str,
         dropout: float,
-        layer_norm: bool,
         embed_confs: Mapping[str, Any],
         embedder: Optional[nn.Module],
         embedder_cache_key: Optional[str],
         emb_modulation_mode: str,
         fac_mode: str,
+        operator_sequence: _FieldSpaceOperatorSequence,
     ) -> None:
         super().__init__()
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
+        self.token_len_time = int(token_len_time)
         self.token_len_depth = int(token_len_depth)
-        self.token_len_time = {int(k): int(v) for k, v in token_len_time.items()}
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = bool(token_overlap_depth)
+        self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
+        self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
+        self.operator_output_overlap_space = bool(
+            token_overlap_space and operator_output_overlap_space
+        )
         self.operator_dim = int(operator_dim)
-        self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
-        self.scale_shift = update == "shift_scale"
-        self.update_multiplier = 2 if self.scale_shift else 1
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.embedder = embedder
+        self.num_heads = int(num_heads)
+        self.max_zoom = max(self.in_zooms)
+        self.operator_sequence = operator_sequence
         self.embedding_keys = set(
             embedder.embedders.keys() if embedder is not None else ()
         )
 
-        self.tokenizers = nn.ModuleDict()
-        self.update_tokenizers = nn.ModuleDict()
-        self.pre_layers = nn.ModuleDict()
-        self.value_layers = nn.ModuleDict()
-        self.output_layers = nn.ModuleDict()
-        self.gammas = nn.ParameterDict()
-        self.residual_gammas = nn.ParameterDict()
-        self.update_shapes: Dict[int, List[int]] = {}
-
-        input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
-        processing_zooms = list(dict.fromkeys([*self.in_zooms, *self.target_zooms]))
-        for zoom in processing_zooms:
-            key = str(zoom)
-            tokenizer = Tokenizer(
-                [zoom],
-                token_zoom,
-                overlap_thickness=int(token_overlap_space),
-                grid_layers=grid_layers,
-                token_len_time=self.token_len_time[zoom],
-                token_len_depth=self.token_len_depth,
-            )
-            update_tokenizer = Tokenizer(
-                [zoom],
-                token_zoom,
-                overlap_thickness=0,
-                grid_layers=grid_layers,
-                token_len_time=self.token_len_time[zoom],
-                token_len_depth=self.token_len_depth,
-            )
-            self.tokenizers[key] = tokenizer
-            self.update_tokenizers[key] = update_tokenizer
-            n_space = sum(tokenizer.get_features()[0].values())
-            n_space_update = sum(update_tokenizer.get_features()[1].values())
-            token_shape = [
-                self.token_len_time[zoom],
-                n_space,
-                self.token_len_depth,
-                int(in_features[zoom]),
-            ]
-            update_shape = [
-                self.token_len_time[zoom],
-                n_space_update,
-                self.token_len_depth,
-                int(in_features[zoom]),
-            ]
-            self.update_shapes[zoom] = update_shape
-
-            emb_tokenizer = Tokenizer(
-                [input_zoom_field]
-                if embedder is not None and embedder.has_space()
-                else [],
-                token_zoom,
-                token_len_time=1,
-                token_len_depth=(
-                    self.token_len_depth
-                    if embedder is not None and embedder.has_depth()
-                    else 1
-                ),
-                overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
-                grid_layers=grid_layers,
-            )
-            emb_shape = list(token_shape)
-            emb_shape[1] = (
-                token_shape[1]
-                if embedder is not None and embedder.has_space()
-                else 1
-            )
-            operator_projection_rank_variables = (
-                operator_projection_rank_variables_by_zoom[zoom]
-            )
-            projection_n_variables = (
-                n_variables
-                if include_variable_dependency_operator_projection
-                else 1
-            )
-            self.pre_layers[key] = LinEmbLayer(
-                emb_shape,
-                emb_shape,
-                ranks=list(operator_projection_ranks_by_zoom[zoom]),
-                n_variables=1,
-                fac_mode=fac_mode,
-                identity_if_equal=True,
-                embedder=embedder,
-                field_tokenizer=emb_tokenizer,
-                output_zoom=zoom,
-                layer_norm=layer_norm,
-                emb_modulation_mode=emb_modulation_mode,
-                embedder_cache_key=embedder_cache_key,
-            )
-            if zoom in self.in_zooms:
-                input_shape = [
-                    token_shape[0] + 2 * int(self.token_overlap_time),
-                    token_shape[1],
-                    token_shape[2] + 2 * int(self.token_overlap_depth),
-                    token_shape[3],
-                ]
-                self.value_layers[key] = get_layer(
-                    input_shape,
-                    [1, 1, 1, self.operator_dim],
-                    ranks=list(operator_projection_ranks_by_zoom[zoom]),
-                    n_variables=projection_n_variables,
-                    rank_variables=operator_projection_rank_variables,
-                    fac_mode=fac_mode,
-                    bias=False,
-                )
-            if zoom in self.target_zooms:
-                output_shape = [
-                    *update_shape[:-1],
-                    update_shape[-1] * self.update_multiplier,
-                ]
-                self.output_layers[key] = get_layer(
-                    [1, 1, 1, self.operator_dim],
-                    output_shape,
-                    ranks=list(operator_projection_ranks_by_zoom[zoom]),
-                    n_variables=projection_n_variables,
-                    rank_variables=operator_projection_rank_variables,
-                    fac_mode=fac_mode,
-                    bias=False,
-                )
-                self.gammas[key] = nn.Parameter(torch.ones(update_shape) * 1e-12)
-                self.residual_gammas[key] = nn.Parameter(
-                    torch.ones(update_shape) * 1e-12
-                )
-
-        self.operator_names = list(operators)
-        self.operators = nn.ModuleList(
-            [
-                FieldSpaceOperator(
-                    operator=operator,
-                    operator_dim=self.operator_dim,
-                    num_heads=int(num_heads[index]),
-                    n_variables=n_variables,
-                    n_times=n_times,
-                    token_zoom=token_zoom,
-                    sequence_zoom=sequence_zooms[index],
-                    include_neighbors=bool(include_neighbors[index]),
-                    include_dependencies=include_dependencies[index],
-                    dependency_ranks=dependency_ranks[index],
-                    constant_dependencies=constant_dependencies[index],
-                    rank_in=ranks_in[index],
-                    rank_out=ranks_out[index],
-                    initialization=initializations[index],
-                    share_factors_across_heads=bool(
-                        share_factors_across_heads[index]
-                    ),
-                    grid_layers=grid_layers,
-                )
-                for index, operator in enumerate(self.operator_names)
-            ]
+        self.tokenizer = Tokenizer(
+            self.in_zooms,
+            self.token_zoom,
+            overlap_thickness=int(token_overlap_space),
+            grid_layers=grid_layers,
+            token_len_time=self.token_len_time,
+            token_len_depth=self.token_len_depth,
         )
+        processing_features, residual_features = self.tokenizer.get_features()
+        self.residual_features = {
+            zoom: int(residual_features[zoom]) for zoom in self.in_zooms
+        }
+        self.processing_shape = [
+            self.token_len_time,
+            sum(int(processing_features[zoom]) for zoom in self.in_zooms),
+            self.token_len_depth,
+            int(in_features),
+        ]
+        self.residual_shape = [
+            self.token_len_time,
+            sum(self.residual_features.values()),
+            self.token_len_depth,
+            int(in_features),
+        ]
+
+        latent_shape = [1, 1, 1, self.operator_dim]
+        operator_input_shape = list(self.processing_shape)
+        operator_input_shape[0] += 2 * int(self.token_overlap_time)
+        operator_input_shape[2] += 2 * int(self.token_overlap_depth)
+        self.operator_input = get_layer(
+            operator_input_shape,
+            latent_shape,
+            ranks=list(projection_ranks),
+            n_variables=int(projection_n_variables),
+            rank_variables=projection_rank_variables,
+            fac_mode=fac_mode,
+            bias=False,
+        )
+        input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
+        self.operator_norm = _token_norm(
+            token_shape=latent_shape,
+            num_heads=self.num_heads,
+            n_variables=int(normalization_n_variables),
+            head_wise_layer_norm=bool(head_wise_layer_norm),
+            grid_layers=grid_layers,
+            token_zoom=token_zoom,
+            token_len_depth=token_len_depth,
+            input_zoom_field=input_zoom_field,
+            output_zoom=self.max_zoom,
+            embed_confs=embed_confs,
+            embedder=embedder,
+            embedder_cache_key=embedder_cache_key,
+            emb_modulation_mode=emb_modulation_mode,
+            fac_mode=fac_mode,
+        )
+        update_multiplier = 2 if update == "shift_scale" else 1
+        operator_state_shape = (
+            self.processing_shape
+            if self.operator_output_overlap_space
+            else self.residual_shape
+        )
+        operator_output_shape = list(operator_state_shape)
+        operator_output_shape[-1] *= update_multiplier
+        self.operator_output = get_layer(
+            latent_shape,
+            operator_output_shape,
+            ranks=list(projection_ranks),
+            n_variables=int(projection_n_variables),
+            rank_variables=projection_rank_variables,
+            fac_mode=fac_mode,
+            bias=False,
+        )
+        self.operator_residual = _GatedResidualUpdate(operator_state_shape, update)
+
+        mlp_input_shape = list(operator_state_shape)
+        mlp_input_shape[0] += 2 * int(self.token_overlap_mlp_time)
+        mlp_input_shape[2] += 2 * int(self.token_overlap_mlp_depth)
+        self.mlp_input = get_layer(
+            mlp_input_shape,
+            latent_shape,
+            ranks=list(mlp_ranks),
+            n_variables=int(mlp_n_variables),
+            rank_variables=mlp_rank_variables,
+            fac_mode=fac_mode,
+            bias=False,
+        )
+        self.mlp_norm = _token_norm(
+            token_shape=latent_shape,
+            num_heads=self.num_heads,
+            n_variables=int(normalization_n_variables),
+            head_wise_layer_norm=bool(head_wise_layer_norm),
+            grid_layers=grid_layers,
+            token_zoom=token_zoom,
+            token_len_depth=token_len_depth,
+            input_zoom_field=input_zoom_field,
+            output_zoom=self.max_zoom,
+            embed_confs=embed_confs,
+            embedder=embedder,
+            embedder_cache_key=embedder_cache_key,
+            emb_modulation_mode=emb_modulation_mode,
+            fac_mode=fac_mode,
+        )
+
+        hidden_dim = self.operator_dim * int(mlp_factor)
+        self.mlp_hidden = get_layer(
+            latent_shape,
+            [1, 1, 1, hidden_dim],
+            ranks=list(mlp_ranks),
+            n_variables=int(mlp_n_variables),
+            rank_variables=mlp_rank_variables,
+            fac_mode=fac_mode,
+            bias=True,
+        )
+        mlp_output_shape = list(self.residual_shape)
+        mlp_output_shape[-1] *= update_multiplier
+        self.mlp_output = get_layer(
+            [1, 1, 1, hidden_dim],
+            mlp_output_shape,
+            ranks=list(mlp_ranks),
+            n_variables=int(mlp_n_variables),
+            rank_variables=mlp_rank_variables,
+            fac_mode=fac_mode,
+            bias=False,
+        )
+        self.mlp_residuals = nn.ModuleDict(
+            {
+                str(zoom): _GatedResidualUpdate(
+                    [
+                        self.token_len_time,
+                        self.residual_features[zoom],
+                        self.token_len_depth,
+                        int(in_features),
+                    ],
+                    update,
+                )
+                for zoom in self.target_zooms
+            }
+        )
+        self.activation = nn.SiLU()
+        self.operator_dropout = (
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        )
+        self.mlp_dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
     def _aligned_embedding(
         self,
         emb: Optional[Dict[str, Any]],
-        zoom: int,
-        tokens: torch.Tensor,
+        residual_tokens: torch.Tensor,
     ) -> Optional[Dict[str, Any]]:
         return align_time_embeddings_to_tokens(
             emb,
-            zoom=zoom,
-            token_len_time=self.token_len_time[zoom],
-            field_time_steps=int(tokens.shape[2] * self.token_len_time[zoom]),
+            zoom=self.max_zoom,
+            token_len_time=self.token_len_time,
+            field_time_steps=int(
+                residual_tokens.shape[2] * self.token_len_time
+            ),
             embedding_keys=self.embedding_keys,
         )
-
-    def _project_values(
-        self,
-        x_zooms: Mapping[int, torch.Tensor],
-        emb: Optional[Dict[str, Any]],
-        sample_configs: Mapping[int, Mapping[str, Any]],
-    ) -> torch.Tensor:
-        projections: List[torch.Tensor] = []
-        for zoom in self.in_zooms:
-            key = str(zoom)
-            tokens = self.tokenizers[key]({zoom: x_zooms[zoom]}, sample_configs)
-            aligned_emb = self._aligned_embedding(emb, zoom, tokens)
-            tokens = self.pre_layers[key](
-                tokens, emb=aligned_emb, sample_configs=sample_configs
-            )
-            if self.token_overlap_time:
-                tokens = add_time_overlap_from_neighbor_patches(
-                    tokens, overlap=1, pad_mode="edge"
-                )
-            if self.token_overlap_depth:
-                tokens = add_depth_overlap_from_neighbor_patches(
-                    tokens, overlap=1, pad_mode="edge"
-                )
-            projected = self.value_layers[key](
-                tokens, emb=aligned_emb, sample_configs=sample_configs
-            )
-            projections.append(
-                projected.reshape(*projected.shape[:5], self.operator_dim)
-            )
-        expected = projections[0].shape
-        if any(projection.shape != expected for projection in projections[1:]):
-            shapes = [tuple(projection.shape) for projection in projections]
-            raise ValueError(
-                f"Operator value projections must have identical shapes, got {shapes}"
-            )
-        return torch.stack(projections).sum(dim=0)
-
-    @staticmethod
-    def _detokenize(tokens: torch.Tensor) -> torch.Tensor:
-        return rearrange(
-            tokens,
-            "b v T N D t n d f -> b v (T t) (N n) (D d) f",
-        )
-
-    def _apply_operator_group(
-        self,
-        values: torch.Tensor,
-        emb: Optional[Dict[str, Any]],
-        sample_config: Mapping[str, Any],
-    ) -> torch.Tensor:
-        """Apply every atomic operator within this projection boundary."""
-        for operator in self.operators:
-            values = operator(values, emb=emb, sample_config=sample_config)
-        return values
 
     def forward(
         self,
@@ -2341,59 +2526,108 @@ class _FieldSpaceOperatorBranch(nn.Module):
         emb: Optional[Dict[str, Any]],
         sample_configs: Mapping[int, Mapping[str, Any]],
     ) -> Dict[int, torch.Tensor]:
-        values = self._project_values(x_zooms, emb, sample_configs)
-        sample_config = sample_configs.get(self.token_zoom, {})
-        if (
-            self.checkpoint_operator_groups
-            and self.training
-            and torch.is_grad_enabled()
-        ):
-            values = checkpoint(
-                self._apply_operator_group,
-                values,
-                emb,
-                sample_config,
-                use_reentrant=False,
+        processing, residual = self.tokenizer.forward_with_residual(
+            {zoom: x_zooms[zoom] for zoom in self.in_zooms},
+            sample_configs=dict(sample_configs),
+        )
+        aligned_emb = self._aligned_embedding(emb, residual)
+        operator_input = processing
+        if self.token_overlap_time:
+            operator_input = add_time_overlap_from_neighbor_patches(
+                operator_input, overlap=1, pad_mode="edge"
             )
-        else:
-            values = self._apply_operator_group(values, emb, sample_config)
-        operator_tokens = values.view(*values.shape[:5], 1, 1, 1, self.operator_dim)
-        for zoom in self.target_zooms:
-            key = str(zoom)
-            base = self.update_tokenizers[key](
-                {zoom: x_zooms[zoom]}, sample_configs
+        if self.token_overlap_depth:
+            operator_input = add_depth_overlap_from_neighbor_patches(
+                operator_input, overlap=1, pad_mode="edge"
             )
-            aligned_emb = self._aligned_embedding(emb, zoom, base)
-            projected = self.dropout(
-                self.output_layers[key](
-                    operator_tokens,
-                    emb=aligned_emb,
-                    sample_configs=sample_configs,
-                )
+
+        latent = self.operator_input(
+            operator_input,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+        latent = self.operator_norm(
+            latent,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        ).reshape(*latent.shape[:5], self.operator_dim)
+        operator_update = self.operator_sequence(
+            latent,
+            emb=aligned_emb,
+            sample_config=sample_configs.get(self.token_zoom, {}),
+        )
+        operator_update = self.operator_output(
+            operator_update.view(
+                *operator_update.shape[:5], 1, 1, 1, self.operator_dim
+            ),
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+        x = self.operator_residual(
+            processing if self.operator_output_overlap_space else residual,
+            self.operator_dropout(operator_update),
+            branch="operator",
+        )
+
+        mlp_input = x
+        if self.token_overlap_mlp_time:
+            mlp_input = add_time_overlap_from_neighbor_patches(
+                mlp_input, overlap=1, pad_mode="edge"
             )
-            gamma = self.gammas[key]
-            gamma_res = self.residual_gammas[key]
-            if self.scale_shift:
-                scale, shift = projected.chunk(2, dim=-1)
-                if scale.shape != base.shape:
-                    raise ValueError(
-                        f"Operator update for zoom {zoom} has shape "
-                        f"{tuple(scale.shape)}, expected {tuple(base.shape)}"
-                    )
-                updated = base * (1 + gamma_res * scale) + gamma * shift
-            else:
-                if projected.shape != base.shape:
-                    raise ValueError(
-                        f"Operator update for zoom {zoom} has shape "
-                        f"{tuple(projected.shape)}, expected {tuple(base.shape)}"
-                    )
-                updated = (1 + gamma_res) * base + gamma * projected
-            x_zooms[zoom] = self._detokenize(updated)
+        if self.token_overlap_mlp_depth:
+            mlp_input = add_depth_overlap_from_neighbor_patches(
+                mlp_input, overlap=1, pad_mode="edge"
+            )
+        latent = self.mlp_input(
+            mlp_input,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+        latent = self.mlp_norm(
+            latent,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+        hidden = self.mlp_hidden(
+            latent,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+        hidden = self.mlp_dropout(self.activation(hidden))
+        mlp_update = self.mlp_output(
+            hidden,
+            emb=aligned_emb,
+            sample_configs=sample_configs,
+        )
+
+        widths = [self.residual_features[zoom] for zoom in self.in_zooms]
+        residual_base = residual if self.operator_output_overlap_space else x
+        bases = residual_base.split(widths, dim=-3)
+        updates = mlp_update.split(widths, dim=-3)
+        for zoom, base, update_value in zip(self.in_zooms, bases, updates):
+            if zoom not in self.target_zooms:
+                continue
+            updated = self.mlp_residuals[str(zoom)](
+                base,
+                update_value,
+                branch=f"MLP zoom {zoom}",
+            )
+            patch = rearrange(
+                updated,
+                "b v T N D t n d f -> b v (T t) (N n) (D d) f",
+            )
+            x_zooms[zoom] = insert_matching_time_patch(
+                x_zooms[zoom],
+                patch,
+                zoom,
+                self.max_zoom,
+                dict(sample_configs),
+            )
         return x_zooms
 
 
 class FieldSpaceOperatorBlock(nn.Module):
-    """Run ordered operator groups followed by the existing FST MLP pattern."""
+    """Run matching-time zoom inputs through one shared latent operator."""
 
     def __init__(
         self,
@@ -2404,7 +2638,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         in_features: Union[int, Sequence[int], Mapping[int, int]],
         token_zoom: int,
         operators: OperatorGroups,
-        num_heads: OperatorSetting,
+        num_heads: int,
         sequence_zooms: OperatorSetting,
         include_neighbors: OperatorSetting,
         ranks_in: OperatorSetting,
@@ -2412,20 +2646,21 @@ class FieldSpaceOperatorBlock(nn.Module):
         include_variable_dependency: OperatorSetting,
         include_time_dependency: OperatorSetting,
         include_space_dependency: OperatorSetting,
-        constant_variable_dependency: Optional[OperatorSetting] = None,
-        constant_time_dependency: Optional[OperatorSetting] = None,
-        constant_space_dependency: Optional[OperatorSetting] = None,
         ranks_variable: OperatorSetting,
         ranks_time: OperatorSetting,
         ranks_space: OperatorSetting,
         initializations: OperatorSetting,
-        share_factors_across_heads: Optional[OperatorSetting] = None,
         operator_dim: int,
         n_variables: int,
         n_times: int,
+        constant_variable_dependency: Optional[OperatorSetting] = None,
+        constant_time_dependency: Optional[OperatorSetting] = None,
+        constant_space_dependency: Optional[OperatorSetting] = None,
+        share_factors_across_heads: Optional[OperatorSetting] = None,
         token_len_time: Any = 1,
         token_len_depth: int = 1,
         token_overlap_space: bool = False,
+        operator_output_overlap_space: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
@@ -2443,10 +2678,10 @@ class FieldSpaceOperatorBlock(nn.Module):
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
         update: str = "shift",
+        mlp_factor: int = 4,
+        head_wise_layer_norm: bool = False,
+        variable_dependent_layer_norm: bool = False,
         dropout: float = 0.0,
-        layer_norm: bool = True,
-        separate_mlp_norm: bool = True,
-        mlp_residual_from_operators: bool = False,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
@@ -2459,10 +2694,11 @@ class FieldSpaceOperatorBlock(nn.Module):
         if kwargs:
             names = ", ".join(sorted(kwargs))
             raise TypeError(f"Unexpected FieldSpaceOperatorBlock settings: {names}")
+
         operator_groups, flattened_operators = _normalize_operator_groups(operators)
         n_operators = len(flattened_operators)
 
-        def align_operator_values(
+        def align(
             value: Optional[OperatorSetting], name: str, default: Any
         ) -> List[Any]:
             return _aligned_values(
@@ -2473,493 +2709,213 @@ class FieldSpaceOperatorBlock(nn.Module):
                 operator_groups=operator_groups,
             )
 
-        num_heads = align_operator_values(num_heads, "num_heads", 1)
-        sequence_zooms = align_operator_values(
-            sequence_zooms, "sequence_zooms", None
+        num_heads = _positive_head_count(num_heads)
+        sequence_zooms = align(sequence_zooms, "sequence_zooms", None)
+        include_neighbors = align(include_neighbors, "include_neighbors", False)
+        ranks_in = align(ranks_in, "ranks_in", None)
+        ranks_out = align(ranks_out, "ranks_out", None)
+        include_variable_dependency = align(
+            include_variable_dependency, "include_variable_dependency", False
         )
-        include_neighbors = align_operator_values(
-            include_neighbors, "include_neighbors", False
+        include_time_dependency = align(
+            include_time_dependency, "include_time_dependency", False
         )
-        ranks_in = align_operator_values(ranks_in, "ranks_in", None)
-        ranks_out = align_operator_values(ranks_out, "ranks_out", None)
-        include_variable_dependency = align_operator_values(
-            include_variable_dependency,
-            "include_variable_dependency",
-            False,
+        include_space_dependency = align(
+            include_space_dependency, "include_space_dependency", False
         )
-        include_time_dependency = align_operator_values(
-            include_time_dependency,
-            "include_time_dependency",
-            False,
+        constant_variable_dependency = align(
+            constant_variable_dependency, "constant_variable_dependency", True
         )
-        include_space_dependency = align_operator_values(
-            include_space_dependency,
-            "include_space_dependency",
-            False,
+        constant_time_dependency = align(
+            constant_time_dependency, "constant_time_dependency", True
         )
-        ranks_variable = align_operator_values(
-            ranks_variable, "ranks_variable", None
+        constant_space_dependency = align(
+            constant_space_dependency, "constant_space_dependency", True
         )
-        ranks_time = align_operator_values(ranks_time, "ranks_time", None)
-        ranks_space = align_operator_values(ranks_space, "ranks_space", None)
-        initializations = align_operator_values(
-            initializations, "initializations", "identity"
+        ranks_variable = align(ranks_variable, "ranks_variable", None)
+        ranks_time = align(ranks_time, "ranks_time", None)
+        ranks_space = align(ranks_space, "ranks_space", None)
+        initializations = align(initializations, "initializations", "identity")
+        share_factors_across_heads = align(
+            share_factors_across_heads, "share_factors_across_heads", False
         )
+
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
+        self.operator_dim = int(operator_dim)
+        if self.operator_dim % num_heads:
+            raise ValueError(
+                f"operator_dim ({self.operator_dim}) must be divisible by "
+                f"num_heads ({num_heads})"
+            )
+        if not self.in_zooms:
+            raise ValueError("in_zooms must not be empty")
+        if not self.target_zooms:
+            raise ValueError("target_zooms must not be empty")
+        if len(set(self.in_zooms)) != len(self.in_zooms):
+            raise ValueError("in_zooms must not contain duplicates")
+        if len(set(self.target_zooms)) != len(self.target_zooms):
+            raise ValueError("target_zooms must not contain duplicates")
+        missing_targets = sorted(set(self.target_zooms).difference(self.in_zooms))
+        if missing_targets:
+            raise ValueError(
+                f"Target zooms {missing_targets} are not present in in_zooms"
+            )
         if min([*self.in_zooms, *self.target_zooms]) < self.token_zoom:
             raise ValueError("All input and target zooms must be >= token_zoom")
+
         self.in_features = {
             int(key): int(value)
             for key, value in _axis_values(
                 in_features, self.in_zooms, "in_features"
             ).items()
         }
-        missing_target_features = [
-            zoom for zoom in self.target_zooms if zoom not in self.in_features
-        ]
-        if missing_target_features:
-            raise ValueError(
-                f"Target zooms {missing_target_features} are not present in in_zooms"
-            )
-        all_zooms = list(dict.fromkeys([*self.in_zooms, *self.target_zooms]))
         self.token_len_time = {
             int(key): int(value)
             for key, value in _axis_values(
-                token_len_time, all_zooms, "token_len_time"
+                token_len_time, self.in_zooms, "token_len_time"
             ).items()
         }
-        if any(value <= 0 for value in self.token_len_time.values()):
-            raise ValueError("token_len_time values must be positive")
-        self.token_len_depth = int(token_len_depth)
-        if self.token_len_depth <= 0:
-            raise ValueError("token_len_depth must be positive")
-        self.operator_dim = int(operator_dim)
-        self.scale_shift = update == "shift_scale"
-        self.update_multiplier = 2 if self.scale_shift else 1
-        self.separate_mlp_norm = bool(separate_mlp_norm)
-        self.mlp_residual_from_operators = bool(mlp_residual_from_operators)
-        self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
-        self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
-        self.dropout_mlp = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.mlp_activation = nn.SiLU()
-        constant_variable_dependency = align_operator_values(
-            constant_variable_dependency,
-            "constant_variable_dependency",
-            True,
-        )
-        constant_time_dependency = align_operator_values(
-            constant_time_dependency,
-            "constant_time_dependency",
-            True,
-        )
-        constant_space_dependency = align_operator_values(
-            constant_space_dependency,
-            "constant_space_dependency",
-            True,
-        )
-        share_factors_across_heads = align_operator_values(
-            share_factors_across_heads,
-            "share_factors_across_heads",
-            False,
-        )
-        embed_confs = {} if embed_confs is None else dict(embed_confs)
-        self.embedder = embedder
-        self.embedding_keys = set(
-            embedder.embedders.keys() if embedder is not None else ()
-        )
 
-        operator_projection_rank_time_by_zoom = _axis_values(
-            operator_projection_rank_time,
-            all_zooms,
-            "operator_projection_rank_time",
-        )
-        operator_projection_rank_space_by_zoom = _axis_values(
-            operator_projection_rank_space,
-            all_zooms,
-            "operator_projection_rank_space",
-        )
-        operator_projection_rank_depth_by_zoom = _axis_values(
-            operator_projection_rank_depth,
-            all_zooms,
-            "operator_projection_rank_depth",
-        )
-        operator_projection_rank_features_by_zoom = _axis_values(
-            operator_projection_rank_features,
-            all_zooms,
-            "operator_projection_rank_features",
-        )
-        operator_projection_rank_variables_by_zoom = _axis_values(
+        def shared(value: Any, name: str) -> Any:
+            return _shared_zoom_value(
+                _axis_values(value, self.in_zooms, name),
+                self.in_zooms,
+                name,
+            )
+
+        operator_ranks = [
+            shared(value, name)
+            for value, name in (
+                (operator_projection_rank_time, "operator_projection_rank_time"),
+                (operator_projection_rank_space, "operator_projection_rank_space"),
+                (operator_projection_rank_depth, "operator_projection_rank_depth"),
+                (
+                    operator_projection_rank_features,
+                    "operator_projection_rank_features",
+                ),
+            )
+        ]
+        mlp_ranks = [
+            shared(value, name)
+            for value, name in (
+                (mlp_projection_rank_time, "mlp_projection_rank_time"),
+                (mlp_projection_rank_space, "mlp_projection_rank_space"),
+                (mlp_projection_rank_depth, "mlp_projection_rank_depth"),
+                (mlp_projection_rank_features, "mlp_projection_rank_features"),
+            )
+        ]
+        operator_variable_rank = shared(
             operator_projection_rank_variables,
-            all_zooms,
             "operator_projection_rank_variables",
+        )
+        mlp_variable_rank = shared(
+            mlp_projection_rank_variables,
+            "mlp_projection_rank_variables",
         )
         if (
             not include_variable_dependency_operator_projection
-            and any(
-                rank is not None
-                for rank in operator_projection_rank_variables_by_zoom.values()
-            )
+            and operator_variable_rank is not None
         ):
             raise ValueError(
                 "operator_projection_rank_variables requires "
                 "include_variable_dependency_operator_projection=True"
             )
-        operator_projection_ranks_by_zoom = {
-            zoom: [
-                operator_projection_rank_time_by_zoom[zoom],
-                operator_projection_rank_space_by_zoom[zoom],
-                operator_projection_rank_depth_by_zoom[zoom],
-                operator_projection_rank_features_by_zoom[zoom],
-            ]
-            for zoom in all_zooms
-        }
-
-        mlp_projection_rank_time_by_zoom = _axis_values(
-            mlp_projection_rank_time,
-            all_zooms,
-            "mlp_projection_rank_time",
-        )
-        mlp_projection_rank_space_by_zoom = _axis_values(
-            mlp_projection_rank_space,
-            all_zooms,
-            "mlp_projection_rank_space",
-        )
-        mlp_projection_rank_depth_by_zoom = _axis_values(
-            mlp_projection_rank_depth,
-            all_zooms,
-            "mlp_projection_rank_depth",
-        )
-        mlp_projection_rank_features_by_zoom = _axis_values(
-            mlp_projection_rank_features,
-            all_zooms,
-            "mlp_projection_rank_features",
-        )
-        mlp_projection_rank_variables_by_zoom = _axis_values(
-            mlp_projection_rank_variables,
-            all_zooms,
-            "mlp_projection_rank_variables",
-        )
         if (
             not include_variable_dependency_mlp
-            and any(
-                rank is not None
-                for rank in mlp_projection_rank_variables_by_zoom.values()
-            )
+            and mlp_variable_rank is not None
         ):
             raise ValueError(
                 "mlp_projection_rank_variables requires "
                 "include_variable_dependency_mlp=True"
             )
-        mlp_projection_ranks_by_zoom = {
-            zoom: [
-                mlp_projection_rank_time_by_zoom[zoom],
-                mlp_projection_rank_space_by_zoom[zoom],
-                mlp_projection_rank_depth_by_zoom[zoom],
-                mlp_projection_rank_features_by_zoom[zoom],
-            ]
-            for zoom in all_zooms
-        }
 
-        self.branches = nn.ModuleList()
-        flat_index = 0
-        for operator_group in operator_groups:
-            group_indices = list(
-                range(flat_index, flat_index + len(operator_group))
-            )
-            flat_index += len(operator_group)
-            self.branches.append(
-                _FieldSpaceOperatorBranch(
-                    grid_layers=grid_layers,
-                    in_zooms=self.in_zooms,
-                    target_zooms=self.target_zooms,
-                    in_features=self.in_features,
-                    token_zoom=self.token_zoom,
-                    token_len_time=self.token_len_time,
-                    token_len_depth=self.token_len_depth,
-                    token_overlap_space=token_overlap_space,
-                    token_overlap_time=token_overlap_time,
-                    token_overlap_depth=token_overlap_depth,
-                    operator_dim=self.operator_dim,
-                    operators=operator_group,
-                    num_heads=[num_heads[index] for index in group_indices],
-                    n_variables=int(n_variables),
-                    n_times=int(n_times),
-                    sequence_zooms=[
-                        sequence_zooms[index] for index in group_indices
-                    ],
-                    include_neighbors=[
-                        bool(include_neighbors[index]) for index in group_indices
-                    ],
-                    include_dependencies=[
-                        {
-                            "variable": bool(include_variable_dependency[index]),
-                            "time": bool(include_time_dependency[index]),
-                            "space": bool(include_space_dependency[index]),
-                        }
-                        for index in group_indices
-                    ],
-                    dependency_ranks=[
-                        {
-                            "variable": ranks_variable[index],
-                            "time": ranks_time[index],
-                            "space": ranks_space[index],
-                        }
-                        for index in group_indices
-                    ],
-                    constant_dependencies=[
-                        {
-                            "variable": bool(
-                                constant_variable_dependency[index]
-                            ),
-                            "time": bool(constant_time_dependency[index]),
-                            "space": bool(constant_space_dependency[index]),
-                        }
-                        for index in group_indices
-                    ],
-                    ranks_in=[ranks_in[index] for index in group_indices],
-                    ranks_out=[ranks_out[index] for index in group_indices],
-                    initializations=[
-                        initializations[index] for index in group_indices
-                    ],
-                    share_factors_across_heads=[
-                        bool(share_factors_across_heads[index])
-                        for index in group_indices
-                    ],
-                    checkpoint_operator_groups=checkpoint_operator_groups,
-                    operator_projection_ranks_by_zoom=(
-                        operator_projection_ranks_by_zoom
-                    ),
-                    operator_projection_rank_variables_by_zoom=(
-                        operator_projection_rank_variables_by_zoom
-                    ),
-                    include_variable_dependency_operator_projection=bool(
-                        include_variable_dependency_operator_projection
-                    ),
-                    update=update,
-                    dropout=dropout,
-                    layer_norm=layer_norm,
-                    embed_confs=embed_confs,
-                    embedder=embedder,
-                    embedder_cache_key=embedder_cache_key,
-                    emb_modulation_mode=emb_modulation_mode,
-                    fac_mode=fac_mode,
-                )
-            )
-
-        self.mlp_tokenizers = nn.ModuleDict()
-        self.mlp_update_tokenizers = nn.ModuleDict()
-        self.mlp_pre_layers = nn.ModuleDict()
-        self.mlp_projection_layers = nn.ModuleDict()
-        self.mlp_output_layers = nn.ModuleDict()
-        self.mlp_gammas = nn.ParameterDict()
-        self.mlp_residual_gammas = nn.ParameterDict()
-        input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
-        for zoom in self.target_zooms:
-            key = str(zoom)
-            tokenizer = Tokenizer(
-                [zoom],
-                self.token_zoom,
-                overlap_thickness=int(token_overlap_space),
-                grid_layers=grid_layers,
-                token_len_time=self.token_len_time[zoom],
-                token_len_depth=self.token_len_depth,
-            )
-            update_tokenizer = Tokenizer(
-                [zoom],
-                self.token_zoom,
-                overlap_thickness=0,
-                grid_layers=grid_layers,
-                token_len_time=self.token_len_time[zoom],
-                token_len_depth=self.token_len_depth,
-            )
-            self.mlp_tokenizers[key] = tokenizer
-            self.mlp_update_tokenizers[key] = update_tokenizer
-            token_shape = [
-                self.token_len_time[zoom],
-                sum(tokenizer.get_features()[0].values()),
-                self.token_len_depth,
-                self.in_features[zoom],
-            ]
-            update_shape = [
-                self.token_len_time[zoom],
-                sum(update_tokenizer.get_features()[1].values()),
-                self.token_len_depth,
-                self.in_features[zoom],
-            ]
-            emb_tokenizer = Tokenizer(
-                [input_zoom_field]
-                if embedder is not None and embedder.has_space()
-                else [],
-                self.token_zoom,
-                token_len_time=1,
-                token_len_depth=(
-                    self.token_len_depth
-                    if embedder is not None and embedder.has_depth()
-                    else 1
-                ),
-                overlap_thickness=int(embed_confs.get("token_overlap_space", False)),
-                grid_layers=grid_layers,
-            )
-            emb_shape = list(token_shape)
-            emb_shape[1] = (
-                token_shape[1]
-                if embedder is not None and embedder.has_space()
-                else 1
-            )
-            mlp_projection_rank_variables_zoom = (
-                mlp_projection_rank_variables_by_zoom[zoom]
-            )
-            projection_n_variables = (
-                int(n_variables)
-                if include_variable_dependency_mlp
-                else 1
-            )
-            self.mlp_pre_layers[key] = LinEmbLayer(
-                emb_shape,
-                emb_shape,
-                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
-                n_variables=1,
-                fac_mode=fac_mode,
-                identity_if_equal=True,
-                embedder=embedder,
-                field_tokenizer=emb_tokenizer,
-                output_zoom=zoom,
-                layer_norm=layer_norm if separate_mlp_norm else False,
-                emb_modulation_mode=emb_modulation_mode,
-                embedder_cache_key=embedder_cache_key,
-            )
-            mlp_input_shape = [
-                token_shape[0] + 2 * int(token_overlap_mlp_time),
-                token_shape[1],
-                token_shape[2] + 2 * int(token_overlap_mlp_depth),
-                token_shape[3],
-            ]
-            self.mlp_projection_layers[key] = get_layer(
-                mlp_input_shape,
-                [1, 1, 1, self.operator_dim],
-                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
-                n_variables=projection_n_variables,
-                rank_variables=mlp_projection_rank_variables_zoom,
-                fac_mode=fac_mode,
-                bias=False,
-            )
-            self.mlp_output_layers[key] = get_layer(
-                [1, 1, 1, self.operator_dim],
-                [*update_shape[:-1], update_shape[-1] * self.update_multiplier],
-                ranks=list(mlp_projection_ranks_by_zoom[zoom]),
-                n_variables=projection_n_variables,
-                rank_variables=mlp_projection_rank_variables_zoom,
-                fac_mode=fac_mode,
-                bias=False,
-            )
-            self.mlp_gammas[key] = nn.Parameter(torch.ones(update_shape) * 1e-12)
-            self.mlp_residual_gammas[key] = nn.Parameter(
-                torch.ones(update_shape) * 1e-12
-            )
-
-        self.mlp_layer1 = get_layer(
-            [1, 1, 1, self.operator_dim],
-            [1, 1, 1, self.operator_dim],
-            ranks=[None] * 4,
-            n_variables=1,
+        sequence = _FieldSpaceOperatorSequence(
+            grid_layers=grid_layers,
+            operator_groups=operator_groups,
+            operator_dim=self.operator_dim,
+            num_heads=num_heads,
+            n_variables=int(n_variables),
+            n_times=int(n_times),
+            token_zoom=self.token_zoom,
+            sequence_zooms=sequence_zooms,
+            include_neighbors=include_neighbors,
+            include_variable_dependency=include_variable_dependency,
+            include_time_dependency=include_time_dependency,
+            include_space_dependency=include_space_dependency,
+            constant_variable_dependency=constant_variable_dependency,
+            constant_time_dependency=constant_time_dependency,
+            constant_space_dependency=constant_space_dependency,
+            ranks_variable=ranks_variable,
+            ranks_time=ranks_time,
+            ranks_space=ranks_space,
+            ranks_in=ranks_in,
+            ranks_out=ranks_out,
+            initializations=initializations,
+            share_factors_across_heads=share_factors_across_heads,
+            checkpoint_operator_groups=checkpoint_operator_groups,
+        )
+        embed_confs = {} if embed_confs is None else dict(embed_confs)
+        projection_n_variables = (
+            int(n_variables)
+            if include_variable_dependency_operator_projection
+            else 1
+        )
+        mlp_n_variables = (
+            int(n_variables) if include_variable_dependency_mlp else 1
+        )
+        common = dict(
+            grid_layers=grid_layers,
+            in_zooms=self.in_zooms,
+            target_zooms=self.target_zooms,
+            token_zoom=self.token_zoom,
+            token_len_depth=int(token_len_depth),
+            token_overlap_space=bool(token_overlap_space),
+            operator_output_overlap_space=bool(operator_output_overlap_space),
+            token_overlap_time=bool(token_overlap_time),
+            token_overlap_depth=bool(token_overlap_depth),
+            token_overlap_mlp_time=bool(token_overlap_mlp_time),
+            token_overlap_mlp_depth=bool(token_overlap_mlp_depth),
+            operator_dim=self.operator_dim,
+            num_heads=num_heads,
+            normalization_n_variables=(
+                int(n_variables) if variable_dependent_layer_norm else 1
+            ),
+            head_wise_layer_norm=bool(head_wise_layer_norm),
+            mlp_factor=int(mlp_factor),
+            projection_n_variables=projection_n_variables,
+            mlp_n_variables=mlp_n_variables,
+            update=update,
+            dropout=float(dropout),
+            embed_confs=embed_confs,
+            embedder=embedder,
+            embedder_cache_key=embedder_cache_key,
+            emb_modulation_mode=emb_modulation_mode,
             fac_mode=fac_mode,
-            bias=False,
+            operator_sequence=sequence,
         )
-        self.mlp_layer2 = get_layer(
-            [1, 1, 1, self.operator_dim],
-            [1, 1, 1, self.operator_dim],
-            ranks=[None] * 4,
-            n_variables=1,
-            fac_mode=fac_mode,
-            bias=False,
+        shared_in_features = int(
+            _shared_zoom_value(self.in_features, self.in_zooms, "in_features")
         )
-
-    def _aligned_embedding(
-        self,
-        emb: Optional[Dict[str, Any]],
-        zoom: int,
-        tokens: torch.Tensor,
-    ) -> Optional[Dict[str, Any]]:
-        return align_time_embeddings_to_tokens(
-            emb,
-            zoom=zoom,
-            token_len_time=self.token_len_time[zoom],
-            field_time_steps=int(tokens.shape[2] * self.token_len_time[zoom]),
-            embedding_keys=self.embedding_keys,
+        shared_token_len_time = int(
+            _shared_zoom_value(
+                self.token_len_time, self.in_zooms, "token_len_time"
+            )
+        )
+        self.execution_path = _FieldSpaceOperatorPath(
+            **common,
+            in_features=shared_in_features,
+            token_len_time=shared_token_len_time,
+            projection_ranks=operator_ranks,
+            mlp_ranks=mlp_ranks,
+            projection_rank_variables=operator_variable_rank,
+            mlp_rank_variables=mlp_variable_rank,
         )
 
-    def _run_mlp(
-        self,
-        x_zooms: Dict[int, torch.Tensor],
-        entry_fields: Mapping[int, torch.Tensor],
-        emb: Optional[Dict[str, Any]],
-        sample_configs: Mapping[int, Mapping[str, Any]],
-    ) -> Dict[int, torch.Tensor]:
-        projections: List[torch.Tensor] = []
-        embeddings: Dict[int, Optional[Dict[str, Any]]] = {}
-        for zoom in self.target_zooms:
-            key = str(zoom)
-            tokens = self.mlp_tokenizers[key]({zoom: x_zooms[zoom]}, sample_configs)
-            aligned_emb = self._aligned_embedding(emb, zoom, tokens)
-            embeddings[zoom] = aligned_emb
-            tokens = self.mlp_pre_layers[key](
-                tokens, emb=aligned_emb, sample_configs=sample_configs
-            )
-            if self.token_overlap_mlp_time:
-                tokens = add_time_overlap_from_neighbor_patches(
-                    tokens, overlap=1, pad_mode="edge"
-                )
-            if self.token_overlap_mlp_depth:
-                tokens = add_depth_overlap_from_neighbor_patches(
-                    tokens, overlap=1, pad_mode="edge"
-                )
-            projections.append(
-                self.mlp_projection_layers[key](
-                    tokens, emb=aligned_emb, sample_configs=sample_configs
-                )
-            )
-        expected = projections[0].shape
-        if any(projection.shape != expected for projection in projections[1:]):
-            raise ValueError("MLP zoom projections must have identical shapes")
-        hidden = torch.stack(projections).sum(dim=0)
-        shared_emb = embeddings[self.target_zooms[0]]
-        hidden = self.mlp_layer1(
-            hidden, emb=shared_emb, sample_configs=sample_configs
-        )
-        hidden = self.mlp_activation(hidden)
-        hidden = self.dropout_mlp(hidden)
-        hidden = self.mlp_layer2(
-            hidden, emb=shared_emb, sample_configs=sample_configs
-        )
-
-        for zoom in self.target_zooms:
-            key = str(zoom)
-            residual_field = (
-                x_zooms[zoom]
-                if self.mlp_residual_from_operators
-                else entry_fields[zoom]
-            )
-            base = self.mlp_update_tokenizers[key](
-                {zoom: residual_field}, sample_configs
-            )
-            projected = self.dropout_mlp(
-                self.mlp_output_layers[key](
-                    hidden,
-                    emb=embeddings[zoom],
-                    sample_configs=sample_configs,
-                )
-            )
-            gamma = self.mlp_gammas[key]
-            gamma_res = self.mlp_residual_gammas[key]
-            if self.scale_shift:
-                scale, shift = projected.chunk(2, dim=-1)
-                updated = base * (1 + gamma_res * scale) + gamma * shift
-            else:
-                updated = (1 + gamma_res) * base + gamma * projected
-            x_zooms[zoom] = _FieldSpaceOperatorBranch._detokenize(updated)
-        return x_zooms
+    @property
+    def operator_sequence(self) -> _FieldSpaceOperatorSequence:
+        return self.execution_path.operator_sequence
 
     def forward(
         self,
@@ -2970,19 +2926,15 @@ class FieldSpaceOperatorBlock(nn.Module):
         **kwargs: Any,
     ) -> Dict[int, torch.Tensor]:
         del kwargs
-        sample_configs = {} if sample_configs is None else sample_configs
-        entry_fields = {zoom: x_zooms[zoom] for zoom in self.target_zooms}
-        for branch in self.branches:
-            x_zooms = branch(
-                x_zooms, emb=emb, sample_configs=sample_configs
-            )
-        return self._run_mlp(
-            x_zooms, entry_fields, emb, sample_configs
+        return self.execution_path(
+            x_zooms,
+            emb=emb,
+            sample_configs={} if sample_configs is None else sample_configs,
         )
 
 
 class FieldSpaceOperatorModule(nn.Module):
-    """Apply independent field-space operator blocks to variable groups."""
+    """Apply field-space operator blocks to selected variable groups."""
 
     def __init__(
         self,
@@ -2996,9 +2948,11 @@ class FieldSpaceOperatorModule(nn.Module):
         n_groups_variables: Sequence[int],
         n_groups_depths: Optional[Sequence[int]] = None,
         groups: Union[Sequence[bool], int] = -1,
+        num_heads: int = 1,
         token_len_depth: Any = 1,
         token_overlap_depth: Any = False,
         token_overlap_mlp_depth: Any = False,
+        operator_output_overlap_space: bool = False,
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
@@ -3014,6 +2968,9 @@ class FieldSpaceOperatorModule(nn.Module):
         mlp_projection_rank_features: Any = None,
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
+        mlp_factor: int = 4,
+        head_wise_layer_norm: bool = False,
+        variable_dependent_layer_norm: bool = False,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         global_embedders: Optional[nn.ModuleDict] = None,
@@ -3036,6 +2993,8 @@ class FieldSpaceOperatorModule(nn.Module):
                 "mlp_projection_rank_variables requires "
                 "include_variable_dependency_mlp=True"
             )
+        self.mlp_factor = int(mlp_factor)
+        self.num_heads = _positive_head_count(num_heads)
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [
             int(zoom) for zoom in (
@@ -3082,8 +3041,6 @@ class FieldSpaceOperatorModule(nn.Module):
             "n_groups_depths",
         )
         self.n_groups_depths = [int(value) for value in n_groups_depths]
-        if any(value <= 0 for value in self.n_groups_depths):
-            raise ValueError("n_groups_depths must contain positive values")
         token_len_depth = _group_values(
             token_len_depth, n_groups, "token_len_depth"
         )
@@ -3127,10 +3084,19 @@ class FieldSpaceOperatorModule(nn.Module):
                 continue
             block_kwargs = dict(kwargs)
             block_kwargs.update(
+                num_heads=self.num_heads,
+                mlp_factor=int(mlp_factor),
+                head_wise_layer_norm=bool(head_wise_layer_norm),
+                variable_dependent_layer_norm=bool(
+                    variable_dependent_layer_norm
+                ),
                 token_len_depth=int(token_len_depth[group_index]),
                 token_overlap_depth=bool(token_overlap_depth[group_index]),
                 token_overlap_mlp_depth=bool(
                     token_overlap_mlp_depth[group_index]
+                ),
+                operator_output_overlap_space=bool(
+                    operator_output_overlap_space
                 ),
                 constant_variable_dependency=constant_variable_dependency,
                 constant_time_dependency=constant_time_dependency,

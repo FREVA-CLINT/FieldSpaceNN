@@ -368,6 +368,9 @@ def create_encoder_decoder_block(
             token_len_time=block_conf.token_len_time,
             token_len_depth=block_conf.token_len_depth,
             token_overlap_space=block_conf.token_overlap_space,
+            operator_output_overlap_space=(
+                block_conf.operator_output_overlap_space
+            ),
             token_overlap_time=block_conf.token_overlap_time,
             token_overlap_depth=block_conf.token_overlap_depth,
             token_overlap_mlp_time=block_conf.token_overlap_mlp_time,
@@ -402,11 +405,13 @@ def create_encoder_decoder_block(
             include_variable_dependency_mlp=(
                 block_conf.include_variable_dependency_mlp
             ),
+            mlp_factor=block_conf.mlp_factor,
+            head_wise_layer_norm=block_conf.head_wise_layer_norm,
+            variable_dependent_layer_norm=(
+                block_conf.variable_dependent_layer_norm
+            ),
             update=block_conf.update,
             dropout=operator_dropout,
-            layer_norm=block_conf.layer_norm,
-            separate_mlp_norm=block_conf.separate_mlp_norm,
-            mlp_residual_from_operators=block_conf.mlp_residual_from_operators,
             checkpoint_operator_groups=block_conf.checkpoint_operator_groups,
             embed_confs=embed_confs,
             global_embedders=global_embedders,
