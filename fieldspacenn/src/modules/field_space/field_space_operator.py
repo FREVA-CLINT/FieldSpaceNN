@@ -217,9 +217,15 @@ def _constant_dependency_factor(
     rank: int,
     num_heads: Optional[int] = None,
 ) -> nn.Parameter:
-    """Create dependency factors with identical unit-norm rows."""
-    shape = (size, rank) if num_heads is None else (num_heads, size, rank)
-    factor = torch.full(shape, 1.0 / math.sqrt(rank))
+    """Create dependency factors with constant random unit-norm rows."""
+    if num_heads is None:
+        constant = torch.randn(rank)
+        constant.div_(constant.norm())
+        factor = constant.expand(size, rank).clone()
+    else:
+        constant = torch.randn(int(num_heads), rank)
+        constant.div_(constant.norm(dim=-1, keepdim=True))
+        factor = constant.unsqueeze(1).expand(-1, size, -1).clone()
     return nn.Parameter(factor)
 
 
