@@ -350,6 +350,8 @@ def create_encoder_decoder_block(
             include_neighbors=block_conf.include_neighbors,
             ranks_in=block_conf.ranks_in,
             ranks_out=block_conf.ranks_out,
+            constant_in_factor=block_conf.constant_in_factor,
+            constant_out_factor=block_conf.constant_out_factor,
             include_variable_dependency=block_conf.include_variable_dependency,
             include_time_dependency=block_conf.include_time_dependency,
             include_space_dependency=block_conf.include_space_dependency,

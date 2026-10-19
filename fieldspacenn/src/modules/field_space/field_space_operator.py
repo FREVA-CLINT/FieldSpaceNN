@@ -212,12 +212,12 @@ def _orthogonal_factor(
     return nn.Parameter(factor)
 
 
-def _constant_dependency_factor(
+def _constant_factor(
     size: int,
     rank: int,
     num_heads: Optional[int] = None,
 ) -> nn.Parameter:
-    """Create dependency factors with constant random unit-norm rows."""
+    """Create factors with constant random unit-norm rows."""
     if num_heads is None:
         constant = torch.randn(rank)
         constant.div_(constant.norm())
@@ -260,6 +260,8 @@ class TuckerOperator(nn.Module):
         in_size: int,
         rank_out: Optional[int] = None,
         rank_in: Optional[int] = None,
+        constant_out_factor: bool = False,
+        constant_in_factor: bool = False,
         dependency_ranks: Optional[Mapping[str, Optional[int]]] = None,
         constant_dependencies: Optional[Mapping[str, bool]] = None,
         initialization: str = "identity",
@@ -301,6 +303,8 @@ class TuckerOperator(nn.Module):
         self.in_size = int(in_size)
         self.rank_out = None if rank_out is None else int(rank_out)
         self.rank_in = None if rank_in is None else int(rank_in)
+        self.constant_out_factor = bool(constant_out_factor)
+        self.constant_in_factor = bool(constant_in_factor)
         self.initialization = initialization
         self.share_factors_across_heads = bool(share_factors_across_heads)
         self.dependency_ranks = {
@@ -331,7 +335,7 @@ class TuckerOperator(nn.Module):
                 None if self.share_factors_across_heads else self.num_heads
             )
             if self.constant_dependencies[name]:
-                factor = _constant_dependency_factor(
+                factor = _constant_factor(
                     size, rank, factor_heads
                 )
             else:
@@ -349,7 +353,12 @@ class TuckerOperator(nn.Module):
                     f"rank_out must be in [1, {self.out_size}], "
                     f"got {self.rank_out}"
                 )
-            self.out_factor = _orthogonal_factor(
+            factor_initializer = (
+                _constant_factor
+                if self.constant_out_factor
+                else _orthogonal_factor
+            )
+            self.out_factor = factor_initializer(
                 self.out_size,
                 self.rank_out,
                 None if self.share_factors_across_heads else self.num_heads,
@@ -364,7 +373,12 @@ class TuckerOperator(nn.Module):
                 raise ValueError(
                     f"rank_in must be in [1, {self.in_size}], got {self.rank_in}"
                 )
-            self.in_factor = _orthogonal_factor(
+            factor_initializer = (
+                _constant_factor
+                if self.constant_in_factor
+                else _orthogonal_factor
+            )
+            self.in_factor = factor_initializer(
                 self.in_size,
                 self.rank_in,
                 None if self.share_factors_across_heads else self.num_heads,
@@ -1197,6 +1211,8 @@ class FieldSpaceOperator(nn.Module):
         constant_dependencies: Optional[Mapping[str, bool]] = None,
         rank_in: Optional[int],
         rank_out: Optional[int],
+        constant_in_factor: bool = False,
+        constant_out_factor: bool = False,
         initialization: str = "identity",
         share_factors_across_heads: bool = False,
         grid_layers: Mapping[str, GridLayer],
@@ -1329,6 +1345,8 @@ class FieldSpaceOperator(nn.Module):
             in_size=in_size,
             rank_out=rank_out,
             rank_in=rank_in,
+            constant_out_factor=constant_out_factor,
+            constant_in_factor=constant_in_factor,
             dependency_ranks=dependency_ranks,
             constant_dependencies=constant_dependencies,
             initialization=initialization,
@@ -1728,6 +1746,8 @@ class FieldSpaceOperatorConfig:
         include_neighbors: Optional[OperatorSetting] = None,
         ranks_in: Optional[OperatorSetting] = None,
         ranks_out: Optional[OperatorSetting] = None,
+        constant_in_factor: Optional[OperatorSetting] = None,
+        constant_out_factor: Optional[OperatorSetting] = None,
         include_variable_dependency: Optional[OperatorSetting] = None,
         include_space_dependency: Optional[OperatorSetting] = None,
         include_time_dependency: Optional[OperatorSetting] = None,
@@ -1812,6 +1832,12 @@ class FieldSpaceOperatorConfig:
         )
         ranks_in = align_operator_values(ranks_in, "ranks_in", None)
         ranks_out = align_operator_values(ranks_out, "ranks_out", None)
+        constant_in_factor = align_operator_values(
+            constant_in_factor, "constant_in_factor", False
+        )
+        constant_out_factor = align_operator_values(
+            constant_out_factor, "constant_out_factor", False
+        )
         include_variable_dependency = align_operator_values(
             include_variable_dependency,
             "include_variable_dependency",
@@ -2004,6 +2030,12 @@ class FieldSpaceOperatorConfig:
         self.include_neighbors = [bool(value) for value in include_neighbors]
         self.ranks_in = ranks_in
         self.ranks_out = ranks_out
+        self.constant_in_factor = [
+            bool(value) for value in constant_in_factor
+        ]
+        self.constant_out_factor = [
+            bool(value) for value in constant_out_factor
+        ]
         self.include_variable_dependency = [
             bool(value) for value in include_variable_dependency
         ]
@@ -2214,6 +2246,8 @@ class _FieldSpaceOperatorSequence(nn.Module):
         constant_variable_dependency: Sequence[bool],
         constant_time_dependency: Sequence[bool],
         constant_space_dependency: Sequence[bool],
+        constant_in_factor: Sequence[bool],
+        constant_out_factor: Sequence[bool],
         ranks_variable: Sequence[Optional[int]],
         ranks_time: Sequence[Optional[int]],
         ranks_space: Sequence[Optional[int]],
@@ -2258,6 +2292,8 @@ class _FieldSpaceOperatorSequence(nn.Module):
                         },
                         rank_in=ranks_in[index],
                         rank_out=ranks_out[index],
+                        constant_in_factor=bool(constant_in_factor[index]),
+                        constant_out_factor=bool(constant_out_factor[index]),
                         initialization=initializations[index],
                         share_factors_across_heads=bool(
                             share_factors_across_heads[index]
@@ -2726,6 +2762,8 @@ class FieldSpaceOperatorBlock(nn.Module):
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
+        constant_in_factor: Optional[OperatorSetting] = None,
+        constant_out_factor: Optional[OperatorSetting] = None,
         share_factors_across_heads: Optional[OperatorSetting] = None,
         token_len_time: Any = 1,
         token_len_depth: int = 1,
@@ -2807,6 +2845,12 @@ class FieldSpaceOperatorBlock(nn.Module):
         )
         constant_space_dependency = align(
             constant_space_dependency, "constant_space_dependency", True
+        )
+        constant_in_factor = align(
+            constant_in_factor, "constant_in_factor", False
+        )
+        constant_out_factor = align(
+            constant_out_factor, "constant_out_factor", False
         )
         ranks_variable = align(ranks_variable, "ranks_variable", None)
         ranks_time = align(ranks_time, "ranks_time", None)
@@ -2923,6 +2967,8 @@ class FieldSpaceOperatorBlock(nn.Module):
             constant_variable_dependency=constant_variable_dependency,
             constant_time_dependency=constant_time_dependency,
             constant_space_dependency=constant_space_dependency,
+            constant_in_factor=constant_in_factor,
+            constant_out_factor=constant_out_factor,
             ranks_variable=ranks_variable,
             ranks_time=ranks_time,
             ranks_space=ranks_space,
@@ -3036,6 +3082,8 @@ class FieldSpaceOperatorModule(nn.Module):
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
+        constant_in_factor: Optional[OperatorSetting] = None,
+        constant_out_factor: Optional[OperatorSetting] = None,
         operator_projection_rank_time: Any = None,
         operator_projection_rank_space: Any = None,
         operator_projection_rank_depth: Any = None,
@@ -3187,6 +3235,8 @@ class FieldSpaceOperatorModule(nn.Module):
                 constant_variable_dependency=constant_variable_dependency,
                 constant_time_dependency=constant_time_dependency,
                 constant_space_dependency=constant_space_dependency,
+                constant_in_factor=constant_in_factor,
+                constant_out_factor=constant_out_factor,
                 operator_projection_rank_time=operator_projection_rank_time,
                 operator_projection_rank_space=operator_projection_rank_space,
                 operator_projection_rank_depth=(
