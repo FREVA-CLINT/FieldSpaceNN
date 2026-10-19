@@ -1739,6 +1739,7 @@ class FieldSpaceOperatorConfig:
         token_len_depth: Any = 1,
         token_overlap_space: bool = False,
         operator_output_overlap_space: bool = False,
+        latent_operator_mlp: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: Any = False,
         token_overlap_mlp_time: bool = False,
@@ -2021,6 +2022,7 @@ class FieldSpaceOperatorConfig:
         self.token_len_depth = token_len_depth
         self.token_overlap_space = bool(token_overlap_space)
         self.operator_output_overlap_space = bool(operator_output_overlap_space)
+        self.latent_operator_mlp = bool(latent_operator_mlp)
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
@@ -2315,6 +2317,7 @@ class _FieldSpaceOperatorPath(nn.Module):
         token_len_depth: int,
         token_overlap_space: bool,
         operator_output_overlap_space: bool,
+        latent_operator_mlp: bool,
         token_overlap_time: bool,
         token_overlap_depth: bool,
         token_overlap_mlp_time: bool,
@@ -2349,8 +2352,11 @@ class _FieldSpaceOperatorPath(nn.Module):
         self.token_overlap_depth = bool(token_overlap_depth)
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
         self.token_overlap_mlp_depth = bool(token_overlap_mlp_depth)
+        self.latent_operator_mlp = bool(latent_operator_mlp)
         self.operator_output_overlap_space = bool(
-            token_overlap_space and operator_output_overlap_space
+            not self.latent_operator_mlp
+            and token_overlap_space
+            and operator_output_overlap_space
         )
         self.operator_dim = int(operator_dim)
         self.num_heads = int(num_heads)
@@ -2421,31 +2427,38 @@ class _FieldSpaceOperatorPath(nn.Module):
             if self.operator_output_overlap_space
             else self.residual_shape
         )
-        operator_output_shape = list(operator_state_shape)
-        operator_output_shape[-1] *= update_multiplier
-        self.operator_output = get_layer(
-            latent_shape,
-            operator_output_shape,
-            ranks=list(projection_ranks),
-            n_variables=int(projection_n_variables),
-            rank_variables=projection_rank_variables,
-            fac_mode=fac_mode,
-            bias=False,
-        )
-        self.operator_residual = _GatedResidualUpdate(operator_state_shape, update)
+        if self.latent_operator_mlp:
+            self.operator_output = None
+            self.operator_residual = None
+            self.mlp_input = None
+        else:
+            operator_output_shape = list(operator_state_shape)
+            operator_output_shape[-1] *= update_multiplier
+            self.operator_output = get_layer(
+                latent_shape,
+                operator_output_shape,
+                ranks=list(projection_ranks),
+                n_variables=int(projection_n_variables),
+                rank_variables=projection_rank_variables,
+                fac_mode=fac_mode,
+                bias=False,
+            )
+            self.operator_residual = _GatedResidualUpdate(
+                operator_state_shape, update
+            )
 
-        mlp_input_shape = list(operator_state_shape)
-        mlp_input_shape[0] += 2 * int(self.token_overlap_mlp_time)
-        mlp_input_shape[2] += 2 * int(self.token_overlap_mlp_depth)
-        self.mlp_input = get_layer(
-            mlp_input_shape,
-            latent_shape,
-            ranks=list(mlp_ranks),
-            n_variables=int(mlp_n_variables),
-            rank_variables=mlp_rank_variables,
-            fac_mode=fac_mode,
-            bias=False,
-        )
+            mlp_input_shape = list(operator_state_shape)
+            mlp_input_shape[0] += 2 * int(self.token_overlap_mlp_time)
+            mlp_input_shape[2] += 2 * int(self.token_overlap_mlp_depth)
+            self.mlp_input = get_layer(
+                mlp_input_shape,
+                latent_shape,
+                ranks=list(mlp_ranks),
+                n_variables=int(mlp_n_variables),
+                rank_variables=mlp_rank_variables,
+                fac_mode=fac_mode,
+                bias=False,
+            )
         self.mlp_norm = _token_norm(
             token_shape=latent_shape,
             num_heads=self.num_heads,
@@ -2477,12 +2490,25 @@ class _FieldSpaceOperatorPath(nn.Module):
         mlp_output_shape[-1] *= update_multiplier
         self.mlp_output = get_layer(
             [1, 1, 1, hidden_dim],
-            mlp_output_shape,
+            latent_shape if self.latent_operator_mlp else mlp_output_shape,
             ranks=list(mlp_ranks),
             n_variables=int(mlp_n_variables),
             rank_variables=mlp_rank_variables,
             fac_mode=fac_mode,
             bias=False,
+        )
+        self.final_output = (
+            get_layer(
+                latent_shape,
+                mlp_output_shape,
+                ranks=list(mlp_ranks),
+                n_variables=int(mlp_n_variables),
+                rank_variables=mlp_rank_variables,
+                fac_mode=fac_mode,
+                bias=False,
+            )
+            if self.latent_operator_mlp
+            else None
         )
         self.mlp_residuals = nn.ModuleDict(
             {
@@ -2556,38 +2582,51 @@ class _FieldSpaceOperatorPath(nn.Module):
             emb=aligned_emb,
             sample_config=sample_configs.get(self.token_zoom, {}),
         )
-        operator_update = self.operator_output(
-            operator_update.view(
-                *operator_update.shape[:5], 1, 1, 1, self.operator_dim
-            ),
-            emb=aligned_emb,
-            sample_configs=sample_configs,
-        )
-        x = self.operator_residual(
-            processing if self.operator_output_overlap_space else residual,
-            self.operator_dropout(operator_update),
-            branch="operator",
-        )
+        if self.latent_operator_mlp:
+            operator_latent = self.operator_dropout(
+                operator_update.view(
+                    *operator_update.shape[:5], 1, 1, 1, self.operator_dim
+                )
+            )
+            latent = self.mlp_norm(
+                operator_latent,
+                emb=aligned_emb,
+                sample_configs=sample_configs,
+            )
+        else:
+            operator_update = self.operator_output(
+                operator_update.view(
+                    *operator_update.shape[:5], 1, 1, 1, self.operator_dim
+                ),
+                emb=aligned_emb,
+                sample_configs=sample_configs,
+            )
+            x = self.operator_residual(
+                processing if self.operator_output_overlap_space else residual,
+                self.operator_dropout(operator_update),
+                branch="operator",
+            )
 
-        mlp_input = x
-        if self.token_overlap_mlp_time:
-            mlp_input = add_time_overlap_from_neighbor_patches(
-                mlp_input, overlap=1, pad_mode="edge"
+            mlp_input = x
+            if self.token_overlap_mlp_time:
+                mlp_input = add_time_overlap_from_neighbor_patches(
+                    mlp_input, overlap=1, pad_mode="edge"
+                )
+            if self.token_overlap_mlp_depth:
+                mlp_input = add_depth_overlap_from_neighbor_patches(
+                    mlp_input, overlap=1, pad_mode="edge"
+                )
+            latent = self.mlp_input(
+                mlp_input,
+                emb=aligned_emb,
+                sample_configs=sample_configs,
             )
-        if self.token_overlap_mlp_depth:
-            mlp_input = add_depth_overlap_from_neighbor_patches(
-                mlp_input, overlap=1, pad_mode="edge"
+            latent = self.mlp_norm(
+                latent,
+                emb=aligned_emb,
+                sample_configs=sample_configs,
             )
-        latent = self.mlp_input(
-            mlp_input,
-            emb=aligned_emb,
-            sample_configs=sample_configs,
-        )
-        latent = self.mlp_norm(
-            latent,
-            emb=aligned_emb,
-            sample_configs=sample_configs,
-        )
+
         hidden = self.mlp_hidden(
             latent,
             emb=aligned_emb,
@@ -2599,9 +2638,17 @@ class _FieldSpaceOperatorPath(nn.Module):
             emb=aligned_emb,
             sample_configs=sample_configs,
         )
+        if self.latent_operator_mlp:
+            mlp_update = self.final_output(
+                operator_latent + mlp_update,
+                emb=aligned_emb,
+                sample_configs=sample_configs,
+            )
+            residual_base = residual
+        else:
+            residual_base = residual if self.operator_output_overlap_space else x
 
         widths = [self.residual_features[zoom] for zoom in self.in_zooms]
-        residual_base = residual if self.operator_output_overlap_space else x
         bases = residual_base.split(widths, dim=-3)
         updates = mlp_update.split(widths, dim=-3)
         for zoom, base, update_value in zip(self.in_zooms, bases, updates):
@@ -2661,6 +2708,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         token_len_depth: int = 1,
         token_overlap_space: bool = False,
         operator_output_overlap_space: bool = False,
+        latent_operator_mlp: bool = False,
         token_overlap_time: bool = False,
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
@@ -2873,6 +2921,7 @@ class FieldSpaceOperatorBlock(nn.Module):
             token_len_depth=int(token_len_depth),
             token_overlap_space=bool(token_overlap_space),
             operator_output_overlap_space=bool(operator_output_overlap_space),
+            latent_operator_mlp=bool(latent_operator_mlp),
             token_overlap_time=bool(token_overlap_time),
             token_overlap_depth=bool(token_overlap_depth),
             token_overlap_mlp_time=bool(token_overlap_mlp_time),
@@ -2953,6 +3002,7 @@ class FieldSpaceOperatorModule(nn.Module):
         token_overlap_depth: Any = False,
         token_overlap_mlp_depth: Any = False,
         operator_output_overlap_space: bool = False,
+        latent_operator_mlp: bool = False,
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
@@ -3098,6 +3148,7 @@ class FieldSpaceOperatorModule(nn.Module):
                 operator_output_overlap_space=bool(
                     operator_output_overlap_space
                 ),
+                latent_operator_mlp=bool(latent_operator_mlp),
                 constant_variable_dependency=constant_variable_dependency,
                 constant_time_dependency=constant_time_dependency,
                 constant_space_dependency=constant_space_dependency,
