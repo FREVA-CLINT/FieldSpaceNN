@@ -56,28 +56,108 @@ class LightningProbabilisticModel(pl.LightningModule):
             except (TypeError, ValueError):
                 return key
 
-        def _repeat_emb_value(value: Any) -> Any:
+        def _map_variable_name_columns(
+            value: Any,
+            *,
+            expected_length: int,
+            transform: Any,
+        ) -> Any:
+            """Transform batch-aligned, variable-major collated name columns."""
+            if not isinstance(value, (list, tuple)):
+                return value
+
+            transformed_columns = []
+            for names in value:
+                # A string denotes one shared variable name, not a batch axis.
+                if isinstance(names, str):
+                    transformed_columns.append(names)
+                    continue
+                if not isinstance(names, (list, tuple)):
+                    transformed_columns.append(names)
+                    continue
+                if len(names) != expected_length:
+                    raise ValueError(
+                        "Collated variable_names_sampled columns must match the "
+                        f"prediction batch size. Expected {expected_length}, "
+                        f"got {len(names)}."
+                    )
+                transformed_names = transform(names)
+                transformed_columns.append(
+                    tuple(transformed_names)
+                    if isinstance(names, tuple)
+                    else list(transformed_names)
+                )
+
+            return (
+                tuple(transformed_columns)
+                if isinstance(value, tuple)
+                else transformed_columns
+            )
+
+        def _repeat_variable_names(value: Any) -> Any:
+            return _map_variable_name_columns(
+                value,
+                expected_length=batch_size,
+                transform=lambda names: [
+                    name
+                    for name in names
+                    for _ in range(self.n_samples)
+                ],
+            )
+
+        def _slice_variable_names(value: Any, start: int, end: int) -> Any:
+            return _map_variable_name_columns(
+                value,
+                expected_length=total_samples,
+                transform=lambda names: names[start:end],
+            )
+
+        def _repeat_emb_value(value: Any, key: Any = None) -> Any:
+            if key == "variable_names_sampled":
+                return _repeat_variable_names(value)
             if isinstance(value, torch.Tensor):
                 if value.ndim > 0 and value.shape[0] == batch_size:
                     return value.repeat_interleave(self.n_samples, dim=0)
                 return value
             if isinstance(value, dict):
-                return {_normalize_emb_key(k): _repeat_emb_value(v) for k, v in value.items()}
+                return {
+                    _normalize_emb_key(k): _repeat_emb_value(v, key=k)
+                    for k, v in value.items()
+                }
             return value
 
-        def _slice_emb_value(value: Any, start: int, end: int) -> Any:
+        def _slice_emb_value(
+            value: Any,
+            start: int,
+            end: int,
+            key: Any = None,
+        ) -> Any:
+            if key == "variable_names_sampled":
+                return _slice_variable_names(value, start, end)
             if isinstance(value, torch.Tensor):
                 if value.ndim > 0 and value.shape[0] == total_samples:
                     return value[start:end]
                 return value
             if isinstance(value, dict):
-                return {_normalize_emb_key(k): _slice_emb_value(v, start, end) for k, v in value.items()}
+                return {
+                    _normalize_emb_key(k): _slice_emb_value(
+                        v, start, end, key=k
+                    )
+                    for k, v in value.items()
+                }
             return value
 
         emb_groups_rep = []
         if emb_groups:
             for emb in emb_groups:
-                emb_groups_rep.append({k: _repeat_emb_value(v) for k, v in emb.items()} if emb else None)
+                emb_groups_rep.append(
+                    {
+                        k: _repeat_emb_value(v, key=k)
+                        for k, v in emb.items()
+                    }
+                    if emb
+                    else None
+                )
 
         output_groups_chunks = []
         max_batchsize = self.max_batchsize if self.max_batchsize != -1 else total_samples
@@ -93,7 +173,10 @@ class LightningProbabilisticModel(pl.LightningModule):
             if emb_groups_rep:
                 for emb_rep in emb_groups_rep:
                     if emb_rep:
-                        chunk = {k: _slice_emb_value(v, start, end) for k, v in emb_rep.items()}
+                        chunk = {
+                            k: _slice_emb_value(v, start, end, key=k)
+                            for k, v in emb_rep.items()
+                        }
                         emb_chunk.append(chunk)
                     else:
                         emb_chunk.append(None)
