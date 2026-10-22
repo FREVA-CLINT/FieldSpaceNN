@@ -510,11 +510,8 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 self.current_epoch,
                 output_comp=pred_x1_comp,
                 plot_name=f"_flow_{t.item():.2f}",
-<<<<<<< HEAD
                 compose_zooms=self.decode_zooms,
-=======
                 apply_diff=self._apply_diff(),
->>>>>>> main
             )
 
     def generate_joint(self, timestamps, forcings, future_length, initial_latents=None,

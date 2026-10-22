@@ -42,7 +42,7 @@ class VariableLengthHealPixLoader(HealPixLoader):
             if config.get("p_drop", 0) or config.get("mask_n_last_ts", 0):
                 raise ValueError("Disable whole-zoom and fixed-suffix masking for prefix windows")
             config.update(n_past_ts=0, n_future_ts=lengths[0] - 1)
-        kwargs.setdefault("residualize_zooms", False)
+        kwargs.setdefault("apply_diff", False)
         kwargs.setdefault("calendar_time", True)
         kwargs.setdefault("output_binary_mask", True)
         super().__init__(data_dict=data_dict, sampling_zooms=configs, **kwargs)

@@ -255,7 +255,8 @@ class CustomImageLogger(Logger):
         current_epoch: int,
         output_comp: Optional[Dict[int, torch.Tensor]] = None,
         plot_name: str = "",
-        apply_diff: bool = True
+        apply_diff: bool = True,
+        compose_zooms: bool = True,
     ):
         """
         Generates and logs plots of input, output, and ground truth tensors.
@@ -270,6 +271,8 @@ class CustomImageLogger(Logger):
         :param current_epoch: Current epoch index for naming.
         :param output_comp: Optional composite output dict by zoom.
         :param plot_name: Optional suffix for plot names.
+        :param apply_diff: Whether the zooms contain residuals to sum.
+        :param compose_zooms: Whether to also log a combined plot at a shared zoom.
         :return: None.
         """
         if not self.save_snapshot_images:
@@ -287,6 +290,9 @@ class CustomImageLogger(Logger):
                 plot_name=f"epoch_{current_epoch}{plot_name}",
             )
 
+
+        if not compose_zooms:
+            return
 
         # Build one combined plot by decoding each tensor dict to a shared zoom.
         combined_zoom_candidates = []
