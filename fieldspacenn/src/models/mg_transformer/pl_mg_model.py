@@ -549,7 +549,7 @@ class LightningMGModel(pl.LightningModule):
             emb = emb_groups[group_idx]
 
             self.logger.log_tensor_plot(
-                plot_types=["healpix_plot_zooms_var"],
+                plot_types=None,
                 input=source,
                 output=output,
                 gt=target,
@@ -570,7 +570,7 @@ class LightningMGModel(pl.LightningModule):
                     target, sample_configs=sample_configs_target, out_zoom=max_zoom
                 )
                 self.logger.log_tensor_plot(
-                    plot_types=["healpix_plot_zooms_var"],
+                    plot_types=None,
                     input=source_comp,
                     output=output_comp,
                     gt=target_comp,

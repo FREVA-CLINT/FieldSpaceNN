@@ -18,12 +18,19 @@ def get_zoom_from_npix(npix: int):
     :param npix: Total number of pixels in the Healpix grid.
     :return: Zoom level (log2 of nside) or None if the input is invalid.
     """
-    try:
-        nside = hp.npix2nside(npix)
-        zoom_level = int(np.log2(nside))
-        return zoom_level
-    except ValueError:
+    if isinstance(npix, bool) or not isinstance(npix, (int, np.integer)):
         return None
+
+    npix = int(npix)
+    if npix < 12 or npix % 12 != 0:
+        return None
+
+    nside_squared = npix // 12
+    nside = math.isqrt(nside_squared)
+    if nside * nside != nside_squared or nside & (nside - 1):
+        return None
+
+    return nside.bit_length() - 1
 
 def get_lon_lat_names(grid_type: Optional[str]):
     """
@@ -958,6 +965,101 @@ def healpix_grid_to_mgrid(zoom_max: int = 10, nh: int = 1):
             "zoom": zoom
         }
         grids.append(grid_lvl)
+
+    return grids
+
+
+def healpix_grid_local_to_mgrid(
+    cell_indices: Sequence[int],
+    sampling_zoom: int,
+    zoom_max: int,
+):
+    """
+    Build local Healpix grid levels from global nested cell indices.
+
+    The supplied cells define the complete local domain at ``sampling_zoom``.
+    Finer levels contain all nested descendants of those cells in the same
+    parent-major order used by the dataset zoom transforms. Neighbors outside
+    the local domain are replaced by the center cell and marked in
+    ``adjc_mask``.
+
+    :param cell_indices: Global nested Healpix cell indices at ``sampling_zoom``.
+    :param sampling_zoom: Zoom level represented by ``cell_indices``.
+    :param zoom_max: Maximum zoom level to include.
+    :return: Grid dictionaries for zooms ``sampling_zoom`` through ``zoom_max``.
+    """
+    sampling_zoom = int(sampling_zoom)
+    zoom_max = int(zoom_max)
+    if sampling_zoom < 0:
+        raise ValueError("`sampling_zoom` must be non-negative.")
+    if zoom_max < sampling_zoom:
+        raise ValueError("`zoom_max` must be greater than or equal to `sampling_zoom`.")
+
+    base_cells = np.asarray(cell_indices, dtype=np.int64)
+    if base_cells.ndim != 1 or base_cells.size == 0:
+        raise ValueError("`cell_indices` must be a non-empty one-dimensional sequence.")
+    if np.unique(base_cells).size != base_cells.size:
+        raise ValueError("`cell_indices` must not contain duplicates.")
+
+    base_npix = hp.nside2npix(2**sampling_zoom)
+    if np.any(base_cells < 0) or np.any(base_cells >= base_npix):
+        raise ValueError(
+            f"Cell indices at zoom {sampling_zoom} must be in [0, {base_npix})."
+        )
+
+    grids = []
+    for zoom in range(sampling_zoom, zoom_max + 1):
+        descendant_count = 4 ** (zoom - sampling_zoom)
+        offsets = np.arange(descendant_count, dtype=np.int64)
+        zoom_cells = (base_cells[:, None] * descendant_count + offsets).reshape(-1)
+
+        global_neighbors = hp.get_all_neighbours(
+            2**zoom,
+            zoom_cells,
+            nest=True,
+        ).T
+        sorted_order = np.argsort(zoom_cells)
+        sorted_cells = zoom_cells[sorted_order]
+        insertion_points = np.searchsorted(sorted_cells, global_neighbors)
+        valid_neighbors = (
+            (global_neighbors >= 0)
+            & (insertion_points < sorted_cells.size)
+        )
+        safe_points = np.minimum(insertion_points, sorted_cells.size - 1)
+        valid_neighbors &= sorted_cells[safe_points] == global_neighbors
+
+        local_neighbors = np.broadcast_to(
+            np.arange(zoom_cells.size, dtype=np.int64)[:, None],
+            global_neighbors.shape,
+        ).copy()
+        local_neighbors[valid_neighbors] = sorted_order[insertion_points[valid_neighbors]]
+
+        center_indices = np.arange(zoom_cells.size, dtype=np.int64)[:, None]
+        adjacency = np.concatenate((center_indices, local_neighbors), axis=1)
+        adjacency_mask = np.concatenate(
+            (
+                np.zeros((zoom_cells.size, 1), dtype=bool),
+                ~valid_neighbors,
+            ),
+            axis=1,
+        )
+
+        theta, phi = hp.pix2ang(2**zoom, zoom_cells, nest=True)
+        coordinates = np.stack(
+            (phi - np.pi, theta - 0.5 * np.pi),
+            axis=-1,
+        ).astype(np.float32)
+
+        grids.append(
+            {
+                "coords": torch.from_numpy(coordinates),
+                "adjc": torch.from_numpy(adjacency),
+                "adjc_mask": torch.from_numpy(adjacency_mask),
+                "cell_indices": torch.from_numpy(zoom_cells.copy()),
+                "regional": True,
+                "zoom": zoom,
+            }
+        )
 
     return grids
 

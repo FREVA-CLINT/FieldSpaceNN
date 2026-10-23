@@ -184,7 +184,8 @@ class GridLayer(nn.Module):
         coordinates: torch.Tensor,
         coord_system: str = "polar",
         periodic_fov: Optional[float] = None,
-        nh_shift_indices: Optional[Dict[str, int]] = None
+        nh_shift_indices: Optional[Dict[str, int]] = None,
+        regional: bool = False,
     ) -> None:
         """
         Initializes the GridLayer with given parameters.
@@ -196,6 +197,7 @@ class GridLayer(nn.Module):
         :param coord_system: The coordinate system. Defaults to "polar".
         :param periodic_fov: The periodic field of view. Defaults to None.
         :param nh_shift_indices: Optional custom neighborhood shift indices.
+        :param regional: Whether masked neighbors represent a regional boundary.
         :return: None.
         """
         super().__init__()
@@ -234,17 +236,18 @@ class GridLayer(nn.Module):
         self.register_buffer("coordinates", coordinates, persistent=False)
         self.coordinates: torch.Tensor
         
-        if zoom >= 1:
+        if zoom >= 1 and not regional:
             # Propagate missing assignments for polar discontinuities.
             for k in [2,6]:
                 i_shift, i_target = propagate_assignments(adjc, adjc_mask==False, coordinates, nh_k=k)
                 if len(i_shift) > 0:
                     adjc[i_shift, k] = i_target 
         
-        for k in [1,3,4,5,7,8]:
-            # Fill missing adjacency entries with a consistent fallback direction.
-            c = torch.where(adjc_mask[:,k])[0]
-            adjc[c,k] = k -1 if k>1 else 8
+        if not regional:
+            for k in [1,3,4,5,7,8]:
+                # Fill missing adjacency entries with a consistent fallback direction.
+                c = torch.where(adjc_mask[:,k])[0]
+                adjc[c,k] = k -1 if k>1 else 8
 
         self.register_buffer("adjc", adjc, persistent=False)
         self.adjc: torch.Tensor
@@ -344,17 +347,24 @@ class GridLayer(nn.Module):
         # Select full or reduced neighborhood indices depending on zoom.
         if (zoom_patch_out - self.zoom) == 0:
             indices = self.adjc
+            valid_neighbors = self.adjc_mask
         else:
             # this removes rundundancy, but still has some
             indices = self.adjc[:,[2,4,6,8]]
+            valid_neighbors = self.adjc_mask[:,[2,4,6,8]]
       
         # Build patch start indices and group adjacency into patches.
         patch_indices = torch.arange(0, indices.shape[0] + 4**(self.zoom - zoom_patch_out), 4**(self.zoom - zoom_patch_out), device=x.device, dtype=indices.dtype).view(-1,1,1)
 
         indices = indices.view(-1, 4**(self.zoom - zoom_patch_out),  indices.shape[-1])
+        valid_neighbors = valid_neighbors.view_as(indices)
 
         # Identify neighbors that fall outside each patch.
-        out_of_patch = (indices < patch_indices[:-1]) | (indices >= patch_indices[1:])
+        out_of_patch = (
+            (indices < patch_indices[:-1])
+            | (indices >= patch_indices[1:])
+            | ~valid_neighbors
+        )
 
         assert len(out_of_patch.sum(dim=[-1,-2]).unique())==1, "neighbourhood not consistent"
 

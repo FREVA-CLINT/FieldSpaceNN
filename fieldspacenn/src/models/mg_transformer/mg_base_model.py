@@ -616,8 +616,16 @@ class MG_base_model(nn.Module):
         # Create grid layers for each unique global level
         zooms = []
         self.grid_layers: nn.ModuleDict = nn.ModuleDict()
-        for zoom, mgrid in enumerate(mgrids):
-            self.grid_layers[str(int(zoom))] = GridLayer(zoom, mgrid['adjc'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar')
+        for position, mgrid in enumerate(mgrids):
+            zoom = int(mgrid.get("zoom", position))
+            self.grid_layers[str(int(zoom))] = GridLayer(
+                zoom,
+                mgrid['adjc'],
+                mgrid['adjc_mask'],
+                mgrid['coords'],
+                coord_system='polar',
+                regional=bool(mgrid.get('regional', False)),
+            )
             zooms.append(zoom)
 
         self.register_buffer('zooms', torch.tensor(zooms), persistent=False)

@@ -2,6 +2,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import copy
 import numpy as np
+import xarray as xr
 
 from .datasets_base import BaseDataset
 from ..modules.grids.grid_utils import hierarchical_zoom_distance_map
@@ -47,16 +48,29 @@ class HealPixLoader(BaseDataset):
         else:
             self.sampling_zooms_target: Mapping[int, Mapping[str, Any]] = copy.deepcopy(sampling_zooms_target)
 
-        # Build patch indices per zoom from the HealPix pixelization scheme.
+        # Build positional patch indices. Regional files retain global nested
+        # cell ids in their coordinate but store only the local cells.
         self.indices: Dict[int, np.ndarray] = {}
         for zoom, sampling in sampling_zooms.items():
+            zoom = int(zoom)
             npix = hp.nside2npix(2**zoom)
+            source_config = data_dict['source'][zoom]
+            files = source_config['files']
+            first_file = files[0] if isinstance(files, (list, ListConfig)) else files
+            with xr.open_dataset(first_file, decode_times=False) as ds:
+                cell_dims = [dim for dim in ds.sizes if 'cell' in dim]
+                stored_npix = int(ds.sizes[cell_dims[0]]) if cell_dims else npix
 
             if sampling['zoom_patch_sample'] == -1:
-                self.indices[zoom] = np.arange(npix).reshape(1, -1)
+                self.indices[zoom] = np.arange(stored_npix).reshape(1, -1)
             else:
                 n = 4**(zoom - sampling['zoom_patch_sample'])
-                self.indices[zoom] = np.arange(npix).reshape(-1, n)
+                if stored_npix % n != 0:
+                    raise ValueError(
+                        f"The {stored_npix} stored cells at zoom {zoom} cannot be split "
+                        f"into patches of {n} cells."
+                    )
+                self.indices[zoom] = np.arange(stored_npix).reshape(-1, n)
 
 
         super().__init__(mapping_fcn=hierarchical_zoom_distance_map, **kwargs)

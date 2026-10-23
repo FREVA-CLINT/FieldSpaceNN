@@ -20,6 +20,7 @@ def healpix_plot_local(
     title: str = "",
     zoom_patch_sample: int = 1,
     patch_index: int = 0,
+    cell_indices: Optional[Sequence[int]] = None,
     **kwargs: Any
 ):
     """
@@ -31,18 +32,30 @@ def healpix_plot_local(
     :param vmin: Optional minimum value for color scaling.
     :param vmax: Optional maximum value for color scaling.
     :param title: Plot title.
-    :param zoom_patch_sample: Patch sampling zoom.
-    :param patch_index: Patch index to select.
+    :param zoom_patch_sample: Patch sampling zoom when ``cell_indices`` is omitted.
+    :param patch_index: Patch index to select when ``cell_indices`` is omitted.
+    :param cell_indices: Optional global nested HEALPix indices for a regional grid.
     :param kwargs: Additional keyword arguments (unused).
     :return: None.
     """
-    # Select pixel indices for the requested patch.
-    if isinstance(patch_index, (list, tuple, np.ndarray, torch.Tensor)):
-        patch_idx = int(patch_index[0])
+    if cell_indices is not None:
+        ipix = np.asarray(cell_indices, dtype=np.int64)
     else:
-        patch_idx = int(patch_index)
+        if isinstance(patch_index, (list, tuple, np.ndarray, torch.Tensor)):
+            patch_idx = int(patch_index[0])
+        else:
+            patch_idx = int(patch_index)
 
-    ipix = np.arange(hp.nside2npix(2**zoom)).reshape(-1,4**(zoom-zoom_patch_sample))[patch_idx]
+        ipix = np.arange(hp.nside2npix(2**zoom)).reshape(
+            -1, 4 ** (zoom - zoom_patch_sample)
+        )[patch_idx]
+
+    values = np.asarray(values).reshape(-1)
+    if len(values) != len(ipix):
+        raise ValueError(
+            f"Local HEALPix values at zoom {zoom} contain {len(values)} cells, "
+            f"but {len(ipix)} global cell indices were provided."
+        )
     lon, lat = hp.pix2ang(2**zoom, ipix, nest=True, lonlat=True)
 
     n_p = max(100, int(np.sqrt(len(lon))))
@@ -90,6 +103,7 @@ def _plot_healpix_panel(
     n_cols: int,
     title: str,
     sample_config: Dict[str, Any],
+    cell_indices: Optional[Sequence[int]] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
 ) -> None:
@@ -105,6 +119,7 @@ def _plot_healpix_panel(
     :param n_cols: Total number of columns in the grid.
     :param title: Plot title.
     :param sample_config: Sampling configuration for the zoom level.
+    :param cell_indices: Optional global nested HEALPix indices for a regional grid.
     :param vmin: Optional minimum for color scaling.
     :param vmax: Optional maximum for color scaling.
     :return: None.
@@ -115,6 +130,19 @@ def _plot_healpix_panel(
         ax.set_title(title)
         ax.text(0.5, 0.5, "Unavailable", ha="center", va="center")
         ax.set_axis_off()
+        return
+
+    if cell_indices is not None:
+        ax = fig.add_subplot(n_rows, n_cols, plot_idx)
+        healpix_plot_local(
+            values,
+            zoom,
+            ax=ax,
+            vmin=vmin,
+            vmax=vmax,
+            title=title,
+            cell_indices=cell_indices,
+        )
         return
 
     if sample_config.get("zoom_patch_sample", -1) == -1:
@@ -145,6 +173,7 @@ def _plot_healpix_grid(
     rows: Sequence[Dict[str, Any]],
     save_path: str,
     sample_configs: Dict[int, Dict[str, Any]],
+    cell_indices_by_zoom: Optional[Dict[int, np.ndarray]] = None,
 ) -> None:
     """
     Render a grid of HEALPix plots and save the figure.
@@ -159,6 +188,7 @@ def _plot_healpix_grid(
     :param rows: Row definitions for the plot grid.
     :param save_path: Output path.
     :param sample_configs: Sampling configuration per zoom.
+    :param cell_indices_by_zoom: Optional global nested HEALPix indices per local zoom.
     :return: None.
     """
     if not rows:
@@ -193,6 +223,11 @@ def _plot_healpix_grid(
                 n_cols=n_cols,
                 title=title,
                 sample_config=sample_config,
+                cell_indices=(
+                    cell_indices_by_zoom.get(panel_zoom)
+                    if cell_indices_by_zoom is not None
+                    else None
+                ),
                 vmin=min_max[col_idx][0],
                 vmax=min_max[col_idx][1],
             )
@@ -207,7 +242,8 @@ def plot_zooms(
     gt_maps: Dict[int, np.ndarray],
     mask_maps: Optional[Dict[int, np.ndarray]],
     save_path: str,
-    sample_configs: Dict[int, Dict[str, Any]] = {}
+    sample_configs: Dict[int, Dict[str, Any]] = {},
+    cell_indices_by_zoom: Optional[Dict[int, np.ndarray]] = None,
 ):
     """
     Plot HEALPix maps per zoom level for a specific variable and save the result.
@@ -218,6 +254,7 @@ def plot_zooms(
     :param mask_maps: Optional mask maps per zoom, each of shape ``(n,)``.
     :param save_path: Path to save the figure.
     :param sample_configs: Sampling configuration per zoom.
+    :param cell_indices_by_zoom: Optional global nested HEALPix indices per local zoom.
     :return: None.
     """
     # Output and ground truth define the target zooms that should be plotted.
@@ -253,7 +290,15 @@ def plot_zooms(
             }
         )
 
-    _plot_healpix_grid(rows, save_path, sample_configs)
+    if cell_indices_by_zoom is None:
+        _plot_healpix_grid(rows, save_path, sample_configs)
+    else:
+        _plot_healpix_grid(
+            rows,
+            save_path,
+            sample_configs,
+            cell_indices_by_zoom=cell_indices_by_zoom,
+        )
 
 
 def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor], 
@@ -266,7 +311,8 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
                            plot_name: str = "healpix_plot",
                            sample: int = 0,
                            plot_n_vars: int = -1,
-                           plot_n_ts: int = 1):
+                           plot_n_ts: int = 1,
+                           cell_indices_by_zoom: Optional[Dict[int, np.ndarray]] = None):
     """
     Create HEALPix plots for each variable across zoom levels and save them.
 
@@ -281,6 +327,7 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
     :param sample: Sample index to plot.
     :param plot_n_vars: Number of variables to plot (-1 for all).
     :param plot_n_ts: Number of timesteps to plot.
+    :param cell_indices_by_zoom: Optional global nested HEALPix indices per local zoom.
     :return: List of saved file paths.
     """
     def _is_plot_tensor(x: Any) -> bool:
@@ -405,10 +452,58 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
                 var_idx = var
 
             save_path = os.path.join(save_dir, f"{plot_name}_{ts}_{var_idx}.png")
-            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs=sample_configs)
+            plot_kwargs = {}
+            if cell_indices_by_zoom is not None:
+                plot_kwargs["cell_indices_by_zoom"] = cell_indices_by_zoom
+            plot_zooms(
+                input_maps,
+                output_maps,
+                gt_maps,
+                mask_maps,
+                save_path,
+                sample_configs=sample_configs,
+                **plot_kwargs,
+            )
             save_paths.append(save_path)
     
     return save_paths
+
+
+def healpix_plot_zooms_local(
+    input_zooms: Dict[int, torch.Tensor],
+    output_zooms: Dict[int, torch.Tensor],
+    gt_zooms: Dict[int, torch.Tensor],
+    save_dir: str,
+    cell_indices: Sequence[int],
+    sampling_zoom: int,
+    **kwargs: Any,
+) -> List[str]:
+    """Plot a regional nested HEALPix domain on an interpolated lon/lat grid."""
+    zooms = set(input_zooms) | set(output_zooms) | set(gt_zooms)
+    base_cells = np.asarray(cell_indices, dtype=np.int64)
+    if base_cells.ndim != 1 or len(base_cells) == 0:
+        raise ValueError("`cell_indices` must be a non-empty one-dimensional sequence.")
+
+    cell_indices_by_zoom = {}
+    for zoom in zooms:
+        if zoom < sampling_zoom:
+            raise ValueError(
+                f"Local plot zoom {zoom} is below sampling zoom {sampling_zoom}."
+            )
+        descendant_count = 4 ** (zoom - sampling_zoom)
+        descendants = np.arange(descendant_count, dtype=np.int64)
+        cell_indices_by_zoom[zoom] = (
+            base_cells[:, None] * descendant_count + descendants[None, :]
+        ).reshape(-1)
+
+    return healpix_plot_zooms_var(
+        input_zooms,
+        output_zooms,
+        gt_zooms,
+        save_dir,
+        cell_indices_by_zoom=cell_indices_by_zoom,
+        **kwargs,
+    )
 
 
 def healpix_plot_zooms_time(

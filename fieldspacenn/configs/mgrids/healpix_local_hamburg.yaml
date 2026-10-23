@@ -1,0 +1,4 @@
+_target_: fieldspacenn.src.modules.grids.grid_utils.healpix_grid_local_to_mgrid
+cell_indices: [742, 739, 745, 748, 749, 743, 741, 740, 737]
+sampling_zoom: 5
+zoom_max: 7

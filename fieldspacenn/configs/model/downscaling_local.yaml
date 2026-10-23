@@ -1,0 +1,48 @@
+_target_: fieldspacenn.src.models.mg_transformer.pl_mg_model.LightningMGModel
+data_variables: ${data_variables}
+
+lambda_loss_dict:
+  aggregation: mean
+  normalize_lambdas: false
+  zooms:
+    7:
+      MSE_loss: 1
+
+lr_groups:
+  default:
+    lr: 1e-3
+    warmup: 1000
+    weight_decay: 0.0
+
+model:
+  _target_: fieldspacenn.src.models.mg_transformer.mg_transformer.MG_Transformer
+  mgrids: ${mgrids}
+  in_zooms: [5, 7]
+  in_features: 1
+  out_features: 1
+  lift_features: 1
+  n_head_channels: 16
+  use_mask: false
+  n_groups_variables: [2]
+  n_groups_depths: [1]
+  emb_aggregation: shift_scale_mlp
+
+  block_configs:
+
+    "tokenize_0": 
+      _target_: fieldspacenn.src.modules.field_space.field_space_layer.FieldSpaceLayerConfig
+      in_zooms: [5]
+      target_zooms: [7]
+      target_features: 1
+      field_zoom: -1
+      out_zooms: [5,7]
+      hidden_dim: 256
+      hidden_dim_mixed: 256
+      type: "mlp"
+      residual_gamma: true
+      residual: true
+
+    "conservative":
+      _target_: fieldspacenn.src.modules.field_space.field_space_base.ConservativeLayerConfig
+      mean_strengths:
+        7: 1

@@ -573,9 +573,15 @@ class BaseDataset(Dataset):
             coords = [
                 get_coords_as_tensor(ds, grid_type=grid_type) for grid_type in self.grid_types
             ]
-            mapping_hr = dict(
-                zip(self.grid_types, [mapping_fcn(coords_, max(self.zooms))[max(self.zooms)] for coords_ in coords])
-            )
+            mapping_hr = {}
+            for grid_type, coords_ in zip(self.grid_types, coords):
+                if coords_ is None and grid_type == 'cell':
+                    n_cells = int(ds.sizes.get('cell', ds.sizes.get('ncells')))
+                    mapping_hr[grid_type] = self._identity_mapping(n_cells)
+                else:
+                    mapping_hr[grid_type] = mapping_fcn(
+                        coords_, max(self.zooms)
+                    )[max(self.zooms)]
             self.mapping[max(self.zooms)] = mapping_hr
         else:
             for zoom in self.zooms:
@@ -584,7 +590,11 @@ class BaseDataset(Dataset):
                 for grid_type in self.grid_types:
                     with xr.open_dataset(self.data_dict['source'][zoom]['files'][0]) as ds:
                         coords = get_coords_as_tensor(ds, grid_type=grid_type)
-                        mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
+                        if coords is None and grid_type == 'cell':
+                            n_cells = int(ds.sizes.get('cell', ds.sizes.get('ncells')))
+                            mapping_grid_type[grid_type] = self._identity_mapping(n_cells)
+                        else:
+                            mapping_grid_type[grid_type] = mapping_fcn(coords, zoom)[zoom]
                 self.mapping[zoom] = mapping_grid_type
 
         self.load_once: bool = (
@@ -829,6 +839,15 @@ class BaseDataset(Dataset):
                     paths.append(str(files))
 
         return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _identity_mapping(n_points: int) -> Dict[str, torch.Tensor]:
+        """Return a one-to-one mapping for data already stored on the target grid."""
+        return {
+            "indices": torch.arange(n_points, dtype=torch.long).view(-1, 1),
+            "distances": torch.ones((n_points, 1), dtype=torch.float32),
+            "resolution": torch.tensor(1.0, dtype=torch.float32),
+        }
 
     def _preload_datasets(self) -> None:
         """Load all configured datasets and retain process-wide shared references."""
@@ -1152,7 +1171,9 @@ class BaseDataset(Dataset):
         return torch.stack((day_fraction, year_fraction), dim=-1).to(torch.float32)
 
     def _resolve_depth_values(self, level_values: Any) -> torch.Tensor:
-        depth_values = torch.as_tensor(level_values, dtype=torch.float32)
+        # Xarray backends can expose read-only NumPy coordinate arrays.  Keep an
+        # owned tensor here instead of sharing their memory with ``as_tensor``.
+        depth_values = torch.tensor(level_values, dtype=torch.float32)
         if self.overwrite_depths is None:
             return depth_values
 

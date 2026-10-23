@@ -8,7 +8,12 @@ from lightning.pytorch.loggers import Logger, MLFlowLogger, WandbLogger
 from lightning.pytorch.utilities import rank_zero_only
 from omegaconf import DictConfig, OmegaConf
 
-from .visualization import regular_plot, healpix_plot_zooms_var, healpix_plot_zooms_time
+from .visualization import (
+    healpix_plot_zooms_local,
+    healpix_plot_zooms_time,
+    healpix_plot_zooms_var,
+    regular_plot,
+)
 from ..modules.grids.grid_utils import decode_zooms
 
 
@@ -295,6 +300,7 @@ class CustomImageLogger(Logger):
         Supported plot types:
         - ``regular_plot``
         - ``healpix_plot_zooms_var``
+        - ``local``
         """
         if not self.save_snapshot_images:
             return []
@@ -307,7 +313,33 @@ class CustomImageLogger(Logger):
         save_paths: List[str] = []
 
         for plot_type in requested_plot_types:
-            if "regular" in plot_type:
+            if plot_type == "local":
+                mgrid_config = self.cfg.get("mgrids", {}) if self.cfg is not None else {}
+                cell_indices = kwargs.get("cell_indices", mgrid_config.get("cell_indices"))
+                sampling_zoom = kwargs.get("sampling_zoom", mgrid_config.get("sampling_zoom"))
+                if cell_indices is None or sampling_zoom is None:
+                    raise ValueError(
+                        "The `local` plot type requires `mgrids.cell_indices` and "
+                        "`mgrids.sampling_zoom` in the configuration."
+                    )
+                save_paths.extend(
+                    healpix_plot_zooms_local(
+                        kwargs["input"],
+                        kwargs["output"],
+                        kwargs["gt"],
+                        save_dir,
+                        cell_indices=cell_indices,
+                        sampling_zoom=int(sampling_zoom),
+                        mask_zooms=kwargs.get("mask"),
+                        sample_configs=kwargs.get("sample_configs", {}),
+                        emb=kwargs.get("emb"),
+                        plot_name=kwargs.get("plot_name", "healpix_plot"),
+                        sample=kwargs.get("sample", 0),
+                        plot_n_vars=kwargs.get("plot_n_vars", -1),
+                        plot_n_ts=kwargs.get("plot_n_ts", 1),
+                    )
+                )
+            elif "regular" in plot_type:
                 save_paths.extend(
                     regular_plot(
                         kwargs["gt"],
@@ -320,7 +352,7 @@ class CustomImageLogger(Logger):
                     )
                 )
 
-            if "zooms" in plot_type:
+            elif "zooms" in plot_type:
                 save_paths.extend(
                     healpix_plot_zooms_var(
                         kwargs["input"],
@@ -337,7 +369,7 @@ class CustomImageLogger(Logger):
                     )
                 )
             
-            if "time" in plot_type:
+            elif "time" in plot_type:
                 save_paths.extend(
                     healpix_plot_zooms_time(
                         kwargs["output"],
@@ -391,7 +423,7 @@ class CustomImageLogger(Logger):
 
         if output is not None:
             self.log_tensor_plot(
-                plot_types=["healpix_plot_zooms_var"],
+                plot_types=None,
                 input=input_data,
                 output=output,
                 gt=gt,
@@ -420,7 +452,7 @@ class CustomImageLogger(Logger):
 
         mask_p = {max_zoom: mask[max_zoom]} if mask is not None and max_zoom in mask else None
         self.log_tensor_plot(
-            plot_types=["healpix_plot_zooms_var"],
+            plot_types=None,
             input=source_p,
             output=output_p,
             gt=target_p,

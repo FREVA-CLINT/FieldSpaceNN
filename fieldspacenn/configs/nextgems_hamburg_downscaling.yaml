@@ -1,0 +1,22 @@
+defaults:
+  - trainer: trainer
+  - logger: mlflow
+  - model: downscaling_local
+  - mgrids: healpix_local_hamburg
+  - data_zooms: nextgems_hamburg
+  - data_variables: hamburg_wind
+  - data_split: nextgems_hamburg
+  - dataloader: downscaling_local
+  - embedding: default
+  - hydra: default
+  - _self_
+
+ckpt_path: null
+
+run_name: nextgems_hamburg_downscaling_local
+config_name: default
+project_name: stableclimgen
+run_dir: run
+
+logger:
+  plot_types: [local]
