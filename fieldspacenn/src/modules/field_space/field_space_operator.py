@@ -25,6 +25,7 @@ from ..embedding.embedder import get_embedder
 from ..grids.grid_layer import GridLayer
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch
 from .field_space_base import (
+    EmbeddingFactor,
     LinEmbLayer,
     Tokenizer,
     add_depth_overlap_from_neighbor_patches,
@@ -267,6 +268,8 @@ class TuckerOperator(nn.Module):
         initialization: str = "identity",
         self_indices: Optional[torch.Tensor] = None,
         share_factors_across_heads: bool = False,
+        rank_embedding: Optional[int] = None,
+        embedding_factor: Optional[EmbeddingFactor] = None,
     ) -> None:
         super().__init__()
         dependency_sizes = {} if dependency_sizes is None else dependency_sizes
@@ -307,6 +310,22 @@ class TuckerOperator(nn.Module):
         self.constant_in_factor = bool(constant_in_factor)
         self.initialization = initialization
         self.share_factors_across_heads = bool(share_factors_across_heads)
+        self.rank_embedding = (
+            None if rank_embedding is None else int(rank_embedding)
+        )
+        if self.rank_embedding is not None and self.rank_embedding <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
+        if self.rank_embedding is not None and embedding_factor is None:
+            raise ValueError(
+                "rank_embedding requires an embedding_factor module"
+            )
+        self.embedding_factor = embedding_factor
+        if self.rank_embedding is None:
+            self.register_parameter("embedding_factor_gamma", None)
+        else:
+            self.embedding_factor_gamma = nn.Parameter(
+                torch.full((self.rank_embedding,), 1e-12)
+            )
         self.dependency_ranks = {
             name: (
                 None
@@ -342,6 +361,9 @@ class TuckerOperator(nn.Module):
                 factor = _orthogonal_factor(size, rank, factor_heads)
             self.dependency_factors[name] = factor
             core_shape.append(rank)
+
+        if self.rank_embedding is not None:
+            core_shape.append(self.rank_embedding)
 
         core_shape.append(self.num_heads)
         if self.rank_out is None:
@@ -608,6 +630,8 @@ class TuckerOperator(nn.Module):
             )
             for name in self.dependency_names
         ]
+        if self.rank_embedding is not None:
+            symbols.append("E")
         symbols.append("h")
         symbols.append("o" if self.rank_out is None else "O")
         symbols.append("i" if self.rank_in is None else "I")
@@ -627,6 +651,8 @@ class TuckerOperator(nn.Module):
                 if self.dependency_ranks[name] is None
                 else None
             )
+        if self.rank_embedding is not None:
+            selections.append(None)
         selections.append(None)
         selections.append(
             output_indices if self.rank_out is None else None
@@ -788,6 +814,43 @@ class TuckerOperator(nn.Module):
             self._einsum_equations[key] = equation
         return equation
 
+    def _prepare_embedding_factor(
+        self,
+        factor: Optional[torch.Tensor],
+        subscript: Optional[str],
+    ) -> Tuple[Optional[torch.Tensor], Optional[str]]:
+        if self.rank_embedding is None:
+            if factor is not None or subscript is not None:
+                raise ValueError(
+                    "An embedding factor was supplied to an operator without "
+                    "rank_embedding"
+                )
+            return None, None
+        if factor is None or subscript is None:
+            raise ValueError(
+                "Embedding inputs are required when rank_embedding is configured"
+            )
+        if factor.shape[-1] != self.rank_embedding:
+            raise ValueError(
+                "Embedding factor channel dimension must equal rank_embedding="
+                f"{self.rank_embedding}, got {factor.shape[-1]}"
+            )
+        if len(subscript) != factor.ndim or not subscript.endswith("E"):
+            raise ValueError(
+                "Operator embedding-factor subscript must describe every tensor "
+                f"axis and end in 'E'; got {subscript!r} for shape "
+                f"{tuple(factor.shape)}"
+            )
+        assert self.embedding_factor_gamma is not None
+        gamma = self.embedding_factor_gamma.to(
+            device=factor.device,
+            dtype=factor.dtype,
+        )
+        same_values_factor = torch.nn.functional.normalize(
+            torch.ones_like(factor), dim=-1
+        )
+        return same_values_factor + gamma * factor, subscript
+
     def _self_selection_contract(
         self,
         values: torch.Tensor,
@@ -885,6 +948,8 @@ class TuckerOperator(nn.Module):
         input_head_before_dependencies: bool = False,
         dependency_order: Optional[Sequence[str]] = None,
         dependency_factors_before_core: bool = False,
+        embedding_factor: Optional[torch.Tensor] = None,
+        embedding_factor_subscript: Optional[str] = None,
     ) -> torch.Tensor:
         structured_ndim = 3 + self.n_dependencies
         batch_ndim = values.ndim - structured_ndim
@@ -934,6 +999,12 @@ class TuckerOperator(nn.Module):
                 output_ids,
                 input_ids,
                 batch_shape,
+            )
+        )
+        embedding_factor, embedding_factor_subscript = (
+            self._prepare_embedding_factor(
+                embedding_factor,
+                embedding_factor_subscript,
             )
         )
         parameter_subscripts = [
@@ -1010,6 +1081,10 @@ class TuckerOperator(nn.Module):
                 *core_subscripts,
                 *dependency_factor_subscripts,
             ]
+        if embedding_factor is not None:
+            assert embedding_factor_subscript is not None
+            core_dependency_operands.append(embedding_factor)
+            core_dependency_subscripts.append(embedding_factor_subscript)
 
         if self.rank_in is None and self.rank_out is None:
             operands = [
@@ -1123,6 +1198,8 @@ class TuckerOperator(nn.Module):
         dependency_indices: Optional[Mapping[str, torch.Tensor]] = None,
         output_indices: Optional[torch.Tensor] = None,
         input_indices: Optional[torch.Tensor] = None,
+        embedding_factor: Optional[torch.Tensor] = None,
+        embedding_factor_subscript: Optional[str] = None,
     ) -> torch.Tensor:
         """Apply the learned correction with the hybrid Tucker contraction."""
         return self._contract(
@@ -1134,6 +1211,8 @@ class TuckerOperator(nn.Module):
             input_head_before_dependencies=False,
             dependency_order=self.dependency_names,
             dependency_factors_before_core=False,
+            embedding_factor=embedding_factor,
+            embedding_factor_subscript=embedding_factor_subscript,
         )
 
     def forward(
@@ -1143,12 +1222,16 @@ class TuckerOperator(nn.Module):
         dependency_indices: Optional[Mapping[str, torch.Tensor]] = None,
         output_indices: Optional[torch.Tensor] = None,
         input_indices: Optional[torch.Tensor] = None,
+        embedding_factor: Optional[torch.Tensor] = None,
+        embedding_factor_subscript: Optional[str] = None,
     ) -> torch.Tensor:
         return self.contract(
             values,
             dependency_indices=dependency_indices,
             output_indices=output_indices,
             input_indices=input_indices,
+            embedding_factor=embedding_factor,
+            embedding_factor_subscript=embedding_factor_subscript,
         )
 
     def to_dense(
@@ -1156,6 +1239,11 @@ class TuckerOperator(nn.Module):
         max_elements: Optional[int] = 10_000_000,
     ) -> torch.Tensor:
         """Materialize the effective operator for bounded diagnostics."""
+        if self.rank_embedding is not None:
+            raise ValueError(
+                "Embedding-factorized operators require runtime embeddings and "
+                "cannot be materialized with to_dense()"
+            )
         element_count = (
             math.prod(self.dependency_sizes.values())
             * self.num_heads
@@ -1215,6 +1303,8 @@ class FieldSpaceOperator(nn.Module):
         constant_out_factor: bool = False,
         initialization: str = "identity",
         share_factors_across_heads: bool = False,
+        rank_embedding: Optional[int] = None,
+        embedding_factor: Optional[EmbeddingFactor] = None,
         grid_layers: Mapping[str, GridLayer],
     ) -> None:
         super().__init__()
@@ -1352,6 +1442,8 @@ class FieldSpaceOperator(nn.Module):
             initialization=initialization,
             self_indices=self_indices,
             share_factors_across_heads=share_factors_across_heads,
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
         )
         factorized_dependencies = tuple(
             name
@@ -1378,6 +1470,7 @@ class FieldSpaceOperator(nn.Module):
             and self.weight.rank_in is None
             and self.weight.rank_out is None
             and not self.weight.share_factors_across_heads
+            and self.weight.rank_embedding is None
         )
 
     def _build_local_spatial_indices(
@@ -1548,6 +1641,7 @@ class FieldSpaceOperator(nn.Module):
         metadata = {
             "dim_names": list(dim_names),
             "sequence_name": sequence_name,
+            "passive_names": passive,
             "current_names": current_names,
             "output_names": [
                 "batch",
@@ -1588,6 +1682,100 @@ class FieldSpaceOperator(nn.Module):
             raise RuntimeError("Sequence name was lost while unpacking operator output")
         permutation = [current_names.index(name) for name in desired_names]
         return values.permute(permutation)
+
+    def _embedding_factor_operand(
+        self,
+        values: torch.Tensor,
+        metadata: Mapping[str, Any],
+        emb: Optional[Mapping[str, Any]],
+        sample_config: Mapping[str, Any],
+    ) -> Tuple[Optional[torch.Tensor], Optional[str]]:
+        if self.weight.rank_embedding is None:
+            return None, None
+        if emb is None:
+            raise ValueError(
+                "Embedding inputs are required when rank_embedding is configured"
+            )
+        embedding_factor = self.weight.embedding_factor
+        if not isinstance(embedding_factor, EmbeddingFactor):
+            raise TypeError(
+                "Field-space operators require an EmbeddingFactor adapter"
+            )
+        factor = embedding_factor(
+            dict(emb) if not isinstance(emb, dict) else emb,
+            sample_configs=sample_config,
+        ).to(device=values.device, dtype=values.dtype)
+
+        factor_dims = tuple(embedding_factor.factor_dims)
+        if factor.ndim != len(factor_dims) + 1:
+            raise ValueError(
+                "Embedding factor has incompatible rank for field-space "
+                f"operator dimensions {factor_dims}: got {tuple(factor.shape)}"
+            )
+
+        passive_names = list(metadata["passive_names"])
+        batch_names = ["batch", *passive_names]
+        batch_symbols = TuckerOperator._BATCH_SYMBOLS[: len(batch_names)]
+        batch_subscripts = dict(zip(batch_names, batch_symbols))
+        canonical_names = {
+            "b": "batch",
+            "v": "variable",
+            "t": "time",
+            "s": "space",
+            "d": "depth",
+        }
+
+        output_sizes = {
+            "variable": int(values.shape[1]),
+            "time": int(values.shape[2]),
+            "space": int(values.shape[3]),
+        }
+        new_shape: List[int] = []
+        subscripts: List[str] = []
+        for dim, size in zip(factor_dims, factor.shape[:-1]):
+            name = canonical_names[dim]
+            size = int(size)
+            if self.local_space and name == "space":
+                out_size = self.weight.out_size
+                if size == 1:
+                    region_size = 1
+                    target_size = 1
+                else:
+                    if size % out_size:
+                        raise ValueError(
+                            "Spatial embedding factor size must be divisible by "
+                            f"the local operator output size {out_size}, got {size}"
+                        )
+                    region_size = size // out_size
+                    target_size = out_size
+                new_shape.extend([region_size, target_size])
+                subscripts.extend([batch_subscripts["space"], "o"])
+                continue
+
+            if name == self.operator:
+                subscript = "o"
+                expected_size = output_sizes[name]
+            elif name in self.dependency_names:
+                subscript = TuckerOperator._PHYSICAL_SYMBOLS[name]
+                expected_size = int(
+                    values.shape[_FIELD_DIM_NAMES.index(name)]
+                )
+            else:
+                subscript = batch_subscripts[name]
+                expected_size = int(
+                    values.shape[_FIELD_DIM_NAMES.index(name)]
+                )
+            if size not in {1, expected_size}:
+                raise ValueError(
+                    f"Embedding factor dimension {name!r} has size {size}, "
+                    f"expected 1 or {expected_size}"
+                )
+            new_shape.append(size)
+            subscripts.append(subscript)
+
+        new_shape.append(int(factor.shape[-1]))
+        factor = factor.reshape(new_shape)
+        return factor, "".join([*subscripts, "E"])
 
     def forward(
         self,
@@ -1672,6 +1860,12 @@ class FieldSpaceOperator(nn.Module):
                 variable_ids,
                 spatial_dependency_ids=spatial_ids,
             )
+            factor, factor_subscript = self._embedding_factor_operand(
+                values,
+                metadata,
+                emb,
+                config,
+            )
             output = self.weight._contract(
                 packed,
                 dependency_indices=dep_ids,
@@ -1685,6 +1879,8 @@ class FieldSpaceOperator(nn.Module):
                 dependency_factors_before_core=metadata[
                     "dependency_factors_before_core"
                 ],
+                embedding_factor=factor,
+                embedding_factor_subscript=factor_subscript,
             )
             output = self._unpack(output, metadata)
             output = output.permute(0, 1, 2, 3, 5, 4, 6, 7)
@@ -1710,6 +1906,12 @@ class FieldSpaceOperator(nn.Module):
             if self.global_space:
                 output_ids = self.global_space_ids
                 input_ids = self.global_space_ids
+            factor, factor_subscript = self._embedding_factor_operand(
+                values,
+                metadata,
+                emb,
+                {} if sample_config is None else sample_config,
+            )
             output = self.weight._contract(
                 packed,
                 dependency_indices=dep_ids,
@@ -1723,6 +1925,8 @@ class FieldSpaceOperator(nn.Module):
                 dependency_factors_before_core=metadata[
                     "dependency_factors_before_core"
                 ],
+                embedding_factor=factor,
+                embedding_factor_subscript=factor_subscript,
             )
             output = self._unpack(output, metadata)
 
@@ -1759,6 +1963,7 @@ class FieldSpaceOperatorConfig:
         ranks_time: Optional[OperatorSetting] = None,
         initializations: Optional[OperatorSetting] = None,
         share_factors_across_heads: Optional[OperatorSetting] = None,
+        use_embedding_factor: Optional[OperatorSetting] = None,
         operator_dim: Optional[int] = None,
         n_times: int = 1,
         token_len_time: Any = 1,
@@ -1777,18 +1982,22 @@ class FieldSpaceOperatorConfig:
         operator_projection_rank_features: Any = None,
         operator_projection_rank_variables: Any = None,
         include_variable_dependency_operator_projection: bool = False,
+        use_embedding_factor_value_projection: bool = False,
         mlp_projection_rank_time: Any = None,
         mlp_projection_rank_space: Any = None,
         mlp_projection_rank_depth: Any = None,
         mlp_projection_rank_features: Any = None,
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
+        use_embedding_factor_mlp: bool = False,
+        rank_embedding: Optional[int] = None,
         update: Literal["shift", "shift_scale"] = "shift",
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
         variable_dependent_layer_norm: bool = False,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Dict[str, Any]] = None,
+        embed_confs_factor: Optional[Dict[str, Any]] = None,
         emb_modulation_mode: str = "shift_scale",
         dropout: Optional[float] = None,
         fac_mode: str = "Tucker",
@@ -1881,6 +2090,11 @@ class FieldSpaceOperatorConfig:
             "share_factors_across_heads",
             False,
         )
+        use_embedding_factor = align_operator_values(
+            use_embedding_factor,
+            "use_embedding_factor",
+            False,
+        )
 
         if update not in {"shift", "shift_scale"}:
             raise ValueError("update must be either 'shift' or 'shift_scale'")
@@ -1896,6 +2110,16 @@ class FieldSpaceOperatorConfig:
             raise ValueError(
                 f"operator_dim ({operator_dim}) must be divisible by "
                 f"num_heads ({num_heads})"
+            )
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
+        if (
+            any(bool(value) for value in use_embedding_factor)
+            or use_embedding_factor_value_projection
+            or use_embedding_factor_mlp
+        ) and rank_embedding is None:
+            raise ValueError(
+                "rank_embedding is required when an embedding factor is enabled"
             )
         if (
             not include_variable_dependency_operator_projection
@@ -2059,6 +2283,9 @@ class FieldSpaceOperatorConfig:
         self.share_factors_across_heads = [
             bool(value) for value in share_factors_across_heads
         ]
+        self.use_embedding_factor = [
+            bool(value) for value in use_embedding_factor
+        ]
         self.operator_dim = None if operator_dim is None else int(operator_dim)
         self.n_times = int(n_times)
         self.token_len_time = token_len_time
@@ -2083,6 +2310,9 @@ class FieldSpaceOperatorConfig:
         self.include_variable_dependency_operator_projection = bool(
             include_variable_dependency_operator_projection
         )
+        self.use_embedding_factor_value_projection = bool(
+            use_embedding_factor_value_projection
+        )
         self.mlp_projection_rank_time = mlp_projection_rank_time
         self.mlp_projection_rank_space = mlp_projection_rank_space
         self.mlp_projection_rank_depth = mlp_projection_rank_depth
@@ -2090,6 +2320,10 @@ class FieldSpaceOperatorConfig:
         self.mlp_projection_rank_variables = mlp_projection_rank_variables
         self.include_variable_dependency_mlp = bool(
             include_variable_dependency_mlp
+        )
+        self.use_embedding_factor_mlp = bool(use_embedding_factor_mlp)
+        self.rank_embedding = (
+            None if rank_embedding is None else int(rank_embedding)
         )
         self.update = update
         self.mlp_factor = int(mlp_factor)
@@ -2100,6 +2334,9 @@ class FieldSpaceOperatorConfig:
         self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
         if embed_confs is not None:
             self.embed_confs = embed_confs
+        self.embed_confs_factor = (
+            {} if embed_confs_factor is None else embed_confs_factor
+        )
         self.emb_modulation_mode = emb_modulation_mode
         if dropout is not None:
             self.dropout = float(dropout)
@@ -2255,6 +2492,9 @@ class _FieldSpaceOperatorSequence(nn.Module):
         ranks_out: Sequence[Optional[int]],
         initializations: Sequence[str],
         share_factors_across_heads: Sequence[bool],
+        use_embedding_factor: Sequence[bool],
+        rank_embedding: Optional[int],
+        embedding_factor: Optional[EmbeddingFactor],
         checkpoint_operator_groups: bool,
     ) -> None:
         super().__init__()
@@ -2297,6 +2537,17 @@ class _FieldSpaceOperatorSequence(nn.Module):
                         initialization=initializations[index],
                         share_factors_across_heads=bool(
                             share_factors_across_heads[index]
+                        ),
+                        rank_embedding=(
+                            int(rank_embedding)
+                            if use_embedding_factor[index]
+                            and rank_embedding is not None
+                            else None
+                        ),
+                        embedding_factor=(
+                            embedding_factor
+                            if use_embedding_factor[index]
+                            else None
                         ),
                         grid_layers=grid_layers,
                     )
@@ -2380,8 +2631,12 @@ class _FieldSpaceOperatorPath(nn.Module):
         mlp_ranks: Sequence[Optional[int]],
         projection_n_variables: int,
         projection_rank_variables: Optional[int],
+        use_embedding_factor_value_projection: bool,
         mlp_n_variables: int,
         mlp_rank_variables: Optional[int],
+        use_embedding_factor_mlp: bool,
+        rank_embedding: Optional[int],
+        embedding_factor: Optional[EmbeddingFactor],
         update: str,
         dropout: float,
         embed_confs: Mapping[str, Any],
@@ -2419,9 +2674,14 @@ class _FieldSpaceOperatorPath(nn.Module):
         self.num_heads = int(num_heads)
         self.max_zoom = max(self.in_zooms)
         self.operator_sequence = operator_sequence
-        self.embedding_keys = set(
-            embedder.embedders.keys() if embedder is not None else ()
-        )
+        self.embedding_keys = {
+            *(embedder.embedders.keys() if embedder is not None else ()),
+            *(
+                embedding_factor.embedder.embedders.keys()
+                if embedding_factor is not None
+                else ()
+            ),
+        }
 
         self.tokenizer = Tokenizer(
             self.in_zooms,
@@ -2459,6 +2719,16 @@ class _FieldSpaceOperatorPath(nn.Module):
             n_variables=int(projection_n_variables),
             rank_variables=projection_rank_variables,
             fac_mode=fac_mode,
+            rank_embedding=(
+                rank_embedding
+                if use_embedding_factor_value_projection
+                else None
+            ),
+            embedding_factor=(
+                embedding_factor
+                if use_embedding_factor_value_projection
+                else None
+            ),
             bias=False,
         )
         input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
@@ -2514,6 +2784,12 @@ class _FieldSpaceOperatorPath(nn.Module):
                 n_variables=int(mlp_n_variables),
                 rank_variables=mlp_rank_variables,
                 fac_mode=fac_mode,
+                rank_embedding=(
+                    rank_embedding if use_embedding_factor_mlp else None
+                ),
+                embedding_factor=(
+                    embedding_factor if use_embedding_factor_mlp else None
+                ),
                 bias=False,
             )
         self.mlp_norm = _token_norm(
@@ -2765,6 +3041,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         constant_in_factor: Optional[OperatorSetting] = None,
         constant_out_factor: Optional[OperatorSetting] = None,
         share_factors_across_heads: Optional[OperatorSetting] = None,
+        use_embedding_factor: Optional[OperatorSetting] = None,
         token_len_time: Any = 1,
         token_len_depth: int = 1,
         token_overlap_space: bool = False,
@@ -2781,12 +3058,15 @@ class FieldSpaceOperatorBlock(nn.Module):
         operator_projection_rank_features: Any = None,
         operator_projection_rank_variables: Any = None,
         include_variable_dependency_operator_projection: bool = False,
+        use_embedding_factor_value_projection: bool = False,
         mlp_projection_rank_time: Any = None,
         mlp_projection_rank_space: Any = None,
         mlp_projection_rank_depth: Any = None,
         mlp_projection_rank_features: Any = None,
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
+        use_embedding_factor_mlp: bool = False,
+        rank_embedding: Optional[int] = None,
         update: str = "shift",
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
@@ -2794,7 +3074,9 @@ class FieldSpaceOperatorBlock(nn.Module):
         dropout: float = 0.0,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
+        embed_confs_factor: Optional[Mapping[str, Any]] = None,
         embedder: Optional[nn.Module] = None,
+        factor_embedder: Optional[nn.Module] = None,
         embedder_cache_key: Optional[str] = None,
         emb_modulation_mode: str = "shift_scale",
         fac_mode: str = "Tucker",
@@ -2859,6 +3141,21 @@ class FieldSpaceOperatorBlock(nn.Module):
         share_factors_across_heads = align(
             share_factors_across_heads, "share_factors_across_heads", False
         )
+        use_embedding_factor = align(
+            use_embedding_factor, "use_embedding_factor", False
+        )
+
+        factor_enabled = (
+            any(bool(value) for value in use_embedding_factor)
+            or use_embedding_factor_value_projection
+            or use_embedding_factor_mlp
+        )
+        if factor_enabled and rank_embedding is None:
+            raise ValueError(
+                "rank_embedding is required when an embedding factor is enabled"
+            )
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
 
         self.in_zooms = [int(zoom) for zoom in in_zooms]
         self.target_zooms = [int(zoom) for zoom in target_zooms]
@@ -2951,6 +3248,37 @@ class FieldSpaceOperatorBlock(nn.Module):
                 "include_variable_dependency_mlp=True"
             )
 
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else dict(embed_confs_factor)
+        )
+        if factor_enabled:
+            if not embed_confs_factor.get("embed_names"):
+                raise ValueError(
+                    "Embedding-factorized FSON layers require at least one "
+                    "embedder in embed_confs_factor"
+                )
+            if factor_embedder is None:
+                factor_input_zoom = int(
+                    embed_confs_factor.get("input_zoom", min(self.in_zooms))
+                )
+                factor_embedder = get_embedder(
+                    **embed_confs_factor,
+                    grid_layers=grid_layers,
+                    zoom=factor_input_zoom,
+                    embed_dim_override=int(rank_embedding),
+                    expand_variable_dim=False,
+                )
+            embedding_factor: Optional[EmbeddingFactor] = EmbeddingFactor(
+                factor_embedder,
+                rank_embedding=int(rank_embedding),
+                output_zoom=self.token_zoom,
+                cache_key=(
+                    f"fson:factor:{id(factor_embedder)}:{self.token_zoom}"
+                ),
+            )
+        else:
+            embedding_factor = None
+
         sequence = _FieldSpaceOperatorSequence(
             grid_layers=grid_layers,
             operator_groups=operator_groups,
@@ -2976,6 +3304,9 @@ class FieldSpaceOperatorBlock(nn.Module):
             ranks_out=ranks_out,
             initializations=initializations,
             share_factors_across_heads=share_factors_across_heads,
+            use_embedding_factor=use_embedding_factor,
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
             checkpoint_operator_groups=checkpoint_operator_groups,
         )
         embed_confs = {} if embed_confs is None else dict(embed_confs)
@@ -3009,7 +3340,13 @@ class FieldSpaceOperatorBlock(nn.Module):
             head_wise_layer_norm=bool(head_wise_layer_norm),
             mlp_factor=int(mlp_factor),
             projection_n_variables=projection_n_variables,
+            use_embedding_factor_value_projection=bool(
+                use_embedding_factor_value_projection
+            ),
             mlp_n_variables=mlp_n_variables,
+            use_embedding_factor_mlp=bool(use_embedding_factor_mlp),
+            rank_embedding=rank_embedding,
+            embedding_factor=embedding_factor,
             update=update,
             dropout=float(dropout),
             embed_confs=embed_confs,
@@ -3084,23 +3421,28 @@ class FieldSpaceOperatorModule(nn.Module):
         constant_space_dependency: Optional[OperatorSetting] = None,
         constant_in_factor: Optional[OperatorSetting] = None,
         constant_out_factor: Optional[OperatorSetting] = None,
+        use_embedding_factor: Optional[OperatorSetting] = None,
         operator_projection_rank_time: Any = None,
         operator_projection_rank_space: Any = None,
         operator_projection_rank_depth: Any = None,
         operator_projection_rank_features: Any = None,
         operator_projection_rank_variables: Any = None,
         include_variable_dependency_operator_projection: bool = False,
+        use_embedding_factor_value_projection: bool = False,
         mlp_projection_rank_time: Any = None,
         mlp_projection_rank_space: Any = None,
         mlp_projection_rank_depth: Any = None,
         mlp_projection_rank_features: Any = None,
         mlp_projection_rank_variables: Any = None,
         include_variable_dependency_mlp: bool = False,
+        use_embedding_factor_mlp: bool = False,
+        rank_embedding: Optional[int] = None,
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
         variable_dependent_layer_norm: bool = False,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
+        embed_confs_factor: Optional[Mapping[str, Any]] = None,
         global_embedders: Optional[nn.ModuleDict] = None,
         **kwargs: Any,
     ) -> None:
@@ -3109,6 +3451,27 @@ class FieldSpaceOperatorModule(nn.Module):
             raise ValueError(
                 "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
             )
+        operator_groups, flattened_operators = _normalize_operator_groups(
+            kwargs["operators"]
+        )
+        use_embedding_factor = _aligned_values(
+            use_embedding_factor,
+            len(flattened_operators),
+            "use_embedding_factor",
+            False,
+            operator_groups=operator_groups,
+        )
+        factor_enabled = (
+            any(bool(value) for value in use_embedding_factor)
+            or use_embedding_factor_value_projection
+            or use_embedding_factor_mlp
+        )
+        if factor_enabled and rank_embedding is None:
+            raise ValueError(
+                "rank_embedding is required when an embedding factor is enabled"
+            )
+        if rank_embedding is not None and int(rank_embedding) <= 0:
+            raise ValueError("rank_embedding must be positive when configured")
         if (
             not include_variable_dependency_operator_projection
             and _contains_configured_value(operator_projection_rank_variables)
@@ -3209,6 +3572,27 @@ class FieldSpaceOperatorModule(nn.Module):
                 zoom=input_zoom_field,
             )
 
+        embed_confs_factor = (
+            {} if embed_confs_factor is None else dict(embed_confs_factor)
+        )
+        factor_embedder = None
+        if factor_enabled:
+            if not embed_confs_factor.get("embed_names"):
+                raise ValueError(
+                    "Embedding-factorized FSON layers require at least one "
+                    "embedder in embed_confs_factor"
+                )
+            factor_input_zoom = int(
+                embed_confs_factor.get("input_zoom", min(self.in_zooms))
+            )
+            factor_embedder = get_embedder(
+                **embed_confs_factor,
+                grid_layers=grid_layers,
+                zoom=factor_input_zoom,
+                embed_dim_override=int(rank_embedding),
+                expand_variable_dim=False,
+            )
+
         self.blocks = nn.ModuleList()
         self.block_group_indices: List[int] = []
         for group_index, active in enumerate(self.active_groups):
@@ -3237,6 +3621,7 @@ class FieldSpaceOperatorModule(nn.Module):
                 constant_space_dependency=constant_space_dependency,
                 constant_in_factor=constant_in_factor,
                 constant_out_factor=constant_out_factor,
+                use_embedding_factor=use_embedding_factor,
                 operator_projection_rank_time=operator_projection_rank_time,
                 operator_projection_rank_space=operator_projection_rank_space,
                 operator_projection_rank_depth=(
@@ -3251,6 +3636,9 @@ class FieldSpaceOperatorModule(nn.Module):
                 include_variable_dependency_operator_projection=(
                     include_variable_dependency_operator_projection
                 ),
+                use_embedding_factor_value_projection=(
+                    use_embedding_factor_value_projection
+                ),
                 mlp_projection_rank_time=mlp_projection_rank_time,
                 mlp_projection_rank_space=mlp_projection_rank_space,
                 mlp_projection_rank_depth=(
@@ -3259,6 +3647,8 @@ class FieldSpaceOperatorModule(nn.Module):
                 mlp_projection_rank_features=mlp_projection_rank_features,
                 mlp_projection_rank_variables=mlp_projection_rank_variables,
                 include_variable_dependency_mlp=include_variable_dependency_mlp,
+                use_embedding_factor_mlp=use_embedding_factor_mlp,
+                rank_embedding=rank_embedding,
                 checkpoint_operator_groups=checkpoint_operator_groups,
             )
             self.blocks.append(
@@ -3269,7 +3659,9 @@ class FieldSpaceOperatorModule(nn.Module):
                     in_features=in_features,
                     n_variables=self.n_groups_variables[group_index],
                     embed_confs=embed_confs,
+                    embed_confs_factor=embed_confs_factor,
                     embedder=shared_embedder,
+                    factor_embedder=factor_embedder,
                     embedder_cache_key=embedder_cache_key,
                     **block_kwargs,
                 )

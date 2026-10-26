@@ -365,6 +365,7 @@ def create_encoder_decoder_block(
             ranks_space=block_conf.ranks_space,
             initializations=block_conf.initializations,
             share_factors_across_heads=block_conf.share_factors_across_heads,
+            use_embedding_factor=block_conf.use_embedding_factor,
             operator_dim=operator_dim,
             n_times=block_conf.n_times,
             token_len_time=block_conf.token_len_time,
@@ -397,6 +398,9 @@ def create_encoder_decoder_block(
             include_variable_dependency_operator_projection=(
                 block_conf.include_variable_dependency_operator_projection
             ),
+            use_embedding_factor_value_projection=(
+                block_conf.use_embedding_factor_value_projection
+            ),
             mlp_projection_rank_time=block_conf.mlp_projection_rank_time,
             mlp_projection_rank_space=block_conf.mlp_projection_rank_space,
             mlp_projection_rank_depth=block_conf.mlp_projection_rank_depth,
@@ -409,6 +413,8 @@ def create_encoder_decoder_block(
             include_variable_dependency_mlp=(
                 block_conf.include_variable_dependency_mlp
             ),
+            use_embedding_factor_mlp=block_conf.use_embedding_factor_mlp,
+            rank_embedding=block_conf.rank_embedding,
             mlp_factor=block_conf.mlp_factor,
             head_wise_layer_norm=block_conf.head_wise_layer_norm,
             variable_dependent_layer_norm=(
@@ -418,6 +424,7 @@ def create_encoder_decoder_block(
             dropout=operator_dropout,
             checkpoint_operator_groups=block_conf.checkpoint_operator_groups,
             embed_confs=embed_confs,
+            embed_confs_factor=embed_confs_factor,
             global_embedders=global_embedders,
             emb_modulation_mode=emb_modulation_mode,
             fac_mode=fac_mode,
