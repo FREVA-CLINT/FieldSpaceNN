@@ -16,9 +16,15 @@ UncertaintyEmbedder:
 DiffusionStepEmbedder:
   in_channels: 64
   embed_dim: 64
-  shared: true
+  shared: false
+SpatialConditioningEmbedder:
+  in_channels: 2
+  embed_dim: 64
+  input_zooms: [3, 5, 7]
+  n_variables: ${embedding.VariableEmbedder.in_channels}
+  shared: false
 VariableEmbedder:
-  in_channels: 5
+  in_channels: 70
   embed_dim: 64
   shared: false
 GridEmbedder:
