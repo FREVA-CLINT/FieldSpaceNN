@@ -46,7 +46,7 @@ class LightningMGModel(pl.LightningModule):
         self.depth_loss_scaler = ReluPressureLevelScaler(**depth_loss_scaler_cfg)
         self.loss_group_names, self.variable_loss_metadata = self._normalize_variable_loss_config(data_variables)
         
-        self.save_hyperparameters(ignore=['model'])
+        self.save_hyperparameters(ignore=['model', 'deterministic_model'])
 
         zooms_loss_dict = lambda_loss_dict.get("zooms",{})
         self.loss_zooms: MGMultiLoss = MGMultiLoss(
