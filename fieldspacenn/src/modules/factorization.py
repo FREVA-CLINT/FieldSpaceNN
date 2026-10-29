@@ -283,7 +283,7 @@ class TuckerFacLayer(nn.Module):
     :param rank_embedding: Optional rank of a dynamic embedding factor.
     :param embedding_factor: Module producing the dynamic embedding factor.
         Its output is added to a normalized same-values factor through a
-        learnable per-rank gamma initialized to ``1e-12``.
+        learnable per-rank gamma2 initialized to ``1e-3``.
     :param bias: Whether to include a bias term.
     """
 
@@ -334,7 +334,7 @@ class TuckerFacLayer(nn.Module):
             self.register_parameter("embedding_factor_gamma", None)
         else:
             self.embedding_factor_gamma = nn.Parameter(
-                torch.full((self.rank_embedding,), 1e-12)
+                torch.full((self.rank_embedding,), 1e-3)
             )
         self.indexed_dims = normalize_indexed_dims(
             indexed_dims=indexed_dims,
@@ -590,11 +590,11 @@ class TuckerFacLayer(nn.Module):
 
         same_values_factor = F.normalize(torch.ones_like(factor), dim=-1)
         assert self.embedding_factor_gamma is not None
-        gamma = self.embedding_factor_gamma.to(
+        gamma2 = self.embedding_factor_gamma.to(
             device=factor.device,
             dtype=factor.dtype,
         )
-        factor = same_values_factor + gamma * factor
+        factor = same_values_factor + gamma2 * factor
 
         return factor
 
