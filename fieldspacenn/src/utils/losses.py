@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..modules.grids.grid_layer import GridLayer
+from .two_channel_prediction import (
+    split_mean_and_error_scale,
+    split_mean_and_log_variance,
+)
 
 
 def _reduce_to_var_depth(values: torch.Tensor) -> torch.Tensor:
@@ -49,6 +53,15 @@ def _constant_loss_map(loss: torch.Tensor | float, output: torch.Tensor) -> torc
     if isinstance(scalar, torch.Tensor) and scalar.ndim > 0:
         scalar = scalar.mean()
     return scalar.expand(output.shape[1], output.shape[-2])
+
+
+def _rmse_to_var_depth(
+    errors: torch.Tensor,
+    mask: Optional[torch.Tensor],
+    epsilon: float,
+) -> torch.Tensor:
+    mse = _masked_reduce_to_var_depth(errors.square(), mask)
+    return torch.sqrt(mse + float(epsilon))
 
 
 class ReluPressureLevelScaler(nn.Module):
@@ -244,6 +257,128 @@ class MSE_masked_loss(nn.Module):
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, mask=mask, **kwargs).mean()
+
+
+class MeanRMSE_loss(nn.Module):
+    """RMSE of the mean channel of a two-channel deterministic prediction."""
+
+    def __init__(
+        self,
+        grid_layer: Optional[GridLayer] = None,
+        epsilon: float = 1e-12,
+    ) -> None:
+        super().__init__()
+        self.epsilon = float(epsilon)
+
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        del kwargs
+        mean, _ = split_mean_and_log_variance(output)
+        mean = mean.unsqueeze(-1)
+        return _rmse_to_var_depth(
+            mean - target.view_as(mean),
+            mask,
+            self.epsilon,
+        )
+
+    def forward(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        return self.loss_map(output, target, **kwargs).mean()
+
+
+class ErrorEstimateRMSE_loss(nn.Module):
+    """RMSE between the predicted scale and detached local absolute error."""
+
+    def __init__(
+        self,
+        grid_layer: Optional[GridLayer] = None,
+        epsilon: float = 1e-12,
+    ) -> None:
+        super().__init__()
+        self.epsilon = float(epsilon)
+
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        del kwargs
+        mean, error_scale = split_mean_and_error_scale(output)
+        absolute_error = (mean - target.view_as(mean)).abs().detach()
+        return _rmse_to_var_depth(
+            error_scale - absolute_error,
+            mask,
+            self.epsilon,
+        )
+
+    def forward(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        return self.loss_map(output, target, **kwargs).mean()
+
+
+class GaussianNLL_loss(nn.Module):
+    """Gaussian negative log likelihood for mean/log-variance predictions."""
+
+    def __init__(
+        self,
+        grid_layer: Optional[GridLayer] = None,
+        channel_dim: int = -1,
+        epsilon: float = 1e-6,
+        full: bool = False,
+    ) -> None:
+        super().__init__()
+        self.channel_dim = int(channel_dim)
+        self.epsilon = float(epsilon)
+        self.full = bool(full)
+
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        del kwargs
+        mean, log_variance = split_mean_and_log_variance(
+            output,
+            self.channel_dim,
+        )
+        variance = torch.exp(log_variance)
+        loss = F.gaussian_nll_loss(
+            mean,
+            target.view_as(mean),
+            variance,
+            full=self.full,
+            eps=self.epsilon,
+            reduction="none",
+        )
+        return _masked_reduce_to_var_depth(
+            loss.unsqueeze(self.channel_dim),
+            mask,
+        )
+
+    def forward(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        return self.loss_map(output, target, **kwargs).mean()
 
 
 class NHInt_loss(nn.Module):

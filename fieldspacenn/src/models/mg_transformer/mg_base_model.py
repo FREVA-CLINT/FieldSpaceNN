@@ -16,6 +16,8 @@ from ...modules.field_space.field_space_operator import (
 )
 from ...modules.field_space.healpix_convolution import MultiZoomHealpixConvBase, MultiZoomHealpixConvConfig
 from ...modules.field_space.zoom_level_transform import (
+    ExpandFeaturesLayer,
+    ExpandFeaturesLayerConfig,
     ReencodeZoomsLayer,
     ReencodeZoomsLayerConfig,
     ZoomLevelTransformConfig,
@@ -260,6 +262,13 @@ def create_encoder_decoder_block(
             mean_strengths=block_conf.mean_strengths,
         )
         block.out_features = in_features
+
+    elif isinstance(block_conf, ExpandFeaturesLayerConfig):
+        block = ExpandFeaturesLayer(
+            config=block_conf,
+            in_zooms=in_zooms,
+            in_features=in_features,
+        )
 
     elif isinstance(block_conf, ReencodeZoomsLayerConfig):
         block = ReencodeZoomsLayer(

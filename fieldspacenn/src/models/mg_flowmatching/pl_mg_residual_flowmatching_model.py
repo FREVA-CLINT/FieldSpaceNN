@@ -1,3 +1,4 @@
+import math
 import operator
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
@@ -6,6 +7,7 @@ import torch.nn as nn
 
 from .pl_mg_flowmatching_model import LightningMGFlowMatchingModel
 from ...utils.helpers import load_from_state_dict, merge_sampling_dicts
+from ...utils.two_channel_prediction import split_mean_and_error_scale
 
 
 class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
@@ -15,11 +17,37 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         self,
         deterministic_model: nn.Module,
         deterministic_checkpoint_path: str,
+        spatial_conditioning_embed_key: Optional[str] = None,
+        spatial_noise_scale: float = 1.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         if not deterministic_checkpoint_path:
             raise ValueError("`deterministic_checkpoint_path` must be provided.")
+        self.spatial_conditioning_embed_key = (
+            None
+            if spatial_conditioning_embed_key is None
+            else str(spatial_conditioning_embed_key)
+        )
+        self.spatial_noise_scale = float(spatial_noise_scale)
+        if (
+            not math.isfinite(self.spatial_noise_scale)
+            or self.spatial_noise_scale < 0
+        ):
+            raise ValueError("`spatial_noise_scale` must be finite and nonnegative.")
+        configured_scale_key = self.flow_matching.noise_scale_embed_key
+        if (
+            configured_scale_key is not None
+            and self.spatial_conditioning_embed_key is None
+        ):
+            raise ValueError(
+                "Spatial noise scaling requires `spatial_conditioning_embed_key`."
+            )
+        if configured_scale_key not in {None, self.spatial_conditioning_embed_key}:
+            raise ValueError(
+                "The spatial-conditioning key must match "
+                "flow_matching.noise_scale_embed_key."
+            )
 
         self.deterministic_model = deterministic_model
         self.deterministic_model, matching_keys = load_from_state_dict(
@@ -50,7 +78,10 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
-    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+    ) -> tuple[
+        List[Optional[Dict[int, torch.Tensor]]],
+        List[Optional[Dict[int, torch.Tensor]]],
+    ]:
         with torch.no_grad():
             prediction_groups = self.deterministic_model(
                 x_zooms_groups=self._copy_groups(source_groups),
@@ -58,7 +89,65 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
                 emb_groups=emb_groups,
                 sample_configs=sample_configs,
             )
-        return list(prediction_groups)
+        mean_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        error_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for prediction_group in prediction_groups:
+            if not prediction_group:
+                mean_groups.append(prediction_group)
+                error_groups.append(prediction_group)
+                continue
+
+            channels = {
+                int(prediction.shape[-1])
+                for prediction in prediction_group.values()
+            }
+            if len(channels) != 1 or next(iter(channels)) not in {1, 2}:
+                raise ValueError(
+                    "Deterministic residual models must output one mean channel or "
+                    "two mean/error channels consistently across zooms."
+                )
+            has_error_scale = next(iter(channels)) == 2
+            means: Dict[int, torch.Tensor] = {}
+            errors: Optional[Dict[int, torch.Tensor]] = (
+                {} if has_error_scale else None
+            )
+            for zoom, prediction in prediction_group.items():
+                if has_error_scale:
+                    mean, error = split_mean_and_error_scale(prediction)
+                    means[int(zoom)] = mean
+                    assert errors is not None
+                    errors[int(zoom)] = error * self.spatial_noise_scale
+                else:
+                    means[int(zoom)] = prediction
+            mean_groups.append(means)
+            error_groups.append(errors)
+        return mean_groups, error_groups
+
+    def _store_spatial_conditioning(
+        self,
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        mean_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        error_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+    ) -> None:
+        if self.spatial_conditioning_embed_key is None:
+            return
+        for index, (mean_group, error_group) in enumerate(
+            zip(mean_groups, error_groups)
+        ):
+            if mean_group is None:
+                continue
+            emb_group = emb_groups[index]
+            if emb_group is None:
+                if not isinstance(emb_groups, list):
+                    raise TypeError(
+                        "Embedding groups must be mutable when an entry is None."
+                    )
+                emb_group = {}
+                emb_groups[index] = emb_group
+            conditioning = {"mu": mean_group}
+            if error_group is not None:
+                conditioning["s"] = error_group
+            emb_group[self.spatial_conditioning_embed_key] = conditioning
 
     @staticmethod
     def _apply_group_operation(
@@ -92,11 +181,16 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
-        deterministic_groups = self._predict_deterministic(
+        deterministic_groups, error_groups = self._predict_deterministic(
             source_groups,
             mask_groups,
             emb_groups,
             sample_configs,
+        )
+        self._store_spatial_conditioning(
+            emb_groups,
+            deterministic_groups,
+            error_groups,
         )
         residual_groups = self._apply_group_operation(
             target_groups,
@@ -146,11 +240,16 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
-        deterministic_groups = self._predict_deterministic(
+        deterministic_groups, error_groups = self._predict_deterministic(
             source_groups,
             mask_groups,
             emb_groups,
             sample_configs,
+        )
+        self._store_spatial_conditioning(
+            emb_groups,
+            deterministic_groups,
+            error_groups,
         )
         prediction_groups = self._apply_group_operation(
             deterministic_groups,
@@ -174,13 +273,25 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         sample_configs = self._get_sample_configs(stage="predict")
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
         mask_groups = mask_groups if mask_groups is not None else [None] * len(source_groups)
-        emb_groups = emb_groups if emb_groups is not None else [None] * len(source_groups)
+        emb_groups = [
+            dict(group) if group else {}
+            for group in (
+                emb_groups
+                if emb_groups is not None
+                else [None] * len(source_groups)
+            )
+        ]
 
-        deterministic_groups = self._predict_deterministic(
+        deterministic_groups, error_groups = self._predict_deterministic(
             source_groups,
             mask_groups,
             emb_groups,
             sample_configs,
+        )
+        self._store_spatial_conditioning(
+            emb_groups,
+            deterministic_groups,
+            error_groups,
         )
         residual_template = [
             {int(zoom): torch.zeros_like(tensor) for zoom, tensor in group.items()}

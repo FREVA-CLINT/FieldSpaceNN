@@ -124,10 +124,11 @@ class EulerFlowSampler:
 
         if x_t_groups is None:
             x_t_groups = [
-                self.flow_matching.generate_noise(
+                self.flow_matching.generate_noise_for_group(
                     group,
-                    self.flow_matching._variable_names(emb_groups[index])
-                    if emb_groups is not None and index < len(emb_groups) else None,
+                    emb_groups[index]
+                    if emb_groups is not None and index < len(emb_groups)
+                    else None,
                 )
                 if group else None
                 for index, group in enumerate(input_groups)

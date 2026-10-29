@@ -356,7 +356,14 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
-        emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
+        emb_groups = [
+            dict(group) if group else {}
+            for group in (
+                emb_groups
+                if emb_groups is not None
+                else [None] * len(target_groups)
+            )
+        ]
         flow_target_groups = self._prepare_flow_target_groups(
             source_groups,
             target_groups,
@@ -396,7 +403,14 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         sample_configs = merge_sampling_dicts(sample_configs, patch_index_zooms)
 
         mask_groups = mask_groups if mask_groups is not None else [None] * len(target_groups)
-        emb_groups = emb_groups if emb_groups is not None else [None] * len(target_groups)
+        emb_groups = [
+            dict(group) if group else {}
+            for group in (
+                emb_groups
+                if emb_groups is not None
+                else [None] * len(target_groups)
+            )
+        ]
         flow_target_groups = self._prepare_flow_target_groups(
             source_groups,
             target_groups,
@@ -557,9 +571,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         )
 
         noise_groups_p = [
-            self.flow_matching.generate_noise(
-                group, self.flow_matching._variable_names(emb_group)
-            )
+            self.flow_matching.generate_noise_for_group(group, emb_group)
             if group else None
             for group, emb_group in zip(flow_target_groups_p, emb_groups_p)
         ]
@@ -644,9 +656,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         if initialize_from_noise:
             x_t_groups = [
-                self.flow_matching.generate_noise(
-                    group, self.flow_matching._variable_names(emb_group)
-                )
+                self.flow_matching.generate_noise_for_group(group, emb_group)
                 if group else None
                 for group, emb_group in zip(input_groups, emb_groups)
             ]

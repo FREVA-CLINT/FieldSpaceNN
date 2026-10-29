@@ -1131,6 +1131,113 @@ class DiffusionStepEmbedder(BaseEmbedder):
         )
 
 
+class SpatialConditioningEmbedder(BaseEmbedder):
+    """Tokenize deterministic prediction fields into spatial conditioning."""
+
+    def __init__(
+        self,
+        name: str,
+        in_channels: int,
+        embed_dim: int,
+        input_zooms: Sequence[int],
+        zoom: int,
+        n_variables: int = 1,
+        hidden_dim: Optional[int] = None,
+        fac_mode: str = "Tucker",
+        grid_layers: Optional[Dict[str, GridLayer]] = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(name, in_channels, embed_dim)
+        if self.in_channels not in {1, 2}:
+            raise ValueError(
+                "SpatialConditioningEmbedder expects one mean channel or mean and scale."
+            )
+        if not input_zooms:
+            raise ValueError("SpatialConditioningEmbedder requires input zooms.")
+
+        # Local import avoids a module cycle: field_space_base also owns the
+        # existing embedding-composition layers.
+        from ..field_space.field_space_base import Tokenizer
+
+        self.input_zooms = [int(input_zoom) for input_zoom in input_zooms]
+        self.zoom = int(zoom)
+        self.keep_dims = ["b", "v", "s", "c"]
+        self.tokenizer = Tokenizer(
+            input_zooms=self.input_zooms,
+            token_zoom=self.zoom,
+            grid_layers={} if grid_layers is None else grid_layers,
+            token_len_time=1,
+            token_len_depth=1,
+        )
+        token_features = [*self.tokenizer.token_size, self.in_channels]
+        hidden_features = [1, 1, 1, int(hidden_dim or self.embed_dim)]
+        self.mlp = MLP_fac(
+            token_features,
+            [1, 1, 1, self.embed_dim],
+            hidden_dim=hidden_features,
+            ranks=[None] * len(token_features),
+            n_variables=int(n_variables),
+            fac_mode=fac_mode,
+        )
+
+    def forward(
+        self,
+        emb: Mapping[str, Mapping[int, torch.Tensor]],
+        sample_configs: Optional[Dict[str, Any]] = None,
+        embedding_inputs: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        field_names = ("mu",) if self.in_channels == 1 else ("mu", "s")
+        if not isinstance(emb, Mapping) or set(emb) != set(field_names):
+            raise ValueError(
+                "Spatial conditioning must contain exactly the maps matching "
+                f"in_channels={self.in_channels}: {field_names}."
+            )
+
+        fields: Dict[int, torch.Tensor] = {}
+        for name in field_names:
+            if not isinstance(emb[name], Mapping):
+                raise TypeError(f"Spatial conditioning `{name}` must be a zoom mapping.")
+        conditioning_fields = {
+            name: {int(zoom): value for zoom, value in emb[name].items()}
+            for name in field_names
+        }
+        expected_zooms = set(self.input_zooms)
+        for name, zoom_fields in conditioning_fields.items():
+            if set(zoom_fields) != expected_zooms:
+                raise ValueError(
+                    "Spatial conditioning zooms must match input_zooms; "
+                    f"expected {sorted(expected_zooms)}, got "
+                    f"{name}={sorted(zoom_fields)}."
+                )
+
+        for zoom in self.input_zooms:
+            zoom_fields = [conditioning_fields[name][zoom] for name in field_names]
+            mean = zoom_fields[0]
+            if any(field.shape != mean.shape for field in zoom_fields[1:]):
+                shapes = {
+                    name: tuple(field.shape)
+                    for name, field in zip(field_names, zoom_fields)
+                }
+                raise ValueError(
+                    f"Spatial conditioning shapes differ at zoom {zoom}: {shapes}."
+                )
+            if mean.ndim != 6 or mean.shape[2] != 1 or mean.shape[-1] != 1:
+                raise ValueError(
+                    "Spatial conditioning fields must have shape "
+                    "(batch, variables, 1, space, depth, 1)."
+                )
+            fields[zoom] = torch.cat(zoom_fields, dim=-1)
+
+        tokens = self.tokenizer(fields, sample_configs=sample_configs or {})
+        projected = self.mlp(tokens, emb=embedding_inputs)
+        if projected.shape[2] != 1 or projected.shape[4] != 1:
+            raise ValueError(
+                "SpatialConditioningEmbedder currently requires one time and depth token."
+            )
+        return projected[:, :, 0, :, 0, 0, 0, 0, :]
+
+
 # Embedder manager to handle shared or non-shared instances
 class EmbedderManager:
     _instance: Optional["EmbedderManager"] = None
@@ -1238,7 +1345,7 @@ class EmbedderSequential(nn.Module):
         self,
         embedder_name: str,
         embedder: BaseEmbedder,
-        inputs: Dict[str, torch.Tensor],
+        inputs: Dict[str, Any],
         sample_configs: Optional[Dict[str, Any]],
         output_zoom: Optional[int],
         variable_embedder_size: Optional[int],
@@ -1251,6 +1358,7 @@ class EmbedderSequential(nn.Module):
             inputs[embedder_name],
             sample_configs=sample_configs,
             output_zoom=output_zoom,
+            embedding_inputs=inputs,
         )
 
         expected_ndim = len(embedder.keep_dims) + (
@@ -1347,7 +1455,7 @@ class EmbedderSequential(nn.Module):
     
     def forward(
         self,
-        inputs: Dict[str, torch.Tensor],
+        inputs: Dict[str, Any],
         sample_configs: Optional[Dict[str, Any]] = None,
         output_zoom: Optional[int] = None
     ) -> torch.Tensor:
@@ -1425,7 +1533,7 @@ class IndependentEmbedderSequential(EmbedderSequential):
 
     def forward(
         self,
-        inputs: Dict[str, torch.Tensor],
+        inputs: Dict[str, Any],
         sample_configs: Optional[Dict[str, Any]] = None,
         output_zoom: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:

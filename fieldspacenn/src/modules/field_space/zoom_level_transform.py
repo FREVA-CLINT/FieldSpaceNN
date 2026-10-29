@@ -44,6 +44,73 @@ def _validate_matching_timestep_counts(
         )
 
 
+class ExpandFeaturesLayerConfig:
+    """Configure deterministic expansion of the field feature dimension."""
+
+    def __init__(self, out_features: int, mode: str = "zeros") -> None:
+        self.out_features = int(out_features)
+        self.mode = str(mode).lower()
+        if self.out_features <= 0:
+            raise ValueError("out_features must be positive")
+        if self.mode not in {"zeros", "repeat"}:
+            raise ValueError("mode must be either 'zeros' or 'repeat'")
+
+
+class ExpandFeaturesLayer(nn.Module):
+    """Append zero-valued or repeated feature channels to every zoom tensor."""
+
+    def __init__(
+        self,
+        config: ExpandFeaturesLayerConfig,
+        in_zooms: Sequence[int],
+        in_features: Sequence[int],
+    ) -> None:
+        super().__init__()
+        self.mode = config.mode
+        self.out_zooms = [int(zoom) for zoom in in_zooms]
+        self.out_features = [config.out_features] * len(self.out_zooms)
+        for zoom, features in zip(self.out_zooms, in_features):
+            if int(features) > config.out_features:
+                raise ValueError(
+                    f"Cannot expand zoom {zoom} from {features} to "
+                    f"{config.out_features} features."
+                )
+
+    def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
+        missing_features = self.out_features[0] - tensor.shape[-1]
+        if missing_features < 0:
+            raise ValueError(
+                f"Runtime tensor has {tensor.shape[-1]} features, which exceeds "
+                f"configured out_features={self.out_features[0]}."
+            )
+        if missing_features == 0:
+            return tensor
+
+        if self.mode == "zeros":
+            appended = tensor.new_zeros(*tensor.shape[:-1], missing_features)
+        else:
+            appended = tensor[..., :1].expand(
+                *tensor.shape[:-1], missing_features
+            )
+        return torch.cat((tensor, appended), dim=-1)
+
+    def forward(
+        self,
+        x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        **kwargs: Any,
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        del kwargs
+        return [
+            {
+                int(zoom): self._expand(tensor)
+                for zoom, tensor in group.items()
+            }
+            if group is not None
+            else None
+            for group in x_zooms_groups
+        ]
+
+
 class ZoomLevelTransformConfig:
     """Base configuration for one-way zoom-level transformation layers."""
 

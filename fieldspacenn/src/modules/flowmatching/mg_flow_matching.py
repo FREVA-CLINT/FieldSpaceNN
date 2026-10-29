@@ -19,6 +19,7 @@ class MGFlowMatching:
         interpolation_mode: str = "linear",
         rectified_time_epsilon: float = 1e-5,
         norm_dict: NormDictInput = None,
+        noise_scale_embed_key: Optional[str] = None,
         temporal_difference: bool = False,
         difference_norm_dict: NormDictInput = None,
     ) -> None:
@@ -33,6 +34,9 @@ class MGFlowMatching:
             mode for numerical stability near ``t=1``.
         :param norm_dict: Optional per-variable, per-zoom data standard deviations,
             either as a mapping or a legacy path to a YAML/JSON file.
+        :param noise_scale_embed_key: Optional embedding-dictionary key containing
+            per-zoom spatial factors. When present, base noise is unit-variance at
+            every zoom and these factors provide its spatial scale.
         :param temporal_difference: Whether masked targets use normalized one-step
             differences.
         :param difference_norm_dict: Mean/std statistics for temporal differences,
@@ -42,6 +46,9 @@ class MGFlowMatching:
         self.time_embed_key: str = time_embed_key
         self.separate_noise_on_zoom: bool = separate_noise_on_zoom
         self.norm_dict = self._load_norm_dict(norm_dict, "norm_dict")
+        self.noise_scale_embed_key = (
+            None if noise_scale_embed_key is None else str(noise_scale_embed_key)
+        )
         self.temporal_difference: bool = bool(temporal_difference)
         self.difference_norm_dict = self._load_norm_dict(
             difference_norm_dict, "difference_norm_dict"
@@ -376,8 +383,9 @@ class MGFlowMatching:
         x_zooms: Mapping[int, torch.Tensor],
         zooms: Sequence[int],
         variable_names: Optional[Sequence[Any]],
+        unit_variance: bool = False,
     ) -> Dict[int, torch.Tensor]:
-        """Build unscaled shared pyramid fields, residualize them, then normalize."""
+        """Build shared pyramid fields and normalize them to configured scales."""
         max_zoom = zooms[0]
         max_time = max(x_zooms[zoom].shape[2] for zoom in zooms)
         finest_shape = list(x_zooms[max_zoom].shape)
@@ -421,8 +429,16 @@ class MGFlowMatching:
                 # Var(fine average - containing coarse average) = 1/N_f - 1/N_c.
                 raw_std = math.sqrt(1.0 / n_fine - 1.0 / n_coarse)
 
-            norm_std = self._normalization_scale(zoom, component, variable_names)
-            noise_zooms[zoom] = component * (norm_std / raw_std)
+            noise_scale = (
+                1.0
+                if unit_variance
+                else self._normalization_scale(
+                    zoom,
+                    component,
+                    variable_names,
+                )
+            )
+            noise_zooms[zoom] = component * (noise_scale / raw_std)
 
         return {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms}
 
@@ -430,26 +446,37 @@ class MGFlowMatching:
         self,
         x_zooms: Mapping[int, torch.Tensor],
         variable_names: Optional[Sequence[Any]] = None,
+        spatial_scales: Optional[Mapping[int, torch.Tensor]] = None,
     ) -> Dict[int, torch.Tensor]:
         """
         Generate Gaussian noise per zoom level.
 
         :param x_zooms: Input tensors per zoom of shape ``(b, v, t, n, d, f)``.
         :param variable_names: Optional variable names matching the tensor variable axis.
+        :param spatial_scales: Optional per-zoom scales broadcastable to the input
+            tensors. When provided, unit-variance noise is generated at every zoom
+            before applying these scales.
         :return: Noise tensors per zoom with matching shapes.
         """
+        spatial_scales = self._validate_spatial_noise_scales(
+            x_zooms,
+            spatial_scales,
+        )
         if self.separate_noise_on_zoom:
             noise_zooms = {
                 int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()
             }
-            if self.norm_dict is not None:
+            if spatial_scales is None and self.norm_dict is not None:
                 noise_zooms = {
                     int(zoom): noise * self._normalization_scale(
                         int(zoom), noise, variable_names
                     )
                     for zoom, noise in noise_zooms.items()
                 }
-            return noise_zooms
+            return self._apply_spatial_noise_scales(
+                noise_zooms,
+                spatial_scales,
+            )
 
         if not x_zooms:
             return {}
@@ -465,8 +492,15 @@ class MGFlowMatching:
 
         max_zoom = zooms[0]
         if self.norm_dict is not None:
-            return self._generate_normalized_shared_noise(
-                x_zooms, zooms, variable_names
+            noise_zooms = self._generate_normalized_shared_noise(
+                x_zooms,
+                zooms,
+                variable_names,
+                unit_variance=spatial_scales is not None,
+            )
+            return self._apply_spatial_noise_scales(
+                noise_zooms,
+                spatial_scales,
             )
 
         noise_zooms: Dict[int, torch.Tensor] = {
@@ -528,7 +562,100 @@ class MGFlowMatching:
 
             noise_zooms[zoom] = current_noise
 
-        return {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms.keys()}
+        if spatial_scales is not None:
+            noise_zooms = {
+                zoom: noise * (2 ** (max_zoom - zoom))
+                for zoom, noise in noise_zooms.items()
+            }
+
+        return self._apply_spatial_noise_scales(
+            {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms.keys()},
+            spatial_scales,
+        )
+
+    @staticmethod
+    def _apply_spatial_noise_scales(
+        noise_zooms: Mapping[int, torch.Tensor],
+        spatial_scales: Optional[Mapping[int, torch.Tensor]],
+    ) -> Dict[int, torch.Tensor]:
+        if spatial_scales is None:
+            return {int(zoom): noise for zoom, noise in noise_zooms.items()}
+        return {
+            int(zoom): noise
+            * spatial_scales[int(zoom)].to(
+                device=noise.device,
+                dtype=noise.dtype,
+            )
+            for zoom, noise in noise_zooms.items()
+        }
+
+    @staticmethod
+    def _validate_spatial_noise_scales(
+        x_zooms: Mapping[int, torch.Tensor],
+        spatial_scales: Optional[Mapping[int, torch.Tensor]],
+    ) -> Optional[Dict[int, torch.Tensor]]:
+        if spatial_scales is None:
+            return None
+
+        scales = {int(zoom): scale for zoom, scale in spatial_scales.items()}
+        expected_zooms = {int(zoom) for zoom in x_zooms}
+        if set(scales) != expected_zooms:
+            raise ValueError(
+                "Spatial noise scales must have the same zooms as the flow field; "
+                f"got scales={sorted(scales)} and fields={sorted(expected_zooms)}."
+            )
+
+        for zoom, field in x_zooms.items():
+            scale = scales[int(zoom)]
+            if not torch.is_tensor(scale):
+                raise TypeError(f"Spatial noise scale for zoom {zoom} must be a tensor.")
+            try:
+                broadcast_shape = torch.broadcast_shapes(field.shape, scale.shape)
+            except RuntimeError as error:
+                raise ValueError(
+                    f"Spatial noise scale shape {tuple(scale.shape)} cannot broadcast "
+                    f"to zoom {zoom} field shape {tuple(field.shape)}."
+                ) from error
+            if tuple(broadcast_shape) != tuple(field.shape):
+                raise ValueError(
+                    f"Spatial noise scale shape {tuple(scale.shape)} broadcasts beyond "
+                    f"zoom {zoom} field shape {tuple(field.shape)}."
+                )
+            if not torch.isfinite(scale).all() or (scale < 0).any():
+                raise ValueError("Spatial noise scales must be finite and nonnegative.")
+        return scales
+
+    def noise_scales_from_embedding(
+        self,
+        emb_group: Optional[Mapping[str, Any]],
+    ) -> Optional[Mapping[int, torch.Tensor]]:
+        if self.noise_scale_embed_key is None or not emb_group:
+            return None
+        conditioning = emb_group.get(self.noise_scale_embed_key)
+        if conditioning is None:
+            return None
+        if not isinstance(conditioning, Mapping):
+            raise TypeError(
+                f"Embedding {self.noise_scale_embed_key!r} must contain a zoom mapping."
+            )
+        scales = conditioning.get("s", conditioning)
+        if not isinstance(scales, Mapping):
+            raise TypeError(
+                f"Embedding {self.noise_scale_embed_key!r} must contain an `s` zoom mapping."
+            )
+        return scales
+
+    def generate_noise_for_group(
+        self,
+        x_zooms: Mapping[int, torch.Tensor],
+        emb_group: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[int, torch.Tensor]:
+        """Generate noise using variable metadata and optional spatial scales."""
+        return self.generate_noise(
+            x_zooms,
+            self._variable_names(emb_group),
+            spatial_scales=self.noise_scales_from_embedding(emb_group),
+        )
 
     def apply_mask_to_noise(
         self,
@@ -712,10 +839,9 @@ class MGFlowMatching:
             )
         if noise_groups is None:
             noise_groups = [
-                self.generate_noise(
+                self.generate_noise_for_group(
                     group,
-                    self._variable_names(emb_groups[index])
-                    if index < len(emb_groups) else None,
+                    emb_groups[index] if index < len(emb_groups) else None,
                 )
                 if group else None
                 for index, group in enumerate(gt_groups)
