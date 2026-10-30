@@ -222,21 +222,7 @@ def plot_zooms(
     """
     # Output and ground truth define the target zooms that should be plotted.
     zoom_levels = sorted(set(output_maps) & set(gt_maps))
-    if not zoom_levels:
-        return
     single_input_zoom = next(iter(input_maps)) if len(input_maps) == 1 else None
-    n_prediction_channels = max(
-        1 if output_maps[zoom].ndim == 1 else output_maps[zoom].shape[-1]
-        for zoom in zoom_levels
-    )
-    output_titles = (
-        ['Output']
-        if n_prediction_channels == 1
-        else [
-            f'Output channel {channel}'
-            for channel in range(n_prediction_channels)
-        ]
-    )
     rows = []
 
     for zoom in zoom_levels:
@@ -244,53 +230,23 @@ def plot_zooms(
         inp_map = input_maps.get(input_zoom) if input_zoom is not None else None
         out_map = output_maps[zoom]
         gt_map = gt_maps[zoom]
-        if out_map.ndim == 1:
-            out_channels = [out_map]
-        elif out_map.ndim == 2:
-            out_channels = [
-                out_map[:, channel]
-                for channel in range(out_map.shape[-1])
-            ]
-        else:
-            raise ValueError(
-                "Prediction maps must have shape (space,) or (space, channels), "
-                f"got {out_map.shape} at zoom {zoom}."
-            )
-        padded_channels = out_channels + [None] * (
-            n_prediction_channels - len(out_channels)
-        )
+        mask_map = mask_maps.get(zoom) if mask_maps is not None else None
 
-        error_map = out_channels[0] - gt_map
+        error_map = (out_map - gt_map)  # * mask_map
 
-        maps = [inp_map, *padded_channels, gt_map, error_map]
-        titles = ['Input', *output_titles, 'Ground Truth', 'Error']
+        maps = [inp_map, out_map, gt_map, error_map]
+        titles = ['Input', 'Output', 'Ground Truth', 'Error']
         if input_zoom is not None and input_zoom != zoom:
             titles[0] = f'Input (zoom {input_zoom})'
         gt_min, gt_max = np.quantile(gt_map, [0.001, 0.999])
         error_map_min, error_map_max = np.quantile(error_map, [0.001, 0.999])
-        output_min_max = []
-        for channel, values in enumerate(padded_channels):
-            if values is None:
-                output_min_max.append((None, None))
-            elif channel == 0:
-                output_min_max.append((gt_min, gt_max))
-            else:
-                output_min_max.append(tuple(np.quantile(values, [0.001, 0.999])))
-        min_max = [
-            (gt_min, gt_max),
-            *output_min_max,
-            (gt_min, gt_max),
-            (error_map_min, error_map_max),
-        ]
+        min_max = [(gt_min, gt_max), (gt_min, gt_max), (gt_min, gt_max), (error_map_min, error_map_max)]
 
         rows.append(
             {
                 "zoom": zoom,
                 "maps": maps,
-                "map_zooms": [
-                    input_zoom if input_zoom is not None else zoom,
-                    *([zoom] * (n_prediction_channels + 2)),
-                ],
+                "map_zooms": [input_zoom if input_zoom is not None else zoom, zoom, zoom, zoom],
                 "titles": titles,
                 "min_max": min_max,
                 "row_label": f"(zoom {zoom})",
@@ -396,7 +352,44 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
 
     for ts in plot_ts:
         for var in range(n_plot_vars):
-            # Use embedding index for variable name if available.
+            input_maps = {}
+            output_maps = {}
+            gt_maps = {}
+            mask_maps = {}
+
+            for zoom in zoom_levels_input:
+                input_zoom = input_zooms[zoom]
+                if var < input_zoom.shape[1]:
+                    sample_in = min(sample, input_zoom.shape[0] - 1)
+                    var_in = var
+                    ts_in = min(int(ts), input_zoom.shape[2] - 1)
+                    input_maps[zoom] = input_zoom[sample_in, var_in, ts_in, :, 0, 0].float().cpu().numpy()
+
+            for zoom in zoom_levels_output_gt:
+                output_zoom = output_zooms[zoom]
+                gt_zoom = gt_zooms[zoom]
+                if var >= output_zoom.shape[1] or var >= gt_zoom.shape[1]:
+                    continue
+
+                sample_out = min(sample, output_zoom.shape[0] - 1)
+                sample_gt = min(sample, gt_zoom.shape[0] - 1)
+                var_out = var
+                var_gt = var
+                ts_out = min(int(ts), output_zoom.shape[2] - 1)
+                ts_gt = min(int(ts), gt_zoom.shape[2] - 1)
+
+                output_maps[zoom] = output_zoom[sample_out, var_out, ts_out, :, 0, 0].float().cpu().numpy()
+                gt_maps[zoom] = gt_zoom[sample_gt, var_gt, ts_gt, :, 0, 0].float().cpu().numpy()
+
+                if mask_zooms is not None and zoom in mask_zooms and _is_plot_tensor(mask_zooms.get(zoom)):
+                    mask_zoom = mask_zooms[zoom]
+                    sample_mask = min(sample, mask_zoom.shape[0] - 1)
+                    if var < mask_zoom.shape[1]:
+                        var_mask = var
+                        ts_mask = min(int(ts), mask_zoom.shape[2] - 1)
+                        mask_maps[zoom] = mask_zoom[sample_mask, var_mask, ts_mask, :, 0, 0].float().cpu().numpy()
+
+            # Use embedding index for variable name if available
             if emb is not None and 'VariableEmbedder' in emb:
                 var_embedder = emb['VariableEmbedder']
                 if (
@@ -411,70 +404,10 @@ def healpix_plot_zooms_var(input_zooms: Dict[int, torch.Tensor],
             else:
                 var_idx = var
 
-            input_maps = {}
-            output_maps = {}
-            gt_maps = {}
-            mask_maps = {}
-
-            for zoom in zoom_levels_input:
-                input_zoom = input_zooms[zoom]
-                if var < input_zoom.shape[1]:
-                    sample_in = min(sample, input_zoom.shape[0] - 1)
-                    ts_in = min(int(ts), input_zoom.shape[2] - 1)
-                    input_maps[zoom] = input_zoom[
-                        sample_in, var, ts_in, :, 0, 0
-                    ].float().cpu().numpy()
-
-            for zoom in zoom_levels_output_gt:
-                output_zoom = output_zooms[zoom]
-                gt_zoom = gt_zooms[zoom]
-                if var >= output_zoom.shape[1] or var >= gt_zoom.shape[1]:
-                    continue
-
-                sample_out = min(sample, output_zoom.shape[0] - 1)
-                sample_gt = min(sample, gt_zoom.shape[0] - 1)
-                ts_out = min(int(ts), output_zoom.shape[2] - 1)
-                ts_gt = min(int(ts), gt_zoom.shape[2] - 1)
-
-                output_map = output_zoom[
-                    sample_out, var, ts_out, :, 0, :
-                ].float().cpu().numpy()
-                output_maps[zoom] = (
-                    output_map[:, 0]
-                    if output_map.shape[-1] == 1
-                    else output_map
-                )
-                gt_maps[zoom] = gt_zoom[
-                    sample_gt, var, ts_gt, :, 0, 0
-                ].float().cpu().numpy()
-
-                if (
-                    mask_zooms is not None
-                    and zoom in mask_zooms
-                    and _is_plot_tensor(mask_zooms.get(zoom))
-                ):
-                    mask_zoom = mask_zooms[zoom]
-                    sample_mask = min(sample, mask_zoom.shape[0] - 1)
-                    if var < mask_zoom.shape[1]:
-                        ts_mask = min(int(ts), mask_zoom.shape[2] - 1)
-                        mask_maps[zoom] = mask_zoom[
-                            sample_mask, var, ts_mask, :, 0, 0
-                        ].float().cpu().numpy()
-
-            save_path = os.path.join(
-                save_dir,
-                f"{plot_name}_{ts}_{var_idx}.png",
-            )
-            plot_zooms(
-                input_maps,
-                output_maps,
-                gt_maps,
-                mask_maps,
-                save_path,
-                sample_configs=sample_configs,
-            )
+            save_path = os.path.join(save_dir, f"{plot_name}_{ts}_{var_idx}.png")
+            plot_zooms(input_maps, output_maps, gt_maps, mask_maps, save_path, sample_configs=sample_configs)
             save_paths.append(save_path)
-
+    
     return save_paths
 
 
@@ -517,6 +450,8 @@ def healpix_plot_zooms_time(
     if plot_n_vars == -1:
         plot_n_vars = V
 
+    titles = ['Output', 'Ground Truth', 'Error']
+
     for var in range(plot_n_vars):
         if emb is not None and 'VariableEmbedder' in emb:
             var_idx = emb['VariableEmbedder'][sample, var].item()
@@ -524,62 +459,27 @@ def healpix_plot_zooms_time(
             var_idx = var
 
         for zoom in zoom_levels:
-            output_zoom = output_zooms[zoom]
-            gt_zoom = gt_zooms[zoom]
-            n_prediction_channels = int(output_zoom.shape[-1])
             rows = []
-            output_series = output_zoom[
-                sample, var, :, :, 0, :
-            ].float().cpu().numpy()
-            gt_series = gt_zoom[
-                sample, var, :, :, 0, 0
-            ].float().cpu().numpy()
-            error_series = output_series[..., 0] - gt_series
+            output_series = output_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            gt_series = gt_zooms[zoom][sample, var, :, :, 0, 0].float().cpu().numpy()
+            error_series = output_series - gt_series
 
             gt_min, gt_max = np.quantile(gt_series, [0.001, 0.999])
             error_min, error_max = np.quantile(error_series, [0.001, 0.999])
-            output_min_max = [(gt_min, gt_max)]
-            output_min_max.extend(
-                tuple(np.quantile(output_series[..., channel], [0.001, 0.999]))
-                for channel in range(1, n_prediction_channels)
-            )
-            min_max = [
-                *output_min_max,
-                (gt_min, gt_max),
-                (error_min, error_max),
-            ]
-            output_titles = (
-                ['Output']
-                if n_prediction_channels == 1
-                else [
-                    f'Output channel {channel}'
-                    for channel in range(n_prediction_channels)
-                ]
-            )
-            titles = [*output_titles, 'Ground Truth', 'Error']
+            min_max = [(gt_min, gt_max), (gt_min, gt_max), (error_min, error_max)]
 
             for row_idx in range(gt_series.shape[0]):
                 rows.append(
                     {
                         "zoom": zoom,
-                        "maps": [
-                            *[
-                                output_series[row_idx, :, channel]
-                                for channel in range(n_prediction_channels)
-                            ],
-                            gt_series[row_idx],
-                            error_series[row_idx],
-                        ],
+                        "maps": [output_series[row_idx], gt_series[row_idx], error_series[row_idx]],
                         "titles": titles,
                         "min_max": min_max,
                         "row_label": f"(t={row_idx}, zoom {zoom})",
                     }
                 )
 
-            save_path = os.path.join(
-                save_dir,
-                f"{plot_name}_zoom_{zoom}_var_{var_idx}.png",
-            )
+            save_path = os.path.join(save_dir, f"{plot_name}_zoom_{zoom}_var_{var_idx}.png")
             _plot_healpix_grid(rows, save_path, sample_configs)
             save_paths.append(save_path)
 

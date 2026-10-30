@@ -324,7 +324,7 @@ class TuckerOperator(nn.Module):
             self.register_parameter("embedding_factor_gamma", None)
         else:
             self.embedding_factor_gamma = nn.Parameter(
-                torch.full((self.rank_embedding,), 1e-3)
+                torch.full((self.rank_embedding,), 1e-12)
             )
         self.dependency_ranks = {
             name: (
@@ -842,14 +842,14 @@ class TuckerOperator(nn.Module):
                 f"{tuple(factor.shape)}"
             )
         assert self.embedding_factor_gamma is not None
-        gamma2 = self.embedding_factor_gamma.to(
+        gamma = self.embedding_factor_gamma.to(
             device=factor.device,
             dtype=factor.dtype,
         )
         same_values_factor = torch.nn.functional.normalize(
             torch.ones_like(factor), dim=-1
         )
-        return same_values_factor + gamma2 * factor, subscript
+        return same_values_factor + gamma * factor, subscript
 
     def _self_selection_contract(
         self,
