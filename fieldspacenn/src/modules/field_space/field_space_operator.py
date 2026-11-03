@@ -3219,6 +3219,7 @@ class _AlignedSumFieldSpaceOperatorPath(nn.Module):
         token_len_time: Mapping[int, int],
         token_len_depth: int,
         token_overlap_space: bool,
+        direct_operator_mlp: bool,
         token_overlap_time: bool,
         token_overlap_depth: bool,
         operator_dim: int,
@@ -3258,6 +3259,7 @@ class _AlignedSumFieldSpaceOperatorPath(nn.Module):
         self.token_len_depth = int(token_len_depth)
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = bool(token_overlap_depth)
+        self.direct_operator_mlp = bool(direct_operator_mlp)
         self.operator_dim = int(operator_dim)
         self.num_heads = int(num_heads)
         self.max_zoom = max(self.in_zooms)
@@ -3653,12 +3655,10 @@ class FieldSpaceOperatorBlock(nn.Module):
             raise ValueError(
                 "multizoom_mode must be either 'joint' or 'aligned_sum'"
             )
-        if multizoom_mode == "aligned_sum" and (
-            latent_operator_mlp or direct_operator_mlp
-        ):
+        if multizoom_mode == "aligned_sum" and latent_operator_mlp:
             raise ValueError(
                 "aligned_sum defines its own per-zoom output MLP and cannot be "
-                "combined with latent_operator_mlp or direct_operator_mlp"
+                "combined with latent_operator_mlp"
             )
         if multizoom_mode == "aligned_sum" and (
             operator_output_overlap_space
@@ -4012,6 +4012,7 @@ class FieldSpaceOperatorBlock(nn.Module):
                 token_len_time=self.token_len_time,
                 token_len_depth=int(token_len_depth),
                 token_overlap_space=bool(token_overlap_space),
+                direct_operator_mlp=bool(direct_operator_mlp),
                 token_overlap_time=bool(token_overlap_time),
                 token_overlap_depth=bool(token_overlap_depth),
                 operator_dim=self.operator_dim,
