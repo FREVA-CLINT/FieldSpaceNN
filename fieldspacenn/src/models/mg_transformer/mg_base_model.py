@@ -385,6 +385,7 @@ def create_encoder_decoder_block(
             ),
             latent_operator_mlp=block_conf.latent_operator_mlp,
             direct_operator_mlp=block_conf.direct_operator_mlp,
+            multizoom_mode=block_conf.multizoom_mode,
             token_overlap_time=block_conf.token_overlap_time,
             token_overlap_depth=block_conf.token_overlap_depth,
             token_overlap_mlp_time=block_conf.token_overlap_mlp_time,

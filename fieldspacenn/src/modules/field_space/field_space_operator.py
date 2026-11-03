@@ -12,7 +12,18 @@ import copy
 import math
 from collections import OrderedDict
 from numbers import Integral
-from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Collection,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from einops import rearrange
 from omegaconf import ListConfig
@@ -40,6 +51,7 @@ OperatorGroups = Union[
     Sequence[Sequence[OperatorName]],
 ]
 OperatorSetting = Union[Sequence[Any], Sequence[Sequence[Any]]]
+MultiZoomMode = Literal["joint", "aligned_sum"]
 _DEPENDENCY_ORDER = ("variable", "time", "space")
 _FIELD_DIM_NAMES = ("batch", "variable", "time", "space", "depth")
 
@@ -1972,6 +1984,7 @@ class FieldSpaceOperatorConfig:
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
         direct_operator_mlp: bool = False,
+        multizoom_mode: MultiZoomMode = "joint",
         token_overlap_time: bool = False,
         token_overlap_depth: Any = False,
         token_overlap_mlp_time: bool = False,
@@ -2011,6 +2024,10 @@ class FieldSpaceOperatorConfig:
         if latent_operator_mlp and direct_operator_mlp:
             raise ValueError(
                 "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
+        if multizoom_mode not in {"joint", "aligned_sum"}:
+            raise ValueError(
+                "multizoom_mode must be either 'joint' or 'aligned_sum'"
             )
         operator_groups, flattened_operators = _normalize_operator_groups(operators)
         n_operators = len(flattened_operators)
@@ -2294,6 +2311,7 @@ class FieldSpaceOperatorConfig:
         self.operator_output_overlap_space = bool(operator_output_overlap_space)
         self.latent_operator_mlp = bool(latent_operator_mlp)
         self.direct_operator_mlp = bool(direct_operator_mlp)
+        self.multizoom_mode = multizoom_mode
         self.token_overlap_time = bool(token_overlap_time)
         self.token_overlap_depth = token_overlap_depth
         self.token_overlap_mlp_time = bool(token_overlap_mlp_time)
@@ -2364,6 +2382,185 @@ def _shared_zoom_value(
             f"zoom {first_zoom} has {first!r}, conflicts={conflicts}"
         )
     return first
+
+
+def _token_time_positions(
+    *,
+    zoom: int,
+    field_time_steps: int,
+    token_len_time: int,
+    sample_config: Mapping[str, Any],
+) -> Tuple[int, ...]:
+    """Return the physical timestamp represented by each temporal token."""
+    if token_len_time <= 0:
+        raise ValueError(
+            f"token_len_time[{zoom}] must be positive, got {token_len_time}"
+        )
+    if field_time_steps % token_len_time:
+        raise ValueError(
+            f"Zoom {zoom} has {field_time_steps} time steps, which is not "
+            f"divisible by token_len_time={token_len_time}"
+        )
+
+    has_past = "n_past_ts" in sample_config
+    has_future = "n_future_ts" in sample_config
+    if has_past != has_future:
+        raise ValueError(
+            f"Temporal alignment for zoom {zoom} requires both n_past_ts and "
+            "n_future_ts"
+        )
+    if has_past:
+        n_past = int(sample_config["n_past_ts"])
+        n_future = int(sample_config["n_future_ts"])
+        expected_time_steps = n_past + n_future + 1
+        if expected_time_steps != field_time_steps:
+            raise ValueError(
+                f"Zoom {zoom} has {field_time_steps} field time steps, but its "
+                f"sampling metadata describes {expected_time_steps}"
+            )
+        first_time = -n_past
+    else:
+        first_time = 0
+
+    return tuple(
+        range(
+            first_time + token_len_time - 1,
+            first_time + field_time_steps,
+            token_len_time,
+        )
+    )
+
+
+def _union_time_embeddings(
+    emb: Optional[Dict[str, Any]],
+    *,
+    embedding_keys: Collection[str],
+    positions_by_zoom: Mapping[int, Sequence[int]],
+    union_positions: Sequence[int],
+    max_zoom: int,
+    token_zoom: int,
+) -> Optional[Dict[str, Any]]:
+    """Align time-aware embeddings to a union of per-zoom token timestamps."""
+    if emb is None:
+        return None
+
+    aligned_emb = dict(emb)
+    changed = False
+    for emb_key in ("TimeEmbedder", "TimeProgressEmbedder", "TimeIndexEmbedder"):
+        if emb_key not in emb or emb_key not in embedding_keys:
+            continue
+        zoom_values = emb[emb_key]
+        if not isinstance(zoom_values, Mapping):
+            raise ValueError(
+                f"{emb_key} must map zoom levels to tensors for aligned_sum"
+            )
+
+        candidates: List[Tuple[Tuple[int, ...], torch.Tensor]] = []
+        for zoom, positions in positions_by_zoom.items():
+            zoom_key: Union[int, str]
+            if zoom in zoom_values:
+                zoom_key = zoom
+            elif str(zoom) in zoom_values:
+                zoom_key = str(zoom)
+            else:
+                continue
+            values = zoom_values[zoom_key]
+            if not torch.is_tensor(values) or values.ndim < 2:
+                shape = None if not torch.is_tensor(values) else tuple(values.shape)
+                raise ValueError(
+                    f"{emb_key}[{zoom}] must have batch and time axes; got "
+                    f"{type(values).__name__} with shape {shape}"
+                )
+            if values.shape[1] != len(positions):
+                continue
+            candidates.append((tuple(int(value) for value in positions), values))
+
+        if not candidates:
+            continue
+
+        reference = candidates[0][1]
+        union_values = reference.new_empty(
+            reference.shape[0], len(union_positions), *reference.shape[2:]
+        )
+        filled = torch.zeros(
+            len(union_positions), dtype=torch.bool, device=reference.device
+        )
+        union_index = {
+            int(position): index
+            for index, position in enumerate(union_positions)
+        }
+        for positions, values in candidates:
+            if (
+                values.shape[0] != reference.shape[0]
+                or values.shape[2:] != reference.shape[2:]
+            ):
+                continue
+            for source_index, position in enumerate(positions):
+                target_index = union_index[position]
+                if not filled[target_index]:
+                    union_values[:, target_index] = values[:, source_index]
+                    filled[target_index] = True
+        if not bool(filled.all()):
+            missing = [
+                int(union_positions[index])
+                for index in torch.where(~filled)[0].tolist()
+            ]
+            raise ValueError(
+                f"{emb_key} cannot represent aligned_sum token timestamps "
+                f"{missing} with a consistent shape"
+            )
+
+        aligned_zoom_values = dict(zoom_values)
+        for output_zoom in {max_zoom, token_zoom}:
+            output_zoom_key: Union[int, str] = (
+                output_zoom if output_zoom in zoom_values else str(output_zoom)
+            )
+            aligned_zoom_values[output_zoom_key] = union_values
+        aligned_emb[emb_key] = aligned_zoom_values
+        changed = True
+
+    if changed:
+        aligned_emb.pop("_global_embedder_cache", None)
+    return aligned_emb
+
+
+def _time_embeddings_for_zoom(
+    emb: Optional[Dict[str, Any]],
+    *,
+    embedding_keys: Collection[str],
+    zoom: int,
+    output_zoom: int,
+) -> Optional[Dict[str, Any]]:
+    """Expose one zoom's aligned time embeddings at a projection's output zoom."""
+    if emb is None or zoom == output_zoom:
+        return emb
+
+    aligned_emb = dict(emb)
+    changed = False
+    for emb_key in ("TimeEmbedder", "TimeProgressEmbedder", "TimeIndexEmbedder"):
+        if emb_key not in emb or emb_key not in embedding_keys:
+            continue
+        zoom_values = emb[emb_key]
+        if not isinstance(zoom_values, Mapping):
+            continue
+        source_key: Union[int, str]
+        if zoom in zoom_values:
+            source_key = zoom
+        elif str(zoom) in zoom_values:
+            source_key = str(zoom)
+        else:
+            continue
+        output_key: Union[int, str] = (
+            output_zoom if output_zoom in zoom_values else str(output_zoom)
+        )
+        aligned_zoom_values = dict(zoom_values)
+        aligned_zoom_values[output_key] = zoom_values[source_key]
+        aligned_emb[emb_key] = aligned_zoom_values
+        changed = True
+
+    if changed:
+        aligned_emb.pop("_global_embedder_cache", None)
+    return aligned_emb
 
 
 class _GatedResidualUpdate(nn.Module):
@@ -3008,6 +3205,367 @@ class _FieldSpaceOperatorPath(nn.Module):
         return x_zooms
 
 
+class _AlignedSumFieldSpaceOperatorPath(nn.Module):
+    """Fuse independently tokenized zooms on a shared temporal timeline."""
+
+    def __init__(
+        self,
+        *,
+        grid_layers: Mapping[str, GridLayer],
+        in_zooms: Sequence[int],
+        target_zooms: Sequence[int],
+        in_features: Mapping[int, int],
+        token_zoom: int,
+        token_len_time: Mapping[int, int],
+        token_len_depth: int,
+        token_overlap_space: bool,
+        token_overlap_time: bool,
+        token_overlap_depth: bool,
+        operator_dim: int,
+        num_heads: int,
+        normalization_n_variables: int,
+        head_wise_layer_norm: bool,
+        mlp_factor: int,
+        projection_ranks: Mapping[int, Sequence[Optional[int]]],
+        mlp_ranks: Mapping[int, Sequence[Optional[int]]],
+        projection_n_variables: int,
+        projection_rank_variables: Mapping[int, Optional[int]],
+        use_embedding_factor_value_projection: bool,
+        mlp_n_variables: int,
+        mlp_rank_variables: Mapping[int, Optional[int]],
+        use_embedding_factor_mlp: bool,
+        rank_embedding: Optional[int],
+        embedding_factor: Optional[EmbeddingFactor],
+        update: str,
+        dropout: float,
+        embed_confs: Mapping[str, Any],
+        embedder: Optional[nn.Module],
+        embedder_cache_key: Optional[str],
+        emb_modulation_mode: str,
+        fac_mode: str,
+        operator_sequence: _FieldSpaceOperatorSequence,
+    ) -> None:
+        super().__init__()
+        self.in_zooms = [int(zoom) for zoom in in_zooms]
+        self.target_zooms = [int(zoom) for zoom in target_zooms]
+        self.in_features = {
+            int(zoom): int(value) for zoom, value in in_features.items()
+        }
+        self.token_len_time = {
+            int(zoom): int(value) for zoom, value in token_len_time.items()
+        }
+        self.token_zoom = int(token_zoom)
+        self.token_len_depth = int(token_len_depth)
+        self.token_overlap_time = bool(token_overlap_time)
+        self.token_overlap_depth = bool(token_overlap_depth)
+        self.operator_dim = int(operator_dim)
+        self.num_heads = int(num_heads)
+        self.max_zoom = max(self.in_zooms)
+        self.operator_sequence = operator_sequence
+        self.embedding_keys = {
+            *(embedder.embedders.keys() if embedder is not None else ()),
+            *(
+                embedding_factor.embedder.embedders.keys()
+                if embedding_factor is not None
+                else ()
+            ),
+        }
+
+        self.input_tokenizers = nn.ModuleDict()
+        self.input_projections = nn.ModuleDict()
+        self.output_mlps = nn.ModuleDict()
+        self.output_residuals = nn.ModuleDict()
+        self.processing_shapes: Dict[int, List[int]] = {}
+        self.residual_shapes: Dict[int, List[int]] = {}
+        latent_shape = [1, 1, 1, self.operator_dim]
+        update_multiplier = 2 if update == "shift_scale" else 1
+        hidden_dim = self.operator_dim * int(mlp_factor)
+
+        for zoom in self.in_zooms:
+            key = str(zoom)
+            tokenizer = Tokenizer(
+                [zoom],
+                self.token_zoom,
+                overlap_thickness=int(token_overlap_space),
+                grid_layers=grid_layers,
+                token_len_time=self.token_len_time[zoom],
+                token_len_depth=self.token_len_depth,
+            )
+            self.input_tokenizers[key] = tokenizer
+            processing_features, residual_features = tokenizer.get_features()
+            processing_shape = [
+                self.token_len_time[zoom],
+                int(processing_features[zoom]),
+                self.token_len_depth,
+                self.in_features[zoom],
+            ]
+            residual_shape = [
+                self.token_len_time[zoom],
+                int(residual_features[zoom]),
+                self.token_len_depth,
+                self.in_features[zoom],
+            ]
+            self.processing_shapes[zoom] = processing_shape
+            self.residual_shapes[zoom] = residual_shape
+            projection_shape = list(processing_shape)
+            projection_shape[0] += 2 * int(self.token_overlap_time)
+            projection_shape[2] += 2 * int(self.token_overlap_depth)
+            self.input_projections[key] = get_layer(
+                projection_shape,
+                latent_shape,
+                ranks=list(projection_ranks[zoom]),
+                n_variables=int(projection_n_variables),
+                rank_variables=projection_rank_variables[zoom],
+                fac_mode=fac_mode,
+                rank_embedding=(
+                    rank_embedding
+                    if use_embedding_factor_value_projection
+                    else None
+                ),
+                embedding_factor=(
+                    embedding_factor
+                    if use_embedding_factor_value_projection
+                    else None
+                ),
+                bias=False,
+            )
+
+            if zoom not in self.target_zooms:
+                continue
+            output_shape = list(residual_shape)
+            output_shape[-1] *= update_multiplier
+            self.output_mlps[key] = nn.ModuleDict(
+                {
+                    "hidden": get_layer(
+                        latent_shape,
+                        [1, 1, 1, hidden_dim],
+                        ranks=list(mlp_ranks[zoom]),
+                        n_variables=int(mlp_n_variables),
+                        rank_variables=mlp_rank_variables[zoom],
+                        fac_mode=fac_mode,
+                        rank_embedding=(
+                            rank_embedding if use_embedding_factor_mlp else None
+                        ),
+                        embedding_factor=(
+                            embedding_factor if use_embedding_factor_mlp else None
+                        ),
+                        bias=True,
+                    ),
+                    "output": get_layer(
+                        [1, 1, 1, hidden_dim],
+                        output_shape,
+                        ranks=list(mlp_ranks[zoom]),
+                        n_variables=int(mlp_n_variables),
+                        rank_variables=mlp_rank_variables[zoom],
+                        fac_mode=fac_mode,
+                        bias=False,
+                    ),
+                }
+            )
+            self.output_residuals[key] = _GatedResidualUpdate(
+                residual_shape, update
+            )
+
+        input_zoom_field = int(embed_confs.get("input_zoom", min(self.in_zooms)))
+        norm_kwargs = dict(
+            token_shape=latent_shape,
+            num_heads=self.num_heads,
+            n_variables=int(normalization_n_variables),
+            head_wise_layer_norm=bool(head_wise_layer_norm),
+            grid_layers=grid_layers,
+            token_zoom=self.token_zoom,
+            token_len_depth=self.token_len_depth,
+            input_zoom_field=input_zoom_field,
+            output_zoom=self.max_zoom,
+            embed_confs=embed_confs,
+            embedder=embedder,
+            embedder_cache_key=embedder_cache_key,
+            emb_modulation_mode=emb_modulation_mode,
+            fac_mode=fac_mode,
+        )
+        self.operator_norm = _token_norm(**norm_kwargs)
+        self.mlp_norm = _token_norm(**norm_kwargs)
+        self.activation = nn.SiLU()
+        self.operator_dropout = (
+            nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        )
+        self.mlp_dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+
+    def _token_embeddings(
+        self,
+        emb: Optional[Dict[str, Any]],
+        field_time_steps: Mapping[int, int],
+    ) -> Optional[Dict[str, Any]]:
+        aligned_emb = emb
+        for zoom in self.in_zooms:
+            aligned_emb = align_time_embeddings_to_tokens(
+                aligned_emb,
+                zoom=zoom,
+                token_len_time=self.token_len_time[zoom],
+                field_time_steps=field_time_steps[zoom],
+                embedding_keys=self.embedding_keys,
+            )
+        return aligned_emb
+
+    def forward(
+        self,
+        x_zooms: Dict[int, torch.Tensor],
+        *,
+        emb: Optional[Dict[str, Any]],
+        sample_configs: Mapping[int, Mapping[str, Any]],
+    ) -> Dict[int, torch.Tensor]:
+        field_time_steps = {
+            zoom: int(x_zooms[zoom].shape[2]) for zoom in self.in_zooms
+        }
+        positions_by_zoom = {
+            zoom: _token_time_positions(
+                zoom=zoom,
+                field_time_steps=field_time_steps[zoom],
+                token_len_time=self.token_len_time[zoom],
+                sample_config=sample_configs.get(zoom, {}),
+            )
+            for zoom in self.in_zooms
+        }
+        union_positions = sorted(
+            {
+                position
+                for positions in positions_by_zoom.values()
+                for position in positions
+            }
+        )
+        union_index = {
+            position: index for index, position in enumerate(union_positions)
+        }
+        token_emb = self._token_embeddings(emb, field_time_steps)
+        local_embs = {
+            zoom: _time_embeddings_for_zoom(
+                token_emb,
+                embedding_keys=self.embedding_keys,
+                zoom=zoom,
+                output_zoom=self.token_zoom,
+            )
+            for zoom in self.in_zooms
+        }
+        union_emb = _union_time_embeddings(
+            token_emb,
+            embedding_keys=self.embedding_keys,
+            positions_by_zoom=positions_by_zoom,
+            union_positions=union_positions,
+            max_zoom=self.max_zoom,
+            token_zoom=self.token_zoom,
+        )
+
+        residual_tokens: Dict[int, torch.Tensor] = {}
+        latent: Optional[torch.Tensor] = None
+        latent_shape: Optional[Tuple[int, ...]] = None
+        for zoom in self.in_zooms:
+            processing, residual = self.input_tokenizers[
+                str(zoom)
+            ].forward_with_residual(
+                {zoom: x_zooms[zoom]}, sample_configs=dict(sample_configs)
+            )
+            residual_tokens[zoom] = residual
+            operator_input = processing
+            if self.token_overlap_time:
+                operator_input = add_time_overlap_from_neighbor_patches(
+                    operator_input, overlap=1, pad_mode="edge"
+                )
+            if self.token_overlap_depth:
+                operator_input = add_depth_overlap_from_neighbor_patches(
+                    operator_input, overlap=1, pad_mode="edge"
+                )
+            projected = self.input_projections[str(zoom)](
+                operator_input,
+                emb=local_embs[zoom],
+                sample_configs=sample_configs,
+            ).reshape(*operator_input.shape[:5], self.operator_dim)
+            if projected.shape[2] != len(positions_by_zoom[zoom]):
+                raise RuntimeError(
+                    f"Zoom {zoom} produced {projected.shape[2]} temporal tokens, "
+                    f"expected {len(positions_by_zoom[zoom])}"
+                )
+            current_shape = (
+                projected.shape[0],
+                projected.shape[1],
+                projected.shape[3],
+                projected.shape[4],
+                projected.shape[5],
+            )
+            if latent_shape is None:
+                latent_shape = current_shape
+            elif current_shape != latent_shape:
+                raise ValueError(
+                    "aligned_sum input projections must agree on batch, variable, "
+                    "space, depth, and latent dimensions; "
+                    f"zoom {zoom} has {current_shape}, expected {latent_shape}"
+                )
+            indices = torch.tensor(
+                [union_index[position] for position in positions_by_zoom[zoom]],
+                dtype=torch.long,
+                device=projected.device,
+            )
+            contribution = projected.new_zeros(
+                projected.shape[0],
+                projected.shape[1],
+                len(union_positions),
+                *projected.shape[3:],
+            ).index_add(2, indices, projected)
+            latent = contribution if latent is None else latent + contribution
+
+        if latent is None:
+            raise RuntimeError("aligned_sum requires at least one input zoom")
+        latent = self.operator_norm(
+            latent.view(*latent.shape[:5], 1, 1, 1, self.operator_dim),
+            emb=union_emb,
+            sample_configs=sample_configs,
+        ).reshape(*latent.shape[:5], self.operator_dim)
+        operator_latent = self.operator_sequence(
+            latent,
+            emb=union_emb,
+            sample_config=sample_configs.get(self.token_zoom, {}),
+        )
+        operator_latent = self.operator_dropout(
+            operator_latent.view(
+                *operator_latent.shape[:5], 1, 1, 1, self.operator_dim
+            )
+        )
+        operator_latent = self.mlp_norm(
+            operator_latent,
+            emb=union_emb,
+            sample_configs=sample_configs,
+        )
+
+        for zoom in self.target_zooms:
+            indices = torch.tensor(
+                [union_index[position] for position in positions_by_zoom[zoom]],
+                dtype=torch.long,
+                device=operator_latent.device,
+            )
+            local_latent = operator_latent.index_select(2, indices)
+            output_mlp = self.output_mlps[str(zoom)]
+            hidden = output_mlp["hidden"](
+                local_latent,
+                emb=local_embs[zoom],
+                sample_configs=sample_configs,
+            )
+            hidden = self.mlp_dropout(self.activation(hidden))
+            update_value = output_mlp["output"](
+                hidden,
+                emb=local_embs[zoom],
+                sample_configs=sample_configs,
+            )
+            updated = self.output_residuals[str(zoom)](
+                residual_tokens[zoom],
+                update_value,
+                branch=f"aligned_sum MLP zoom {zoom}",
+            )
+            x_zooms[zoom] = rearrange(
+                updated,
+                "b v T N D t n d f -> b v (T t) (N n) (D d) f",
+            )
+        return x_zooms
+
+
 class FieldSpaceOperatorBlock(nn.Module):
     """Run matching-time zoom inputs through one shared latent operator."""
 
@@ -3048,6 +3606,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
         direct_operator_mlp: bool = False,
+        multizoom_mode: MultiZoomMode = "joint",
         token_overlap_time: bool = False,
         token_overlap_depth: bool = False,
         token_overlap_mlp_time: bool = False,
@@ -3089,6 +3648,26 @@ class FieldSpaceOperatorBlock(nn.Module):
         if latent_operator_mlp and direct_operator_mlp:
             raise ValueError(
                 "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
+        if multizoom_mode not in {"joint", "aligned_sum"}:
+            raise ValueError(
+                "multizoom_mode must be either 'joint' or 'aligned_sum'"
+            )
+        if multizoom_mode == "aligned_sum" and (
+            latent_operator_mlp or direct_operator_mlp
+        ):
+            raise ValueError(
+                "aligned_sum defines its own per-zoom output MLP and cannot be "
+                "combined with latent_operator_mlp or direct_operator_mlp"
+            )
+        if multizoom_mode == "aligned_sum" and (
+            operator_output_overlap_space
+            or token_overlap_mlp_time
+            or token_overlap_mlp_depth
+        ):
+            raise ValueError(
+                "aligned_sum does not use operator_output_overlap_space or MLP "
+                "token overlap settings"
             )
 
         operator_groups, flattened_operators = _normalize_operator_groups(operators)
@@ -3161,6 +3740,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         self.target_zooms = [int(zoom) for zoom in target_zooms]
         self.token_zoom = int(token_zoom)
         self.operator_dim = int(operator_dim)
+        self.multizoom_mode = multizoom_mode
         if self.operator_dim % num_heads:
             raise ValueError(
                 f"operator_dim ({self.operator_dim}) must be divisible by "
@@ -3194,6 +3774,17 @@ class FieldSpaceOperatorBlock(nn.Module):
                 token_len_time, self.in_zooms, "token_len_time"
             ).items()
         }
+        if self.multizoom_mode == "aligned_sum":
+            invalid_token_lengths = {
+                zoom: value
+                for zoom, value in self.token_len_time.items()
+                if value <= 0
+            }
+            if invalid_token_lengths:
+                raise ValueError(
+                    "aligned_sum token_len_time values must be positive; "
+                    f"got {invalid_token_lengths}"
+                )
 
         def shared(value: Any, name: str) -> Any:
             return _shared_zoom_value(
@@ -3202,38 +3793,70 @@ class FieldSpaceOperatorBlock(nn.Module):
                 name,
             )
 
-        operator_ranks = [
-            shared(value, name)
-            for value, name in (
-                (operator_projection_rank_time, "operator_projection_rank_time"),
-                (operator_projection_rank_space, "operator_projection_rank_space"),
-                (operator_projection_rank_depth, "operator_projection_rank_depth"),
-                (
-                    operator_projection_rank_features,
-                    "operator_projection_rank_features",
-                ),
-            )
-        ]
-        mlp_ranks = [
-            shared(value, name)
-            for value, name in (
-                (mlp_projection_rank_time, "mlp_projection_rank_time"),
-                (mlp_projection_rank_space, "mlp_projection_rank_space"),
-                (mlp_projection_rank_depth, "mlp_projection_rank_depth"),
-                (mlp_projection_rank_features, "mlp_projection_rank_features"),
-            )
-        ]
-        operator_variable_rank = shared(
-            operator_projection_rank_variables,
-            "operator_projection_rank_variables",
+        operator_rank_settings = (
+            (operator_projection_rank_time, "operator_projection_rank_time"),
+            (operator_projection_rank_space, "operator_projection_rank_space"),
+            (operator_projection_rank_depth, "operator_projection_rank_depth"),
+            (
+                operator_projection_rank_features,
+                "operator_projection_rank_features",
+            ),
         )
-        mlp_variable_rank = shared(
-            mlp_projection_rank_variables,
-            "mlp_projection_rank_variables",
+        mlp_rank_settings = (
+            (mlp_projection_rank_time, "mlp_projection_rank_time"),
+            (mlp_projection_rank_space, "mlp_projection_rank_space"),
+            (mlp_projection_rank_depth, "mlp_projection_rank_depth"),
+            (mlp_projection_rank_features, "mlp_projection_rank_features"),
         )
+        if multizoom_mode == "joint":
+            operator_ranks: Union[
+                List[Optional[int]], Dict[int, List[Optional[int]]]
+            ] = [shared(value, name) for value, name in operator_rank_settings]
+            mlp_ranks: Union[
+                List[Optional[int]], Dict[int, List[Optional[int]]]
+            ] = [shared(value, name) for value, name in mlp_rank_settings]
+            operator_variable_rank: Union[
+                Optional[int], Dict[int, Optional[int]]
+            ] = shared(
+                operator_projection_rank_variables,
+                "operator_projection_rank_variables",
+            )
+            mlp_variable_rank: Union[
+                Optional[int], Dict[int, Optional[int]]
+            ] = shared(
+                mlp_projection_rank_variables,
+                "mlp_projection_rank_variables",
+            )
+        else:
+            operator_rank_axes = [
+                _axis_values(value, self.in_zooms, name)
+                for value, name in operator_rank_settings
+            ]
+            mlp_rank_axes = [
+                _axis_values(value, self.in_zooms, name)
+                for value, name in mlp_rank_settings
+            ]
+            operator_ranks = {
+                zoom: [axis[zoom] for axis in operator_rank_axes]
+                for zoom in self.in_zooms
+            }
+            mlp_ranks = {
+                zoom: [axis[zoom] for axis in mlp_rank_axes]
+                for zoom in self.in_zooms
+            }
+            operator_variable_rank = _axis_values(
+                operator_projection_rank_variables,
+                self.in_zooms,
+                "operator_projection_rank_variables",
+            )
+            mlp_variable_rank = _axis_values(
+                mlp_projection_rank_variables,
+                self.in_zooms,
+                "mlp_projection_rank_variables",
+            )
         if (
             not include_variable_dependency_operator_projection
-            and operator_variable_rank is not None
+            and _contains_configured_value(operator_variable_rank)
         ):
             raise ValueError(
                 "operator_projection_rank_variables requires "
@@ -3241,7 +3864,7 @@ class FieldSpaceOperatorBlock(nn.Module):
             )
         if (
             not include_variable_dependency_mlp
-            and mlp_variable_rank is not None
+            and _contains_configured_value(mlp_variable_rank)
         ):
             raise ValueError(
                 "mlp_projection_rank_variables requires "
@@ -3356,23 +3979,69 @@ class FieldSpaceOperatorBlock(nn.Module):
             fac_mode=fac_mode,
             operator_sequence=sequence,
         )
-        shared_in_features = int(
-            _shared_zoom_value(self.in_features, self.in_zooms, "in_features")
-        )
-        shared_token_len_time = int(
-            _shared_zoom_value(
-                self.token_len_time, self.in_zooms, "token_len_time"
+        if self.multizoom_mode == "joint":
+            shared_in_features = int(
+                _shared_zoom_value(
+                    self.in_features, self.in_zooms, "in_features"
+                )
             )
-        )
-        self.execution_path = _FieldSpaceOperatorPath(
-            **common,
-            in_features=shared_in_features,
-            token_len_time=shared_token_len_time,
-            projection_ranks=operator_ranks,
-            mlp_ranks=mlp_ranks,
-            projection_rank_variables=operator_variable_rank,
-            mlp_rank_variables=mlp_variable_rank,
-        )
+            shared_token_len_time = int(
+                _shared_zoom_value(
+                    self.token_len_time, self.in_zooms, "token_len_time"
+                )
+            )
+            self.execution_path: Union[
+                _FieldSpaceOperatorPath,
+                _AlignedSumFieldSpaceOperatorPath,
+            ] = _FieldSpaceOperatorPath(
+                **common,
+                in_features=shared_in_features,
+                token_len_time=shared_token_len_time,
+                projection_ranks=operator_ranks,
+                mlp_ranks=mlp_ranks,
+                projection_rank_variables=operator_variable_rank,
+                mlp_rank_variables=mlp_variable_rank,
+            )
+        else:
+            self.execution_path = _AlignedSumFieldSpaceOperatorPath(
+                grid_layers=grid_layers,
+                in_zooms=self.in_zooms,
+                target_zooms=self.target_zooms,
+                in_features=self.in_features,
+                token_zoom=self.token_zoom,
+                token_len_time=self.token_len_time,
+                token_len_depth=int(token_len_depth),
+                token_overlap_space=bool(token_overlap_space),
+                token_overlap_time=bool(token_overlap_time),
+                token_overlap_depth=bool(token_overlap_depth),
+                operator_dim=self.operator_dim,
+                num_heads=num_heads,
+                normalization_n_variables=(
+                    int(n_variables) if variable_dependent_layer_norm else 1
+                ),
+                head_wise_layer_norm=bool(head_wise_layer_norm),
+                mlp_factor=int(mlp_factor),
+                projection_ranks=operator_ranks,
+                mlp_ranks=mlp_ranks,
+                projection_n_variables=projection_n_variables,
+                projection_rank_variables=operator_variable_rank,
+                use_embedding_factor_value_projection=bool(
+                    use_embedding_factor_value_projection
+                ),
+                mlp_n_variables=mlp_n_variables,
+                mlp_rank_variables=mlp_variable_rank,
+                use_embedding_factor_mlp=bool(use_embedding_factor_mlp),
+                rank_embedding=rank_embedding,
+                embedding_factor=embedding_factor,
+                update=update,
+                dropout=float(dropout),
+                embed_confs=embed_confs,
+                embedder=embedder,
+                embedder_cache_key=embedder_cache_key,
+                emb_modulation_mode=emb_modulation_mode,
+                fac_mode=fac_mode,
+                operator_sequence=sequence,
+            )
 
     @property
     def operator_sequence(self) -> _FieldSpaceOperatorSequence:
@@ -3416,6 +4085,7 @@ class FieldSpaceOperatorModule(nn.Module):
         operator_output_overlap_space: bool = False,
         latent_operator_mlp: bool = False,
         direct_operator_mlp: bool = False,
+        multizoom_mode: MultiZoomMode = "joint",
         constant_variable_dependency: Optional[OperatorSetting] = None,
         constant_time_dependency: Optional[OperatorSetting] = None,
         constant_space_dependency: Optional[OperatorSetting] = None,
@@ -3450,6 +4120,10 @@ class FieldSpaceOperatorModule(nn.Module):
         if latent_operator_mlp and direct_operator_mlp:
             raise ValueError(
                 "latent_operator_mlp and direct_operator_mlp are mutually exclusive"
+            )
+        if multizoom_mode not in {"joint", "aligned_sum"}:
+            raise ValueError(
+                "multizoom_mode must be either 'joint' or 'aligned_sum'"
             )
         operator_groups, flattened_operators = _normalize_operator_groups(
             kwargs["operators"]
@@ -3616,6 +4290,7 @@ class FieldSpaceOperatorModule(nn.Module):
                 ),
                 latent_operator_mlp=bool(latent_operator_mlp),
                 direct_operator_mlp=bool(direct_operator_mlp),
+                multizoom_mode=multizoom_mode,
                 constant_variable_dependency=constant_variable_dependency,
                 constant_time_dependency=constant_time_dependency,
                 constant_space_dependency=constant_space_dependency,
