@@ -28,7 +28,8 @@ class LightningMGModel(pl.LightningModule):
         :param lr_groups: Optimizer parameter-group configuration, including optional
             per-group optimizer settings such as ``weight_decay`` and match rules
             for module classes or module names.
-        :param lambda_loss_dict: Loss weighting dictionary.
+        :param lambda_loss_dict: Loss weighting dictionary. Set ``masked_loss`` to
+            compute non-neighborhood losses only at masked datapoints.
         :param weight_decay: Fallback weight decay for groups that do not define one.
         :return: None.
         """
@@ -40,6 +41,7 @@ class LightningMGModel(pl.LightningModule):
         self.weight_decay: float = weight_decay
         self.loss_aggregation: str = str(lambda_loss_dict.get("aggregation", "mean")).lower()
         self.normalize_lambdas: bool = bool(lambda_loss_dict.get("normalize_lambdas", False))
+        self.masked_loss: bool = bool(lambda_loss_dict.get("masked_loss", False))
         if self.loss_aggregation not in {"mean", "sum"}:
             raise ValueError(f"Unsupported loss aggregation '{self.loss_aggregation}'. Use 'mean' or 'sum'.")
         depth_loss_scaler_cfg = self._extract_depth_loss_scaler_config(lambda_loss_dict)
@@ -53,6 +55,7 @@ class LightningMGModel(pl.LightningModule):
             zooms_loss_dict,
             grid_layers=model.grid_layers,
             normalize_lambdas=self.normalize_lambdas,
+            masked_loss=self.masked_loss,
         )
 
         comp_loss_dict = lambda_loss_dict.get("composed",{})
@@ -60,6 +63,7 @@ class LightningMGModel(pl.LightningModule):
             comp_loss_dict,
             grid_layers=model.grid_layers,
             normalize_lambdas=self.normalize_lambdas,
+            masked_loss=self.masked_loss,
         )
         self.lambda_loss_groups = lambda_loss_groups
 

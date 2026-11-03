@@ -55,6 +55,16 @@ def _constant_loss_map(loss: torch.Tensor | float, output: torch.Tensor) -> torc
     return scalar.expand(output.shape[1], output.shape[-2])
 
 
+def _mask_for_loss(
+    loss: nn.Module,
+    mask: Optional[torch.Tensor],
+    masked_loss: bool,
+) -> Optional[torch.Tensor]:
+    if masked_loss and not getattr(loss, "uses_neighborhood", False):
+        return mask
+    return None
+
+
 def _rmse_to_var_depth(
     errors: torch.Tensor,
     mask: Optional[torch.Tensor],
@@ -81,10 +91,12 @@ class MGMultiLoss(nn.Module):
         lambda_dict: Mapping[str, Any],
         grid_layers: Optional[nn.ModuleDict] = None,
         normalize_lambdas: bool = False,
+        masked_loss: bool = False,
     ):
         super().__init__()
         self.grid_layers: Optional[nn.ModuleDict] = grid_layers
         self.normalize_lambdas: bool = bool(normalize_lambdas)
+        self.masked_loss: bool = bool(masked_loss)
         self.common_losses: nn.ModuleList = nn.ModuleList()
         self.level_specific_losses: nn.ModuleDict = nn.ModuleDict()
 
@@ -185,11 +197,12 @@ class MGMultiLoss(nn.Module):
                 var_ids = torch.arange(out_zoom.shape[1], device=out_zoom.device)
 
             for loss_fcn in loss_modules:
+                loss_mask = _mask_for_loss(loss_fcn, mask_zoom, self.masked_loss)
                 if hasattr(loss_fcn, "loss_map"):
-                    loss_map = loss_fcn.loss_map(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf)
+                    loss_map = loss_fcn.loss_map(out_zoom, tgt_zoom, mask=loss_mask, sample_configs=sample_conf)
                 else:
                     loss_map = _constant_loss_map(
-                        loss_fcn(out_zoom, tgt_zoom, mask=mask_zoom, sample_configs=sample_conf),
+                        loss_fcn(out_zoom, tgt_zoom, mask=loss_mask, sample_configs=sample_conf),
                         out_zoom,
                     )
 
@@ -230,8 +243,15 @@ class L1_loss(nn.Module):
     def __init__(self, **kwargs: Any):
         super().__init__()
 
-    def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return _reduce_to_var_depth(F.smooth_l1_loss(output, target.view(output.shape), reduction="none"))
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        loss = F.smooth_l1_loss(output, target.view(output.shape), reduction="none")
+        return _masked_reduce_to_var_depth(loss, mask)
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -241,22 +261,17 @@ class MSE_loss(nn.Module):
     def __init__(self, grid_layer: Optional[GridLayer] = None):
         super().__init__()
 
-    def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-        return _reduce_to_var_depth((output - target.view(output.shape)) ** 2)
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, mask)
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
-
-
-class MSE_masked_loss(nn.Module):
-    def __init__(self, grid_layer: Optional[GridLayer] = None):
-        super().__init__()
-
-    def loss_map(self, output: torch.Tensor, target: torch.Tensor, mask: Optional[torch.Tensor], **kwargs: Any) -> torch.Tensor:
-        return _masked_reduce_to_var_depth((output - target.view(output.shape)) ** 2, mask)
-
-    def forward(self, output: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, **kwargs: Any):
-        return self.loss_map(output, target, mask=mask, **kwargs).mean()
 
 
 class MeanRMSE_loss(nn.Module):
@@ -382,6 +397,8 @@ class GaussianNLL_loss(nn.Module):
 
 
 class NHInt_loss(nn.Module):
+    uses_neighborhood = True
+
     def __init__(self, grid_layer: GridLayer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
@@ -404,6 +421,8 @@ class NHInt_loss(nn.Module):
 
 
 class NHVar_loss(nn.Module):
+    uses_neighborhood = True
+
     def __init__(self, grid_layer: GridLayer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
@@ -431,10 +450,16 @@ class GNLL_loss(nn.Module):
     def __init__(self, grid_layer: Optional[GridLayer] = None):
         super().__init__()
 
-    def loss_map(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+    def loss_map(
+        self,
+        output: torch.Tensor,
+        target: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
         output_mean, output_var = output.chunk(2, dim=-1)
         loss = F.gaussian_nll_loss(output_mean, target.view(*output_mean.shape), output_var, reduction="none")
-        return _reduce_to_var_depth(loss)
+        return _masked_reduce_to_var_depth(loss, mask)
 
     def forward(self, output: torch.Tensor, target: torch.Tensor, **kwargs: Any):
         return self.loss_map(output, target, **kwargs).mean()
@@ -458,8 +483,14 @@ class MSE_Hole_loss(nn.Module):
 
 
 class MultiLoss(nn.Module):
-    def __init__(self, lambda_dict: Mapping[str, Any], grid_layer: Optional[GridLayer] = None):
+    def __init__(
+        self,
+        lambda_dict: Mapping[str, Any],
+        grid_layer: Optional[GridLayer] = None,
+        masked_loss: bool = False,
+    ):
         super().__init__()
+        self.masked_loss = bool(masked_loss)
 
         self.loss_fcns: List[Dict[str, Any]] = []
         for target, lambda_ in lambda_dict.items():
@@ -480,7 +511,9 @@ class MultiLoss(nn.Module):
         total_loss = 0
 
         for loss_fcn in self.loss_fcns:
-            loss = loss_fcn["fcn"](output, target, mask=mask, sample_configs=sample_configs)
+            loss_module = loss_fcn["fcn"]
+            loss_mask = _mask_for_loss(loss_module, mask, self.masked_loss)
+            loss = loss_module(output, target, mask=loss_mask, sample_configs=sample_configs)
             loss_dict[prefix + loss_fcn["fcn"]._get_name()] = loss.item()
             total_loss = total_loss + loss_fcn["lambda"] * loss
 
@@ -488,6 +521,8 @@ class MultiLoss(nn.Module):
 
 
 class Grad_loss(nn.Module):
+    uses_neighborhood = True
+
     def __init__(self, grid_layer: GridLayer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
@@ -524,6 +559,8 @@ class Grad_loss(nn.Module):
 
 
 class NHTV_loss(nn.Module):
+    uses_neighborhood = True
+
     def __init__(self, grid_layer: GridLayer):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
@@ -545,6 +582,8 @@ class NHTV_loss(nn.Module):
 
 
 class NHTV_decay_loss(nn.Module):
+    uses_neighborhood = True
+
     def __init__(self, grid_layer: GridLayer, tau: float = 0.2):
         super().__init__()
         self.grid_layer: GridLayer = grid_layer
