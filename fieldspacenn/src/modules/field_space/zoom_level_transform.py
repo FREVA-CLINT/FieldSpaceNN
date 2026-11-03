@@ -1,5 +1,5 @@
 import copy
-from typing import Any, Dict, List, Mapping, Optional, Sequence
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Union
 
 import torch
 import torch.nn as nn
@@ -47,17 +47,30 @@ def _validate_matching_timestep_counts(
 class ExpandFeaturesLayerConfig:
     """Configure deterministic expansion of the field feature dimension."""
 
-    def __init__(self, out_features: int, mode: str = "zeros") -> None:
-        self.out_features = int(out_features)
+    def __init__(
+        self,
+        out_features: Union[int, Mapping[int, int]],
+        mode: str = "zeros",
+    ) -> None:
+        if isinstance(out_features, Mapping):
+            self.out_features: Union[int, Dict[int, int]] = {
+                int(zoom): int(features)
+                for zoom, features in out_features.items()
+            }
+            feature_counts = self.out_features.values()
+        else:
+            self.out_features = int(out_features)
+            feature_counts = [self.out_features]
+
         self.mode = str(mode).lower()
-        if self.out_features <= 0:
+        if any(features <= 0 for features in feature_counts):
             raise ValueError("out_features must be positive")
         if self.mode not in {"zeros", "repeat"}:
             raise ValueError("mode must be either 'zeros' or 'repeat'")
 
 
 class ExpandFeaturesLayer(nn.Module):
-    """Append zero-valued or repeated feature channels to every zoom tensor."""
+    """Append zero-valued or repeated feature channels to selected zoom tensors."""
 
     def __init__(
         self,
@@ -68,20 +81,53 @@ class ExpandFeaturesLayer(nn.Module):
         super().__init__()
         self.mode = config.mode
         self.out_zooms = [int(zoom) for zoom in in_zooms]
-        self.out_features = [config.out_features] * len(self.out_zooms)
-        for zoom, features in zip(self.out_zooms, in_features):
-            if int(features) > config.out_features:
+        in_features_by_zoom = {
+            zoom: int(features)
+            for zoom, features in zip(self.out_zooms, in_features)
+        }
+        if isinstance(config.out_features, Mapping):
+            self.out_features_by_zoom: Dict[int, int] = dict(config.out_features)
+            self.default_out_features: Optional[int] = None
+            unknown_zooms = sorted(
+                set(self.out_features_by_zoom) - set(self.out_zooms)
+            )
+            if unknown_zooms:
                 raise ValueError(
-                    f"Cannot expand zoom {zoom} from {features} to "
-                    f"{config.out_features} features."
+                    "Cannot expand unconfigured zooms "
+                    f"{unknown_zooms}; input zooms are {self.out_zooms}."
+                )
+        else:
+            self.default_out_features = config.out_features
+            self.out_features_by_zoom = {
+                zoom: config.out_features
+                for zoom in self.out_zooms
+            }
+
+        for zoom, out_features in self.out_features_by_zoom.items():
+            in_features_zoom = in_features_by_zoom[zoom]
+            if in_features_zoom > out_features:
+                raise ValueError(
+                    f"Cannot expand zoom {zoom} from {in_features_zoom} to "
+                    f"{out_features} features."
                 )
 
-    def _expand(self, tensor: torch.Tensor) -> torch.Tensor:
-        missing_features = self.out_features[0] - tensor.shape[-1]
+        self.out_features = [
+            self.out_features_by_zoom.get(zoom, in_features_by_zoom[zoom])
+            for zoom in self.out_zooms
+        ]
+
+    def _expand(self, tensor: torch.Tensor, zoom: int) -> torch.Tensor:
+        out_features = self.out_features_by_zoom.get(
+            zoom, self.default_out_features
+        )
+        if out_features is None:
+            return tensor
+
+        missing_features = out_features - tensor.shape[-1]
         if missing_features < 0:
             raise ValueError(
-                f"Runtime tensor has {tensor.shape[-1]} features, which exceeds "
-                f"configured out_features={self.out_features[0]}."
+                f"Runtime tensor at zoom {zoom} has {tensor.shape[-1]} features, "
+                f"which exceeds configured out_features={out_features}."
             )
         if missing_features == 0:
             return tensor
@@ -102,7 +148,7 @@ class ExpandFeaturesLayer(nn.Module):
         del kwargs
         return [
             {
-                int(zoom): self._expand(tensor)
+                int(zoom): self._expand(tensor, int(zoom))
                 for zoom, tensor in group.items()
             }
             if group is not None
