@@ -1089,7 +1089,9 @@ class MergeGroupsBlockWrapOperation(BlockWrapOperation):
                             f"in group {group_idx}."
                         )
                     field = zoom_fields.get(zoom)
-                    expected_shape = group_shapes[group_idx][zoom]
+                    expected_shape = _spatial_conditioning_field_shape(
+                        group_shapes[group_idx][zoom]
+                    )
                     if not torch.is_tensor(field) or field.shape != expected_shape:
                         actual_shape = None if not torch.is_tensor(field) else tuple(field.shape)
                         raise ValueError(
@@ -1389,6 +1391,10 @@ def _restore_group_depth_layout(
     return restored
 
 
+def _spatial_conditioning_field_shape(state_shape: torch.Size) -> torch.Size:
+    return torch.Size((*state_shape[:-1], 1))
+
+
 def _slice_emb_group_depths(
     emb_group: Dict[str, Any],
     group_shape: Dict[int, torch.Size],
@@ -1435,11 +1441,14 @@ def _slice_emb_group_depths(
                     raise ValueError(
                         f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` contains unexpected zoom {zoom}."
                     )
-                if not torch.is_tensor(field) or field.shape != group_shape[zoom]:
+                expected_shape = _spatial_conditioning_field_shape(
+                    group_shape[zoom]
+                )
+                if not torch.is_tensor(field) or field.shape != expected_shape:
                     actual_shape = None if not torch.is_tensor(field) else tuple(field.shape)
                     raise ValueError(
                         f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` at zoom {zoom} must have shape "
-                        f"{tuple(group_shape[zoom])}, got {actual_shape}."
+                        f"{tuple(expected_shape)}, got {actual_shape}."
                     )
                 sliced_conditioning[str(field_name)][zoom] = _select_depth_indices(
                     field,
