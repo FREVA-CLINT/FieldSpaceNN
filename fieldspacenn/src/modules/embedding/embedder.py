@@ -1204,11 +1204,12 @@ class SpatialConditioningEmbedder(BaseEmbedder):
         }
         expected_zooms = set(self.input_zooms)
         for name, zoom_fields in conditioning_fields.items():
-            if set(zoom_fields) != expected_zooms:
+            missing_zooms = expected_zooms - set(zoom_fields)
+            if missing_zooms:
                 raise ValueError(
-                    "Spatial conditioning zooms must match input_zooms; "
-                    f"expected {sorted(expected_zooms)}, got "
-                    f"{name}={sorted(zoom_fields)}."
+                    "Spatial conditioning must contain every input zoom; "
+                    f"missing {name}={sorted(missing_zooms)} from "
+                    f"available zooms {sorted(zoom_fields)}."
                 )
 
         for zoom in self.input_zooms:
