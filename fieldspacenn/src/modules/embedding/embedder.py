@@ -1161,7 +1161,7 @@ class SpatialConditioningEmbedder(BaseEmbedder):
 
         self.input_zooms = [int(input_zoom) for input_zoom in input_zooms]
         self.zoom = int(zoom)
-        self.keep_dims = ["b", "v", "s", "c"]
+        self.keep_dims = ["b", "v", "t", "s", "c"]
         self.tokenizer = Tokenizer(
             input_zooms=self.input_zooms,
             token_zoom=self.zoom,
@@ -1223,20 +1223,27 @@ class SpatialConditioningEmbedder(BaseEmbedder):
                 raise ValueError(
                     f"Spatial conditioning shapes differ at zoom {zoom}: {shapes}."
                 )
-            if mean.ndim != 6 or mean.shape[2] != 1 or mean.shape[-1] != 1:
+            if (
+                mean.ndim != 6
+                or mean.shape[2] < 1
+                or mean.shape[4] != 1
+                or mean.shape[5] != 1
+            ):
                 raise ValueError(
                     "Spatial conditioning fields must have shape "
-                    "(batch, variables, 1, space, depth, 1)."
+                    "(batch, variables, time, space, 1, 1) with at least "
+                    "one timestep."
                 )
             fields[zoom] = torch.cat(zoom_fields, dim=-1)
 
         tokens = self.tokenizer(fields, sample_configs=sample_configs or {})
         projected = self.mlp(tokens, emb=embedding_inputs)
-        if projected.shape[2] != 1 or projected.shape[4] != 1:
+        if tuple(projected.shape[4:8]) != (1, 1, 1, 1):
             raise ValueError(
-                "SpatialConditioningEmbedder currently requires one time and depth token."
+                "SpatialConditioningEmbedder requires singleton depth and inner "
+                "token dimensions."
             )
-        return projected[:, :, 0, :, 0, 0, 0, 0, :]
+        return projected[:, :, :, :, 0, 0, 0, 0, :]
 
 
 # Embedder manager to handle shared or non-shared instances

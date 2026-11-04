@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from ..base import HeadWiseLayerNorm, get_layer
+from ..base import HeadWiseLayerNorm, IdentityLayer, get_layer
 from ..embedding.embedder import get_embedder
 from ..grids.grid_layer import GridLayer
 from ..grids.grid_utils import get_matching_time_patch, insert_matching_time_patch
@@ -2008,6 +2008,7 @@ class FieldSpaceOperatorConfig:
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
         variable_dependent_layer_norm: bool = False,
+        use_mlp_norm: bool = True,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Dict[str, Any]] = None,
         embed_confs_factor: Optional[Dict[str, Any]] = None,
@@ -2349,6 +2350,7 @@ class FieldSpaceOperatorConfig:
         self.variable_dependent_layer_norm = bool(
             variable_dependent_layer_norm
         )
+        self.use_mlp_norm = bool(use_mlp_norm)
         self.checkpoint_operator_groups = bool(checkpoint_operator_groups)
         if embed_confs is not None:
             self.embed_confs = embed_confs
@@ -2823,6 +2825,7 @@ class _FieldSpaceOperatorPath(nn.Module):
         num_heads: int,
         normalization_n_variables: int,
         head_wise_layer_norm: bool,
+        use_mlp_norm: bool,
         mlp_factor: int,
         projection_ranks: Sequence[Optional[int]],
         mlp_ranks: Sequence[Optional[int]],
@@ -2989,21 +2992,25 @@ class _FieldSpaceOperatorPath(nn.Module):
                 ),
                 bias=False,
             )
-        self.mlp_norm = _token_norm(
-            token_shape=latent_shape,
-            num_heads=self.num_heads,
-            n_variables=int(normalization_n_variables),
-            head_wise_layer_norm=bool(head_wise_layer_norm),
-            grid_layers=grid_layers,
-            token_zoom=token_zoom,
-            token_len_depth=token_len_depth,
-            input_zoom_field=input_zoom_field,
-            output_zoom=self.max_zoom,
-            embed_confs=embed_confs,
-            embedder=embedder,
-            embedder_cache_key=embedder_cache_key,
-            emb_modulation_mode=emb_modulation_mode,
-            fac_mode=fac_mode,
+        self.mlp_norm = (
+            _token_norm(
+                token_shape=latent_shape,
+                num_heads=self.num_heads,
+                n_variables=int(normalization_n_variables),
+                head_wise_layer_norm=bool(head_wise_layer_norm),
+                grid_layers=grid_layers,
+                token_zoom=token_zoom,
+                token_len_depth=token_len_depth,
+                input_zoom_field=input_zoom_field,
+                output_zoom=self.max_zoom,
+                embed_confs=embed_confs,
+                embedder=embedder,
+                embedder_cache_key=embedder_cache_key,
+                emb_modulation_mode=emb_modulation_mode,
+                fac_mode=fac_mode,
+            )
+            if use_mlp_norm
+            else IdentityLayer()
         )
 
         hidden_dim = self.operator_dim * int(mlp_factor)
@@ -3226,6 +3233,7 @@ class _AlignedSumFieldSpaceOperatorPath(nn.Module):
         num_heads: int,
         normalization_n_variables: int,
         head_wise_layer_norm: bool,
+        use_mlp_norm: bool,
         mlp_factor: int,
         projection_ranks: Mapping[int, Sequence[Optional[int]]],
         mlp_ranks: Mapping[int, Sequence[Optional[int]]],
@@ -3386,7 +3394,9 @@ class _AlignedSumFieldSpaceOperatorPath(nn.Module):
             fac_mode=fac_mode,
         )
         self.operator_norm = _token_norm(**norm_kwargs)
-        self.mlp_norm = _token_norm(**norm_kwargs)
+        self.mlp_norm = (
+            _token_norm(**norm_kwargs) if use_mlp_norm else IdentityLayer()
+        )
         self.activation = nn.SiLU()
         self.operator_dropout = (
             nn.Dropout(dropout) if dropout > 0 else nn.Identity()
@@ -3632,6 +3642,7 @@ class FieldSpaceOperatorBlock(nn.Module):
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
         variable_dependent_layer_norm: bool = False,
+        use_mlp_norm: bool = True,
         dropout: float = 0.0,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
@@ -3961,6 +3972,7 @@ class FieldSpaceOperatorBlock(nn.Module):
                 int(n_variables) if variable_dependent_layer_norm else 1
             ),
             head_wise_layer_norm=bool(head_wise_layer_norm),
+            use_mlp_norm=bool(use_mlp_norm),
             mlp_factor=int(mlp_factor),
             projection_n_variables=projection_n_variables,
             use_embedding_factor_value_projection=bool(
@@ -4021,6 +4033,7 @@ class FieldSpaceOperatorBlock(nn.Module):
                     int(n_variables) if variable_dependent_layer_norm else 1
                 ),
                 head_wise_layer_norm=bool(head_wise_layer_norm),
+                use_mlp_norm=bool(use_mlp_norm),
                 mlp_factor=int(mlp_factor),
                 projection_ranks=operator_ranks,
                 mlp_ranks=mlp_ranks,
@@ -4111,6 +4124,7 @@ class FieldSpaceOperatorModule(nn.Module):
         mlp_factor: int = 4,
         head_wise_layer_norm: bool = False,
         variable_dependent_layer_norm: bool = False,
+        use_mlp_norm: bool = True,
         checkpoint_operator_groups: bool = False,
         embed_confs: Optional[Mapping[str, Any]] = None,
         embed_confs_factor: Optional[Mapping[str, Any]] = None,
@@ -4281,6 +4295,7 @@ class FieldSpaceOperatorModule(nn.Module):
                 variable_dependent_layer_norm=bool(
                     variable_dependent_layer_norm
                 ),
+                use_mlp_norm=bool(use_mlp_norm),
                 token_len_depth=int(token_len_depth[group_index]),
                 token_overlap_depth=bool(token_overlap_depth[group_index]),
                 token_overlap_mlp_depth=bool(

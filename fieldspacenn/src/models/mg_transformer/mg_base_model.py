@@ -430,6 +430,7 @@ def create_encoder_decoder_block(
             variable_dependent_layer_norm=(
                 block_conf.variable_dependent_layer_norm
             ),
+            use_mlp_norm=block_conf.use_mlp_norm,
             update=block_conf.update,
             dropout=operator_dropout,
             checkpoint_operator_groups=block_conf.checkpoint_operator_groups,
