@@ -17,6 +17,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         self,
         deterministic_model: nn.Module,
         deterministic_checkpoint_path: str,
+        deterministic_zooms: Sequence[int],
         spatial_conditioning_embed_key: Optional[str] = None,
         spatial_noise_scale: float = 1.0,
         **kwargs: Any,
@@ -24,6 +25,11 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         super().__init__(**kwargs)
         if not deterministic_checkpoint_path:
             raise ValueError("`deterministic_checkpoint_path` must be provided.")
+        self.deterministic_zooms: set[int] = {
+            int(zoom) for zoom in deterministic_zooms
+        }
+        if not self.deterministic_zooms:
+            raise ValueError("`deterministic_zooms` must contain at least one zoom.")
         self.spatial_conditioning_embed_key = (
             None
             if spatial_conditioning_embed_key is None
@@ -91,34 +97,55 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             )
         mean_groups: List[Optional[Dict[int, torch.Tensor]]] = []
         error_groups: List[Optional[Dict[int, torch.Tensor]]] = []
-        for prediction_group in prediction_groups:
+        channels = {
+            int(prediction.shape[-1])
+            for prediction_group in prediction_groups
+            if prediction_group
+            for zoom, prediction in prediction_group.items()
+            if int(zoom) in self.deterministic_zooms
+        }
+        if len(channels) != 1 or next(iter(channels)) not in {1, 2}:
+            raise ValueError(
+                "Configured deterministic zooms present in the batch must "
+                "consistently output one mean channel or two mean/error channels."
+            )
+        has_error_scale = next(iter(channels)) == 2
+
+        for group_index, prediction_group in enumerate(prediction_groups):
             if not prediction_group:
                 mean_groups.append(prediction_group)
                 error_groups.append(prediction_group)
                 continue
 
-            channels = {
-                int(prediction.shape[-1])
-                for prediction in prediction_group.values()
-            }
-            if len(channels) != 1 or next(iter(channels)) not in {1, 2}:
+            source_group = source_groups[group_index]
+            if not source_group:
                 raise ValueError(
-                    "Deterministic residual models must output one mean channel or "
-                    "two mean/error channels consistently across zooms."
+                    "Deterministic output requires a matching source group."
                 )
-            has_error_scale = next(iter(channels)) == 2
             means: Dict[int, torch.Tensor] = {}
             errors: Optional[Dict[int, torch.Tensor]] = (
                 {} if has_error_scale else None
             )
-            for zoom, prediction in prediction_group.items():
+            for zoom, source in source_group.items():
+                zoom = int(zoom)
+                if zoom not in self.deterministic_zooms:
+                    means[zoom] = source
+                    if errors is not None:
+                        errors[zoom] = torch.ones_like(source)
+                    continue
+
+                if zoom not in prediction_group:
+                    raise ValueError(
+                        f"Deterministic model output is missing zoom {zoom}."
+                    )
+                prediction = prediction_group[zoom]
                 if has_error_scale:
                     mean, error = split_mean_and_error_scale(prediction)
-                    means[int(zoom)] = mean
+                    means[zoom] = mean
                     assert errors is not None
-                    errors[int(zoom)] = error * self.spatial_noise_scale
+                    errors[zoom] = error * self.spatial_noise_scale
                 else:
-                    means[int(zoom)] = prediction
+                    means[zoom] = prediction
             mean_groups.append(means)
             error_groups.append(errors)
         return mean_groups, error_groups
