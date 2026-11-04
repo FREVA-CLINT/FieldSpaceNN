@@ -15,6 +15,7 @@ ZoomGroups = List[ZoomGroup]
 MaskGroup = Optional[Dict[int, torch.Tensor]]
 MaskGroups = Optional[Sequence[MaskGroup]]
 EmbGroups = Optional[Sequence[Optional[Dict[str, Any]]]]
+SPATIAL_CONDITIONING_EMBED_KEY = "SpatialConditioningEmbedder"
 
 
 @dataclass
@@ -934,7 +935,12 @@ class MergeGroupsBlockWrapOperation(BlockWrapOperation):
         merged_emb = {
             key: copy.deepcopy(value)
             for key, value in source_emb.items()
-            if key not in self._VARIABLE_ID_KEYS and key not in {"variable_names_sampled", GLOBAL_EMBEDDER_CACHE_KEY}
+            if key not in self._VARIABLE_ID_KEYS
+            and key not in {
+                "variable_names_sampled",
+                GLOBAL_EMBEDDER_CACHE_KEY,
+                SPATIAL_CONDITIONING_EMBED_KEY,
+            }
         }
 
         variable_name_pieces: List[str] = []
@@ -1007,7 +1013,106 @@ class MergeGroupsBlockWrapOperation(BlockWrapOperation):
         if variable_name_pieces:
             merged_emb["variable_names_sampled"] = variable_name_pieces
 
+        merged_spatial_conditioning = self._merge_spatial_conditioning(
+            emb_groups=emb_groups,
+            group_shapes=group_shapes,
+            selected_depth_indices=selected_depth_indices,
+            source_group_indices=source_group_indices,
+        )
+        if merged_spatial_conditioning is not None:
+            merged_emb[SPATIAL_CONDITIONING_EMBED_KEY] = merged_spatial_conditioning
+
         return merged_emb
+
+    def _merge_spatial_conditioning(
+        self,
+        *,
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        group_shapes: Sequence[Dict[int, torch.Size]],
+        selected_depth_indices: Mapping[int, List[int]],
+        source_group_indices: Sequence[int],
+    ) -> Optional[Dict[str, Dict[int, torch.Tensor]]]:
+        conditioning_by_group = {
+            group_idx: emb_groups[group_idx].get(SPATIAL_CONDITIONING_EMBED_KEY)
+            for group_idx in source_group_indices
+            if emb_groups[group_idx] is not None
+        }
+        present_conditioning = {
+            group_idx: conditioning
+            for group_idx, conditioning in conditioning_by_group.items()
+            if conditioning is not None
+        }
+        if not present_conditioning:
+            return None
+
+        missing_groups = [
+            group_idx
+            for group_idx in source_group_indices
+            if group_idx not in present_conditioning
+        ]
+        if missing_groups:
+            raise ValueError(
+                f"`{SPATIAL_CONDITIONING_EMBED_KEY}` must be present for every merged group; "
+                f"missing groups {missing_groups}."
+            )
+
+        first_group_idx = source_group_indices[0]
+        first_conditioning = present_conditioning[first_group_idx]
+        if not isinstance(first_conditioning, Mapping):
+            raise TypeError(
+                f"`{SPATIAL_CONDITIONING_EMBED_KEY}` must be a mapping."
+            )
+        field_names = list(first_conditioning.keys())
+        merged_conditioning: Dict[str, Dict[int, torch.Tensor]] = {}
+
+        for group_idx in source_group_indices:
+            conditioning = present_conditioning[group_idx]
+            if not isinstance(conditioning, Mapping):
+                raise TypeError(
+                    f"`{SPATIAL_CONDITIONING_EMBED_KEY}` must be a mapping in group {group_idx}."
+                )
+            if set(conditioning.keys()) != set(field_names):
+                raise ValueError(
+                    f"`{SPATIAL_CONDITIONING_EMBED_KEY}` fields must match across merged groups; "
+                    f"expected {sorted(field_names)}, got {sorted(conditioning.keys())} in group {group_idx}."
+                )
+
+        for field_name in field_names:
+            merged_conditioning[str(field_name)] = {}
+            for zoom in group_shapes[0]:
+                pieces: List[torch.Tensor] = []
+                for group_idx in source_group_indices:
+                    zoom_fields = present_conditioning[group_idx][field_name]
+                    if not isinstance(zoom_fields, Mapping):
+                        raise TypeError(
+                            f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` must be a zoom mapping "
+                            f"in group {group_idx}."
+                        )
+                    field = zoom_fields.get(zoom)
+                    expected_shape = group_shapes[group_idx][zoom]
+                    if not torch.is_tensor(field) or field.shape != expected_shape:
+                        actual_shape = None if not torch.is_tensor(field) else tuple(field.shape)
+                        raise ValueError(
+                            f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` at zoom {zoom} in group "
+                            f"{group_idx} must have shape {tuple(expected_shape)}, got {actual_shape}."
+                        )
+                    if group_idx == 0:
+                        pieces.append(field)
+                    else:
+                        pieces.append(
+                            _fold_depth_into_variable(
+                                _select_depth_indices(
+                                    field,
+                                    selected_depth_indices[group_idx],
+                                )
+                            )
+                        )
+                merged_conditioning[str(field_name)][zoom] = torch.cat(
+                    pieces,
+                    dim=1,
+                )
+
+        return merged_conditioning
 
 
 def _resolve_shift_zooms(
@@ -1290,6 +1395,7 @@ def _slice_emb_group_depths(
     remaining_depth_indices: Sequence[int],
 ) -> Dict[str, Any]:
     sliced = copy.deepcopy(emb_group)
+    sliced.pop(GLOBAL_EMBEDDER_CACHE_KEY, None)
     reference_shape = next(iter(group_shape.values()))
     n_depths = int(reference_shape[4])
 
@@ -1309,6 +1415,37 @@ def _slice_emb_group_depths(
             if torch.is_tensor(depth_ids) and depth_ids.ndim == 1 and depth_ids.shape[0] == n_depths:
                 depth_index_tensor = torch.as_tensor(remaining_depth_indices, device=depth_ids.device, dtype=torch.long)
                 sliced["GroupDepthEmbedder"] = (group_id, depth_ids.index_select(0, depth_index_tensor))
+
+    if SPATIAL_CONDITIONING_EMBED_KEY in sliced:
+        conditioning = sliced[SPATIAL_CONDITIONING_EMBED_KEY]
+        if not isinstance(conditioning, Mapping):
+            raise TypeError(
+                f"`{SPATIAL_CONDITIONING_EMBED_KEY}` must be a mapping."
+            )
+        sliced_conditioning: Dict[str, Dict[int, torch.Tensor]] = {}
+        for field_name, zoom_fields in conditioning.items():
+            if not isinstance(zoom_fields, Mapping):
+                raise TypeError(
+                    f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` must be a zoom mapping."
+                )
+            sliced_conditioning[str(field_name)] = {}
+            for zoom, field in zoom_fields.items():
+                zoom = int(zoom)
+                if zoom not in group_shape:
+                    raise ValueError(
+                        f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` contains unexpected zoom {zoom}."
+                    )
+                if not torch.is_tensor(field) or field.shape != group_shape[zoom]:
+                    actual_shape = None if not torch.is_tensor(field) else tuple(field.shape)
+                    raise ValueError(
+                        f"`{SPATIAL_CONDITIONING_EMBED_KEY}.{field_name}` at zoom {zoom} must have shape "
+                        f"{tuple(group_shape[zoom])}, got {actual_shape}."
+                    )
+                sliced_conditioning[str(field_name)][zoom] = _select_depth_indices(
+                    field,
+                    remaining_depth_indices,
+                )
+        sliced[SPATIAL_CONDITIONING_EMBED_KEY] = sliced_conditioning
 
     return sliced
 
