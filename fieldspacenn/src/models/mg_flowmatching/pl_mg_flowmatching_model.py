@@ -97,6 +97,46 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         return [group.copy() if group else None for group in groups]
 
+    def _generate_noise_groups(
+        self,
+        input_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        if conditioning_groups is not None and len(conditioning_groups) != len(
+            input_groups
+        ):
+            raise ValueError(
+                "Conditioning groups must match the number of input groups."
+            )
+
+        noise_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for index, input_group in enumerate(input_groups):
+            if not input_group:
+                noise_groups.append(None)
+                continue
+            emb_group = emb_groups[index] if index < len(emb_groups) else None
+            if conditioning_groups is None:
+                noise = self.flow_matching.generate_noise_for_group(
+                    input_group,
+                    emb_group,
+                )
+            else:
+                conditioning = conditioning_groups[index]
+                noise = self.flow_matching.generate_noise_for_group(
+                    input_group,
+                    emb_group,
+                    spatial_scales=(
+                        conditioning.get("s")
+                        if conditioning is not None
+                        else None
+                    ),
+                )
+            noise_groups.append(noise)
+        return noise_groups
+
     @staticmethod
     def _get_first_valid_group(
         groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -285,6 +325,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         prefix: str,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         batch_size, device = self._get_batch_size_and_device(input_groups)
         if batch_size == 0:
@@ -297,6 +340,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             flow_times,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            conditioning_groups=conditioning_groups,
             create_pred_x1=False,
             sample_configs=sample_configs,
         )
@@ -324,6 +368,29 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         """Return the endpoint field learned by flow matching."""
         return self._copy_groups(target_groups)
 
+    def _prepare_flow_target_and_conditioning(
+        self,
+        source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        target_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        sample_configs: Mapping[int, Dict[str, Any]],
+    ) -> Tuple[
+        List[Optional[Dict[int, torch.Tensor]]],
+        Optional[List[Optional[Dict[str, Dict[int, torch.Tensor]]]]],
+    ]:
+        """Return the flow endpoint and optional model conditioning."""
+        return (
+            self._prepare_flow_target_groups(
+                source_groups,
+                target_groups,
+                mask_groups,
+                emb_groups,
+                sample_configs,
+            ),
+            None,
+        )
+
     def _reconstruct_flow_prediction(
         self,
         flow_prediction_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -331,6 +398,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         """Convert a sampled flow endpoint to the model's prediction field."""
         return self._copy_groups(flow_prediction_groups)
@@ -364,12 +434,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 else [None] * len(target_groups)
             )
         ]
-        flow_target_groups = self._prepare_flow_target_groups(
-            source_groups,
-            target_groups,
-            mask_groups,
-            emb_groups,
-            sample_configs,
+        (
+            flow_target_groups,
+            conditioning_groups,
+        ) = self._prepare_flow_target_and_conditioning(
+            source_groups, target_groups, mask_groups, emb_groups, sample_configs
         )
 
         block_losses: List[torch.Tensor] = []
@@ -382,6 +451,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
+                conditioning_groups=conditioning_groups,
                 prefix="train",
             )
             block_losses.append(block_loss)
@@ -411,12 +481,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 else [None] * len(target_groups)
             )
         ]
-        flow_target_groups = self._prepare_flow_target_groups(
-            source_groups,
-            target_groups,
-            mask_groups,
-            emb_groups,
-            sample_configs,
+        (
+            flow_target_groups,
+            conditioning_groups,
+        ) = self._prepare_flow_target_and_conditioning(
+            source_groups, target_groups, mask_groups, emb_groups, sample_configs
         )
 
         block_losses: List[torch.Tensor] = []
@@ -429,6 +498,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 sample_configs=sample_configs,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
+                conditioning_groups=conditioning_groups,
                 prefix="val",
             )
             block_losses.append(block_loss)
@@ -562,7 +632,10 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             copy.deepcopy(self._get_sample_configs(stage="val")),
             patch_index_zooms_p,
         )
-        flow_target_groups_p = self._prepare_flow_target_groups(
+        (
+            flow_target_groups_p,
+            conditioning_groups_p,
+        ) = self._prepare_flow_target_and_conditioning(
             source_groups_p,
             target_groups_p,
             mask_groups_p,
@@ -570,11 +643,11 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             sample_configs_p,
         )
 
-        noise_groups_p = [
-            self.flow_matching.generate_noise_for_group(group, emb_group)
-            if group else None
-            for group, emb_group in zip(flow_target_groups_p, emb_groups_p)
-        ]
+        noise_groups_p = self._generate_noise_groups(
+            flow_target_groups_p,
+            emb_groups_p,
+            conditioning_groups_p,
+        )
         time_dtype = next(iter(target_p.values())).dtype
 
         for t in ts:
@@ -588,6 +661,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 time_tensor,
                 mask_groups=mask_groups_p,
                 emb_groups=emb_groups_p,
+                conditioning_groups=conditioning_groups_p,
                 noise_groups=noise_groups_p,
                 create_pred_x1=True,
                 sample_configs=sample_configs_p,
@@ -604,6 +678,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 mask_groups_p,
                 emb_groups_p,
                 sample_configs_p,
+                conditioning_groups=conditioning_groups_p,
             )
             pred_x1_group = (
                 pred_x1_groups[group_idx]
@@ -653,13 +728,16 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
         initialize_from_noise: bool = True,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         if initialize_from_noise:
-            x_t_groups = [
-                self.flow_matching.generate_noise_for_group(group, emb_group)
-                if group else None
-                for group, emb_group in zip(input_groups, emb_groups)
-            ]
+            x_t_groups = self._generate_noise_groups(
+                input_groups,
+                emb_groups,
+                conditioning_groups,
+            )
         else:
             x_t_groups = self._copy_groups(input_groups)
 
@@ -669,6 +747,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
             x_t_groups=x_t_groups,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            conditioning_groups=conditioning_groups,
             sample_configs=sample_configs,
             time_range=self.model.get_time_range(block_idx, inference=True),
             n_steps=self.sampling_steps_per_block,
@@ -750,6 +829,9 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         """Sample all configured flow blocks from noise to an endpoint."""
         current_groups = self._copy_groups(input_groups)
@@ -760,6 +842,7 @@ class LightningMGFlowMatchingModel(LightningMGModel, LightningProbabilisticModel
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
                 sample_configs=sample_configs,
+                conditioning_groups=conditioning_groups,
                 initialize_from_noise=(block_idx == 0),
             )
         return current_groups

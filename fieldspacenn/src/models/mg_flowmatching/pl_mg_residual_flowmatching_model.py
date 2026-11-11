@@ -20,6 +20,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         deterministic_zooms: Sequence[int],
         spatial_conditioning_embed_key: Optional[str] = None,
         spatial_noise_scale: float = 1.0,
+        scale_std_by_one_minus_tau: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -36,23 +37,38 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             else str(spatial_conditioning_embed_key)
         )
         self.spatial_noise_scale = float(spatial_noise_scale)
+        self.scale_std_by_one_minus_tau = bool(scale_std_by_one_minus_tau)
         if (
             not math.isfinite(self.spatial_noise_scale)
             or self.spatial_noise_scale < 0
         ):
             raise ValueError("`spatial_noise_scale` must be finite and nonnegative.")
-        configured_scale_key = self.flow_matching.noise_scale_embed_key
-        if (
-            configured_scale_key is not None
-            and self.spatial_conditioning_embed_key is None
-        ):
-            raise ValueError(
-                "Spatial noise scaling requires `spatial_conditioning_embed_key`."
+        if self.flow_matching.conditioning_embed_key is None:
+            self.flow_matching.conditioning_embed_key = (
+                self.spatial_conditioning_embed_key
             )
-        if configured_scale_key not in {None, self.spatial_conditioning_embed_key}:
+        self.flow_matching.scale_std_by_one_minus_tau = (
+            self.scale_std_by_one_minus_tau
+        )
+        configured_conditioning_keys = {
+            key
+            for key in (
+                self.flow_matching.noise_scale_embed_key,
+                self.flow_matching.conditioning_embed_key,
+            )
+            if key is not None
+        }
+        if (
+            configured_conditioning_keys or self.scale_std_by_one_minus_tau
+        ) and self.spatial_conditioning_embed_key is None:
             raise ValueError(
-                "The spatial-conditioning key must match "
-                "flow_matching.noise_scale_embed_key."
+                "Spatial noise or input conditioning requires "
+                "`spatial_conditioning_embed_key`."
+            )
+        if configured_conditioning_keys - {self.spatial_conditioning_embed_key}:
+            raise ValueError(
+                "Flow-matching spatial-conditioning keys must match "
+                "`spatial_conditioning_embed_key`."
             )
 
         self.deterministic_model = deterministic_model
@@ -96,7 +112,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
                 sample_configs=sample_configs,
             )
         mean_groups: List[Optional[Dict[int, torch.Tensor]]] = []
-        error_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        sigma_groups: List[Optional[Dict[int, torch.Tensor]]] = []
         channels = {
             int(prediction.shape[-1])
             for prediction_group in prediction_groups
@@ -114,7 +130,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         for group_index, prediction_group in enumerate(prediction_groups):
             if not prediction_group:
                 mean_groups.append(prediction_group)
-                error_groups.append(prediction_group)
+                sigma_groups.append(prediction_group)
                 continue
 
             source_group = source_groups[group_index]
@@ -123,58 +139,52 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
                     "Deterministic output requires a matching source group."
                 )
             means: Dict[int, torch.Tensor] = {}
-            errors: Optional[Dict[int, torch.Tensor]] = (
+            sigmas: Optional[Dict[int, torch.Tensor]] = (
                 {} if has_error_scale else None
             )
             for zoom, source in source_group.items():
                 zoom = int(zoom)
                 if zoom not in self.deterministic_zooms:
                     means[zoom] = source
-                    if errors is not None:
-                        errors[zoom] = torch.ones_like(source)
+                    if sigmas is not None:
+                        sigmas[zoom] = torch.ones_like(source)
                     continue
 
                 if zoom not in prediction_group:
                     raise ValueError(
                         f"Deterministic model output is missing zoom {zoom}."
                     )
-                prediction = prediction_group[zoom]
+                prediction = prediction_group[zoom].detach()
                 if has_error_scale:
-                    mean, error = split_mean_and_error_scale(prediction)
-                    means[zoom] = mean
-                    assert errors is not None
-                    errors[zoom] = error * self.spatial_noise_scale
+                    mean, sigma = split_mean_and_error_scale(prediction)
+                    # ``mean`` is a view into the two-channel prediction. Clone it
+                    # so retaining the mean does not also retain log-variance storage.
+                    means[zoom] = mean.clone()
+                    assert sigmas is not None
+                    sigmas[zoom] = sigma * self.spatial_noise_scale
                 else:
                     means[zoom] = prediction
             mean_groups.append(means)
-            error_groups.append(errors)
-        return mean_groups, error_groups
+            sigma_groups.append(sigmas)
+        return mean_groups, sigma_groups
 
-    def _store_spatial_conditioning(
-        self,
-        emb_groups: Sequence[Optional[Dict[str, Any]]],
+    @staticmethod
+    def _build_spatial_conditioning(
         mean_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
-        error_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
-    ) -> None:
-        if self.spatial_conditioning_embed_key is None:
-            return
-        for index, (mean_group, error_group) in enumerate(
-            zip(mean_groups, error_groups)
-        ):
+        sigma_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+    ) -> List[Optional[Dict[str, Dict[int, torch.Tensor]]]]:
+        conditioning_groups: List[
+            Optional[Dict[str, Dict[int, torch.Tensor]]]
+        ] = []
+        for mean_group, sigma_group in zip(mean_groups, sigma_groups):
             if mean_group is None:
+                conditioning_groups.append(None)
                 continue
-            emb_group = emb_groups[index]
-            if emb_group is None:
-                if not isinstance(emb_groups, list):
-                    raise TypeError(
-                        "Embedding groups must be mutable when an entry is None."
-                    )
-                emb_group = {}
-                emb_groups[index] = emb_group
             conditioning = {"mu": mean_group}
-            if error_group is not None:
-                conditioning["s"] = error_group
-            emb_group[self.spatial_conditioning_embed_key] = conditioning
+            if sigma_group is not None:
+                conditioning["s"] = sigma_group
+            conditioning_groups.append(conditioning)
+        return conditioning_groups
 
     @staticmethod
     def _apply_group_operation(
@@ -200,6 +210,41 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             })
         return output_groups
 
+    def _prepare_residual_target_and_conditioning(
+        self,
+        source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        target_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        sample_configs: Mapping[int, Dict[str, Any]],
+    ) -> tuple[
+        List[Optional[Dict[int, torch.Tensor]]],
+        List[Optional[Dict[str, Dict[int, torch.Tensor]]]],
+    ]:
+        deterministic_groups, sigma_groups = self._predict_deterministic(
+            source_groups,
+            mask_groups,
+            emb_groups,
+            sample_configs,
+        )
+        conditioning_groups = self._build_spatial_conditioning(
+            deterministic_groups,
+            sigma_groups,
+        )
+        residual_groups = self._apply_group_operation(
+            target_groups,
+            deterministic_groups,
+            operator.sub,
+        )
+        return (
+            self._preserve_known_source_values(
+                residual_groups,
+                source_groups,
+                mask_groups,
+            ),
+            conditioning_groups,
+        )
+
     def _prepare_flow_target_groups(
         self,
         source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
@@ -208,26 +253,32 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
-        deterministic_groups, error_groups = self._predict_deterministic(
+        residual_groups, _ = self._prepare_residual_target_and_conditioning(
             source_groups,
+            target_groups,
             mask_groups,
             emb_groups,
             sample_configs,
         )
-        self._store_spatial_conditioning(
-            emb_groups,
-            deterministic_groups,
-            error_groups,
-        )
-        residual_groups = self._apply_group_operation(
-            target_groups,
-            deterministic_groups,
-            operator.sub,
-        )
-        return self._preserve_known_source_values(
-            residual_groups,
+        return residual_groups
+
+    def _prepare_flow_target_and_conditioning(
+        self,
+        source_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        target_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Optional[Dict[str, Any]]],
+        sample_configs: Mapping[int, Dict[str, Any]],
+    ) -> tuple[
+        List[Optional[Dict[int, torch.Tensor]]],
+        Optional[List[Optional[Dict[str, Dict[int, torch.Tensor]]]]],
+    ]:
+        return self._prepare_residual_target_and_conditioning(
             source_groups,
+            target_groups,
             mask_groups,
+            emb_groups,
+            sample_configs,
         )
 
     @staticmethod
@@ -266,17 +317,27 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         emb_groups: Sequence[Optional[Dict[str, Any]]],
         sample_configs: Mapping[int, Dict[str, Any]],
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
-        deterministic_groups, error_groups = self._predict_deterministic(
-            source_groups,
-            mask_groups,
-            emb_groups,
-            sample_configs,
-        )
-        self._store_spatial_conditioning(
-            emb_groups,
-            deterministic_groups,
-            error_groups,
+        deterministic_groups = (
+            [
+                None
+                if conditioning is None
+                else {
+                    int(zoom): value
+                    for zoom, value in conditioning["mu"].items()
+                }
+                for conditioning in conditioning_groups
+            ]
+            if conditioning_groups is not None
+            else self._predict_deterministic(
+                source_groups,
+                mask_groups,
+                emb_groups,
+                sample_configs,
+            )[0]
         )
         prediction_groups = self._apply_group_operation(
             deterministic_groups,
@@ -309,16 +370,15 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             )
         ]
 
-        deterministic_groups, error_groups = self._predict_deterministic(
+        deterministic_groups, sigma_groups = self._predict_deterministic(
             source_groups,
             mask_groups,
             emb_groups,
             sample_configs,
         )
-        self._store_spatial_conditioning(
-            emb_groups,
+        conditioning_groups = self._build_spatial_conditioning(
             deterministic_groups,
-            error_groups,
+            sigma_groups,
         )
         residual_template = [
             {int(zoom): torch.zeros_like(tensor) for zoom, tensor in group.items()}
@@ -335,6 +395,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             mask_groups,
             emb_groups,
             sample_configs,
+            conditioning_groups=conditioning_groups,
         )
         if self.flow_matching.temporal_difference:
             residual_groups = self.flow_matching.decode_temporal_differences(

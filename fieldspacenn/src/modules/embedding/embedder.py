@@ -1144,13 +1144,28 @@ class SpatialConditioningEmbedder(BaseEmbedder):
         n_variables: int = 1,
         hidden_dim: Optional[int] = None,
         fac_mode: str = "Tucker",
+        conditioning_fields: Optional[Sequence[str]] = None,
         grid_layers: Optional[Dict[str, GridLayer]] = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(name, in_channels, embed_dim)
         if self.in_channels not in {1, 2}:
             raise ValueError(
-                "SpatialConditioningEmbedder expects one mean channel or mean and scale."
+                "SpatialConditioningEmbedder expects one or two conditioning channels."
+            )
+        if conditioning_fields is None:
+            conditioning_fields = ("mu",) if self.in_channels == 1 else ("mu", "s")
+        self.conditioning_fields = tuple(str(field) for field in conditioning_fields)
+        invalid_fields = set(self.conditioning_fields) - {"mu", "s"}
+        if (
+            invalid_fields
+            or len(set(self.conditioning_fields)) != len(self.conditioning_fields)
+            or len(self.conditioning_fields) != self.in_channels
+        ):
+            raise ValueError(
+                "`conditioning_fields` must contain one entry per input channel "
+                f"using unique values from {{'mu', 's'}}, got "
+                f"{self.conditioning_fields}."
             )
         if not input_zooms:
             raise ValueError("SpatialConditioningEmbedder requires input zooms.")
@@ -1187,11 +1202,11 @@ class SpatialConditioningEmbedder(BaseEmbedder):
         embedding_inputs: Optional[Dict[str, Any]] = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        field_names = ("mu",) if self.in_channels == 1 else ("mu", "s")
-        if not isinstance(emb, Mapping) or set(emb) != set(field_names):
+        field_names = self.conditioning_fields
+        if not isinstance(emb, Mapping) or not set(field_names).issubset(emb):
             raise ValueError(
-                "Spatial conditioning must contain exactly the maps matching "
-                f"in_channels={self.in_channels}: {field_names}."
+                "Spatial conditioning is missing one or more configured maps: "
+                f"{field_names}."
             )
 
         fields: Dict[int, torch.Tensor] = {}

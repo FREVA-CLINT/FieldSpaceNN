@@ -1,4 +1,4 @@
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 
@@ -63,6 +63,9 @@ class EulerFlowSampler:
         time_range: Tuple[float, float] = (0.0, 1.0),
         n_steps: int = 50,
         progress: bool = False,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
         **model_kwargs: Any,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
         """
@@ -77,6 +80,7 @@ class EulerFlowSampler:
         :param time_range: Start/end integration times.
         :param n_steps: Number of Euler steps.
         :param progress: Whether to show a progress bar.
+        :param conditioning_groups: Optional deterministic ``mu``/``s`` sidecars.
         :param model_kwargs: Additional model keyword arguments.
         :return: Final sampled groups.
         """
@@ -87,6 +91,7 @@ class EulerFlowSampler:
             x_t_groups=x_t_groups,
             mask_groups=mask_groups,
             emb_groups=emb_groups,
+            conditioning_groups=conditioning_groups,
             sample_configs=sample_configs,
             time_range=time_range,
             n_steps=n_steps,
@@ -110,6 +115,9 @@ class EulerFlowSampler:
         time_range: Tuple[float, float] = (0.0, 1.0),
         n_steps: int = 50,
         progress: bool = False,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
         **model_kwargs: Any,
     ) -> Iterator[Dict[str, Any]]:
         """
@@ -121,18 +129,41 @@ class EulerFlowSampler:
         start, end = float(time_range[0]), float(time_range[1])
         if start < 0.0 or end > 1.0 or start > end:
             raise ValueError(f"`time_range` must satisfy 0 <= start <= end <= 1, got {time_range}.")
+        if conditioning_groups is not None and len(conditioning_groups) != len(
+            input_groups
+        ):
+            raise ValueError(
+                "Conditioning groups must match the number of input groups."
+            )
 
         if x_t_groups is None:
-            x_t_groups = [
-                self.flow_matching.generate_noise_for_group(
-                    group,
+            x_t_groups = []
+            for index, group in enumerate(input_groups):
+                if not group:
+                    x_t_groups.append(None)
+                    continue
+                emb_group = (
                     emb_groups[index]
                     if emb_groups is not None and index < len(emb_groups)
-                    else None,
+                    else None
                 )
-                if group else None
-                for index, group in enumerate(input_groups)
-            ]
+                if conditioning_groups is None:
+                    noise = self.flow_matching.generate_noise_for_group(
+                        group,
+                        emb_group,
+                    )
+                else:
+                    conditioning = conditioning_groups[index]
+                    noise = self.flow_matching.generate_noise_for_group(
+                        group,
+                        emb_group,
+                        spatial_scales=(
+                            conditioning.get("s")
+                            if conditioning is not None
+                            else None
+                        ),
+                    )
+                x_t_groups.append(noise)
         x_t_groups = self._apply_known_values(x_t_groups, input_groups, mask_groups)
 
         first_valid_group = next((group for group in x_t_groups if group), None)
@@ -165,6 +196,7 @@ class EulerFlowSampler:
                     t_batch,
                     mask_groups=mask_groups,
                     emb_groups=emb_groups,
+                    conditioning_groups=conditioning_groups,
                     **model_kwargs,
                 )
                 sample_groups: List[Optional[Dict[int, torch.Tensor]]] = []

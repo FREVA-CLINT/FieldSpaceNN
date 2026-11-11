@@ -7,6 +7,9 @@ from ..grids.grid_utils import encode_zooms, to_zoom
 from ...utils.normalization import NormDictInput, load_norm_dict
 
 
+_SPATIAL_SCALES_FROM_EMBEDDING = object()
+
+
 class MGFlowMatching:
     """
     Utilities for Gaussian OT conditional flow-matching training.
@@ -20,6 +23,9 @@ class MGFlowMatching:
         rectified_time_epsilon: float = 1e-5,
         norm_dict: NormDictInput = None,
         noise_scale_embed_key: Optional[str] = None,
+        conditioning_embed_key: Optional[str] = None,
+        input_conditioning_fields: Sequence[str] = (),
+        scale_std_by_one_minus_tau: bool = False,
         temporal_difference: bool = False,
         difference_norm_dict: NormDictInput = None,
     ) -> None:
@@ -37,6 +43,12 @@ class MGFlowMatching:
         :param noise_scale_embed_key: Optional embedding-dictionary key containing
             per-zoom spatial factors. When present, base noise is unit-variance at
             every zoom and these factors provide its spatial scale.
+        :param conditioning_embed_key: Optional embedding-dictionary key containing
+            deterministic fields used for model conditioning.
+        :param input_conditioning_fields: Any of ``"mu"`` and ``"s"`` to append
+            to the flow state before each velocity-model evaluation.
+        :param scale_std_by_one_minus_tau: Whether ``"s"`` is multiplied by
+            ``1 - tau`` for all velocity-model conditioning paths.
         :param temporal_difference: Whether masked targets use normalized one-step
             differences.
         :param difference_norm_dict: Mean/std statistics for temporal differences,
@@ -49,6 +61,26 @@ class MGFlowMatching:
         self.noise_scale_embed_key = (
             None if noise_scale_embed_key is None else str(noise_scale_embed_key)
         )
+        self.conditioning_embed_key = (
+            None if conditioning_embed_key is None else str(conditioning_embed_key)
+        )
+        self.input_conditioning_fields = tuple(
+            str(field) for field in input_conditioning_fields
+        )
+        invalid_fields = set(self.input_conditioning_fields) - {"mu", "s"}
+        if invalid_fields or len(set(self.input_conditioning_fields)) != len(
+            self.input_conditioning_fields
+        ):
+            raise ValueError(
+                "`input_conditioning_fields` must contain unique values from "
+                f"{{'mu', 's'}}, got {self.input_conditioning_fields}."
+            )
+        if self.input_conditioning_fields and self.conditioning_embed_key is None:
+            raise ValueError(
+                "`conditioning_embed_key` is required when flow input "
+                "conditioning fields are configured."
+            )
+        self.scale_std_by_one_minus_tau = bool(scale_std_by_one_minus_tau)
         self.temporal_difference: bool = bool(temporal_difference)
         self.difference_norm_dict = self._load_norm_dict(
             difference_norm_dict, "difference_norm_dict"
@@ -649,12 +681,15 @@ class MGFlowMatching:
         self,
         x_zooms: Mapping[int, torch.Tensor],
         emb_group: Optional[Mapping[str, Any]] = None,
+        spatial_scales: Any = _SPATIAL_SCALES_FROM_EMBEDDING,
     ) -> Dict[int, torch.Tensor]:
-        """Generate noise using variable metadata and optional spatial scales."""
+        """Generate noise using variable metadata and optional explicit scales."""
+        if spatial_scales is _SPATIAL_SCALES_FROM_EMBEDDING:
+            spatial_scales = self.noise_scales_from_embedding(emb_group)
         return self.generate_noise(
             x_zooms,
             self._variable_names(emb_group),
-            spatial_scales=self.noise_scales_from_embedding(emb_group),
+            spatial_scales=spatial_scales,
         )
 
     def apply_mask_to_noise(
@@ -758,6 +793,9 @@ class MGFlowMatching:
         emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]],
         n_groups: int,
         times: torch.Tensor,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
     ) -> List[Dict[str, Any]]:
         """
         Return embedding groups with the flow time injected.
@@ -765,17 +803,121 @@ class MGFlowMatching:
         :param emb_groups: Optional original embedding groups.
         :param n_groups: Number of data groups.
         :param times: Continuous times of shape ``(b,)``.
+        :param conditioning_groups: Optional deterministic ``mu``/``s`` sidecars.
         :return: Embedding groups containing ``self.time_embed_key``.
         """
         if emb_groups is None:
             emb_groups = [{} for _ in range(n_groups)]
 
+        if conditioning_groups is not None and len(conditioning_groups) != n_groups:
+            raise ValueError(
+                "Conditioning groups must match the number of data groups."
+            )
+
         output: List[Dict[str, Any]] = []
-        for emb in emb_groups:
+        for group_index, emb in enumerate(emb_groups):
             emb_out = dict(emb) if emb else {}
             emb_out[self.time_embed_key] = times
+            conditioning = (
+                conditioning_groups[group_index]
+                if conditioning_groups is not None
+                else emb_out.get(self.conditioning_embed_key)
+                if self.conditioning_embed_key
+                else None
+            )
+            if isinstance(conditioning, Mapping):
+                conditioning_out = dict(conditioning)
+                scale_fields = conditioning.get("s")
+                if (
+                    self.scale_std_by_one_minus_tau
+                    and isinstance(scale_fields, Mapping)
+                ):
+                    conditioning_out["s"] = {
+                        zoom: scale
+                        * (1.0 - self._expand_time_like(times, scale))
+                        for zoom, scale in scale_fields.items()
+                    }
+                if self.conditioning_embed_key:
+                    emb_out[self.conditioning_embed_key] = conditioning_out
             output.append(emb_out)
         return output
+
+    def _append_input_conditioning(
+        self,
+        x_t_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        emb_groups: Sequence[Mapping[str, Any]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        if not self.input_conditioning_fields:
+            return list(x_t_groups)
+
+        conditioned_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for group_index, x_t_zooms in enumerate(x_t_groups):
+            if not x_t_zooms:
+                conditioned_groups.append(None)
+                continue
+
+            conditioning = emb_groups[group_index].get(self.conditioning_embed_key)
+            if not isinstance(conditioning, Mapping):
+                raise ValueError(
+                    f"Embedding {self.conditioning_embed_key!r} must contain "
+                    "deterministic conditioning maps."
+                )
+
+            field_maps: Dict[str, Mapping[int, torch.Tensor]] = {}
+            for field_name in self.input_conditioning_fields:
+                field_map = conditioning.get(field_name)
+                if not isinstance(field_map, Mapping):
+                    raise ValueError(
+                        f"Input conditioning field {field_name!r} must be a zoom mapping."
+                    )
+                field_maps[field_name] = field_map
+
+            conditioned_zooms: Dict[int, torch.Tensor] = {}
+            for zoom, state in x_t_zooms.items():
+                channels = [state]
+                for field_name in self.input_conditioning_fields:
+                    field_map = field_maps[field_name]
+                    field = field_map.get(zoom, field_map.get(str(zoom)))
+                    if not isinstance(field, torch.Tensor):
+                        raise ValueError(
+                            f"Input conditioning field {field_name!r} is missing zoom {zoom}."
+                        )
+                    if field.shape != state.shape:
+                        raise ValueError(
+                            f"Input conditioning shape at zoom {zoom} must match the "
+                            f"flow state: {tuple(field.shape)} != {tuple(state.shape)}."
+                        )
+                    channels.append(field)
+                conditioned_zooms[int(zoom)] = torch.cat(channels, dim=-1)
+            conditioned_groups.append(conditioned_zooms)
+        return conditioned_groups
+
+    @staticmethod
+    def _select_state_channels(
+        output_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        state_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        if len(output_groups) != len(state_groups):
+            raise ValueError("Velocity output and flow-state group counts must match.")
+        selected_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+        for output_zooms, state_zooms in zip(output_groups, state_groups):
+            if not output_zooms or not state_zooms:
+                selected_groups.append(None)
+                continue
+            selected_zooms: Dict[int, torch.Tensor] = {}
+            for zoom, state in state_zooms.items():
+                if zoom not in output_zooms:
+                    raise ValueError(f"Velocity output is missing zoom {zoom}.")
+                output = output_zooms[zoom]
+                n_state_channels = state.shape[-1]
+                if output.shape[-1] < n_state_channels:
+                    raise ValueError(
+                        f"Velocity output at zoom {zoom} has {output.shape[-1]} "
+                        f"channels, but the flow state has {n_state_channels}."
+                    )
+                selected_zooms[int(zoom)] = output[..., :n_state_channels]
+            selected_groups.append(selected_zooms)
+        return selected_groups
 
     def model_velocity(
         self,
@@ -784,6 +926,9 @@ class MGFlowMatching:
         times: torch.Tensor,
         mask_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]] = None,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
         **model_kwargs: Any,
     ) -> Sequence[Optional[Dict[int, torch.Tensor]]]:
         """
@@ -794,16 +939,44 @@ class MGFlowMatching:
         :param times: Continuous times of shape ``(b,)``.
         :param mask_groups: Optional mask groups.
         :param emb_groups: Optional embedding groups.
+        :param conditioning_groups: Optional deterministic ``mu``/``s`` sidecars.
         :param model_kwargs: Additional model keyword arguments.
         :return: Predicted velocity groups.
         """
-        emb_groups_with_time = self._with_time_embedding(emb_groups, len(x_t_groups), times)
-        return model(
+        emb_groups_with_time = self._with_time_embedding(
+            emb_groups,
+            len(x_t_groups),
+            times,
+            conditioning_groups=conditioning_groups,
+        )
+        model_input_groups = self._append_input_conditioning(
             x_t_groups,
+            emb_groups_with_time,
+        )
+        configured_in_features = getattr(model, "in_features", None)
+        if self.input_conditioning_fields and isinstance(configured_in_features, int):
+            input_feature_counts = {
+                tensor.shape[-1]
+                for group in model_input_groups
+                if group
+                for tensor in group.values()
+            }
+            if input_feature_counts != {configured_in_features}:
+                raise ValueError(
+                    "Flow model `in_features` must equal the state channel plus "
+                    "configured conditioning channels; got "
+                    f"model.in_features={configured_in_features} and input "
+                    f"features={sorted(input_feature_counts)}."
+                )
+        output_groups = model(
+            model_input_groups,
             emb_groups=emb_groups_with_time,
             mask_zooms_groups=mask_groups,
             **model_kwargs,
         )
+        if not self.input_conditioning_fields:
+            return output_groups
+        return self._select_state_channels(output_groups, x_t_groups)
 
     def training_losses(
         self,
@@ -814,6 +987,9 @@ class MGFlowMatching:
         emb_groups: Optional[Sequence[Optional[Dict[str, Any]]]] = None,
         noise_groups: Optional[Sequence[Optional[Dict[int, torch.Tensor]]]] = None,
         create_pred_x1: bool = False,
+        conditioning_groups: Optional[
+            Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
+        ] = None,
         **model_kwargs: Any,
     ) -> List[Tuple[Optional[Dict[int, torch.Tensor]], Optional[Dict[int, torch.Tensor]], Optional[Dict[int, torch.Tensor]]]]:
         """
@@ -826,6 +1002,7 @@ class MGFlowMatching:
         :param emb_groups: Optional embedding groups.
         :param noise_groups: Optional pre-sampled noise endpoint groups.
         :param create_pred_x1: Whether to return estimated data endpoints.
+        :param conditioning_groups: Optional deterministic ``mu``/``s`` sidecars.
         :param model_kwargs: Additional model keyword arguments.
         :return: List of ``(target_velocity, model_output, pred_x1)`` tuples.
         """
@@ -833,19 +1010,37 @@ class MGFlowMatching:
             mask_groups = [None] * len(gt_groups)
         if emb_groups is None:
             emb_groups = [{} for _ in gt_groups]
+        if conditioning_groups is not None and len(conditioning_groups) != len(
+            gt_groups
+        ):
+            raise ValueError(
+                "Conditioning groups must match the number of ground-truth groups."
+            )
         if self.temporal_difference:
             gt_groups = self.encode_temporal_differences(
                 gt_groups, mask_groups, emb_groups
             )
         if noise_groups is None:
-            noise_groups = [
-                self.generate_noise_for_group(
-                    group,
-                    emb_groups[index] if index < len(emb_groups) else None,
-                )
-                if group else None
-                for index, group in enumerate(gt_groups)
-            ]
+            noise_groups = []
+            for index, group in enumerate(gt_groups):
+                if not group:
+                    noise_groups.append(None)
+                    continue
+                emb_group = emb_groups[index] if index < len(emb_groups) else None
+                if conditioning_groups is None:
+                    noise = self.generate_noise_for_group(group, emb_group)
+                else:
+                    conditioning = conditioning_groups[index]
+                    noise = self.generate_noise_for_group(
+                        group,
+                        emb_group,
+                        spatial_scales=(
+                            conditioning.get("s")
+                            if conditioning is not None
+                            else None
+                        ),
+                    )
+                noise_groups.append(noise)
 
         adjusted_noise_groups: List[Optional[Dict[int, torch.Tensor]]] = []
         x_t_groups: List[Optional[Dict[int, torch.Tensor]]] = []
@@ -874,6 +1069,7 @@ class MGFlowMatching:
                 times,
                 mask_groups=mask_groups,
                 emb_groups=emb_groups,
+                conditioning_groups=conditioning_groups,
                 **model_kwargs,
             )
         )
