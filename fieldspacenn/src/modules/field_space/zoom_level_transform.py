@@ -157,6 +157,114 @@ class ExpandFeaturesLayer(nn.Module):
         ]
 
 
+class SelectFeaturesLayerConfig:
+    """Configure feature-channel selection globally or per zoom level."""
+
+    def __init__(
+        self,
+        out_features: Union[Sequence[int], Mapping[int, Sequence[int]]],
+    ) -> None:
+        if isinstance(out_features, Mapping):
+            self.out_features: Union[List[int], Dict[int, List[int]]] = {
+                int(zoom): self._normalize_indices(indices)
+                for zoom, indices in out_features.items()
+            }
+        else:
+            self.out_features = self._normalize_indices(out_features)
+
+    @staticmethod
+    def _normalize_indices(indices: Sequence[int]) -> List[int]:
+        normalized = [int(index) for index in indices]
+        if not normalized:
+            raise ValueError("out_features must select at least one feature")
+        if any(index < 0 for index in normalized):
+            raise ValueError("out_features indices must be non-negative")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("out_features indices must be unique")
+        return normalized
+
+
+class SelectFeaturesLayer(nn.Module):
+    """Keep selected feature channels on the final tensor axis."""
+
+    def __init__(
+        self,
+        config: SelectFeaturesLayerConfig,
+        in_zooms: Sequence[int],
+        in_features: Sequence[int],
+    ) -> None:
+        super().__init__()
+        self.out_zooms = [int(zoom) for zoom in in_zooms]
+        in_features_by_zoom = {
+            zoom: int(features)
+            for zoom, features in zip(self.out_zooms, in_features)
+        }
+
+        if isinstance(config.out_features, Mapping):
+            self.out_feature_indices_by_zoom = dict(config.out_features)
+            self.default_out_feature_indices: Optional[List[int]] = None
+            unknown_zooms = sorted(
+                set(self.out_feature_indices_by_zoom) - set(self.out_zooms)
+            )
+            if unknown_zooms:
+                raise ValueError(
+                    "Cannot select features for unconfigured zooms "
+                    f"{unknown_zooms}; input zooms are {self.out_zooms}."
+                )
+        else:
+            self.default_out_feature_indices = list(config.out_features)
+            self.out_feature_indices_by_zoom = {
+                zoom: list(config.out_features)
+                for zoom in self.out_zooms
+            }
+
+        for zoom, indices in self.out_feature_indices_by_zoom.items():
+            invalid_indices = [
+                index for index in indices if index >= in_features_by_zoom[zoom]
+            ]
+            if invalid_indices:
+                raise ValueError(
+                    f"Cannot select feature indices {invalid_indices} at zoom {zoom}; "
+                    f"input has {in_features_by_zoom[zoom]} features."
+                )
+
+        self.out_features = [
+            len(self.out_feature_indices_by_zoom[zoom])
+            if zoom in self.out_feature_indices_by_zoom
+            else in_features_by_zoom[zoom]
+            for zoom in self.out_zooms
+        ]
+
+    def _select(self, tensor: torch.Tensor, zoom: int) -> torch.Tensor:
+        indices = self.out_feature_indices_by_zoom.get(
+            zoom, self.default_out_feature_indices
+        )
+        if indices is None:
+            return tensor
+        if max(indices) >= tensor.shape[-1]:
+            raise ValueError(
+                f"Runtime tensor at zoom {zoom} has {tensor.shape[-1]} features, "
+                f"which cannot provide configured out_features={indices}."
+            )
+        return tensor[..., indices]
+
+    def forward(
+        self,
+        x_zooms_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        **kwargs: Any,
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        del kwargs
+        return [
+            {
+                int(zoom): self._select(tensor, int(zoom))
+                for zoom, tensor in group.items()
+            }
+            if group is not None
+            else None
+            for group in x_zooms_groups
+        ]
+
+
 class ZoomLevelTransformConfig:
     """Base configuration for one-way zoom-level transformation layers."""
 

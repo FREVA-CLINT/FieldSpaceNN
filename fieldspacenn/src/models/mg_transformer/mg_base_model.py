@@ -20,6 +20,8 @@ from ...modules.field_space.zoom_level_transform import (
     ExpandFeaturesLayerConfig,
     ReencodeZoomsLayer,
     ReencodeZoomsLayerConfig,
+    SelectFeaturesLayer,
+    SelectFeaturesLayerConfig,
     ZoomLevelTransformConfig,
     ZoomLevelTransformLayer,
 )
@@ -265,6 +267,13 @@ def create_encoder_decoder_block(
 
     elif isinstance(block_conf, ExpandFeaturesLayerConfig):
         block = ExpandFeaturesLayer(
+            config=block_conf,
+            in_zooms=in_zooms,
+            in_features=in_features,
+        )
+
+    elif isinstance(block_conf, SelectFeaturesLayerConfig):
+        block = SelectFeaturesLayer(
             config=block_conf,
             in_zooms=in_zooms,
             in_features=in_features,
