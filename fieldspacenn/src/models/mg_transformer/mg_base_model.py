@@ -361,7 +361,9 @@ class MG_base_model(nn.Module):
         zooms = []
         self.grid_layers: nn.ModuleDict = nn.ModuleDict()
         for zoom, mgrid in enumerate(mgrids):
-            self.grid_layers[str(int(zoom))] = GridLayer(zoom, mgrid['adjc'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar')
+            self.grid_layers[str(int(zoom))] = GridLayer(
+                zoom, mgrid['adjc'], mgrid['adjc_mask'], mgrid['coords'], coord_system='polar',
+                grid_type=mgrid.get('grid_type', 'healpix'))
             zooms.append(zoom)
 
         self.register_buffer('zooms', torch.tensor(zooms), persistent=False)

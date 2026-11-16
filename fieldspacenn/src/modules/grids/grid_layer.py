@@ -171,6 +171,43 @@ def propagate_assignments(
     return torch.concat(assignment_index), torch.concat(assignment_target)
 
 
+def tokens_with_ring(adjc: torch.Tensor, valid: torch.Tensor, cells_per_token: int) -> torch.Tensor:
+    """
+    Indices of every token's own cells followed by its ring: the cells that
+    touch the token from outside.
+
+    Needs a neighbour list whose slot ``k`` is the same relative place for
+    every cell, and a cell order that is the same inside every token
+    (`icon_grid.icon_canonical_mgrid`). Then the first reference to each ring
+    cell is at the same (own cell, slot) for every token, and it is read off
+    one token whose ring is complete.
+
+    :param adjc: Adjacency tensor of shape ``(n, k)``, the cell itself first.
+    :param valid: ``(n, k)``, False where a neighbour is missing.
+    :param cells_per_token: Cells of a token, consecutive rows of ``adjc``.
+    :return: ``(n_tokens, cells_per_token + ring)`` cell indices. A missing
+        ring cell is replaced by the own cell next to it.
+    """
+    n_slots = adjc.shape[1] - 1
+    own = torch.arange(adjc.shape[0], device=adjc.device).view(-1, cells_per_token)
+    token = torch.arange(own.shape[0], device=adjc.device).view(-1, 1)
+    refs = adjc[:, 1:].reshape(own.shape[0], -1)  # every neighbour of every own cell
+    outside = (refs // cells_per_token != token) & valid[:, 1:].reshape(own.shape[0], -1)
+
+    # The token with the most ring cells has a complete ring.
+    ring_cells = torch.where(outside, refs, -1).sort(dim=1).values
+    n_ring = (ring_cells.diff(dim=1) != 0).sum(dim=1) + (ring_cells[:, 0] >= 0)
+    reference = int(n_ring.argmax())
+    cells, inverse = torch.unique(torch.where(outside[reference], refs[reference], -1), return_inverse=True)
+    first = torch.full_like(cells, refs.shape[1]).scatter_reduce(
+        0, inverse, torch.arange(refs.shape[1], device=adjc.device), "amin"
+    )
+    columns = first[cells >= 0].sort().values  # one column of ``refs`` per ring cell
+
+    ring = torch.where(outside[:, columns], refs[:, columns], own[:, columns // n_slots])
+    return torch.cat([own, ring], dim=1)
+
+
 class GridLayer(nn.Module):
     """
     A grid layer with coordinate transforms, neighborhood gathering, and relative positioning.
@@ -184,7 +221,8 @@ class GridLayer(nn.Module):
         coordinates: torch.Tensor,
         coord_system: str = "polar",
         periodic_fov: Optional[float] = None,
-        nh_shift_indices: Optional[Dict[str, int]] = None
+        nh_shift_indices: Optional[Dict[str, int]] = None,
+        grid_type: str = "healpix"
     ) -> None:
         """
         Initializes the GridLayer with given parameters.
@@ -196,9 +234,13 @@ class GridLayer(nn.Module):
         :param coord_system: The coordinate system. Defaults to "polar".
         :param periodic_fov: The periodic field of view. Defaults to None.
         :param nh_shift_indices: Optional custom neighborhood shift indices.
+        :param grid_type: "healpix" (8 neighbours in HEALPix's order) or "icon"
+            (the 12 neighbours of `icon_grid.icon_canonical_mgrid`).
         :return: None.
         """
         super().__init__()
+
+        self.grid_type: str = grid_type
 
         if nh_shift_indices is None:
             self.nh_shift_indices: Dict[str, int] = {
@@ -234,14 +276,14 @@ class GridLayer(nn.Module):
         self.register_buffer("coordinates", coordinates, persistent=False)
         self.coordinates: torch.Tensor
         
-        if zoom >= 1:
+        if zoom >= 1 and grid_type == "healpix":
             # Propagate missing assignments for polar discontinuities.
             for k in [2,6]:
                 i_shift, i_target = propagate_assignments(adjc, adjc_mask==False, coordinates, nh_k=k)
                 if len(i_shift) > 0:
-                    adjc[i_shift, k] = i_target 
-        
-        for k in [1,3,4,5,7,8]:
+                    adjc[i_shift, k] = i_target
+
+        for k in [1,3,4,5,7,8] if grid_type == "healpix" else []:
             # Fill missing adjacency entries with a consistent fallback direction.
             c = torch.where(adjc_mask[:,k])[0]
             adjc[c,k] = k -1 if k>1 else 8
@@ -341,6 +383,20 @@ class GridLayer(nn.Module):
         """
         
         zoom_patch_out = self.zoom if zoom_patch_out is None else zoom_patch_out
+
+        if self.grid_type == "icon":
+            # Own cells, then the ring, from a table built once per token zoom.
+            name = f"tokens_with_ring_{zoom_patch_out}"
+            if not hasattr(self, name):
+                cells = 4**(self.zoom - zoom_patch_out)
+                table = tokens_with_ring(self.adjc, self.adjc_mask, cells)
+                # A triangle with m cells per side has 6 m + 6 cells around it.
+                assert table.shape[1] == cells + 6 * 2**(self.zoom - zoom_patch_out) + 6, \
+                    "no token has all the cells around it: the grid is too small for token overlap"
+                self.register_buffer(name, table, persistent=False)
+            patch_indices = getattr(self, name)
+            return x[:, patch_indices], mask[:, patch_indices] if mask is not None else None
+
         # Select full or reduced neighborhood indices depending on zoom.
         if (zoom_patch_out - self.zoom) == 0:
             indices = self.adjc
@@ -408,6 +464,8 @@ class GridLayer(nn.Module):
         :return: Tuple of (shifted_x, shifted_mask) with shapes ``(b, v, t, n', f)``
             and ``(b, v, t, n', m)``, where ``n'`` may include flattened depth.
         """
+        if self.grid_type != "healpix":
+            raise NotImplementedError("shifts use HEALPix's 8 directions")
         x, mask = self.get_nh(x, patch_index=patch_index, zoom_patch_sample=zoom_patch_sample, mask=mask, **kwargs)
 
         x = x.view(*x.shape[:4],self.adjc.shape[-1],-1,x.shape[-1])
