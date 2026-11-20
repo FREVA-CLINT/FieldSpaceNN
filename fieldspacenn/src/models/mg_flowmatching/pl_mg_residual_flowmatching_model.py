@@ -19,6 +19,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         deterministic_checkpoint_path: str,
         deterministic_zooms: Sequence[int],
         spatial_conditioning_embed_key: Optional[str] = None,
+        spatial_conditioning_masked_only: bool = False,
         spatial_noise_scale: float = 1.0,
         scale_std_by_one_minus_tau: bool = False,
         **kwargs: Any,
@@ -35,6 +36,9 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             None
             if spatial_conditioning_embed_key is None
             else str(spatial_conditioning_embed_key)
+        )
+        self.spatial_conditioning_masked_only = bool(
+            spatial_conditioning_masked_only
         )
         self.spatial_noise_scale = float(spatial_noise_scale)
         self.scale_std_by_one_minus_tau = bool(scale_std_by_one_minus_tau)
@@ -169,20 +173,112 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         return mean_groups, sigma_groups
 
     @staticmethod
+    def _masked_time_indices(
+        mask: torch.Tensor,
+        field: torch.Tensor,
+        zoom: int,
+    ) -> torch.Tensor:
+        if mask.ndim < 3 or field.ndim < 3:
+            raise ValueError(
+                "Masked-only spatial conditioning requires tensors with a time "
+                f"axis at dimension 2 for zoom {zoom}; got mask={tuple(mask.shape)} "
+                f"and field={tuple(field.shape)}."
+            )
+        if mask.shape[2] != field.shape[2]:
+            raise ValueError(
+                "Spatial-conditioning mask and field time lengths must match at "
+                f"zoom {zoom}; got {mask.shape[2]} and {field.shape[2]}."
+            )
+
+        masked = mask if mask.dtype == torch.bool else mask > 0
+        mask_by_time = masked.movedim(2, 0).reshape(mask.shape[2], -1)
+        fully_masked = mask_by_time.all(dim=1)
+        fully_known = (~mask_by_time).all(dim=1)
+        if not bool(torch.all(fully_masked | fully_known).item()):
+            raise ValueError(
+                "Masked-only spatial conditioning requires each timestep to be "
+                f"consistently masked across the batch and field at zoom {zoom}."
+            )
+
+        indices = torch.nonzero(fully_masked, as_tuple=False).flatten()
+        if indices.numel() == 0:
+            raise ValueError(
+                "Masked-only spatial conditioning requires at least one fully "
+                f"masked timestep at deterministic zoom {zoom}."
+            )
+        return indices.to(device=field.device)
+
     def _build_spatial_conditioning(
+        self,
         mean_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
         sigma_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
+        mask_groups: Sequence[Optional[Dict[int, torch.Tensor]]],
     ) -> List[Optional[Dict[str, Dict[int, torch.Tensor]]]]:
+        if not len(mean_groups) == len(sigma_groups) == len(mask_groups):
+            raise ValueError(
+                "Mean, scale, and mask groups must have matching lengths."
+            )
+
         conditioning_groups: List[
             Optional[Dict[str, Dict[int, torch.Tensor]]]
         ] = []
-        for mean_group, sigma_group in zip(mean_groups, sigma_groups):
+        for mean_group, sigma_group, mask_group in zip(
+            mean_groups,
+            sigma_groups,
+            mask_groups,
+        ):
             if mean_group is None:
                 conditioning_groups.append(None)
                 continue
-            conditioning = {"mu": mean_group}
-            if sigma_group is not None:
-                conditioning["s"] = sigma_group
+
+            if not self.spatial_conditioning_masked_only:
+                conditioning = {"mu": mean_group}
+                if sigma_group is not None:
+                    conditioning["s"] = sigma_group
+                conditioning_groups.append(conditioning)
+                continue
+
+            masked_means: Dict[int, torch.Tensor] = {}
+            masked_scales: Optional[Dict[int, torch.Tensor]] = (
+                {} if sigma_group is not None else None
+            )
+            for zoom, mean in mean_group.items():
+                zoom = int(zoom)
+                if zoom not in self.deterministic_zooms:
+                    masked_means[zoom] = mean
+                    if masked_scales is not None:
+                        assert sigma_group is not None
+                        masked_scales[zoom] = sigma_group[zoom]
+                    continue
+                if mask_group is None:
+                    raise ValueError(
+                        "Masked-only spatial conditioning requires a mask group."
+                    )
+                mask = mask_group.get(zoom)
+                if mask is None:
+                    mask = mask_group.get(str(zoom))
+                if not isinstance(mask, torch.Tensor):
+                    raise ValueError(
+                        "Masked-only spatial conditioning is missing a mask for "
+                        f"deterministic zoom {zoom}."
+                    )
+
+                indices = self._masked_time_indices(mask, mean, zoom)
+                masked_means[zoom] = mean.index_select(2, indices)
+                if masked_scales is not None:
+                    assert sigma_group is not None
+                    scale = sigma_group[zoom]
+                    if scale.shape[2] != mean.shape[2]:
+                        raise ValueError(
+                            "Spatial-conditioning mean and scale time lengths must "
+                            f"match at zoom {zoom}; got {mean.shape[2]} and "
+                            f"{scale.shape[2]}."
+                        )
+                    masked_scales[zoom] = scale.index_select(2, indices)
+
+            conditioning = {"mu": masked_means}
+            if masked_scales is not None:
+                conditioning["s"] = masked_scales
             conditioning_groups.append(conditioning)
         return conditioning_groups
 
@@ -230,6 +326,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         conditioning_groups = self._build_spatial_conditioning(
             deterministic_groups,
             sigma_groups,
+            mask_groups,
         )
         residual_groups = self._apply_group_operation(
             target_groups,
@@ -321,6 +418,58 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
             Sequence[Optional[Mapping[str, Mapping[int, torch.Tensor]]]]
         ] = None,
     ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        if self.spatial_conditioning_masked_only and conditioning_groups is not None:
+            prediction_groups: List[Optional[Dict[int, torch.Tensor]]] = []
+            for group_index, residual_group in enumerate(flow_prediction_groups):
+                if residual_group is None:
+                    prediction_groups.append(None)
+                    continue
+                conditioning = conditioning_groups[group_index]
+                if conditioning is None:
+                    raise ValueError(
+                        "Residual reconstruction requires spatial conditioning."
+                    )
+                mean_group = conditioning["mu"]
+                mask_group = mask_groups[group_index]
+                predictions: Dict[int, torch.Tensor] = {}
+                for zoom, residual in residual_group.items():
+                    mean = mean_group[int(zoom)]
+                    if mean.shape == residual.shape:
+                        predictions[int(zoom)] = residual + mean
+                        continue
+                    mask = None if mask_group is None else mask_group.get(int(zoom))
+                    if mask is None and mask_group is not None:
+                        mask = mask_group.get(str(zoom))
+                    if not isinstance(mask, torch.Tensor):
+                        raise ValueError(
+                            "Masked-only residual reconstruction requires a mask "
+                            f"for zoom {zoom}."
+                        )
+                    indices = self._masked_time_indices(
+                        mask,
+                        residual,
+                        int(zoom),
+                    )
+                    if mean.shape[2] != indices.numel():
+                        raise ValueError(
+                            "Masked spatial-conditioning time length must match the "
+                            f"number of selected timesteps at zoom {zoom}; got "
+                            f"{mean.shape[2]} and {indices.numel()}."
+                        )
+                    prediction = residual.clone()
+                    prediction.index_copy_(
+                        2,
+                        indices,
+                        residual.index_select(2, indices) + mean,
+                    )
+                    predictions[int(zoom)] = prediction
+                prediction_groups.append(predictions)
+            return self._restore_unmasked_source_values(
+                prediction_groups,
+                source_groups,
+                mask_groups,
+            )
+
         deterministic_groups = (
             [
                 None
@@ -379,6 +528,7 @@ class LightningMGResidualFlowMatchingModel(LightningMGFlowMatchingModel):
         conditioning_groups = self._build_spatial_conditioning(
             deterministic_groups,
             sigma_groups,
+            mask_groups,
         )
         residual_template = [
             {int(zoom): torch.zeros_like(tensor) for zoom, tensor in group.items()}
