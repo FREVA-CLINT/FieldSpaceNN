@@ -261,6 +261,7 @@ def create_encoder_decoder_block(
     if isinstance(block_conf, ConservativeLayerConfig):
         block = ConservativeLayer(
             in_zooms,
+            first_feature_only=block_conf.first_channel_only,
             mean_strengths=block_conf.mean_strengths,
         )
         block.out_features = in_features

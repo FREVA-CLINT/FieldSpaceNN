@@ -191,6 +191,7 @@ class ConservativeLayerConfig:
     def __init__(
         self,
         mean_strengths: Optional[Mapping[int, float]] = None,
+        first_channel_only: bool = True,
     ) -> None:
         """
         Store per-child-zoom mean strengths.
@@ -200,12 +201,14 @@ class ConservativeLayerConfig:
         ``1.0``.
 
         :param mean_strengths: Optional mapping from child zoom to mean strength.
+        :param first_channel_only: Whether to conserve only the first feature channel.
         :return: None.
         """
         self.mean_strengths = {
             int(zoom): float(strength)
             for zoom, strength in (mean_strengths or {}).items()
         }
+        self.first_channel_only = bool(first_channel_only)
 
 
 
@@ -1199,21 +1202,32 @@ class ConservativeLayer(nn.Module):
                 zoom_level_cons = zoom - self.cons_dict[zoom]
 
                 if zoom_level_cons > 0:
+                    original_x = x
+                    if self.ffo:
+                        x = x[..., :1]
+
                     x = x.view(*x.shape[:3], -1, 4**zoom_level_cons, *x.shape[-2:]) 
 
                     mean = x.mean(dim=-3)
                     x = (x-mean.unsqueeze(dim=-3)).view(*x.shape[:3], -1, *x.shape[-2:])
 
+                    if self.ffo:
+                        x = torch.cat((x, original_x[..., 1:]), dim=-1)
+
                     mean_strength = self.mean_strengths[zoom]
-                    x_patch = (
-                        get_matching_time_patch(
-                            x_zooms[self.cons_dict[zoom]],
-                            self.cons_dict[zoom],
-                            zoom,
-                            sample_configs,
-                        )
-                        + mean_strength * mean
+                    parent_patch = get_matching_time_patch(
+                        x_zooms[self.cons_dict[zoom]],
+                        self.cons_dict[zoom],
+                        zoom,
+                        sample_configs,
                     )
+                    if self.ffo:
+                        first_channel = parent_patch[..., :1] + mean_strength * mean
+                        x_patch = torch.cat(
+                            (first_channel, parent_patch[..., 1:]), dim=-1
+                        )
+                    else:
+                        x_patch = parent_patch + mean_strength * mean
 
                     x_zooms[self.cons_dict[zoom]] = insert_matching_time_patch(x_zooms[self.cons_dict[zoom]], x_patch, self.cons_dict[zoom], zoom, sample_configs)
 
