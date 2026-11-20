@@ -165,6 +165,7 @@ class EulerFlowSampler:
                     )
                 x_t_groups.append(noise)
         x_t_groups = self._apply_known_values(x_t_groups, input_groups, mask_groups)
+        x_t_groups = self.flow_matching.project_residual_groups(x_t_groups)
 
         first_valid_group = next((group for group in x_t_groups if group), None)
         if not first_valid_group:
@@ -210,6 +211,9 @@ class EulerFlowSampler:
                     })
 
                 sample_groups = self._apply_known_values(sample_groups, input_groups, mask_groups)
+                sample_groups = self.flow_matching.project_residual_groups(
+                    sample_groups
+                )
                 out = {"sample": sample_groups, "velocity": velocity_groups, "time": t_batch}
                 yield out
                 x_t_groups = sample_groups

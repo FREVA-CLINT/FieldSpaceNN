@@ -28,6 +28,7 @@ class MGFlowMatching:
         scale_std_by_one_minus_tau: bool = False,
         temporal_difference: bool = False,
         difference_norm_dict: NormDictInput = None,
+        hard_residual_constraints: bool = False,
     ) -> None:
         """
         Initialize the flow-matching helper.
@@ -53,6 +54,9 @@ class MGFlowMatching:
             differences.
         :param difference_norm_dict: Mean/std statistics for temporal differences,
             either as a mapping or a legacy path to a YAML/JSON file.
+        :param hard_residual_constraints: Whether fine-zoom flow states and
+            velocities are projected to have zero contribution at the next
+            configured coarser zoom.
         :return: None.
         """
         self.time_embed_key: str = time_embed_key
@@ -81,6 +85,7 @@ class MGFlowMatching:
                 "conditioning fields are configured."
             )
         self.scale_std_by_one_minus_tau = bool(scale_std_by_one_minus_tau)
+        self.hard_residual_constraints = bool(hard_residual_constraints)
         self.temporal_difference: bool = bool(temporal_difference)
         self.difference_norm_dict = self._load_norm_dict(
             difference_norm_dict, "difference_norm_dict"
@@ -161,6 +166,44 @@ class MGFlowMatching:
         if start < 0.0 or end > 1.0 or start > end:
             raise ValueError(f"`time_range` must satisfy 0 <= start <= end <= 1, got {time_range}.")
         return start + (end - start) * torch.rand(batch_size, device=device)
+
+    def project_residuals(
+        self,
+        x_zooms: Mapping[int, torch.Tensor],
+    ) -> Dict[int, torch.Tensor]:
+        """Project fine zooms with ``P = I - UD`` and leave the coarsest unchanged."""
+        projected = {int(zoom): tensor for zoom, tensor in x_zooms.items()}
+        if not self.hard_residual_constraints or len(projected) < 2:
+            return projected
+
+        zooms = sorted(projected)
+        for coarse_zoom, fine_zoom in zip(zooms, zooms[1:]):
+            coarse_contribution, _ = to_zoom(
+                projected[fine_zoom],
+                fine_zoom,
+                coarse_zoom,
+            )
+            upsampled_contribution, _ = to_zoom(
+                coarse_contribution,
+                coarse_zoom,
+                fine_zoom,
+            )
+            upsampled_contribution = upsampled_contribution.reshape_as(
+                projected[fine_zoom]
+            )
+            projected[fine_zoom] = (
+                projected[fine_zoom] - upsampled_contribution
+            )
+        return projected
+
+    def project_residual_groups(
+        self,
+        groups: Sequence[Optional[Mapping[int, torch.Tensor]]],
+    ) -> List[Optional[Dict[int, torch.Tensor]]]:
+        """Apply the residual projection to every populated group."""
+        if not self.hard_residual_constraints:
+            return list(groups)
+        return [self.project_residuals(group) if group else None for group in groups]
 
     @staticmethod
     def _stat_from_definition(definition: Any, statistic: str) -> Optional[Any]:
@@ -494,6 +537,8 @@ class MGFlowMatching:
             x_zooms,
             spatial_scales,
         )
+        # Project only after all normalization and spatial sigma scaling so the
+        # constrained quantity is the residual in model units, not unit noise.
         if self.separate_noise_on_zoom:
             noise_zooms = {
                 int(zoom): torch.randn_like(x_zooms[zoom]) for zoom in x_zooms.keys()
@@ -505,9 +550,11 @@ class MGFlowMatching:
                     )
                     for zoom, noise in noise_zooms.items()
                 }
-            return self._apply_spatial_noise_scales(
-                noise_zooms,
-                spatial_scales,
+            return self.project_residuals(
+                self._apply_spatial_noise_scales(
+                    noise_zooms,
+                    spatial_scales,
+                )
             )
 
         if not x_zooms:
@@ -530,9 +577,11 @@ class MGFlowMatching:
                 variable_names,
                 unit_variance=spatial_scales is not None,
             )
-            return self._apply_spatial_noise_scales(
-                noise_zooms,
-                spatial_scales,
+            return self.project_residuals(
+                self._apply_spatial_noise_scales(
+                    noise_zooms,
+                    spatial_scales,
+                )
             )
 
         noise_zooms: Dict[int, torch.Tensor] = {
@@ -600,9 +649,11 @@ class MGFlowMatching:
                 for zoom, noise in noise_zooms.items()
             }
 
-        return self._apply_spatial_noise_scales(
-            {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms.keys()},
-            spatial_scales,
+        return self.project_residuals(
+            self._apply_spatial_noise_scales(
+                {int(zoom): noise_zooms[int(zoom)] for zoom in x_zooms.keys()},
+                spatial_scales,
+            )
         )
 
     @staticmethod
@@ -974,9 +1025,9 @@ class MGFlowMatching:
             mask_zooms_groups=mask_groups,
             **model_kwargs,
         )
-        if not self.input_conditioning_fields:
-            return output_groups
-        return self._select_state_channels(output_groups, x_t_groups)
+        if self.input_conditioning_fields:
+            output_groups = self._select_state_channels(output_groups, x_t_groups)
+        return self.project_residual_groups(output_groups)
 
     def training_losses(
         self,
@@ -1020,6 +1071,7 @@ class MGFlowMatching:
             gt_groups = self.encode_temporal_differences(
                 gt_groups, mask_groups, emb_groups
             )
+        gt_groups = self.project_residual_groups(gt_groups)
         if noise_groups is None:
             noise_groups = []
             for index, group in enumerate(gt_groups):
@@ -1054,7 +1106,9 @@ class MGFlowMatching:
                 continue
 
             assert noise_zooms is not None
-            adjusted_noise = self.apply_mask_to_noise(gt_zooms, noise_zooms, mask_zooms)
+            adjusted_noise = self.project_residuals(
+                self.apply_mask_to_noise(gt_zooms, noise_zooms, mask_zooms)
+            )
             adjusted_noise_groups.append(adjusted_noise)
             x_t_zooms = self.interpolate(gt_zooms, adjusted_noise, times)
             x_t_groups.append(x_t_zooms)
